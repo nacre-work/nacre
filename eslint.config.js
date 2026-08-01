@@ -6,6 +6,12 @@ export default tseslint.config(
   js.configs.recommended,
   tseslint.configs.recommended,
   {
+    // Plain-JS tooling runs on Node. no-undef is off for .ts files by default,
+    // because the compiler answers that question better.
+    files: ['scripts/**/*.{js,mjs,cjs}'],
+    languageOptions: { globals: { console: 'readonly', process: 'readonly' } },
+  },
+  {
     rules: {
       // The permission model reads better with explicit, narrow types than
       // with inferred ones; these two catch the drift that hides a widening.

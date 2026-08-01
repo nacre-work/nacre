@@ -44,8 +44,26 @@ export type Permission = 'read' | 'write' | 'admin'
 export type Effect = 'allow' | 'deny'
 
 export interface Grant {
+  /**
+   * Carried on the grant itself, not just implied by the query that fetched it.
+   * Rule 1 is a precondition rather than part of the ACL, and the resolver
+   * re-checks it — a grant that reached the resolver from the wrong tenant is a
+   * bug somewhere upstream, and the resolver is the last place to catch it
+   * before it becomes a result.
+   */
+  readonly orgId: string
   readonly principal: Principal
   readonly scope: Scope
   readonly permission: Permission
   readonly effect: Effect
 }
+
+/**
+ * Roles that bypass the grant table, from rules 2 and 3.
+ *
+ * `platform_admin` is not "an admin with more power" — it administers
+ * organizations and reads no documents at all. Modelling it as a role that
+ * short-circuits to *less* access is deliberate; anyone reaching for
+ * `if (role === 'platform_admin') allowEverything` has inverted rule 2.
+ */
+export type OrgRole = 'platform_admin' | 'org_admin' | 'member'
