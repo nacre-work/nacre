@@ -1,3 +1,6 @@
+# packages/core/authz is a directory inside @nacre.work/core, not a workspace
+# package of its own — see packages/core/authz/README.md. Do not add
+# "packages/core/*" here; it would make pnpm treat it as one the moment
+# somebody adds a package.json to it by reflex.
 packages:
   - "packages/*"
-  - "packages/core/*"

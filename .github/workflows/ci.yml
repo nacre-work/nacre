@@ -33,6 +33,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Core must not reference private packages
         run: |
+          set -euo pipefail
+          # grep exits 2 when a search path is missing, and `if grep` reads
+          # that as "no match" — so a renamed directory would silently turn
+          # this check into a no-op. Fail loudly instead.
+          for d in packages services; do
+            [ -d "$d" ] || { echo "::error::$d/ is missing; boundary check cannot run"; exit 1; }
+          done
           if grep -rn "@nacre.work/enterprise" --include="*.ts" --include="*.json" packages/ services/; then
             echo "::error::public core references enterprise modules"
             exit 1
