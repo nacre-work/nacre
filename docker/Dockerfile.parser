@@ -1,0 +1,15 @@
+# The parser sidecar: bytes -> {text, blocks, metadata}.
+#
+# Python because that is where the document-parsing libraries are, and a
+# sidecar rather than a library because it is the one component that runs
+# untrusted input through a large C dependency tree. It holds no credentials
+# and reaches no database — if it is compromised it has nothing to reach.
+FROM python:3.13-slim
+WORKDIR /app
+
+RUN adduser --system --group nacre
+USER nacre
+
+COPY --chown=nacre:nacre services/parser services/parser
+EXPOSE 8090
+CMD ["python", "-m", "services.parser"]
