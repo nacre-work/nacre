@@ -143,9 +143,18 @@ that a database is down rather than reading it as a tool that does not exist.
 
 ## Current state
 
-The transport and the tool catalog are implemented in `packages/mcp`; the tool
-bodies are injected and are not written yet. What is under test is the part
-that carries the leak risk:
+Both transports are implemented in `packages/mcp`, and the tool bodies behind
+them are wired to the same resolver, search service and audit sink the REST API
+uses — one set of objects, built in `services.ts` and shared, because a second
+copy is a second place for rule 6 to drift.
+
+Local mode authenticates once from `NACRE_SERVICE_KEY` and then carries exactly
+that service account's permissions. It reaches the same per-caller catalog, so a
+tool the account cannot see is indistinguishable from one that does not exist —
+the relaxation this file warns about would be easy to add here and looks like a
+convenience, so there is a test that fails if the check is removed.
+
+What is under test is the part that carries the leak risk:
 
 - the catalog is built **per caller**, so one tenant cannot learn another's
   layer names through a shared `tools/list` — the same fact as
@@ -157,6 +166,14 @@ that carries the leak risk:
   document;
 - no tool schema accepts an organization at any depth, and `params` carrying
   one is refused before dispatch;
-- there is no `initialize` and no `Mcp-Session-Id` to be had — a test asserts
-  the session cannot be established, because state creeping into the transport
-  is what quietly ends the round-robin deployment.
+- there is no `initialize` and no `Mcp-Session-Id` to be had over HTTP — a test
+  asserts the session cannot be established, because state creeping into the
+  transport is what quietly ends the round-robin deployment. STDIO answers
+  `initialize` because a pipe is a session by construction: there is one client,
+  one process, and nothing to route.
+
+Both transports answer a successful call with a `CallToolResult`, and stdout in
+local mode carries protocol frames and nothing else — a stray log line lands
+mid-stream and the client fails on a frame nobody sent. There is a test for
+each, both written after the HTTP one shipped returning bare values that no
+compliant client could read.
