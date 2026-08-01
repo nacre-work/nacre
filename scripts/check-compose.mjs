@@ -10,9 +10,9 @@
 import { spawnSync } from 'node:child_process'
 
 const EXPECTED = {
-  minimal: ['api', 'mcp', 'parser', 'postgres', 'qdrant', 'redis', 'worker'],
-  full: ['api', 'embedder', 'mcp', 'minio', 'parser', 'postgres', 'qdrant', 'redis', 'reranker', 'worker'],
-  airgapped: ['api', 'embedder', 'keycloak', 'mcp', 'parser', 'postgres', 'qdrant', 'redis', 'reranker', 'worker'],
+  minimal: ['api', 'mcp', 'migrate', 'parser', 'postgres', 'qdrant', 'redis', 'worker'],
+  full: ['api', 'embedder', 'mcp', 'migrate', 'minio', 'parser', 'postgres', 'qdrant', 'redis', 'reranker', 'worker'],
+  airgapped: ['api', 'embedder', 'keycloak', 'mcp', 'migrate', 'parser', 'postgres', 'qdrant', 'redis', 'reranker', 'worker'],
 }
 
 let failed = false

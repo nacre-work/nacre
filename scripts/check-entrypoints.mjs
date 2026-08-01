@@ -11,7 +11,7 @@
  * docker-compose ran until the entry points existed.
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 
 const ENTRY_POINTS = [
   'packages/api/dist/main.js',
@@ -22,6 +22,10 @@ const ENTRY_POINTS = [
   // restart loop either way.
   'packages/mcp/dist/stdio-main.js',
   'packages/worker/dist/main.js',
+  // Compose runs this to completion before the others start. It is the one that
+  // must not be silently skippable: a stack that comes up against an unmigrated
+  // database fails on the first query, not at boot.
+  'packages/core/dist/migrate-main.js',
 ]
 
 let failed = false
@@ -56,6 +60,36 @@ for (const entry of ENTRY_POINTS) {
   }
 
   console.log(`${entry}: refuses an empty environment, exit 2`)
+}
+
+/**
+ * The build output has to carry the SQL, not only the code that reads it.
+ *
+ * `migrate()` is exported from `@nacre.work/core` and resolves its directory
+ * relative to its own module URL, so in a build it looks in `dist/migrations/`.
+ * `tsc` compiles TypeScript and copies nothing else, which made that export
+ * throw ENOENT on its first call for anyone consuming the package rather than
+ * the repository — and everything in this repository runs from source, so
+ * nothing here would ever notice.
+ */
+const sqlIn = (dir) => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.sql')) : [])
+
+const source = sqlIn('packages/core/migrations')
+const built = sqlIn('packages/core/dist/migrations')
+const missing = source.filter((f) => !built.includes(f))
+
+if (source.length === 0) {
+  console.error('::error::no migrations under packages/core/migrations')
+  failed = true
+} else if (missing.length > 0) {
+  console.error(
+    `::error::packages/core/dist/migrations is missing ${missing.length} of ${source.length} ` +
+      `migration(s): ${missing.join(', ')}. migrate() reads dist, and a published package ` +
+      'without them exports a function that cannot run.',
+  )
+  failed = true
+} else {
+  console.log(`packages/core/dist/migrations: ${built.length} migration(s), all present`)
 }
 
 process.exit(failed ? 1 : 0)

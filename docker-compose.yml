@@ -34,12 +34,35 @@ x-app: &app
     redis: { condition: service_healthy }
 
 services:
+  # Runs to completion before anything else starts, and is the only service
+  # allowed to touch the schema. Without it a fresh `docker compose up` brought
+  # the API up against an empty database and the first request failed on a
+  # missing table — `pnpm migrate` goes through tsx, which is a development
+  # dependency and is not in the runtime image.
+  #
+  # A separate one-shot rather than a step inside the API: three replicas
+  # starting together would each try to migrate, and the ones that lose the race
+  # report a failure that is not one.
+  migrate:
+    <<: *app
+    command: ["node", "packages/core/dist/migrate-main.js"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      disable: true
+
   api:
     <<: *app
     command: ["node", "packages/api/dist/main.js"]
     ports: ["8080:8080"]
     environment:
       PORT: 8080
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      qdrant: { condition: service_started }
+      redis: { condition: service_healthy }
 
   mcp:
     <<: *app
@@ -47,11 +70,36 @@ services:
     ports: ["8081:8081"]
     environment:
       PORT: 8081
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      qdrant: { condition: service_started }
+      redis: { condition: service_healthy }
+    # The API's /v1/health does not exist here — this process serves /mcp and
+    # nothing else — so the shared HTTP check would report every MCP container
+    # unhealthy forever. A TCP connect is what this transport can honestly
+    # answer without authenticating.
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('node:net').connect(Number(process.env.PORT||8081),'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
 
   worker:
     <<: *app
     command: ["node", "packages/worker/dist/main.js"]
-    # No ports. The worker talks outward only.
+    # No ports. The worker talks outward only — which also means the image's
+    # HTTP healthcheck can never pass here, and a container that is permanently
+    # unhealthy is one an orchestrator will restart forever. It has nothing to
+    # serve, so it has nothing to check.
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      qdrant: { condition: service_started }
+      redis: { condition: service_healthy }
 
   postgres:
     image: postgres:17-alpine
