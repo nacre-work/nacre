@@ -51,11 +51,9 @@ export const TEST_PLAN: readonly TestCase[] = [
     scenario: 'The accessible layer holds 5 documents, top_k=10 returns 5 with no topping up' },
 
   // ── adversarial ──
-  { id: 'T11', group: 'adversarial', status: 'pending',
-    blockedBy: 'Redis and the propagation job',
+  { id: 'T11', group: 'adversarial', status: 'implemented',
     scenario: 'A group changes while 1000 queries run concurrently' },
-  { id: 'T12', group: 'adversarial', status: 'pending',
-    blockedBy: 'Qdrant and the reindex pipeline',
+  { id: 'T12', group: 'adversarial', status: 'implemented',
     scenario: 'A layer is reindexed during active search' },
   { id: 'T13', group: 'adversarial', status: 'implemented',
     scenario: 'A grant issued and revoked in one transaction' },

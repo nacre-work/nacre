@@ -137,3 +137,24 @@ export class PostgresGroupGraph implements GroupGraph {
     return this.#edges.get(principal) ?? []
   }
 }
+
+/**
+ * The organization's current groups_version.
+ *
+ * Read in the same transaction as the grants, so the cache key and the grant
+ * set describe the same instant. Reading it separately would leave a window
+ * where the version says "fresh" about a set loaded before a change.
+ */
+export async function loadGroupsVersion(client: PoolClient, orgId: string): Promise<number> {
+  const { rows } = await client.query<{ groups_version: string }>(
+    'SELECT groups_version FROM organizations WHERE id = $1',
+    [orgId],
+  )
+  const value = rows[0]?.groups_version
+  if (value === undefined) {
+    // No organization means no permissions to evaluate. Rule I3: deny rather
+    // than default, and a version of 0 is a key nothing else will collide with.
+    return 0
+  }
+  return Number(value)
+}

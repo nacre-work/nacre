@@ -5,14 +5,15 @@ name: acl-invariants
 # instead of hiding among unit tests.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# STATUS: 13 of the 15 cases in docs/authz.md section 3.5 run, against a real
-# Postgres, a real Qdrant, and the HTTP surface over a real socket. The
-# `not yet covered` step prints the rest on every run, including green ones,
-# deliberately.
+# STATUS: all 15 cases in docs/authz.md section 3.5 run, against a real
+# Postgres, a real Qdrant, and the HTTP surface over a real socket.
 #
-# Outstanding: T11 (Redis and the propagation job) and T12 (the reindex
-# pipeline). Both are about change under load rather than about a single
-# decision, which is why they are last.
+# This job is now a gate on what that document specifies. It is not a gate on
+# what nobody has thought to specify, and the difference matters: every case
+# here was written from the spec, so a leak nobody imagined is still a leak
+# nobody tests for. Adding a case to test-plan.ts is how that changes — the
+# coverage test refuses a case claimed without a test behind it, in either
+# direction.
 #
 # The integration tests refuse to skip when CI is set, so a missing service URL
 # fails the job instead of quietly reducing what it checks.
