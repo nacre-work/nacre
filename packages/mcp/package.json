@@ -1,0 +1,14 @@
+{
+  "name": "@nacre.work/mcp",
+  "version": "0.0.0",
+  "description": "MCP server: Streamable HTTP and STDIO",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsx watch src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

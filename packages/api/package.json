@@ -1,0 +1,11 @@
+{
+  "name": "@nacre.work/api",
+  "version": "0.0.0",
+  "description": "REST API and authorization service",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsx watch src/index.ts"
+  },
+  "private": true
+}

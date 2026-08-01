@@ -1,0 +1,11 @@
+{
+  "name": "@nacre.work/worker",
+  "version": "0.0.0",
+  "description": "Indexing pipeline: parse, chunk, embed",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsx watch src/index.ts"
+  },
+  "private": true
+}

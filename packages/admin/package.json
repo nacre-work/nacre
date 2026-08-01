@@ -1,0 +1,11 @@
+{
+  "name": "@nacre.work/admin",
+  "version": "0.0.0",
+  "description": "Community admin UI",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsx watch src/index.ts"
+  },
+  "private": true
+}

@@ -1,0 +1,51 @@
+name: acl-invariants
+
+# Deliberately a separate required job rather than a step inside build.
+# A failure here means a data leak, and it should show up as its own line
+# in the checks list instead of hiding among unit tests.
+
+on:
+  push:    { branches: [main] }
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"   # nightly full property-based run
+
+jobs:
+  acl-invariants:
+    name: acl-invariants
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_PASSWORD: test, POSTGRES_DB: nacre_test }
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+        ports: ["5432:5432"]
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports: ["6333:6333"]
+    env:
+      NACRE_PG_URL: postgres://postgres:test@localhost:5432/nacre_test
+      NACRE_QDRANT_URL: http://localhost:6333
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm migrate
+
+      - name: T1-T8 · baseline
+        run: pnpm test:acl -- --grep "baseline"
+      - name: T9-T10 · result saturation
+        run: pnpm test:acl -- --grep "saturation"
+      - name: T11-T15 · adversarial
+        run: pnpm test:acl -- --grep "adversarial"
+
+      - name: property-based resolver vs reference
+        run: pnpm test:acl:property
+        env:
+          # fast on PRs, exhaustive at night
+          PROPERTY_RUNS: ${{ github.event_name == 'schedule' && '10000' || '500' }}

@@ -1,0 +1,11 @@
+# Code owners. The permission model gets extra scrutiny.
+
+*                           @nacre-work/maintainers
+
+/packages/core/authz/       @nacre-work/security @nacre-work/maintainers
+/packages/core/authz/**     @nacre-work/security @nacre-work/maintainers
+/packages/mcp/auth/         @nacre-work/security @nacre-work/maintainers
+/docs/authz.md              @nacre-work/security
+/SECURITY.md                @nacre-work/security
+/TRADEMARK.md               @nacre-work/maintainers
+/.github/workflows/         @nacre-work/maintainers

@@ -1,0 +1,39 @@
+name: build
+
+on:
+  push:    { branches: [main] }
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm build
+      - run: pnpm test:unit
+
+  # The public repo must build and test without access to nacre-enterprise.
+  # If this job fails, the open/commercial boundary has leaked.
+  boundary:
+    name: boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Core must not reference private packages
+        run: |
+          if grep -rn "@nacre.work/enterprise" --include="*.ts" --include="*.json" packages/ services/; then
+            echo "::error::public core references enterprise modules"
+            exit 1
+          fi
