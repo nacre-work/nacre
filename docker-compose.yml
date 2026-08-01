@@ -36,21 +36,21 @@ x-app: &app
 services:
   api:
     <<: *app
-    command: ["node", "packages/api/dist/index.js"]
+    command: ["node", "packages/api/dist/main.js"]
     ports: ["8080:8080"]
     environment:
       PORT: 8080
 
   mcp:
     <<: *app
-    command: ["node", "packages/mcp/dist/index.js"]
+    command: ["node", "packages/mcp/dist/main.js"]
     ports: ["8081:8081"]
     environment:
       PORT: 8081
 
   worker:
     <<: *app
-    command: ["node", "packages/worker/dist/index.js"]
+    command: ["node", "packages/worker/dist/main.js"]
     # No ports. The worker talks outward only.
 
   postgres:

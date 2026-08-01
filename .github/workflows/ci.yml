@@ -32,6 +32,9 @@ jobs:
       - run: pnpm lint:compose
       - run: pnpm typecheck
       - run: pnpm build
+      # The entry points are what docker-compose runs. Until they existed it ran
+      # a library barrel that exited zero without doing anything.
+      - run: pnpm lint:entrypoints
       - run: pnpm test:unit
 
   # The public repo must build and test without access to nacre-enterprise.

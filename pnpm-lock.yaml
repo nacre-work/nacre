@@ -98,10 +98,23 @@ importers:
   packages/sdk: {}
 
   packages/worker:
+    dependencies:
+      '@nacre.work/core':
+        specifier: workspace:*
+        version: link:../core
+      '@qdrant/js-client-rest':
+        specifier: ^1.18.0
+        version: 1.18.0(typescript@6.0.3)
+      pg:
+        specifier: ^8.22.0
+        version: 8.22.0
     devDependencies:
       '@types/node':
         specifier: ^26.1.2
         version: 26.1.2
+      '@types/pg':
+        specifier: ^8.20.3
+        version: 8.20.3
 
 packages:
 
