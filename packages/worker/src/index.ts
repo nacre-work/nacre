@@ -12,3 +12,4 @@ export type {
   StoredDocument,
   VectorWriter,
 } from './ingest.js'
+export { HttpParser, PostgresDocumentStore, QdrantVectorWriter } from './adapters.js'

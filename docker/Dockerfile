@@ -42,4 +42,4 @@ COPY --from=build --chown=nacre:nacre /app/package.json ./
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["node", "packages/api/dist/index.js"]
+CMD ["node", "packages/api/dist/main.js"]
