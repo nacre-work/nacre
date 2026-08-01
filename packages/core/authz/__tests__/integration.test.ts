@@ -157,12 +157,44 @@ when('baseline · tenant isolation in the database', () => {
   it('the installation-wide default model stays visible to every tenant', async () => {
     // The one deliberate exception in the policy: org_id IS NULL is the global
     // default, and a tenant that cannot see it cannot index anything.
+    //
+    // The assertion is the property, not a row count. Counting was brittle —
+    // another test adding a global provider broke it while nothing about
+    // isolation had changed.
     for (const org of [A, B]) {
       const rows = await withOrg(pool, org, async (c) =>
-        (await c.query('SELECT id, org_id FROM embedding_providers')).rows, AS_APP)
-      expect(rows).toHaveLength(1)
-      expect(rows[0].org_id).toBeNull()
+        (await c.query<{ id: string; org_id: string | null }>(
+          'SELECT id, org_id FROM embedding_providers',
+        )).rows, AS_APP)
+
+      expect(rows.length, 'the global default must be reachable').toBeGreaterThan(0)
+      for (const row of rows) {
+        // Global, or this tenant's own. Never another tenant's — that row would
+        // carry an endpoint and a credentials reference.
+        expect([null, org], `provider ${row.id}`).toContain(row.org_id)
+      }
     }
+  })
+
+  it('another tenant’s embedding provider stays invisible', async () => {
+    const c = await pool.connect()
+    try {
+      await c.query(
+        `INSERT INTO embedding_providers (id, org_id, name, endpoint, model, dimensions)
+         VALUES ('00000000-0000-0000-0000-0000000000f1', $1, 'b-private', 'http://secret.internal', 'm', 4)
+         ON CONFLICT (id) DO NOTHING`,
+        [B],
+      )
+    } finally {
+      c.release()
+    }
+
+    const visible = await withOrg(pool, A, async (client) =>
+      (await client.query<{ endpoint: string }>('SELECT endpoint FROM embedding_providers')).rows.map(
+        (r) => r.endpoint,
+      ), AS_APP)
+
+    expect(visible).not.toContain('http://secret.internal')
   })
 
   it('the audit log refuses UPDATE and DELETE for the application role', async () => {
