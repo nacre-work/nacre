@@ -23,8 +23,10 @@ Vector search is a solved problem. What isn't solved: making sure an agent
 querying a company index sees exactly the documents the requesting user is
 cleared for — and being able to prove it to an auditor.
 
-- **Permissions down to the document.** Workspaces → layers → documents,
-  with `read`/`write`/`admin`, allow and deny, inherited top-down.
+- **Permissions that inherit.** Workspaces → layers, with `read`/`write`/`admin`
+  inherited top-down. `write` does not imply `read`; `admin` implies both.
+  Document-level grants and deny rules are commercial — this build refuses them
+  and says so, rather than accepting a rule it cannot propagate.
 - **Filtering happens inside the index.** Access filters are applied during
   HNSW traversal, not after ranking, so `top_k` returns k permitted results
   rather than k minus whatever got stripped out.
@@ -59,11 +61,23 @@ docs/               specifications — normative, and ahead of the code
 
 ## State
 
-Early. The repository builds and its tests pass, but no service is implemented
-yet: the packages are entry points, and `packages/core/authz/permissions.ts` is
-the only logic in the tree. `docs/` is the specification to build against, not a
-description of what exists — start with [docs/authz.md](./docs/authz.md), which
-everything else depends on.
+Early, and it runs. The loop works end to end and has been driven by hand
+against a real PostgreSQL and a real Qdrant: create an organization, create a
+layer, grant someone `read`, ingest a document, poll the job to `indexed`,
+search and get the chunk back — and search as someone without the grant and get
+nothing while the vectors are still sitting in the index. Both surfaces work,
+REST and MCP over Streamable HTTP and STDIO alike. Revoking a grant removes the
+document from results, and the recomputation that refreshes the index tags runs
+in the worker with a metric on how far behind it is.
+
+What is not built: no login — tokens are signed with a shared secret and issued
+by the `init` command, so there is no user-facing authentication yet; no
+reranking on the search path; no garbage collection for tombstoned vectors; and
+the SDK and admin UI are empty packages. `docker compose up` has not been run
+from a clean checkout, though its profiles are validated in CI.
+
+`docs/` is the specification, and it still runs ahead of the code in places —
+start with [docs/authz.md](./docs/authz.md), which everything else depends on.
 
 ## Invariants
 

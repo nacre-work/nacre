@@ -16,6 +16,11 @@ import { existsSync } from 'node:fs'
 const ENTRY_POINTS = [
   'packages/api/dist/main.js',
   'packages/mcp/dist/main.js',
+  // The local transport is a published bin, so it is run by people rather than
+  // by compose — which makes refusing an incomplete environment more important
+  // here, not less. A developer gets the message; an orchestrator gets a
+  // restart loop either way.
+  'packages/mcp/dist/stdio-main.js',
   'packages/worker/dist/main.js',
 ]
 
