@@ -33,11 +33,16 @@ NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://embedder:8080
 NACRE_DEFAULT_EMBEDDING_MODEL=bge-m3
 NACRE_DEFAULT_EMBEDDING_DIM=1024
 NACRE_RERANKER_ENDPOINT=http://reranker:8081
-NACRE_RERANKER_ENABLED=true
+NACRE_RERANKER_ENABLED=false          # true needs an endpoint; minimal has none
 NACRE_PARSER_ENDPOINT=http://parser:8090
 
 # ─── authorization ───
-NACRE_JWT_PRIVATE_KEY_REF=file:///run/secrets/jwt_ed25519
+# One of these two. NACRE_JWT_SECRET is symmetric, is what the code reads
+# today, and is required — there is no default, because a default signing key is
+# one anybody reading the source can forge tokens with. Asymmetric keys through
+# NACRE_JWT_PRIVATE_KEY_REF are specified below and not implemented yet.
+NACRE_JWT_SECRET=                      # >= 32 bytes; a secret-store reference in production
+NACRE_JWT_PRIVATE_KEY_REF=file:///run/secrets/jwt_ed25519   # not implemented yet
 NACRE_JWT_ISSUER=https://api.nacre.work   # must match NACRE_CANONICAL_URL in production
 NACRE_JWT_AUDIENCE=nacre
 NACRE_ACCESS_TOKEN_TTL=900
@@ -51,6 +56,11 @@ NACRE_EMA_TRUSTED_ISSUERS=
 NACRE_ACL_CACHE_TTL=60
 NACRE_ACL_PROPAGATION_SLA=60           # alert above this
 NACRE_ACL_TAG_HASH_BYTES=8
+
+# ─── the background worker ───
+NACRE_GC_GRACE=3600                    # tombstone to physical purge
+NACRE_INDEX_LEASE=900                  # a claim older than this is abandoned
+NACRE_INDEX_MAX_ATTEMPTS=5             # then the document is failed, not requeued
 
 # ─── limits ───
 NACRE_RATE_SEARCH_PER_MIN=60

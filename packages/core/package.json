@@ -11,7 +11,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node ./scripts/copy-migrations.mjs",
     "dev": "tsx watch index.ts"
   },
   "publishConfig": {

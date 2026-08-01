@@ -18,10 +18,15 @@ import { buildServices, jwtKey } from './services.js'
 async function main(): Promise<void> {
   const config = loadConfig()
   const key = jwtKey()
-  const { pool, layers, tools } = buildServices(config)
+  const { pool, layers, tools, serviceKeys } = buildServices(config)
 
   const server = createMcpServer({
-    verify: { key, issuer: config.jwtIssuer, audience: config.jwtAudience },
+    // serviceKeys is not optional here in practice. An agent connecting over
+    // Streamable HTTP is the case this transport exists for, and a service
+    // account key is how an agent authenticates; leaving it out made every
+    // `nacre_sk_` token 401 on this transport while the same key worked over
+    // STDIO and REST — one credential, three surfaces, two of them agreeing.
+    verify: { key, issuer: config.jwtIssuer, audience: config.jwtAudience, serviceKeys },
     layers,
     tools,
     // Discovery lives on the API host, never on the apex — static hosting there

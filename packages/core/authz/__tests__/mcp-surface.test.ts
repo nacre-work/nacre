@@ -53,6 +53,23 @@ const token = (orgId: string) =>
     .setExpirationTime('5m')
     .sign(SECRET)
 
+/**
+ * A service account key resolver, standing in for the Postgres one.
+ *
+ * Present because this transport is the agent transport and an agent presents a
+ * `nacre_sk_` key. It was absent from the Streamable HTTP wiring for as long as
+ * that wiring existed — every agent key 401'd here while the same key worked
+ * over STDIO and REST — and nothing failed, because the surface tests built
+ * their own options and never asked for one.
+ */
+const AGENT_KEY = 'nacre_sk_' + 'a'.repeat(32)
+const serviceKeys = {
+  resolve: async (key: string): Promise<AuthContext | undefined> =>
+    key === AGENT_KEY
+      ? { orgId: ORG_A, principal: { type: 'service_account', id: 'agent-1' }, role: 'member' }
+      : undefined,
+}
+
 const MCP_HEADERS = {
   'mcp-protocol-version': '2026-07-28',
   'mcp-method': 'tools/list',
@@ -76,7 +93,7 @@ async function rpc(
 describe('baseline · the MCP surface', () => {
   beforeAll(async () => {
     server = createMcpServer({
-      verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE },
+      verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE, serviceKeys },
       resourceMetadataUrl: METADATA,
       layers: { forCaller: async (auth: AuthContext) => LAYERS[auth.orgId] ?? [] },
       tools: {
@@ -108,6 +125,30 @@ describe('baseline · the MCP surface', () => {
     // The names are the leak: one tenant must not learn the other's layers.
     expect(describe(a)).not.toContain('Payroll')
     expect(describe(b)).not.toContain('Contracts')
+  })
+
+  it('a service account key authenticates on this transport', async () => {
+    const res = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { ...MCP_HEADERS, authorization: `Bearer ${AGENT_KEY}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    })
+
+    // 200, not 401. An agent holding a working key over REST and STDIO getting
+    // 401 here is indistinguishable from a revoked key, which is where the
+    // debugging goes and where it does not end.
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as ToolsListResult
+    expect(body.result.tools.map((t) => t.name)).toContain('search')
+  })
+
+  it('an unknown service account key is refused like every other bad token', async () => {
+    const res = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { ...MCP_HEADERS, authorization: `Bearer nacre_sk_${'z'.repeat(32)}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    })
+    expect(res.status).toBe(401)
   })
 
   it('tools/list is cached per user, for the same reason', async () => {

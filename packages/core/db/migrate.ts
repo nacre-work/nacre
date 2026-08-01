@@ -16,8 +16,28 @@ export interface Migration {
  * `0010` sorts after `0009` rather than between `0001` and `0002`.
  */
 export function loadMigrations(dir: string = MIGRATIONS_DIR): readonly Migration[] {
-  return readdirSync(dir)
-    .filter((f) => f.endsWith('.sql'))
+  let entries: string[]
+  try {
+    entries = readdirSync(dir)
+  } catch (cause) {
+    // The built package resolves this to dist/migrations, which tsc does not
+    // create — it compiles .ts and ignores .sql. Saying so beats an ENOENT
+    // naming a path the caller has no reason to recognise.
+    throw new Error(
+      `no migrations directory at ${dir}. In a published build this means the ` +
+        'SQL was not copied into dist; see packages/core/scripts/copy-migrations.mjs.',
+      { cause },
+    )
+  }
+
+  const migrations = entries.filter((f) => f.endsWith('.sql'))
+  if (migrations.length === 0) {
+    // Applying nothing and reporting success would leave a fresh database with
+    // no tables and a ledger saying everything is up to date.
+    throw new Error(`no .sql files in ${dir}; there is nothing to apply and that is not "already migrated"`)
+  }
+
+  return migrations
     .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10) || a.localeCompare(b))
     .map((name) => ({ name, sql: readFileSync(join(dir, name), 'utf8') }))
 }

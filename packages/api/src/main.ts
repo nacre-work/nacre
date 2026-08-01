@@ -110,7 +110,7 @@ async function main(): Promise<void> {
       vectorName: vectorName(config.embeddingModel, config.embeddingDim),
       role: APP_ROLE,
     }),
-    ingest: new NacreIngest(pool, APP_ROLE),
+    ingest: new NacreIngest({ pool, tombstone: vectors, orgSlug, role: APP_ROLE }),
     audit: new PostgresAudit(pool, APP_ROLE),
     jobs: new PostgresJobs(pool, APP_ROLE),
     layers: new PostgresLayers(pool, APP_ROLE),

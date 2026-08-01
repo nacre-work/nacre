@@ -37,6 +37,13 @@ const ids = {
 }
 
 const AS_APP = 'nacre_app'
+
+/** The port takes the whole context now, because it resolves before it reads. */
+const as = (orgId: string, principal = ids.alice) => ({
+  orgId,
+  principal: { type: 'user' as const, id: principal },
+  role: 'member' as const,
+})
 let pool: Pool
 
 /** Records the plan it was asked to search with; returns nothing. */
@@ -172,17 +179,17 @@ when('baseline · the search path', () => {
   it('T8 · a document read is scoped by the token, twice over', async () => {
     const documents = new PostgresDocuments(pool, AS_APP)
 
-    expect(await documents.read(A, ids.docA)).toEqual({ id: ids.docA, title: '' })
+    expect(await documents.read(as(A), ids.docA)).toEqual({ id: ids.docA, title: '' })
     // Same call, other organization's token: absent, not forbidden.
-    expect(await documents.read(B, ids.docA)).toBeUndefined()
+    expect(await documents.read(as(B), ids.docA)).toBeUndefined()
   })
 
   it('a malformed document id is absent, not an error', async () => {
     const documents = new PostgresDocuments(pool, AS_APP)
     // A cast error distinguishable from "not found" is an oracle for the id
     // format, and the first step in probing what the ids look like.
-    expect(await documents.read(A, 'not-a-uuid')).toBeUndefined()
-    expect(await documents.read(A, "'; drop table documents; --")).toBeUndefined()
+    expect(await documents.read(as(A), 'not-a-uuid')).toBeUndefined()
+    expect(await documents.read(as(A), "'; drop table documents; --")).toBeUndefined()
   })
 })
 

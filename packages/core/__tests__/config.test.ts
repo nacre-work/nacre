@@ -94,10 +94,26 @@ describe('configuration', () => {
   it('reranking on without an endpoint is refused', () => {
     const { NACRE_RERANKER_ENDPOINT: _drop, ...withoutEndpoint } = COMPLETE
     void _drop
-    expect(problems(withoutEndpoint).join('\n')).toContain('NACRE_RERANKER_ENDPOINT')
+    expect(
+      problems({ ...withoutEndpoint, NACRE_RERANKER_ENABLED: 'true' }).join('\n'),
+    ).toContain('NACRE_RERANKER_ENDPOINT')
 
     // Turning it off deliberately is fine.
     expect(() => loadConfig({ ...withoutEndpoint, NACRE_RERANKER_ENABLED: 'false' })).not.toThrow()
+  })
+
+  it('reranking is off by default, so the minimal profile boots', () => {
+    // COMPLETE does not set NACRE_RERANKER_ENABLED at all, which is the point:
+    // this asserts the default rather than a value.
+    const { NACRE_RERANKER_ENDPOINT: _drop, ...bare } = COMPLETE
+    void _drop
+
+    // The `minimal` profile has no reranker — that is what keeps it runnable on
+    // a laptop without a GPU. A default of true made the documented starting
+    // profile refuse to boot until the operator turned off a feature they had
+    // never asked for, and one that is not on the search path yet either.
+    const config = loadConfig(bare)
+    expect(config.rerankerEnabled).toBe(false)
   })
 
   it('production refuses a plaintext or localhost issuer', () => {

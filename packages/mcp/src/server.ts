@@ -21,7 +21,16 @@ export interface ToolRunner {
 }
 
 export interface McpOptions {
-  readonly verify: VerifyOptions
+  /**
+   * `serviceKeys` is required here, unlike on the REST surface.
+   *
+   * This transport exists for agents, and an agent authenticates with a service
+   * account key. Leaving the resolver out is not a smaller deployment — it is a
+   * server that 401s every `nacre_sk_` token while the same key works over REST
+   * and STDIO, which reads as a revoked credential rather than a missing wire.
+   * Requiring it makes that a compile error instead of a support ticket.
+   */
+  readonly verify: VerifyOptions & { readonly serviceKeys: NonNullable<VerifyOptions['serviceKeys']> }
   readonly layers: Layers
   readonly tools: ToolRunner
   /** Where a 401 points the client for discovery, per RFC 9728. */

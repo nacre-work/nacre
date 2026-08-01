@@ -67,6 +67,27 @@ export class VectorStore {
     }
   }
 
+  /**
+   * Mark every point of a document deleted.
+   *
+   * A payload write, not a removal: physical deletion is the collector's job
+   * and runs on its own schedule. This is what actually takes the document out
+   * of results, because `deleted = false` is what the pre-filter tests — the
+   * Postgres tombstone alone changes nothing a query looks at.
+   *
+   * It lives on the search client rather than in the worker because the
+   * request that deletes a document is served by the API, and a document that
+   * is tombstoned in Postgres but not here stays searchable until a background
+   * job gets to it. That window is exactly what invariant I5 forbids.
+   */
+  async tombstone(orgSlug: string, documentId: string): Promise<void> {
+    await this.#client.setPayload(collectionName(orgSlug), {
+      wait: true,
+      payload: { deleted: true },
+      filter: { must: [{ key: 'doc_id', match: { value: documentId } }] },
+    } as never)
+  }
+
   async search(request: SearchRequest): Promise<readonly Hit[]> {
     const filter = buildFilter(request.orgId, request.plan)
     const query = buildHybridQuery({

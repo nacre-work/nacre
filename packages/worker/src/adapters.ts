@@ -5,6 +5,8 @@ import type { Pool } from 'pg'
 
 import type { DocumentStore, Parser, ParsedDocument, StoredDocument, VectorWriter } from './ingest.js'
 import type { StaleDocument } from './retag.js'
+import type { PurgeTarget } from './collect.js'
+import type { StrandedDocument } from './reap.js'
 
 /**
  * The adapters behind the ingest ports.
@@ -79,6 +81,29 @@ export class PostgresDocumentStore implements DocumentStore {
   }
 
   /**
+   * Record that the vectors are physically gone.
+   *
+   * Only ever set once — the guard is not defensive, it is what keeps a
+   * document out of the sweep queue after the first success. `deleted_at` is
+   * left alone: when the tombstone happened and when the space came back are
+   * different facts, and an operator investigating a delete wants both.
+   */
+  async markPurged(orgId: string, documentId: string): Promise<void> {
+    await withOrg(
+      this.pool,
+      orgId,
+      async (client) => {
+        await client.query(
+          `UPDATE documents SET vectors_purged_at = now()
+            WHERE org_id = $1 AND id = $2 AND vectors_purged_at IS NULL`,
+          [orgId, documentId],
+        )
+      },
+      this.scope,
+    )
+  }
+
+  /**
    * The document and all of its chunks, in one transaction.
    *
    * Replacing the chunks rather than diffing them: a partial replacement would
@@ -111,6 +136,11 @@ export class PostgresDocumentStore implements DocumentStore {
              status       = 'indexed',
              chunk_count  = EXCLUDED.chunk_count,
              version      = documents.version + 1,
+             -- The lease ends here. Leaving it set would make a document that
+             -- indexed correctly look abandoned to the reaper, which would put
+             -- it back in the queue and index it again on a timer.
+             claimed_at   = NULL,
+             attempts     = 0,
              updated_at   = now()
            RETURNING id`,
           [
@@ -155,6 +185,19 @@ export class PostgresDocumentStore implements DocumentStore {
 function explain(cause: unknown): string {
   const data = (cause as { data?: unknown } | null)?.data
   return data === undefined ? String(cause) : `${String(cause)} — ${JSON.stringify(data)}`
+}
+
+/**
+ * Whether Qdrant is saying the collection is not there.
+ *
+ * It matters only on the purge path, and only because the sweep is ordered
+ * oldest-first with a small batch: a target that can never succeed sits at the
+ * front of that queue forever and starves everything behind it. An organization
+ * whose collection was dropped — offboarded, or a development database — turns
+ * garbage collection off for every other tenant.
+ */
+function collectionMissing(cause: unknown): boolean {
+  return /doesn't exist|does not exist|Not found: Collection/i.test(explain(cause))
 }
 
 export class QdrantVectorWriter implements VectorWriter {
@@ -235,6 +278,31 @@ export class QdrantVectorWriter implements VectorWriter {
       payload: { acl_tags: [...input.aclTags], acl_version: input.aclVersion },
       filter: { must: [{ key: 'doc_id', match: { value: input.documentId } }] },
     } as never)
+  }
+
+  /**
+   * Physically remove every point of a document.
+   *
+   * `delete`, not `setPayload` — the tombstone already happened, and this is
+   * the sweep that makes it mean something on disk. Filtered on `doc_id` so a
+   * point that somehow lost its `deleted` flag is still collected: the
+   * authority for what should exist is Postgres, and a vector store that
+   * disagrees loses.
+   */
+  async purge(orgSlug: string, documentId: string): Promise<void> {
+    try {
+      await this.client.delete(collectionName(orgSlug), {
+        wait: true,
+        filter: { must: [{ key: 'doc_id', match: { value: documentId } }] },
+      } as never)
+    } catch (cause) {
+      // No collection, no points. Reporting success here is not optimism: the
+      // thing this job exists to remove demonstrably is not there, and the
+      // alternative is a target that fails on every sweep, forever, at the head
+      // of a queue ordered oldest-first.
+      if (collectionMissing(cause)) return
+      throw new Error(`purge from ${collectionName(orgSlug)} rejected: ${explain(cause)}`, { cause })
+    }
   }
 
   /**
@@ -343,6 +411,119 @@ export async function claimStale(pool: Pool, limit: number): Promise<readonly St
       orgSlug: r.slug,
       documentId: r.id,
       layerId: r.layer_id,
+    }))
+  } finally {
+    client.release()
+  }
+}
+
+/**
+ * Documents whose vectors are still in the index after the grace period.
+ *
+ * Cross-tenant like `claimStale`, and oldest first. The grace period is a
+ * courtesy rather than a safeguard — nothing depends on the delay, and setting
+ * it to zero is a valid choice for an operator who wants the space back.
+ */
+export async function claimPurgeable(
+  pool: Pool,
+  limit: number,
+  graceSeconds: number,
+): Promise<readonly PurgeTarget[]> {
+  const client = await pool.connect()
+  try {
+    const { rows } = await client.query<{
+      id: string
+      org_id: string
+      slug: string
+      age: string
+    }>(
+      `SELECT d.id, d.org_id, o.slug,
+              EXTRACT(EPOCH FROM (now() - d.deleted_at))::text AS age
+         FROM documents d
+         JOIN organizations o ON o.id = d.org_id
+        WHERE d.deleted_at IS NOT NULL
+          AND d.vectors_purged_at IS NULL
+          AND d.deleted_at < now() - make_interval(secs => $2)
+        ORDER BY d.deleted_at
+        LIMIT $1`,
+      [limit, graceSeconds],
+    )
+
+    return rows.map((r) => ({
+      orgId: r.org_id,
+      orgSlug: r.slug,
+      documentId: r.id,
+      deletedAgeSeconds: Number(r.age),
+    }))
+  } finally {
+    client.release()
+  }
+}
+
+/**
+ * Reclaim documents whose lease expired, in one statement.
+ *
+ * The requeue and the fail are the same UPDATE, decided by `attempts + 1`
+ * against the ceiling. Reading first and writing second would let two reapers
+ * both see attempt 4 and both write 5, which turns a bounded retry into an
+ * unbounded one at exactly the moment the bound matters.
+ *
+ * `SKIP LOCKED` for the same reason `claimNext` uses it: several replicas run
+ * this and none of them coordinate.
+ *
+ * Cross-tenant, under the worker's BYPASSRLS role, so `org_id` is returned and
+ * named explicitly by everything downstream.
+ */
+export async function claimStranded(
+  pool: Pool,
+  limit: number,
+  leaseSeconds: number,
+  maxAttempts: number,
+): Promise<readonly StrandedDocument[]> {
+  const client = await pool.connect()
+  try {
+    const { rows } = await client.query<{
+      id: string
+      org_id: string
+      held: string
+      attempts: number
+    }>(
+      `WITH expired AS (
+         SELECT id, claimed_at
+           FROM documents
+          WHERE status IN ('parsing', 'indexing')
+            AND claimed_at IS NOT NULL
+            AND claimed_at < now() - make_interval(secs => $2)
+          ORDER BY claimed_at
+          LIMIT $1
+          FOR UPDATE SKIP LOCKED
+       )
+       UPDATE documents d
+          SET attempts   = d.attempts + 1,
+              status     = CASE WHEN d.attempts + 1 >= $3 THEN 'failed' ELSE 'pending' END,
+              -- The lease is released either way. A failed row keeps no claim,
+              -- and a requeued one is claimed again by whoever picks it up.
+              claimed_at = NULL,
+              error      = CASE WHEN d.attempts + 1 >= $3
+                                THEN 'Indexing was abandoned ' || $3::text ||
+                                     ' times without completing. The worker did not report a failure, ' ||
+                                     'which means it stopped between claiming this document and finishing it.'
+                                ELSE d.error END,
+              updated_at = now()
+         FROM expired e
+        WHERE d.id = e.id
+        -- e.claimed_at, not d.claimed_at: RETURNING sees the new row, and the
+        -- new row's claim was just cleared. The CTE still holds the old value.
+        RETURNING d.id, d.org_id, d.attempts,
+                  EXTRACT(EPOCH FROM (now() - e.claimed_at))::text AS held`,
+      [limit, leaseSeconds, maxAttempts],
+    )
+
+    return rows.map((r) => ({
+      orgId: r.org_id,
+      documentId: r.id,
+      heldSeconds: Number(r.held),
+      attempts: r.attempts,
     }))
   } finally {
     client.release()

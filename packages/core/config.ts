@@ -43,6 +43,29 @@ export interface Config {
   readonly aclPropagationSla: number
   readonly aclTagHashBytes: number
 
+  /**
+   * How long a tombstoned document keeps its vectors before the sweep removes
+   * them. A tunable, so a default is fine — and it is not a correctness knob:
+   * invariant I5 is held by `deleted = false` in every query, not by this.
+   */
+  readonly gcGrace: number
+
+  /**
+   * How long a claimed document may stay claimed before another worker may take
+   * it back. Must exceed the slowest legitimate indexing run, because a lease
+   * that expires while the work is still going produces two workers on one
+   * document — wasteful rather than wrong, since ingest is idempotent, but it
+   * is the wrong direction to be wrong in.
+   */
+  readonly indexLease: number
+
+  /**
+   * Claims after which a document is failed instead of requeued. Bounded so a
+   * document that reliably kills the worker takes itself out of the queue
+   * rather than the queue out of service.
+   */
+  readonly indexMaxAttempts: number
+
   readonly rateSearchPerMin: number
   readonly rateIngestPerHour: number
   readonly maxDocumentBytes: number
@@ -147,7 +170,12 @@ export function loadConfig(env: Env = process.env): Config {
     embeddingDim: r.number('NACRE_DEFAULT_EMBEDDING_DIM', 1024, { min: 8, max: 16384 }),
     parserEndpoint: r.url('NACRE_PARSER_ENDPOINT'),
     rerankerEndpoint: r.optional('NACRE_RERANKER_ENDPOINT'),
-    rerankerEnabled: r.boolean('NACRE_RERANKER_ENABLED', true),
+    // False, and it was true. `minimal` has no reranker by definition — the
+    // profile exists to run on a laptop without a GPU — so a default of true
+    // meant the documented starting profile refused to boot until the operator
+    // turned off a feature they had not asked for. It is also not implemented
+    // on the search path yet, so the refusal bought nothing at all.
+    rerankerEnabled: r.boolean('NACRE_RERANKER_ENABLED', false),
 
     jwtIssuer: r.required('NACRE_JWT_ISSUER'),
     jwtAudience: r.required('NACRE_JWT_AUDIENCE'),
@@ -155,6 +183,13 @@ export function loadConfig(env: Env = process.env): Config {
 
     aclCacheTtl: r.number('NACRE_ACL_CACHE_TTL', 60, { min: 0, max: 3600 }),
     aclPropagationSla: r.number('NACRE_ACL_PROPAGATION_SLA', 60, { min: 1, max: 3600 }),
+    gcGrace: r.number('NACRE_GC_GRACE', 3600, { min: 0, max: 2_592_000 }),
+    // 15 minutes: long enough for a large PDF through parse, chunk, embed, and
+    // upsert, short enough that a drained node's documents are not stuck for an
+    // afternoon. The minimum is 60 rather than 0 — a zero lease reclaims a
+    // document the instant it is claimed, which is a loop, not a setting.
+    indexLease: r.number('NACRE_INDEX_LEASE', 900, { min: 60, max: 86_400 }),
+    indexMaxAttempts: r.number('NACRE_INDEX_MAX_ATTEMPTS', 5, { min: 1, max: 100 }),
     aclTagHashBytes: r.number('NACRE_ACL_TAG_HASH_BYTES', 8, { min: 4, max: 32 }),
 
     rateSearchPerMin: r.number('NACRE_RATE_SEARCH_PER_MIN', 60, { min: 1 }),
@@ -171,8 +206,8 @@ export function loadConfig(env: Env = process.env): Config {
   if (config.rerankerEnabled && config.rerankerEndpoint === undefined) {
     r.problems.push(
       'NACRE_RERANKER_ENABLED is true but NACRE_RERANKER_ENDPOINT is not set. ' +
-        'Reranking is on by default because it buys more than any chunking ' +
-        'tuning; set the endpoint or turn it off deliberately.',
+        'Turning reranking on is worth more than any chunking tuning, and it ' +
+        'needs somewhere to send the request — the full profile provides one.',
     )
   }
 

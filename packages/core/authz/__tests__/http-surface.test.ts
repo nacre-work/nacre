@@ -77,7 +77,7 @@ describe('baseline · the HTTP surface', () => {
     server = createApi({
       verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE },
       documents: {
-        read: async (orgId, id) => STORE[orgId]?.[id],
+        read: async (a, id) => STORE[a.orgId]?.[id],
       },
       search: {
         search: async (auth: AuthContext) => [{ org: auth.orgId }],
