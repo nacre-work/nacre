@@ -12,6 +12,21 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
+    # Not for the unit tests in general — they inject their ports and need
+    # nothing. It is here for the observability gauges, which are SQL and so
+    # cannot be tested against a fake without testing the fake. The tests refuse
+    # to skip when CI is set, so a missing service fails the job rather than
+    # quietly reducing what it checks.
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_PASSWORD: test, POSTGRES_DB: nacre_test }
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+        ports: ["5432:5432"]
+    env:
+      NACRE_PG_URL: postgres://postgres:test@localhost:5432/nacre_test
     steps:
       - uses: actions/checkout@v4
       # No version here: pnpm/action-setup refuses to run when the version is
@@ -35,6 +50,7 @@ jobs:
       # The entry points are what docker-compose runs. Until they existed it ran
       # a library barrel that exited zero without doing anything.
       - run: pnpm lint:entrypoints
+      - run: pnpm migrate
       - run: pnpm test:unit
 
   # The public repo must build and test without access to nacre-enterprise.

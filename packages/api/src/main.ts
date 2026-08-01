@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto'
 
-import { createPool, loadConfig, VectorStore, withOrg, ConfigError } from '@nacre.work/core'
+import {
+  collectDatabaseGauges,
+  createMetrics,
+  createPool,
+  loadConfig,
+  Registry,
+  VectorStore,
+  withOrg,
+  ConfigError,
+} from '@nacre.work/core'
 
 import {
   HttpEmbedder,
@@ -75,8 +84,13 @@ async function main(): Promise<void> {
     return found
   }
 
+  const registry = new Registry()
+  const metrics = createMetrics(registry)
+  registry.collect(collectDatabaseGauges(pool, metrics, APP_ROLE))
+
   const server = createApi({
     verify: { key, issuer: config.jwtIssuer, audience: config.jwtAudience },
+    metrics: registry,
     documents: new PostgresDocuments(pool, APP_ROLE),
     search: new NacreSearchService({
       pool,

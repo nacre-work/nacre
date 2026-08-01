@@ -250,14 +250,33 @@ down is still unguarded, and adding one here is how that changes.
 
 **T11 is satisfied more strongly than it asks.** The specification allows a
 revoked grant to be served for up to `ACL_PROPAGATION_SLA`; the effective
-principals cache is keyed on `organizations.groups_version`, which a database
-trigger increments on every membership change, so a revoked grant cannot be
-served at all. The stale entry is not invalidated — it is simply never asked
-for again, because the next request composes a different key. The TTL is a
-memory bound, not the correctness mechanism.
+principals cache is keyed on `organizations.groups_version`, which database
+triggers increment on every change to `groups`, `group_members` and `grants`,
+so a revoked grant cannot be served at all. The stale entry is not invalidated —
+it is simply never asked for again, because the next request composes a
+different key. The TTL is a memory bound, not the correctness mechanism.
+
+The column is the permission epoch rather than a group counter; the name is
+narrower than the meaning. `grants` was added to the list in migration 0005,
+and until then a revocation moved nothing — which left
+`nacre_acl_propagation_lag_seconds` reporting zero through the one event it is
+offered as evidence about.
 
 `acl_tags` remains a cache the SLA does bound, which is why the layer filter
 and the tag filter both apply until a recomputation finishes.
+
+The recomputation runs in the indexing worker, in the gaps between documents:
+`claimStale` returns documents whose `acl_version` is behind their
+organization's, oldest first, and each is retagged with `setPayload` rather than
+re-embedded. Indexing has priority — a document nobody can find yet is a worse
+outage than a permission cache a few seconds behind, and the SLA has room for
+the wait.
+
+A document that fails to retag is left behind rather than marked. It keeps its
+old `acl_version`, stays in the next claim, and keeps contributing to the lag.
+The alternative is a document that quietly stops being retried while the gauge
+reports everything is fine, which is the failure this subsystem exists to make
+impossible.
 
 **T9 and T10 were the ones to weigh, and they now run.** They are what catches
 a post-filter: an implementation that fetches k results and removes the ones the

@@ -12,4 +12,6 @@ export type {
   StoredDocument,
   VectorWriter,
 } from './ingest.js'
-export { HttpParser, PostgresDocumentStore, QdrantVectorWriter } from './adapters.js'
+export { claimStale, HttpParser, PostgresDocumentStore, QdrantVectorWriter, tagsForLayer } from './adapters.js'
+export { retagOnce } from './retag.js'
+export type { RetagPorts, RetagResult, StaleDocument } from './retag.js'

@@ -109,17 +109,36 @@ Required metrics:
 ```
 nacre_search_duration_seconds{quantile}    # target p95 < 200ms at 10M vectors
 nacre_search_results_total{layer}
-nacre_acl_propagation_lag_seconds          # target < 60
+nacre_acl_propagation_lag_seconds{org}     # target < 60
 nacre_acl_denials_total{reason}
 nacre_ingest_duration_seconds{stage}
 nacre_documents_total{org,status}
 nacre_reindex_progress_ratio{layer}
 nacre_vectors_total{org}
-nacre_tombstones_pending_total             # climbing means GC is losing
+nacre_tombstones_pending_total{org}        # climbing means GC is losing
 ```
 
 `nacre_acl_propagation_lag_seconds` is the one to alert on. It is the only
 external evidence that invariant I4 still holds.
+
+```
+max(nacre_acl_propagation_lag_seconds) > 60
+```
+
+Per organization rather than one aggregate, and the reason is not
+presentational: a single worst-across-tenants number lets one neglected tenant
+pin the gauge and hide every other tenant behind it, and when the alert fires it
+does not say who. `max()` is the same alert and does not depend on how many
+tenants exist.
+
+Every live organization reports a value on every scrape, zero included. An
+absent series and a zero one mean "not being measured" and "caught up", and on
+this metric those must not look alike.
+
+The value is the age of the oldest document whose `acl_version` is behind its
+organization's `groups_version`. Deleted documents are excluded — invariant I5
+already keeps them out of every answer, and counting them would mean an unpurged
+tombstone pages someone forever about a propagation problem that does not exist.
 
 OpenTelemetry tracing runs end to end: `request_id` from HTTP is tied to
 `trace_id` and lands in the audit log, so an auditor's question and a latency

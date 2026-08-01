@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 
 import { QdrantClient } from '@qdrant/js-client-rest'
-import { aclTags, ConfigError, createPool, loadConfig, withOrg } from '@nacre.work/core'
-import type { PrincipalRef } from '@nacre.work/core'
+import { ConfigError, createPool, loadConfig, withOrg } from '@nacre.work/core'
 
-import { HttpParser, PostgresDocumentStore, QdrantVectorWriter } from './adapters.js'
+import { claimStale, HttpParser, PostgresDocumentStore, QdrantVectorWriter, tagsForLayer } from './adapters.js'
 import { ingest } from './ingest.js'
+import { retagOnce } from './retag.js'
 
 /**
  * The indexing worker.
@@ -19,6 +19,12 @@ import { ingest } from './ingest.js'
 
 const APP_ROLE = 'nacre_app'
 const IDLE_MS = 2000
+
+// The recomputation pass. Bounded because a revocation across a large layer can
+// touch every document in it, and an unbounded sweep would take the vector
+// store down at exactly the moment correctness depends on it being reachable.
+const RETAG_BATCH = 50
+const RETAG_CONCURRENCY = 4
 
 interface Claim {
   readonly orgId: string
@@ -87,41 +93,6 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
   }
 }
 
-/**
- * Principals allowed to read this layer, hashed into tags.
- *
- * Read from `grants` every time rather than cached: these go into the payload
- * and become the thing a query trusts, so a stale set written at index time is
- * a stale set until the next reindex. `acl_tags` is a cache of a cache
- * otherwise.
- */
-async function tagsForLayer(
-  pool: ReturnType<typeof createPool>,
-  orgId: string,
-  layerId: string,
-): Promise<readonly string[]> {
-  return withOrg(
-    pool,
-    orgId,
-    async (client) => {
-      const { rows } = await client.query<{ principal_type: string; principal_id: string }>(
-        `SELECT DISTINCT principal_type, principal_id
-           FROM grants
-          WHERE org_id = $1
-            AND effect = 'allow'
-            AND permission IN ('read','admin')
-            AND (
-              (scope_type = 'layer'     AND scope_id = $2)
-              OR (scope_type = 'workspace' AND scope_id = (SELECT workspace_id FROM layers WHERE id = $2))
-            )`,
-        [orgId, layerId],
-      )
-      return aclTags(rows.map((r) => `${r.principal_type}:${r.principal_id}` as PrincipalRef))
-    },
-    { role: APP_ROLE },
-  )
-}
-
 async function markFailed(
   pool: ReturnType<typeof createPool>,
   claim: Claim,
@@ -168,6 +139,18 @@ async function main(): Promise<void> {
     },
   }
 
+  const retagPorts = {
+    claim: (limit: number) => claimStale(pool, limit),
+    tagsFor: (orgId: string, layerId: string) => tagsForLayer(pool, orgId, layerId, APP_ROLE),
+    retag: vectors.retag.bind(vectors),
+    markTagged: documents.markTagged.bind(documents),
+    onError: (document: { documentId: string }, error: unknown) => {
+      console.error(
+        JSON.stringify({ msg: 'retag failed', document_id: document.documentId, error: String(error) }),
+      )
+    },
+  }
+
   let running = true
   const stop = (signal: string) => {
     console.log(JSON.stringify({ msg: 'draining', signal }))
@@ -189,12 +172,25 @@ async function main(): Promise<void> {
     }
 
     if (claim === undefined) {
+      // Indexing first, retagging in the gaps. A document nobody can find yet
+      // is a worse outage than a permission cache a few seconds behind, and
+      // the SLA the lag is measured against has room for the wait.
+      try {
+        const pass = await retagOnce(retagPorts, RETAG_BATCH, RETAG_CONCURRENCY)
+        if (pass.retagged > 0 || pass.failed > 0) {
+          console.log(JSON.stringify({ msg: 'retagged', ...pass }))
+          continue
+        }
+      } catch (error) {
+        console.error(JSON.stringify({ msg: 'retag pass failed', error: String(error) }))
+      }
+
       await new Promise((r) => setTimeout(r, IDLE_MS))
       continue
     }
 
     try {
-      const tags = await tagsForLayer(pool, claim.orgId, claim.layerId)
+      const acl = await tagsForLayer(pool, claim.orgId, claim.layerId, APP_ROLE)
       const source =
         claim.sourceType === 'url' && claim.sourceRef !== null
           ? { url: claim.sourceRef }
@@ -207,8 +203,13 @@ async function main(): Promise<void> {
           layerId: claim.layerId,
           vectorName: claim.vectorName,
           externalId: claim.externalId,
-          aclTags: tags,
-          aclVersion: Date.now(),
+          aclTags: acl.tags,
+          // The organization's groups_version, never a clock. The propagation
+          // gauge asks whether acl_version has fallen behind groups_version,
+          // and a millisecond timestamp is larger than that counter will ever
+          // be — so the comparison would never fire and the one metric that
+          // evidences invariant I4 would report perfect health forever.
+          aclVersion: acl.version,
           ...source,
         },
         { parser, embedder, documents, vectors, newId: randomUUID },

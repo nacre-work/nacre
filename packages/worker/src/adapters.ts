@@ -1,8 +1,10 @@
 import { QdrantClient } from '@qdrant/js-client-rest'
-import { collectionName, withOrg } from '@nacre.work/core'
+import { aclTags, collectionName, loadGroupsVersion, withOrg } from '@nacre.work/core'
+import type { PrincipalRef } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
 import type { DocumentStore, Parser, ParsedDocument, StoredDocument, VectorWriter } from './ingest.js'
+import type { StaleDocument } from './retag.js'
 
 /**
  * The adapters behind the ingest ports.
@@ -33,6 +35,31 @@ export class PostgresDocumentStore implements DocumentStore {
         return row === undefined
           ? undefined
           : { id: row.id, contentHash: row.content_hash, chunkCount: row.chunk_count }
+      },
+      this.scope,
+    )
+  }
+
+  /**
+   * Monotone on purpose: `<=` lets an equal version refresh the timestamp and
+   * refuses an older one outright. Two ingests of the same document can finish
+   * out of order, and without the guard the loser would walk `acl_version`
+   * backwards and invent lag that nothing is actually behind on.
+   *
+   * `version` and `updated_at` are left alone. This records a fact about
+   * tagging, not a change to the document, and bumping them would make every
+   * retag look like an edit to anything watching for one.
+   */
+  async markTagged(orgId: string, documentId: string, aclVersion: number): Promise<void> {
+    await withOrg(
+      this.pool,
+      orgId,
+      async (client) => {
+        await client.query(
+          `UPDATE documents SET acl_version = $3, acl_tagged_at = now()
+            WHERE org_id = $1 AND id = $2 AND acl_version <= $3`,
+          [orgId, documentId, aclVersion],
+        )
       },
       this.scope,
     )
@@ -142,6 +169,33 @@ export class QdrantVectorWriter implements VectorWriter {
   }
 
   /**
+   * Replace the ACL tags on every point of a document.
+   *
+   * `setPayload` with a filter rather than a re-upsert: the vectors are
+   * unchanged and re-embedding a document because its permissions moved would
+   * make a revocation cost as much as an ingest, which is how a recomputation
+   * job ends up disabled in production.
+   *
+   * The filter carries `doc_id` alone and not `deleted`. A tombstoned document
+   * still has points until garbage collection takes them, and leaving stale
+   * tags on them would matter the moment a purge is late — I5 keeps them out of
+   * answers, but this job should not be the reason that is the only thing
+   * standing in the way.
+   */
+  async retag(input: {
+    orgSlug: string
+    documentId: string
+    aclTags: readonly string[]
+    aclVersion: number
+  }): Promise<void> {
+    await this.client.setPayload(collectionName(input.orgSlug), {
+      wait: true,
+      payload: { acl_tags: [...input.aclTags], acl_version: input.aclVersion },
+      filter: { must: [{ key: 'doc_id', match: { value: input.documentId } }] },
+    } as never)
+  }
+
+  /**
    * Tombstone every point of a document.
    *
    * Sets `deleted` rather than removing the points: physical removal is a
@@ -191,4 +245,96 @@ export class HttpParser implements Parser {
           : {},
     }
   }
+}
+
+/**
+ * Principals allowed to read this layer, hashed into tags, and the
+ * `groups_version` those tags were built from.
+ *
+ * Read from `grants` every time rather than cached: these go into the payload
+ * and become the thing a query trusts, so a stale set written at index time is
+ * a stale set until the next reindex. `acl_tags` is a cache of a cache
+ * otherwise.
+ *
+ * The version is read inside the same transaction as the grants, and that is
+ * the whole reason this returns a pair instead of just the tags. Reading it
+ * afterwards would let a membership change land in between, and the document
+ * would then be recorded as tagged at a version whose grants it never saw —
+ * a claim of freshness that is false in the direction nobody checks.
+ */
+/**
+ * Documents whose ACL tags are behind their organization's permission version.
+ *
+ * Across tenants, so it runs under the worker role rather than `withOrg`. The
+ * oldest first: the lag gauge reports the worst laggard, so clearing the oldest
+ * is what actually moves the number an alert fires on.
+ *
+ * No `FOR UPDATE SKIP LOCKED` and no claim column. Retagging is idempotent —
+ * two replicas writing the same tags to the same points produce the same
+ * payload — so the cost of a double retag is a wasted call, while the cost of a
+ * claim that leaks on a crash is a document nothing retries. The version guard
+ * in `markTagged` is what keeps concurrent passes from disagreeing.
+ */
+export async function claimStale(pool: Pool, limit: number): Promise<readonly StaleDocument[]> {
+  const client = await pool.connect()
+  try {
+    const { rows } = await client.query<{
+      id: string
+      org_id: string
+      slug: string
+      layer_id: string
+    }>(
+      `SELECT d.id, d.org_id, o.slug, d.layer_id
+         FROM documents d
+         JOIN organizations o ON o.id = d.org_id
+        WHERE d.deleted_at IS NULL
+          AND o.deleted_at IS NULL
+          AND d.acl_version < o.groups_version
+          AND d.status = 'indexed'
+        ORDER BY COALESCE(d.acl_tagged_at, d.created_at)
+        LIMIT $1`,
+      [limit],
+    )
+
+    return rows.map((r) => ({
+      orgId: r.org_id,
+      orgSlug: r.slug,
+      documentId: r.id,
+      layerId: r.layer_id,
+    }))
+  } finally {
+    client.release()
+  }
+}
+
+export async function tagsForLayer(
+  pool: Pool,
+  orgId: string,
+  layerId: string,
+  role?: string,
+): Promise<{ tags: readonly string[]; version: number }> {
+  return withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      const version = await loadGroupsVersion(client, orgId)
+      const { rows } = await client.query<{ principal_type: string; principal_id: string }>(
+        `SELECT DISTINCT principal_type, principal_id
+           FROM grants
+          WHERE org_id = $1
+            AND effect = 'allow'
+            AND permission IN ('read','admin')
+            AND (
+              (scope_type = 'layer'     AND scope_id = $2)
+              OR (scope_type = 'workspace' AND scope_id = (SELECT workspace_id FROM layers WHERE id = $2))
+            )`,
+        [orgId, layerId],
+      )
+      return {
+        tags: aclTags(rows.map((r) => `${r.principal_type}:${r.principal_id}` as PrincipalRef)),
+        version,
+      }
+    },
+    role === undefined ? {} : { role },
+  )
 }
