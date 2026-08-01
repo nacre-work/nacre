@@ -1,4 +1,4 @@
-// MCP server, Streamable HTTP and STDIO. Contract: docs/mcp.md.
-// Nothing is implemented yet. The transport is stateless by construction and
-// authorization is delegated per call — see the spec before adding anything.
-export {}
+export { createMcpServer, PROTOCOL_VERSION, TOOLS_TTL_MS } from './server.js'
+export type { Layers, McpOptions, ToolRunner } from './server.js'
+export { catalog, searchDescription } from './tools.js'
+export type { Layer, ToolContext, ToolDefinition, ToolPermission } from './tools.js'

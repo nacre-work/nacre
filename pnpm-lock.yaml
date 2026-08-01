@@ -66,6 +66,9 @@ importers:
       '@nacre.work/api':
         specifier: workspace:*
         version: link:../api
+      '@nacre.work/mcp':
+        specifier: workspace:*
+        version: link:../mcp
       '@types/node':
         specifier: ^26.1.2
         version: 26.1.2
@@ -73,7 +76,18 @@ importers:
         specifier: ^6.2.7
         version: 6.2.7
 
-  packages/mcp: {}
+  packages/mcp:
+    dependencies:
+      '@nacre.work/api':
+        specifier: workspace:*
+        version: link:../api
+      '@nacre.work/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^26.1.2
+        version: 26.1.2
 
   packages/sdk: {}
 

@@ -27,5 +27,12 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "dependencies": {
+    "@nacre.work/api": "workspace:*",
+    "@nacre.work/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2"
+  }
 }
