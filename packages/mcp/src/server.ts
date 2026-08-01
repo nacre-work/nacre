@@ -167,10 +167,38 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
           (params.arguments ?? {}) as Record<string, unknown>,
           auth,
         )
-        send(res, 200, { jsonrpc: '2.0', id, result })
-      } catch {
-        // Nothing about what failed. A tool error that names a layer tells the
-        // caller the layer exists, which is the leak invariant I6 is about.
+
+        // A CallToolResult, not the bare value. The protocol requires
+        // `content` to be a list of content blocks, and a client that follows
+        // it rejects anything else — this server answered with the raw array
+        // and no compliant client could read a single result from it. The
+        // product's claim is that agents reach it over MCP; the shape of this
+        // object is the whole of that claim in practice.
+        send(res, 200, {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+            isError: false,
+          },
+        })
+      } catch (error) {
+        // Nothing about what failed reaches the caller. A tool error that names
+        // a layer tells them the layer exists, which is the leak invariant I4
+        // is about, and an unknown tool must answer the same way.
+        //
+        // Logged here, though: without this a database that is down looks
+        // exactly like a tool that does not exist, from both ends at once —
+        // the caller is told nothing, by design, and the operator was told
+        // nothing either.
+        console.error(
+          JSON.stringify({
+            msg: 'tool call failed',
+            tool: definition.name,
+            request_id: requestId,
+            error: String(error),
+          }),
+        )
         send(res, 404, rpcError(id, -32601, 'Not found'))
       }
       return

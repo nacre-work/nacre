@@ -145,6 +145,26 @@ describe('baseline · the MCP surface', () => {
     expect(res.status).toBe(403)
   })
 
+  it('a successful call answers with a CallToolResult, not the bare value', async () => {
+    const res = await rpc('tools/call', { name: 'search', arguments: { query: 'x' } }, ORG_A)
+    expect(res.status).toBe(200)
+
+    const body = (await res.json()) as {
+      result?: { content?: { type: string; text: string }[]; isError?: boolean }
+    }
+
+    // The protocol requires `content` to be a list of content blocks, and a
+    // client that follows it rejects anything else. This server answered with
+    // the raw result array — every request in this file passed, and no
+    // compliant client could read a single result from any of them. The claim
+    // that agents reach this over MCP is exactly the shape of this object.
+    expect(Array.isArray(body.result?.content), JSON.stringify(body)).toBe(true)
+    expect(body.result?.content?.[0]?.type).toBe('text')
+    expect(body.result?.isError).toBe(false)
+    // The payload survives the envelope rather than being described by it.
+    expect(() => JSON.parse(body.result?.content?.[0]?.text ?? '')).not.toThrow()
+  })
+
   it('T8 · a failing tool and an unknown tool answer identically', async () => {
     const unknown = await rpc('tools/call', { name: 'no_such_tool', arguments: {} }, ORG_A)
     const failing = await rpc('tools/call', { name: 'get_document', arguments: { document_id: 'x' } }, ORG_A)
