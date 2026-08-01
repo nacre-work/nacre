@@ -97,6 +97,27 @@ Major version in the path. Breaking changes only with `/v1` → `/v2` and at lea
 
 ## Current state
 
-Nothing in `packages/api` is implemented. The OpenAPI document at
-[`openapi.yaml`](./openapi.yaml) is the contract and is validated in CI; it is
-ahead of the code on purpose.
+The OpenAPI document at [`openapi.yaml`](./openapi.yaml) is the contract and is
+validated in CI. It still runs slightly ahead of the code, but no longer by
+much, and this section said "nothing in `packages/api` is implemented" for a
+long time after that stopped being true — which is its own kind of wrong, since
+a reader who believes it goes looking for a server that is already there.
+
+Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
+
+| | |
+|---|---|
+| `POST /v1/search` | pre-filtered by the caller's plan, `top_k` uncorrected |
+| `POST /v1/documents` | `202` with a job id, `200` for an unchanged repeat |
+| `DELETE /v1/documents/{id}` | tombstones the index and the row, in that order |
+| `GET /v1/documents/{id}`, `GET /v1/jobs/{id}` | resolved per caller |
+| `GET`/`POST /v1/layers` | |
+| `GET`/`POST /v1/grants`, `DELETE /v1/grants/{id}` | |
+| `GET`/`POST /v1/service-accounts`, `DELETE /v1/service-accounts/{id}` | |
+| `GET /v1/health`, `GET /v1/ready`, `GET /metrics` | |
+
+Not implemented, and the document describes them anyway because they are the
+contract they will be built to: login and refresh, OAuth discovery and dynamic
+client registration, `Idempotency-Key` on unsafe methods, `429` and the
+`RateLimit-*` headers, cursor pagination on the collection endpoints, and
+multipart upload on `POST /v1/documents`.
