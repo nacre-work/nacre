@@ -132,6 +132,24 @@ export function collectionConfig(vectorName: string, size: number) {
   }
 }
 
+/**
+ * The named vector for a model and dimension: `v_{model}_{dim}`.
+ *
+ * One function because there are three callers that must agree — the API and
+ * MCP search paths derive it from configuration, and a layer stores it in a
+ * column the worker reads when writing points. They disagreed: layers created
+ * through `POST /v1/layers` got the literal `default`, so the worker wrote to a
+ * vector the collection did not have and every upsert failed with `Bad
+ * Request`, while search looked for the configured name and would have found
+ * nothing even if the write had worked.
+ *
+ * A mismatch here is not a type error and not a test failure; it is an empty
+ * index. Deriving it in more than one place is what made that possible.
+ */
+export function vectorName(model: string, dimensions: number): string {
+  return `v_${model.replace(/[^a-z0-9]/gi, '_')}_${dimensions}`
+}
+
 /** `org_{slug}` — offboarding a tenant is then one delete, with no rows to forget. */
 export function collectionName(orgSlug: string): string {
   if (!/^[a-z0-9][a-z0-9_-]*$/i.test(orgSlug)) {

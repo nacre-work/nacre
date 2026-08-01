@@ -83,11 +83,17 @@ describe('the administrative surface', () => {
       },
       layers: {
         list: async () => [{ id: LAYER, slug: 'handbook', name: 'Handbook', workspaceId: WS_MINE }],
-        // Undefined for "may not administer" and for "no such workspace" alike.
+        // `denied` for "may not administer" and "no such workspace" alike;
+        // `conflict` only once the caller has proved admin on the workspace.
         create: async (_a: AuthContext, input) =>
-          input.workspaceId === WS_MINE
-            ? { id: LAYER, slug: input.slug, name: input.name, workspaceId: WS_MINE }
-            : undefined,
+          input.workspaceId !== WS_MINE
+            ? { kind: 'denied' as const }
+            : input.slug === 'taken'
+              ? { kind: 'conflict' as const }
+              : {
+                  kind: 'created' as const,
+                  layer: { id: LAYER, slug: input.slug, name: input.name, workspaceId: WS_MINE },
+                },
       },
       grants: {
         list: async () => [],
@@ -155,6 +161,21 @@ describe('the administrative surface', () => {
 
     expect(res.status).toBe(201)
     expect(audited.find((e) => e.action === 'create_layer')?.result).toBe('allow')
+  })
+
+  it('a slug already in use is 409, not another 404', async () => {
+    const res = await fetch(`${base}/v1/layers`, {
+      method: 'POST',
+      headers: await auth(),
+      body: JSON.stringify({ workspace_id: WS_MINE, slug: 'taken', name: 'Taken' }),
+    })
+
+    // The caller proved admin on the workspace to get here, so this says
+    // something about the resource rather than about what they can see.
+    // Answering 404 makes the endpoint unusable: an administrator who picks a
+    // name in use cannot tell it from having no permission, and guesses next.
+    expect(res.status).toBe(409)
+    expect((await answerOnly(res)).detail).toMatch(/already exists/)
   })
 
   it('a layer request missing its fields is 400', async () => {

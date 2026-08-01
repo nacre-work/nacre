@@ -82,6 +82,7 @@ function ports(
           id: stored.get(key)?.id ?? `doc-${++counter}`,
           contentHash: input.contentHash,
           chunkCount: input.chunks.length,
+          indexed: true,
         }
         stored.set(key, doc)
         return doc
@@ -122,6 +123,40 @@ describe('ingest', () => {
     // The point of the idempotency key: every client that times out retries,
     // and re-embedding is what that costs if this is wrong.
     expect(p.embedded).toBe(embeddedAfterFirst)
+  })
+
+  it('a pending row with a matching hash is work to do, not work already done', async () => {
+    // Exactly what the REST layer leaves behind: it inserts the document with
+    // its content hash and status 'pending', and *that row is the work order*.
+    //
+    // Matching on the hash alone made the worker find the request it had just
+    // been handed, call it unchanged, and index nothing — for every document,
+    // in every deployment. The status stayed at 'parsing', /v1/jobs answered
+    // `queued` forever, and Qdrant stayed empty. Nothing failed anywhere: the
+    // worker logged `indexed` and moved on.
+    const p = ports({
+      documents: {
+        find: async () => ({
+          id: 'doc-1',
+          contentHash: contentHash(request.content),
+          chunkCount: 0,
+          indexed: false,
+        }),
+        markTagged: async () => undefined,
+        upsert: async (input) => ({
+          id: 'doc-1',
+          contentHash: input.contentHash,
+          chunkCount: input.chunks.length,
+          indexed: true,
+        }),
+      },
+    })
+
+    const result = await ingest(request, p)
+
+    expect(result.unchanged).toBe(false)
+    expect(result.chunkCount).toBeGreaterThan(0)
+    expect(p.written, 'the vectors are the whole point of the job').toHaveLength(1)
   })
 
   it('changed content is reindexed under the same document id', async () => {

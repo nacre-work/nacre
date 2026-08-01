@@ -156,6 +156,13 @@ paths:
         gets 404, identical to a workspace that does not exist.
       responses:
         '201': { description: Created }
+        '409':
+          description: >
+            The slug is already in use in this organization. Deliberately not a
+            404: the caller has proved admin on the workspace by this point, so
+            the answer is about the resource rather than about what they can
+            see, and answering 404 leaves an administrator unable to tell a
+            name collision from having no permission.
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /layers/{id}/reindex:
     post:

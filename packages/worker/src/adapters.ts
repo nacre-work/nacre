@@ -26,15 +26,28 @@ export class PostgresDocumentStore implements DocumentStore {
       this.pool,
       orgId,
       async (client) => {
-        const { rows } = await client.query<{ id: string; content_hash: string; chunk_count: number }>(
-          `SELECT id, content_hash, chunk_count FROM documents
+        const { rows } = await client.query<{
+          id: string
+          content_hash: string
+          chunk_count: number
+          status: string
+        }>(
+          `SELECT id, content_hash, chunk_count, status FROM documents
             WHERE org_id = $1 AND layer_id = $2 AND external_id = $3 AND deleted_at IS NULL`,
           [orgId, layerId, externalId],
         )
         const row = rows[0]
         return row === undefined
           ? undefined
-          : { id: row.id, contentHash: row.content_hash, chunkCount: row.chunk_count }
+          : {
+              id: row.id,
+              contentHash: row.content_hash,
+              chunkCount: row.chunk_count,
+              // Only 'indexed' counts. Every other status — pending, parsing,
+              // embedding, failed — describes a document that still has work
+              // outstanding, and treating any of them as done strands it there.
+              indexed: row.status === 'indexed',
+            }
       },
       this.scope,
     )
@@ -124,11 +137,24 @@ export class PostgresDocumentStore implements DocumentStore {
           )
         }
 
-        return { id, contentHash: input.contentHash, chunkCount: input.chunks.length }
+        // The upsert writes status = 'indexed', so the row it returns is.
+        return { id, contentHash: input.contentHash, chunkCount: input.chunks.length, indexed: true }
       },
       this.scope,
     )
   }
+}
+
+/**
+ * The Qdrant client reports every rejection as `Bad Request` and puts the
+ * reason in `.data`, which is nowhere near the stack trace. A worker log
+ * reading `indexing failed: Error: Bad Request` says a write was refused and
+ * nothing about why — a wrong vector name, a payload type the index disagrees
+ * with, and a malformed id all look identical.
+ */
+function explain(cause: unknown): string {
+  const data = (cause as { data?: unknown } | null)?.data
+  return data === undefined ? String(cause) : `${String(cause)} — ${JSON.stringify(data)}`
 }
 
 export class QdrantVectorWriter implements VectorWriter {
@@ -146,6 +172,22 @@ export class QdrantVectorWriter implements VectorWriter {
   }): Promise<void> {
     if (input.points.length === 0) return
 
+    try {
+      await this.upsertPoints(input)
+    } catch (cause) {
+      throw new Error(`upsert into ${collectionName(input.orgSlug)} rejected: ${explain(cause)}`, { cause })
+    }
+  }
+
+  private async upsertPoints(input: {
+    orgId: string
+    orgSlug: string
+    layerId: string
+    vectorName: string
+    points: readonly { pointId: string; ordinal: number; vector: readonly number[]; docId: string }[]
+    aclTags: readonly string[]
+    aclVersion: number
+  }): Promise<void> {
     await this.client.upsert(collectionName(input.orgSlug), {
       wait: true,
       points: input.points.map((p) => ({
