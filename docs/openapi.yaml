@@ -1,0 +1,186 @@
+openapi: 3.1.0
+info:
+  title: Nacre API
+  version: "1.0.0"
+  description: >
+    A self-hosted corporate knowledge index with fine-grained access control.
+    The organization is determined by the token alone and is never accepted
+    from a request body, a path, or a header.
+servers:
+  - url: https://nacre.work/v1
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status, request_id]
+      properties:
+        type:       { type: string, format: uri }
+        title:      { type: string }
+        status:     { type: integer }
+        detail:     { type: string, description: Never reveals the existence of an inaccessible object }
+        instance:   { type: string }
+        request_id: { type: string }
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:   { type: string }
+        layers:  { type: array, items: { type: string } }
+        top_k:   { type: integer, default: 10, minimum: 1, maximum: 50 }
+        filters: { type: object, additionalProperties: true }
+        rerank:  { type: boolean, default: true }
+        include_content: { type: boolean, default: true }
+    SearchHit:
+      type: object
+      required: [chunk_id, doc_id, layer, score]
+      properties:
+        chunk_id:   { type: string, format: uuid }
+        doc_id:     { type: string, format: uuid }
+        layer:      { type: string }
+        title:      { type: string }
+        score:      { type: number }
+        text:       { type: string }
+        source_url: { type: string, description: 'Presigned, TTL from NACRE_PRESIGN_TTL' }
+        metadata:   { type: object, additionalProperties: true }
+    IngestRequest:
+      type: object
+      required: [layer]
+      properties:
+        layer:       { type: string }
+        external_id: { type: string, description: Idempotency key }
+        title:       { type: string }
+        content:     { type: string }
+        url:         { type: string, format: uri }
+        metadata:    { type: object, additionalProperties: true }
+      oneOf:
+        - required: [content]
+        - required: [url]
+    Job:
+      type: object
+      properties:
+        job_id:      { type: string }
+        document_id: { type: string, format: uuid }
+        status:      { type: string, enum: [queued, parsing, embedding, indexed, failed] }
+        progress:    { type: number }
+        error:       { type: string }
+    Grant:
+      type: object
+      required: [principal_type, principal_id, scope_type, scope_id, permission]
+      properties:
+        id:             { type: string, format: uuid }
+        principal_type: { type: string, enum: [user, group, service_account] }
+        principal_id:   { type: string, format: uuid }
+        scope_type:     { type: string, enum: [workspace, layer, document] }
+        scope_id:       { type: string, format: uuid }
+        permission:     { type: string, enum: [read, write, admin] }
+        effect:         { type: string, enum: [allow, deny], default: allow }
+        source:         { type: string, enum: [manual, scim, api] }
+  responses:
+    NotFoundOrForbidden:
+      description: >
+        The object is absent or invisible. The two are deliberately
+        indistinguishable: otherwise enumerating identifiers reveals which
+        documents exist.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+paths:
+  /search:
+    post:
+      summary: Semantic search, scoped to the caller's effective permissions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SearchRequest' }
+      responses:
+        '200':
+          description: Results. Exactly top_k permitted ones — the filter is applied inside the index traversal, not after ranking.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hits: { type: array, items: { $ref: '#/components/schemas/SearchHit' } }
+        '429': { description: Rate limit exceeded }
+  /documents:
+    post:
+      summary: Add or update a document
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IngestRequest' }
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:  { type: string, format: binary }
+                layer: { type: string }
+      responses:
+        '200': { description: Idempotent repeat; the document is unchanged }
+        '202':
+          description: Accepted for processing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '413': { description: Document exceeds NACRE_MAX_DOCUMENT_BYTES }
+  /documents/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Fetch a document
+      responses:
+        '200': { description: The document }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+    delete:
+      summary: Delete a document — a tombstone; it leaves results immediately
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /layers:
+    get:  { summary: Accessible layers, responses: { '200': { description: The list } } }
+    post: { summary: Create a layer,  responses: { '201': { description: Created } } }
+  /layers/{id}/reindex:
+    post:
+      summary: Reindex onto a different model. Search stays available throughout.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '202': { description: Started }
+  /grants:
+    get:  { summary: Grants in the organization, responses: { '200': { description: The list } } }
+    post:
+      summary: Issue a grant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Grant' }
+      responses:
+        '201': { description: 'Issued. Reflected in results within ACL_PROPAGATION_SLA.' }
+  /jobs/{id}:
+    get:
+      summary: Ingest job status
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Job state and progress
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /audit:
+    get:
+      summary: Access log. Cursor pagination; JSONL and CSV export.
+      responses:
+        '200': { description: Events }
+        '403': { description: The caller may not read this organization's audit log }

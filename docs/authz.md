@@ -1,0 +1,198 @@
+# Permissions
+
+> The most consequential document here. Retrieval can be rewritten in a week;
+> a mistake in this one is a leaked document that you find out about from an
+> auditor's report. Implement it as written. Deviations get discussed first.
+
+## Vocabulary
+
+- **Principal** — a `user`, a `group`, or a `service_account`, written `{type}:{id}`.
+- **Scope** — `workspace:{id}`, `layer:{id}`, or `document:{id}`. Scopes form a
+  tree: workspace → layer → document.
+- **Permission** — `read`, `write`, or `admin`.
+- **Effect** — `allow` or `deny`.
+- **Grant** — the tuple `(principal, scope, permission, effect)`.
+- **Effective principals** of a user — the user, plus every group they belong
+  to, transitively.
+
+## Resolution rules
+
+Applied in this order.
+
+1. **Tenant isolation is checked first, and separately.** If
+   `token.org_id != resource.org_id` there is no access and no further rule is
+   considered. This is not part of the ACL; it is a precondition.
+2. **`platform_admin` gets no access to data.** It administers organizations,
+   quotas, and the default model. It does not read documents. A separate role
+   means a separate audit trail.
+3. **`org_admin` holds `admin` on every scope in its organization**, implicitly,
+   with no grants.
+4. **Inheritance goes down.** A grant on a scope reaches every scope nested
+   under it.
+5. **Deny beats allow at any level.** Not "nearest wins" — *any* applicable deny
+   overrides *any* allow, whatever the depth.
+6. **`write` does not imply `read`.** A service account that only uploads
+   documents must not be able to search them.
+7. **`admin` implies `read` and `write`** within its scope.
+8. **Default deny.** No grant means no access.
+
+### Truth table
+
+| On workspace | On layer | On document | Result for the document |
+|---|---|---|---|
+| allow read | — | — | read |
+| allow read | deny read | — | none |
+| allow read | — | deny read | none |
+| — | allow read | deny read | none |
+| deny read | allow read | allow read | **none** — the deny above wins |
+| allow write | — | — | write, not read |
+| allow admin | — | — | read + write |
+| allow admin | deny read | — | write; admin grants write, the deny removes read |
+| — | — | allow read | read on that document only |
+| — | — | — | none |
+
+Rules 6 and 7 pull against each other on purpose, and the pair is the single
+easiest thing to get wrong here — every permission system people have habits
+from treats write as a superset of read. `packages/core/authz/permissions.ts`
+states the table and nothing else, and its test writes out all nine cases by
+hand rather than generating them, so it cannot agree with a wrong
+implementation.
+
+## Algorithm
+
+```
+effective_principals(user, org) -> Set[Principal]:
+    # cached in Redis, TTL 60s, key org:user:groups_version
+    return {user} ∪ transitive_groups(user)          # from the SCIM sync
+
+resolve(principals, org, permission) -> AccessPlan:
+    grants = SELECT * FROM grants
+             WHERE org_id = org AND principal IN principals
+               AND permission_implies(granted := permission)
+
+    deny_scopes  = {g.scope for g in grants if g.effect = 'deny'}
+    allow_scopes = {g.scope for g in grants if g.effect = 'allow'}
+
+    allow_layers = expand_to_layers(allow_scopes)     # workspace -> its layers
+    deny_layers  = expand_to_layers(deny_scopes)
+    layers       = allow_layers − deny_layers
+
+    allow_docs   = {s.id for s in allow_scopes if s.type = 'document'}
+    deny_docs    = {s.id for s in deny_scopes  if s.type = 'document'}
+    # a document denied explicitly is excluded even when its layer is allowed
+    return AccessPlan(layers, extra_docs = allow_docs − deny_docs, denied_docs = deny_docs)
+```
+
+The `AccessPlan` becomes a **pre-filter** on the vector query. Not a
+post-filter.
+
+```jsonc
+filter = {
+  must:     [ {key: "org_id",   match: {value: org}},
+              {key: "deleted",  match: {value: false}} ],
+  should:   [ {key: "layer_id", match: {any: plan.layers}},
+              {key: "doc_id",   match: {any: plan.extra_docs}} ],
+  must_not: [ {key: "doc_id",   match: {any: plan.denied_docs}} ],
+  min_should: 1
+}
+```
+
+## Invariants
+
+Breaking any of these is an incident, not a bug.
+
+**I1.** No search result carries an `org_id` other than `token.org_id`. Checked
+by the filter and then *again* when the response is serialized: a mismatch is a
+500 and a journal entry, not a quiet drop. Silently filtering hides the bug that
+produced it.
+
+**I2.** The number of results does not depend on whether the filter ran before
+or after ranking. A user with access to 1 layer of 20 asking for `top_k=10` gets
+10 results — not 10 minus whatever was stripped.
+
+**I3.** A failure to evaluate permissions denies access. There is no "couldn't
+compute it, let it through" path — not in the resolver, not in the cache, not in
+a degraded mode.
+
+**I4.** A revoked grant is reflected in results within `ACL_PROPAGATION_SLA`
+(default 60s). The lag is exported as a metric.
+
+**I5.** A deleted document is never returned, including in the window before
+vector garbage collection runs.
+
+**I6.** A request without permission is indistinguishable from a request for
+something that does not exist: `404`, never `403`. Otherwise enumerating IDs
+tells you which documents exist, which is its own leak.
+
+## Test plan
+
+Ordinary tests do not catch these. All of them are required in CI; any failure
+blocks a release.
+
+### Baseline
+
+| # | Scenario | Expected |
+|---|---|---|
+| T1 | A user of org A searches with an org A token against an index containing org B documents | nothing from B |
+| T2 | An org A token with `org_id` swapped to org B in the request body | 403, attempt journaled |
+| T3 | `read` on a workspace, `deny read` on one layer | that layer never appears, for any query |
+| T4 | `write` without `read` | ingest succeeds, search returns empty |
+| T5 | `read` on one document, nothing on its layer | that document is found, its neighbours are not |
+| T6 | A user is removed from a group | results are empty within 60s |
+| T7 | A document is deleted | not found immediately, before GC |
+| T8 | A direct request for another org's `document_id` | 404, not 403 |
+
+### Result saturation
+
+| # | Scenario | Expected |
+|---|---|---|
+| T9 | 20 layers, access to 1, `top_k=10` | exactly 10 results from the accessible layer |
+| T10 | The accessible layer holds 5 documents, `top_k=10` | 5 results, no topping up from elsewhere |
+
+### Adversarial
+
+| # | Scenario | Expected |
+|---|---|---|
+| T11 | A group changes while 1000 queries run concurrently | nothing from the revoked layer after the SLA |
+| T12 | A layer is reindexed during active search | permissions hold on both indexes |
+| T13 | A grant issued and revoked in one transaction | no access |
+| T14 | Cyclic group nesting (A ⊂ B ⊂ A) | terminates, resolves correctly |
+| T15 | 10 000 principals in the filter | search p95 degrades by no more than 2× |
+
+### Property-based test
+
+One is mandatory. Generate random scope trees and grant sets; for every
+document, compare `resolve()` against a naive reference implementation written
+straight from the rules above. At least 10 000 cases in the nightly build.
+
+`reference.ts` must never be optimized. Its whole value is being obviously
+correct: when the optimized `resolve.ts` drifts, the property test catches the
+drift. An optimized reference just agrees with the bug.
+
+## Denormalization into the vector payload
+
+Each chunk's payload carries `acl_tags`: hashes of the principals allowed to
+`read` it. This speeds up filtering and creates a desynchronization risk.
+
+- `acl_tags` is a **cache, not the source of truth**. The source is the `grants`
+  table.
+- A grant change enqueues a background recomputation of the affected documents,
+  with bounded concurrency.
+- Until that finishes, queries are additionally constrained by `plan.layers`
+  from Postgres — both the layer filter and the tag filter apply.
+- `nacre_acl_propagation_lag_seconds` is mandatory, with an alert above the SLA.
+
+Tags are truncated to 8 bytes. A collision produces a false tag match, but the
+query is also bounded by the allowed `layer_id` list, so a single collision
+cannot leak.
+
+## Current state
+
+`packages/core/authz/` holds the implication table and its test. The resolver,
+the reference implementation, the principal cache, and the filter builder are
+not written yet, and T1–T15 need the schema and the vector store as well as the
+resolver.
+
+Until they run, the `acl-invariants` CI job is **not** evidence that any of this
+holds. The workflow file says so, and it should not be a required check on that
+basis until the suite is real.
