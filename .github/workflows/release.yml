@@ -6,7 +6,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write        # required for npm provenance
+  id-token: write        # the OIDC token npm exchanges for publish rights
 
 jobs:
   npm:
@@ -14,7 +14,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with: { version: 9 }
+        # pnpm 10 forwards the OIDC token to the registry. pnpm 11.0.8 broke
+        # that and publishes fail with a 404 (pnpm/pnpm#11513) — do not bump
+        # the major here without checking that issue first.
+        with: { version: 10 }
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -23,9 +26,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
-      # npm publishes scoped packages privately by default and fails without
-      # a paid plan. access and provenance are set in each package's
-      # publishConfig — do not remove them.
+      # Trusted publishing, no token. Each package is configured on npmjs.com
+      # under Settings -> Trusted Publisher against this repository and this
+      # workflow file; the registry then accepts the OIDC token above. There is
+      # no NPM_TOKEN secret, so there is none to leak or rotate.
+      #
+      # publishConfig carries `access` but deliberately not `provenance`:
+      # trusted publishing attaches provenance on its own, and the flag breaks
+      # the one manual publish that has to bootstrap each package before a
+      # trusted publisher can be configured for it at all.
       - run: pnpm -r --filter "./packages/*" publish --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
