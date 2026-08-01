@@ -12,7 +12,8 @@
       "@nacre.work/core": ["./packages/core/index.ts"],
       "@nacre.work/core/*": ["./packages/core/*"],
       "@nacre.work/api": ["./packages/api/src/index.ts"],
-      "@nacre.work/mcp": ["./packages/mcp/src/index.ts"]
+      "@nacre.work/mcp": ["./packages/mcp/src/index.ts"],
+      "@nacre.work/worker": ["./packages/worker/src/index.ts"]
     }
   },
   "include": ["packages/**/*.ts", "*.ts", "*.js"],

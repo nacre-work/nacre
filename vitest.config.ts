@@ -19,6 +19,7 @@ const alias = {
   '@nacre.work/core': src('./packages/core/index.ts'),
   '@nacre.work/api': src('./packages/api/src/index.ts'),
   '@nacre.work/mcp': src('./packages/mcp/src/index.ts'),
+  '@nacre.work/worker': src('./packages/worker/src/index.ts'),
 }
 
 export default defineConfig({
@@ -34,6 +35,8 @@ export default defineConfig({
           // those tests here too would mean a leak test that fails shows up
           // as a unit-test failure, which is how it gets triaged as a flake.
           exclude: [...IGNORED, 'packages/core/authz/**'],
+          // No passWithNoTests any more: there are unit tests, and a project
+          // that silently runs none should fail here too.
         },
       },
       {

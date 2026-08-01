@@ -1,0 +1,214 @@
+import { describe, expect, it } from 'vitest'
+
+import { chunk, DEFAULT_CHUNK_CONFIG } from '../chunk.js'
+import { contentHash, ingest, type IngestPorts, type StoredDocument } from '../ingest.js'
+
+describe('chunking', () => {
+  it('splits on the largest boundary that fits', () => {
+    const text = ['First paragraph.', 'Second paragraph.', 'Third paragraph.'].join('\n\n')
+    const chunks = chunk(text, { size: 40, overlap: 0, strategy: 'recursive' })
+
+    expect(chunks.length).toBeGreaterThan(1)
+    // A chunk ends where the text does, not mid-word.
+    for (const c of chunks) expect(c.text).not.toMatch(/\w-$/)
+  })
+
+  it('never emits a chunk larger than the limit, even with no boundary', () => {
+    // One 5000-character token. The embedding endpoint has its own ceiling and
+    // discovering it there is worse than cutting here.
+    const chunks = chunk('x'.repeat(5000), { size: 100, overlap: 10, strategy: 'recursive' })
+    for (const c of chunks) expect(c.text.length).toBeLessThanOrEqual(100)
+    expect(chunks.length).toBeGreaterThan(1)
+  })
+
+  it('numbers chunks from zero, without gaps', () => {
+    const chunks = chunk('word '.repeat(500), DEFAULT_CHUNK_CONFIG)
+    expect(chunks.map((c) => c.ordinal)).toEqual(chunks.map((_, i) => i))
+  })
+
+  it('overlaps so a sentence spanning a boundary is searchable from both sides', () => {
+    const text = 'alpha beta gamma delta epsilon zeta eta theta iota kappa'
+    const chunks = chunk(text, { size: 24, overlap: 10, strategy: 'recursive' })
+    expect(chunks.length).toBeGreaterThan(1)
+
+    const first = chunks[0]?.text ?? ''
+    const second = chunks[1]?.text ?? ''
+    const tail = first.slice(-6).trim()
+    expect(second, 'the overlap should carry the tail forward').toContain(tail.split(' ')[0] ?? '')
+  })
+
+  it('refuses an overlap that would stop the loop advancing', () => {
+    expect(() => chunk('anything', { size: 100, overlap: 100, strategy: 'recursive' })).toThrow(
+      /must be smaller than size/,
+    )
+  })
+
+  it('empty and whitespace-only input produce no chunks', () => {
+    expect(chunk('')).toEqual([])
+    expect(chunk('   \n\n  ')).toEqual([])
+  })
+
+  it('is deterministic', () => {
+    // An unstable chunker makes every reindex look like a content change, and
+    // the propagation metric stops meaning anything.
+    const text = 'Sentence one. Sentence two. Sentence three. '.repeat(20)
+    expect(chunk(text)).toEqual(chunk(text))
+  })
+})
+
+function ports(overrides: Partial<IngestPorts> = {}): IngestPorts & { written: unknown[]; embedded: number } {
+  const state = { written: [] as unknown[], embedded: 0 }
+  let counter = 0
+  const stored = new Map<string, StoredDocument>()
+
+  return {
+    parser: { parse: async (s) => ({ text: s.content ?? `fetched:${s.url}`, metadata: {} }) },
+    embedder: {
+      embed: async (texts) => {
+        state.embedded += texts.length
+        return texts.map(() => [0.1, 0.2, 0.3, 0.4])
+      },
+    },
+    documents: {
+      find: async (org, layer, external) => stored.get(`${org}/${layer}/${external}`),
+      upsert: async (input) => {
+        const key = `${input.orgId}/${input.layerId}/${input.externalId}`
+        const doc: StoredDocument = {
+          id: stored.get(key)?.id ?? `doc-${++counter}`,
+          contentHash: input.contentHash,
+          chunkCount: input.chunks.length,
+        }
+        stored.set(key, doc)
+        return doc
+      },
+    },
+    vectors: {
+      write: async (input) => {
+        state.written.push(input)
+      },
+    },
+    newId: () => `point-${++counter}`,
+    ...overrides,
+    ...state,
+  } as IngestPorts & { written: unknown[]; embedded: number }
+}
+
+const request = {
+  orgId: 'org-1',
+  orgSlug: 'acme',
+  layerId: 'layer-1',
+  vectorName: 'v_bge_m3_1024',
+  externalId: 'handbook-2026',
+  content: 'New engineers get repository access on their first day.',
+  aclTags: ['h:aaaa', 'h:bbbb'],
+  aclVersion: 42,
+}
+
+describe('ingest', () => {
+  it('a repeat with identical content is a no-op', async () => {
+    const p = ports()
+    const first = await ingest(request, p)
+    const embeddedAfterFirst = p.embedded
+
+    const second = await ingest(request, p)
+
+    expect(second.unchanged).toBe(true)
+    expect(second.documentId).toBe(first.documentId)
+    // The point of the idempotency key: every client that times out retries,
+    // and re-embedding is what that costs if this is wrong.
+    expect(p.embedded).toBe(embeddedAfterFirst)
+  })
+
+  it('changed content is reindexed under the same document id', async () => {
+    const p = ports()
+    const first = await ingest(request, p)
+    const second = await ingest({ ...request, content: 'Something else entirely.' }, p)
+
+    expect(second.unchanged).toBe(false)
+    expect(second.documentId).toBe(first.documentId)
+  })
+
+  it('exactly one source is required', async () => {
+    const p = ports()
+    await expect(ingest({ ...request, url: 'https://x.test/a' }, p)).rejects.toThrow(/exactly one/)
+    // exactOptionalPropertyTypes means "absent" and "present and undefined"
+    // are different types, and the request type says absent. Build it that way
+    // rather than casting the difference away.
+    const { content: _content, ...withoutSource } = request
+    void _content
+    await expect(ingest(withoutSource, p)).rejects.toThrow(/exactly one/)
+  })
+
+  it('a short vector list is refused rather than written', async () => {
+    const p = ports({
+      embedder: { embed: async (texts) => texts.slice(1).map(() => [0, 0, 0, 0]) },
+    })
+
+    await expect(
+      ingest({ ...request, content: 'a. '.repeat(2000) }, p),
+    ).rejects.toThrow(/vectors for/)
+
+    // Writing whatever came back would attach the wrong vector to the wrong
+    // text: a retrieval defect with nothing failing anywhere.
+    expect(p.written).toHaveLength(0)
+  })
+
+  it('acl tags and version reach the vector payload', async () => {
+    const p = ports()
+    await ingest(request, p)
+
+    const write = p.written[0] as { aclTags: readonly string[]; aclVersion: number; orgId: string }
+    expect(write.aclTags).toEqual(request.aclTags)
+    expect(write.aclVersion).toBe(42)
+    expect(write.orgId).toBe('org-1')
+  })
+
+  it('Postgres is written before the vector store', async () => {
+    const order: string[] = []
+    const p = ports()
+    const wrapped: IngestPorts = {
+      ...p,
+      documents: {
+        find: p.documents.find.bind(p.documents),
+        upsert: async (i) => {
+          order.push('postgres')
+          return p.documents.upsert(i)
+        },
+      },
+      vectors: {
+        write: async (i) => {
+          order.push('vectors')
+          return p.vectors.write(i)
+        },
+      },
+    }
+
+    await ingest(request, wrapped)
+
+    // Vectors are rebuilt from Postgres and S3; the reverse does not hold. A
+    // crash between the two must leave a document with no vectors — recoverable
+    // by reindexing — rather than vectors with no document.
+    expect(order).toEqual(['postgres', 'vectors'])
+  })
+
+  it('an empty document is recorded, so a retry does not reparse it forever', async () => {
+    const p = ports({ parser: { parse: async () => ({ text: '   ', metadata: {} }) } })
+    const result = await ingest(request, p)
+
+    expect(result.chunkCount).toBe(0)
+    expect(result.documentId).toBeTruthy()
+    expect(p.written, 'nothing to index means nothing written to the vector store').toHaveLength(0)
+  })
+
+  it('the content hash covers the parsed text, not the request', async () => {
+    // Two requests differing only in title must not be treated as different
+    // content, and a URL whose contents changed must be.
+    expect(contentHash('same')).toBe(contentHash('same'))
+    expect(contentHash('a')).not.toBe(contentHash('b'))
+
+    const p = ports()
+    await ingest(request, p)
+    const again = await ingest({ ...request, title: 'A different title' }, p)
+    expect(again.unchanged).toBe(true)
+  })
+})
