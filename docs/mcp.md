@@ -121,6 +121,20 @@ Permission: `write`.
 `{ document_id }` or `{ external_id, layer }`. Writes a tombstone; the document
 leaves results immediately. Permission: `write`.
 
+## What a call answers with
+
+A `CallToolResult`, always — `{ content: [...], isError }` — with the payload
+JSON-encoded into a text block. Not the bare value. A client that follows the
+protocol rejects anything else, so this is not a stylistic point: the server
+returned raw arrays for its first several revisions, every test in the suite
+passed, and no compliant client could have read a single result.
+
+An error is the exception rather than a variant of the result: a failing tool
+and an unknown one both answer with a JSON-RPC error carrying nothing about
+which, because distinguishing them tells the caller whether a tool — and so a
+layer — exists. The reason is logged on the server, where an operator can see
+that a database is down rather than reading it as a tool that does not exist.
+
 ## What tools may not do
 
 - Return error messages that reveal the existence of inaccessible objects.
