@@ -35,8 +35,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # No version here: pnpm/action-setup refuses to run when the version is
+      # given both as an input and as packageManager in package.json. That
+      # field is the single source of truth, and it pins an exact version.
       - uses: pnpm/action-setup@v4
-        with: { version: 10 }
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile

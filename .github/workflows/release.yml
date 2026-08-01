@@ -13,11 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The version comes from packageManager in package.json — passing it here
+      # as well makes pnpm/action-setup refuse to run. Keep that field on pnpm
+      # 10: it forwards the OIDC token to the registry, and pnpm 11.0.8 broke
+      # exactly that path, failing publishes with a 404 (pnpm/pnpm#11513).
+      # Check that issue before bumping the major.
       - uses: pnpm/action-setup@v4
-        # pnpm 10 forwards the OIDC token to the registry. pnpm 11.0.8 broke
-        # that and publishes fail with a 404 (pnpm/pnpm#11513) — do not bump
-        # the major here without checking that issue first.
-        with: { version: 10 }
       - uses: actions/setup-node@v4
         with:
           node-version: 22
