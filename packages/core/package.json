@@ -34,6 +34,7 @@
   },
   "devDependencies": {
     "@nacre.work/api": "workspace:*",
+    "@nacre.work/mcp": "workspace:*",
     "@types/node": "^26.1.2",
     "jose": "^6.2.7"
   }

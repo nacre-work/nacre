@@ -129,6 +129,20 @@ leaves results immediately. Permission: `write`.
 
 ## Current state
 
-Nothing in `packages/mcp` is implemented. Read [authz.md](./authz.md) before
-starting here — the permission model is a hard dependency of every tool above,
-and building the transport first means building it twice.
+The transport and the tool catalog are implemented in `packages/mcp`; the tool
+bodies are injected and are not written yet. What is under test is the part
+that carries the leak risk:
+
+- the catalog is built **per caller**, so one tenant cannot learn another's
+  layer names through a shared `tools/list` — the same fact as
+  `cacheScope: "user"`, and there is a test for each;
+- a caller with no layers is told exactly that and nothing about what exists
+  elsewhere;
+- a failing tool call and an unknown tool return **byte-identical** answers,
+  because a tool error naming a layer is the same leak as a `403` naming a
+  document;
+- no tool schema accepts an organization at any depth, and `params` carrying
+  one is refused before dispatch;
+- there is no `initialize` and no `Mcp-Session-Id` to be had — a test asserts
+  the session cannot be established, because state creeping into the transport
+  is what quietly ends the round-robin deployment.

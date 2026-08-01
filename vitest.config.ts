@@ -18,6 +18,7 @@ const src = (p: string) => fileURLToPath(new URL(p, import.meta.url))
 const alias = {
   '@nacre.work/core': src('./packages/core/index.ts'),
   '@nacre.work/api': src('./packages/api/src/index.ts'),
+  '@nacre.work/mcp': src('./packages/mcp/src/index.ts'),
 }
 
 export default defineConfig({
