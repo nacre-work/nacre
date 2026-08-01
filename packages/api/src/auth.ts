@@ -1,0 +1,136 @@
+import type { OrgRole, Principal } from '@nacre.work/core'
+import { jwtVerify, type JWTPayload, type KeyObject } from 'jose'
+
+import { forbidden, unauthorized, type Problem } from './errors.js'
+
+export interface AuthContext {
+  /** From the token. Never from anywhere else. */
+  readonly orgId: string
+  readonly principal: Principal
+  readonly role: OrgRole
+}
+
+export interface VerifyOptions {
+  readonly key: KeyObject | Uint8Array
+  readonly issuer: string
+  readonly audience: string
+}
+
+/**
+ * Fields a request body, path, or query string may never carry.
+ *
+ * Rule 1 is a precondition, not a validation step: the organization comes from
+ * the token, so a request that names one is not a request with a bad field —
+ * it is an attempt to act as another tenant, and it is journaled as one.
+ *
+ * `organization` and `tenant` are here because the next person to add a field
+ * will not call it `org_id`.
+ */
+const FORBIDDEN_KEYS = ['org_id', 'orgId', 'organization', 'organization_id', 'tenant', 'tenant_id']
+
+export function findTenantOverride(value: unknown, path: string[] = []): string | undefined {
+  if (value === null || typeof value !== 'object') return undefined
+
+  for (const [key, nested] of Object.entries(value)) {
+    if (FORBIDDEN_KEYS.includes(key)) return [...path, key].join('.')
+    // Nested, because a body that cannot say org_id at the top level will say
+    // it one level down.
+    const deeper = findTenantOverride(nested, [...path, key])
+    if (deeper !== undefined) return deeper
+  }
+  return undefined
+}
+
+/**
+ * T2. A body, path, or header naming an organization is refused with 403.
+ *
+ * 403 rather than 404 is deliberate and is the one place the wording matters in
+ * the other direction: the caller is authenticated, the refusal is about the
+ * *operation*, and no object's existence is revealed by saying so.
+ */
+export function rejectTenantOverride(
+  body: unknown,
+  query: URLSearchParams,
+  headers: Record<string, string | string[] | undefined>,
+  instance: string,
+  requestId: string,
+): Problem | undefined {
+  const inBody = findTenantOverride(body)
+  if (inBody !== undefined) {
+    return forbidden(instance, requestId, `The organization comes from the token. Remove '${inBody}'.`)
+  }
+
+  for (const key of FORBIDDEN_KEYS) {
+    if (query.has(key)) {
+      return forbidden(instance, requestId, `The organization comes from the token. Remove '${key}'.`)
+    }
+    if (headers[`x-${key.replace(/_/g, '-')}`] !== undefined) {
+      return forbidden(instance, requestId, 'The organization comes from the token.')
+    }
+  }
+
+  return undefined
+}
+
+interface NacreClaims extends JWTPayload {
+  readonly org?: unknown
+  readonly principal_type?: unknown
+  readonly role?: unknown
+}
+
+const ROLES: readonly OrgRole[] = ['platform_admin', 'org_admin', 'member']
+const PRINCIPAL_TYPES = ['user', 'group', 'service_account'] as const
+
+/**
+ * Verify a bearer token into an AuthContext.
+ *
+ * Every failure path returns 401 with the same shape. Distinguishing "expired"
+ * from "wrong audience" from "unknown issuer" in the response tells an attacker
+ * which of their guesses was closest.
+ */
+export async function authenticate(
+  authorization: string | undefined,
+  options: VerifyOptions,
+  instance: string,
+  requestId: string,
+): Promise<AuthContext | Problem> {
+  const bearer = authorization?.startsWith('Bearer ') ? authorization.slice(7) : undefined
+  if (bearer === undefined) {
+    return unauthorized(instance, requestId, 'A bearer token is required.')
+  }
+
+  let claims: NacreClaims
+  try {
+    const verified = await jwtVerify<NacreClaims>(bearer, options.key, {
+      issuer: options.issuer,
+      audience: options.audience,
+    })
+    claims = verified.payload
+  } catch {
+    return unauthorized(instance, requestId, 'The token is not valid.')
+  }
+
+  const org = claims.org
+  const sub = claims.sub
+  const type = claims.principal_type
+  const role = claims.role ?? 'member'
+
+  if (
+    typeof org !== 'string' ||
+    typeof sub !== 'string' ||
+    typeof type !== 'string' ||
+    !(PRINCIPAL_TYPES as readonly string[]).includes(type) ||
+    typeof role !== 'string' ||
+    !(ROLES as readonly string[]).includes(role)
+  ) {
+    // A token that verifies but does not say who it is cannot be evaluated, and
+    // rule I3 makes that a denial rather than a default.
+    return unauthorized(instance, requestId, 'The token is not valid.')
+  }
+
+  return {
+    orgId: org,
+    principal: { type: type as Principal['type'], id: sub },
+    role: role as OrgRole,
+  }
+}

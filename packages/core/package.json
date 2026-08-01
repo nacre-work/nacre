@@ -31,5 +31,10 @@
   "dependencies": {
     "@qdrant/js-client-rest": "^1.18.0",
     "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@nacre.work/api": "workspace:*",
+    "@types/node": "^26.1.2",
+    "jose": "^6.2.7"
   }
 }

@@ -27,8 +27,7 @@ export const TEST_PLAN: readonly TestCase[] = [
   // ── baseline ──
   { id: 'T1', group: 'baseline', status: 'implemented',
     scenario: 'A user of org A searches with an org A token against an index holding org B documents' },
-  { id: 'T2', group: 'baseline', status: 'pending',
-    blockedBy: 'HTTP surface: the org_id must be rejected in the request body, which needs a request',
+  { id: 'T2', group: 'baseline', status: 'implemented',
     scenario: 'An org A token with org_id swapped to org B in the request body' },
   { id: 'T3', group: 'baseline', status: 'implemented',
     scenario: 'read on a workspace, deny read on one layer' },
@@ -40,8 +39,7 @@ export const TEST_PLAN: readonly TestCase[] = [
     scenario: 'A user is removed from a group' },
   { id: 'T7', group: 'baseline', status: 'implemented',
     scenario: 'A deleted document is excluded before garbage collection' },
-  { id: 'T8', group: 'baseline', status: 'pending',
-    blockedBy: 'HTTP surface: 404-not-403 is a property of the response, not of the plan',
+  { id: 'T8', group: 'baseline', status: 'implemented',
     scenario: 'A direct request for another org’s document_id' },
 
   // ── saturation ──
