@@ -10,9 +10,19 @@ import {
   withOrg,
   type Hit,
 } from '@nacre.work/core'
+import { createHash } from 'node:crypto'
+
 import type { Pool } from 'pg'
 
-import type { AuditEvent, AuditSink, Documents, SearchService } from './server.js'
+import type {
+  AuditEvent,
+  AuditSink,
+  Documents,
+  Ingest,
+  IngestOutcome,
+  IngestRequest,
+  SearchService,
+} from './server.js'
 import type { AuthContext } from './auth.js'
 
 /**
@@ -216,3 +226,145 @@ export class HttpEmbedder implements Embedder {
 }
 
 export { aclTags }
+
+
+/**
+ * Queueing a document, with the write permission checked first.
+ *
+ * `write` is resolved, not `read`. Rule 6 is the whole reason this is a
+ * separate resolve: an ingest-only service account has `write` and no `read`,
+ * and a check that asked for `read` would refuse exactly the caller this
+ * endpoint exists for. Asking for `admin` would refuse them too.
+ */
+export class NacreIngest implements Ingest {
+  constructor(
+    private readonly pool: Pool,
+    private readonly role?: string,
+  ) {}
+
+  private get scope() {
+    return this.role === undefined ? {} : { role: this.role }
+  }
+
+  /** The layers this caller may write to, by slug. */
+  private async writableLayer(
+    client: import('pg').PoolClient,
+    auth: AuthContext,
+    layerSlug: string,
+  ): Promise<string | undefined> {
+    const graph = await PostgresGroupGraph.load(client, auth.orgId)
+    const principals = effectivePrincipals(auth.principal, graph)
+    const grants = await loadGrants(client, auth.orgId, principals)
+    const tree = await loadScopeTree(
+      client,
+      auth.orgId,
+      grants.filter((g) => g.scope.type === 'document').map((g) => g.scope.id),
+    )
+    const plan = resolve({ orgId: auth.orgId, role: auth.role, principals, grants, tree }, 'write')
+    if (plan.kind === 'none') return undefined
+
+    const { rows } = await client.query<{ id: string }>(
+      `SELECT id FROM layers WHERE org_id = $1 AND slug = $2 AND deleted_at IS NULL`,
+      [auth.orgId, layerSlug],
+    )
+    const id = rows[0]?.id
+    if (id === undefined) return undefined
+
+    // A layer that exists but is not writable and a layer that does not exist
+    // return the same thing, so the caller cannot tell them apart.
+    if (plan.kind === 'all') return id
+    return plan.layers.includes(id) ? id : undefined
+  }
+
+  async queue(auth: AuthContext, request: IngestRequest): Promise<IngestOutcome | undefined> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const layerId = await this.writableLayer(client, auth, request.layer)
+        if (layerId === undefined) return undefined
+
+        const source = request.content !== undefined ? request.content : (request.url as string)
+        const sourceType = request.content !== undefined ? 'inline' : 'url'
+        const hash = createHash('sha256').update(source, 'utf8').digest('hex')
+
+        const { rows } = await client.query<{ id: string; content_hash: string; status: string }>(
+          `INSERT INTO documents
+             (org_id, layer_id, external_id, source_type, source_ref, title, content_hash, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')
+           ON CONFLICT (layer_id, external_id) DO UPDATE SET
+             -- Only touch the row when the content actually changed. A repeat
+             -- with the same bytes must not re-queue work: every client that
+             -- times out retries, and re-embedding is what that costs.
+             source_ref   = CASE WHEN documents.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                                 THEN EXCLUDED.source_ref ELSE documents.source_ref END,
+             title        = COALESCE(EXCLUDED.title, documents.title),
+             content_hash = EXCLUDED.content_hash,
+             status       = CASE WHEN documents.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                                 THEN 'pending' ELSE documents.status END,
+             deleted_at   = NULL,
+             updated_at   = now()
+           RETURNING id, content_hash, status`,
+          [
+            auth.orgId,
+            layerId,
+            request.externalId,
+            sourceType,
+            source,
+            request.title ?? null,
+            `sha256:${hash}`,
+          ],
+        )
+
+        const row = rows[0]
+        if (row === undefined) throw new Error('the document upsert returned no row')
+
+        return {
+          documentId: row.id,
+          jobId: row.id,
+          unchanged: row.status === 'indexed',
+        }
+      },
+      this.scope,
+    )
+  }
+
+  async remove(auth: AuthContext, documentId: string): Promise<boolean> {
+    if (!/^[0-9a-f-]{36}$/i.test(documentId)) return false
+
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const graph = await PostgresGroupGraph.load(client, auth.orgId)
+        const principals = effectivePrincipals(auth.principal, graph)
+        const grants = await loadGrants(client, auth.orgId, principals)
+        const tree = await loadScopeTree(client, auth.orgId, [documentId])
+        const plan = resolve({ orgId: auth.orgId, role: auth.role, principals, grants, tree }, 'write')
+        if (plan.kind === 'none') return false
+
+        const { rows } = await client.query<{ layer_id: string }>(
+          `SELECT layer_id FROM documents
+            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+          [auth.orgId, documentId],
+        )
+        const layerId = rows[0]?.layer_id
+        if (layerId === undefined) return false
+        if (plan.kind === 'scoped' && !plan.layers.includes(layerId) && !plan.extraDocs.includes(documentId)) {
+          return false
+        }
+
+        // A tombstone, not a delete. Physical removal of the points is a
+        // background job, and the document has to leave results before it runs
+        // — depending on the sweep's timing is how invariant I5 breaks.
+        await client.query(
+          `UPDATE documents SET deleted_at = now(), updated_at = now()
+            WHERE org_id = $1 AND id = $2`,
+          [auth.orgId, documentId],
+        )
+        return true
+      },
+      this.scope,
+    )
+  }
+}

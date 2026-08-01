@@ -82,6 +82,16 @@ describe('baseline · the HTTP surface', () => {
       search: {
         search: async (auth: AuthContext) => [{ org: auth.orgId }],
       },
+      ingest: {
+        // `undefined` for "may not write" and for "no such layer" alike: ingest
+        // is otherwise the cheapest oracle in the system, since a caller could
+        // enumerate layer names by watching which ones accept a document.
+        queue: async (auth, request) =>
+          request.layer === 'writable'
+            ? { documentId: DOC_A, jobId: 'job-1', unchanged: false }
+            : undefined,
+        remove: async (auth, id) => id === DOC_A && auth.orgId === ORG_A,
+      },
       audit: {
         write: async (event) => {
           audited.push(event)
@@ -216,6 +226,72 @@ describe('baseline · the HTTP surface', () => {
   it('a missing header is a 401 too, and may say so plainly', async () => {
     const res = await fetch(`${base}/v1/documents/${DOC_A}`)
     expect(res.status).toBe(401)
+  })
+
+  it('a layer the caller may not write to answers like one that does not exist', async () => {
+    const auth = { authorization: `Bearer ${await token(ORG_A)}`, 'content-type': 'application/json' }
+
+    const forbidden = await fetch(`${base}/v1/documents`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ layer: 'not-mine', external_id: 'x', content: 'hello' }),
+    })
+    const absent = await fetch(`${base}/v1/documents`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ layer: 'no-such-layer', external_id: 'x', content: 'hello' }),
+    })
+
+    expect(forbidden.status).toBe(404)
+    expect(absent.status).toBe(404)
+    expect(await answerOnly(forbidden)).toEqual(await answerOnly(absent))
+  })
+
+  it('ingest requires exactly one source', async () => {
+    const auth = { authorization: `Bearer ${await token(ORG_A)}`, 'content-type': 'application/json' }
+
+    for (const body of [
+      { layer: 'writable', external_id: 'x' },
+      { layer: 'writable', external_id: 'x', content: 'a', url: 'https://b.test' },
+    ]) {
+      const res = await fetch(`${base}/v1/documents`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify(body),
+      })
+      expect(res.status).toBe(400)
+    }
+  })
+
+  it('a queued document answers 202 and names its job', async () => {
+    const res = await fetch(`${base}/v1/documents`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${await token(ORG_A)}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ layer: 'writable', external_id: 'x', content: 'hello' }),
+    })
+
+    expect(res.status).toBe(202)
+    const body = (await res.json()) as { document_id: string; job_id: string; status: string }
+    expect(body.status).toBe('queued')
+    expect(body.job_id).toBeTruthy()
+  })
+
+  it('deleting another organization’s document is 404, not 403', async () => {
+    const res = await fetch(`${base}/v1/documents/${DOC_A}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${await token(ORG_B)}` },
+    })
+    expect(res.status).toBe(404)
+  })
+
+  it('deleting your own document is 204 and journaled', async () => {
+    audited.length = 0
+    const res = await fetch(`${base}/v1/documents/${DOC_A}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${await token(ORG_A)}` },
+    })
+    expect(res.status).toBe(204)
+    expect(audited.find((e) => e.action === 'delete_document')?.result).toBe('allow')
   })
 
   it('health touches no dependency and needs no token', async () => {

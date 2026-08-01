@@ -2,7 +2,13 @@ import { createHash } from 'node:crypto'
 
 import { createPool, loadConfig, VectorStore, withOrg, ConfigError } from '@nacre.work/core'
 
-import { HttpEmbedder, NacreSearchService, PostgresAudit, PostgresDocuments } from './adapters.js'
+import {
+  HttpEmbedder,
+  NacreIngest,
+  NacreSearchService,
+  PostgresAudit,
+  PostgresDocuments,
+} from './adapters.js'
 import { createApi } from './server.js'
 
 /**
@@ -80,6 +86,7 @@ async function main(): Promise<void> {
       vectorName: `v_${config.embeddingModel.replace(/[^a-z0-9]/gi, '_')}_${config.embeddingDim}`,
       role: APP_ROLE,
     }),
+    ingest: new NacreIngest(pool, APP_ROLE),
     audit: new PostgresAudit(pool, APP_ROLE),
   })
 
