@@ -50,8 +50,27 @@ jobs:
       # The entry points are what docker-compose runs. Until they existed it ran
       # a library barrel that exited zero without doing anything.
       - run: pnpm lint:entrypoints
+      # Every acl test must be reachable by one of the acl-invariants
+      # selectors, or it does not run in the job that gates leaks — while that
+      # job reports success, because every step it did run passed.
+      - run: pnpm lint:acl-groups
       - run: pnpm migrate
       - run: pnpm test:unit
+
+  # The one Python component, and it had no job at all — no tests, no lint, and
+  # nothing checking that it still imports. It is also the only component that
+  # fetches a URL a tenant chose, which makes it the one place in the system
+  # where an authenticated caller picks the destination of an outbound request.
+  parser:
+    name: parser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      # Standard library only, deliberately: this process runs hostile input
+      # through whatever it depends on, so it depends on as little as possible.
+      - run: python -m unittest discover -s services/parser -t . -v
 
   # The public repo must build and test without access to nacre-enterprise.
   # If this job fails, the open/commercial boundary has leaked.
