@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["node"],
+    "paths": {
+      "@nacre.work/core": ["./packages/core/index.ts"],
+      "@nacre.work/core/*": ["./packages/core/*"]
+    }
+  },
+  "include": ["packages/**/*.ts", "*.ts", "*.js"],
+  "exclude": ["**/dist/**", "**/node_modules/**"]
+}

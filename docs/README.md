@@ -8,3 +8,4 @@
 | [api.md](./api.md) | REST API |
 | [config.md](./config.md) | Environment variables and deployment profiles |
 | [architecture.md](./architecture.md) | Components and data flow |
+| [licensing.md](./licensing.md) | Open/commercial boundary, third-party licenses |
