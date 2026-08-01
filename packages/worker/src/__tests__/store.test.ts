@@ -2,7 +2,7 @@ import { createPool, withOrg } from '@nacre.work/core'
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { PostgresDocumentStore } from '../adapters.js'
+import { PostgresDocumentStore, tagsForLayer } from '../adapters.js'
 
 /**
  * `markTagged`, against a real database.
@@ -165,6 +165,33 @@ when('PostgresDocumentStore · markTagged', () => {
     await store.markTagged(ORG, ids.doc, 7)
     await store.markTagged(ORG, ids.doc, 9)
     expect((await versionOf(ids.doc)).version).toBe(9)
+  })
+
+  it('the version tags are built from is the organization’s groups_version', async () => {
+    const { version } = await tagsForLayer(pool, ORG, ids.layer, 'nacre_app')
+    const current = await withOrg(
+      pool,
+      ORG,
+      async (c) =>
+        Number(
+          (
+            await c.query<{ groups_version: string }>(
+              'SELECT groups_version FROM organizations WHERE id = $1',
+              [ORG],
+            )
+          ).rows[0]?.groups_version,
+        ),
+      AS_APP,
+    )
+
+    // The first version of this passed `Date.now()`. It typechecks — both are
+    // numbers — and it silently disables the propagation gauge outright: the
+    // lag asks whether acl_version has fallen behind groups_version, and a
+    // millisecond timestamp is a thousand times larger than that counter will
+    // ever reach, so the comparison never fires and the metric reports perfect
+    // health forever. Nothing about a wrong number here is visible except this.
+    expect(version).toBe(current)
+    expect(version).toBeLessThan(1_000_000)
   })
 
   it('another organization cannot mark this one’s document', async () => {

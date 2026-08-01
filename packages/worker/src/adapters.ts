@@ -1,5 +1,6 @@
 import { QdrantClient } from '@qdrant/js-client-rest'
-import { collectionName, withOrg } from '@nacre.work/core'
+import { aclTags, collectionName, loadGroupsVersion, withOrg } from '@nacre.work/core'
+import type { PrincipalRef } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
 import type { DocumentStore, Parser, ParsedDocument, StoredDocument, VectorWriter } from './ingest.js'
@@ -216,4 +217,51 @@ export class HttpParser implements Parser {
           : {},
     }
   }
+}
+
+/**
+ * Principals allowed to read this layer, hashed into tags, and the
+ * `groups_version` those tags were built from.
+ *
+ * Read from `grants` every time rather than cached: these go into the payload
+ * and become the thing a query trusts, so a stale set written at index time is
+ * a stale set until the next reindex. `acl_tags` is a cache of a cache
+ * otherwise.
+ *
+ * The version is read inside the same transaction as the grants, and that is
+ * the whole reason this returns a pair instead of just the tags. Reading it
+ * afterwards would let a membership change land in between, and the document
+ * would then be recorded as tagged at a version whose grants it never saw —
+ * a claim of freshness that is false in the direction nobody checks.
+ */
+export async function tagsForLayer(
+  pool: Pool,
+  orgId: string,
+  layerId: string,
+  role?: string,
+): Promise<{ tags: readonly string[]; version: number }> {
+  return withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      const version = await loadGroupsVersion(client, orgId)
+      const { rows } = await client.query<{ principal_type: string; principal_id: string }>(
+        `SELECT DISTINCT principal_type, principal_id
+           FROM grants
+          WHERE org_id = $1
+            AND effect = 'allow'
+            AND permission IN ('read','admin')
+            AND (
+              (scope_type = 'layer'     AND scope_id = $2)
+              OR (scope_type = 'workspace' AND scope_id = (SELECT workspace_id FROM layers WHERE id = $2))
+            )`,
+        [orgId, layerId],
+      )
+      return {
+        tags: aclTags(rows.map((r) => `${r.principal_type}:${r.principal_id}` as PrincipalRef)),
+        version,
+      }
+    },
+    role === undefined ? {} : { role },
+  )
 }

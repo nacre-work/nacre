@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto'
 
 import { QdrantClient } from '@qdrant/js-client-rest'
-import { aclTags, ConfigError, createPool, loadConfig, withOrg } from '@nacre.work/core'
-import type { PrincipalRef } from '@nacre.work/core'
+import { ConfigError, createPool, loadConfig, withOrg } from '@nacre.work/core'
 
-import { HttpParser, PostgresDocumentStore, QdrantVectorWriter } from './adapters.js'
+import { HttpParser, PostgresDocumentStore, QdrantVectorWriter, tagsForLayer } from './adapters.js'
 import { ingest } from './ingest.js'
 
 /**
@@ -87,41 +86,6 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
   }
 }
 
-/**
- * Principals allowed to read this layer, hashed into tags.
- *
- * Read from `grants` every time rather than cached: these go into the payload
- * and become the thing a query trusts, so a stale set written at index time is
- * a stale set until the next reindex. `acl_tags` is a cache of a cache
- * otherwise.
- */
-async function tagsForLayer(
-  pool: ReturnType<typeof createPool>,
-  orgId: string,
-  layerId: string,
-): Promise<readonly string[]> {
-  return withOrg(
-    pool,
-    orgId,
-    async (client) => {
-      const { rows } = await client.query<{ principal_type: string; principal_id: string }>(
-        `SELECT DISTINCT principal_type, principal_id
-           FROM grants
-          WHERE org_id = $1
-            AND effect = 'allow'
-            AND permission IN ('read','admin')
-            AND (
-              (scope_type = 'layer'     AND scope_id = $2)
-              OR (scope_type = 'workspace' AND scope_id = (SELECT workspace_id FROM layers WHERE id = $2))
-            )`,
-        [orgId, layerId],
-      )
-      return aclTags(rows.map((r) => `${r.principal_type}:${r.principal_id}` as PrincipalRef))
-    },
-    { role: APP_ROLE },
-  )
-}
-
 async function markFailed(
   pool: ReturnType<typeof createPool>,
   claim: Claim,
@@ -194,7 +158,7 @@ async function main(): Promise<void> {
     }
 
     try {
-      const tags = await tagsForLayer(pool, claim.orgId, claim.layerId)
+      const acl = await tagsForLayer(pool, claim.orgId, claim.layerId, APP_ROLE)
       const source =
         claim.sourceType === 'url' && claim.sourceRef !== null
           ? { url: claim.sourceRef }
@@ -207,8 +171,13 @@ async function main(): Promise<void> {
           layerId: claim.layerId,
           vectorName: claim.vectorName,
           externalId: claim.externalId,
-          aclTags: tags,
-          aclVersion: Date.now(),
+          aclTags: acl.tags,
+          // The organization's groups_version, never a clock. The propagation
+          // gauge asks whether acl_version has fallen behind groups_version,
+          // and a millisecond timestamp is larger than that counter will ever
+          // be — so the comparison would never fire and the one metric that
+          // evidences invariant I4 would report perfect health forever.
+          aclVersion: acl.version,
           ...source,
         },
         { parser, embedder, documents, vectors, newId: randomUUID },
