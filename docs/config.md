@@ -38,6 +38,8 @@ NACRE_PARSER_ENDPOINT=http://parser:8090
 
 # ─── authorization ───
 NACRE_JWT_PRIVATE_KEY_REF=file:///run/secrets/jwt_ed25519
+NACRE_JWT_ISSUER=https://api.nacre.work   # must match NACRE_CANONICAL_URL in production
+NACRE_JWT_AUDIENCE=nacre
 NACRE_ACCESS_TOKEN_TTL=900
 NACRE_REFRESH_TOKEN_TTL=2592000
 NACRE_OAUTH_CIMD_ENABLED=true
@@ -68,7 +70,20 @@ the tenant-isolation policies into decoration. Migrations run as the owner;
 the application runs as `nacre_app`.
 
 **The application validates the whole configuration at startup and exits if
-anything required is missing or contradictory.** Silent defaults for secrets and
+anything required is missing or contradictory**, reporting every problem at
+once rather than the first — one restart per missing variable is how a
+deployment takes an afternoon.
+
+Three combinations parse individually and are refused together, because a
+per-variable check cannot catch them:
+
+- `NACRE_ACL_CACHE_TTL` longer than `NACRE_ACL_PROPAGATION_SLA`. The cache
+  would still be serving a revoked grant after the SLA it promises, while
+  `nacre_acl_propagation_lag_seconds` reported compliance.
+- `NACRE_RERANKER_ENABLED=true` with no endpoint set.
+- A plaintext or localhost `NACRE_CANONICAL_URL` in production. It is the OAuth
+  issuer, it goes into every token ever issued, and over plaintext it is also
+  what an attacker rewrites. Silent defaults for secrets and
 URLs are not allowed — a default that quietly points at localhost is how a
 production deployment ends up talking to nothing and reporting success.
 
