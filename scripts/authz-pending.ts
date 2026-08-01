@@ -8,6 +8,12 @@
  */
 import { TEST_PLAN, pending } from '../packages/core/authz/test-plan.js'
 
+// `pnpm authz:pending | head` closes the pipe early, and Node turns that into
+// an unhandled EPIPE that looks like a crash in the report itself.
+process.stdout.on('error', (e: NodeJS.ErrnoException) => {
+  if (e.code !== 'EPIPE') throw e
+})
+
 const outstanding = pending()
 const done = TEST_PLAN.length - outstanding.length
 

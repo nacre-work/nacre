@@ -29,6 +29,7 @@
     "dist"
   ],
   "dependencies": {
+    "@qdrant/js-client-rest": "^1.18.0",
     "pg": "^8.22.0"
   }
 }

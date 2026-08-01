@@ -228,17 +228,20 @@ implementation (`reference.ts`), effective principals (`principals.ts`), the
 pre-filter builder (`filter.ts`), and the implication table
 (`permissions.ts`).
 
-**9 of the 15 cases run.** T1, T3–T7, T13–T15, plus the full truth table
+**11 of the 15 cases run**, against a real Postgres and a real Qdrant. T1, T3–T7, T9, T10, T13–T15, plus the full truth table
 checked against both implementations and a property-based comparison between
 them. `test-plan.ts` is the inventory, and `packages/core/authz/__tests__/coverage.test.ts`
 fails if a case is marked implemented without a test carrying its marker — so
 the list cannot drift in either direction. `pnpm authz:pending` prints what is
 outstanding, and the CI job prints it on green runs too.
 
-Outstanding: T2 and T8 need the HTTP surface, T9 and T10 need Qdrant, T11 needs
-Redis and the propagation job, T12 needs the reindex pipeline.
+Outstanding: T2 and T8 need the HTTP surface, T11 needs Redis and the
+propagation job, T12 needs the reindex pipeline.
 
-**T9 and T10 are the ones to weigh before trusting the job.** They are what
-catches a post-filter, and an implementation that filters after ranking passes
-every case that runs today. Until the vector store lands, `acl-invariants`
-attests to the resolver and not to the system.
+**T9 and T10 were the ones to weigh, and they now run.** They are what catches
+a post-filter: an implementation that fetches k results and removes the ones the
+caller may not see passes every other case in this suite and fails these two.
+The pre-filter is also structural rather than conventional — `buildHybridQuery`
+takes one filter and applies it to every prefetch branch, and a `Branch` has no
+field for a filter of its own, so the "forgot it in one branch" leak is
+unrepresentable rather than merely discouraged.
