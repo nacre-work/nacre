@@ -271,7 +271,15 @@ when('PostgresDocumentStore · markTagged', () => {
     // than this.
     const written: string[] = []
     const ports = {
-      claim: (limit: number) => claimStale(pool, limit),
+      // The real query, narrowed to this fixture's organization afterwards.
+      //
+      // `claimStale` is cross-tenant by design — one worker drains every
+      // tenant — so a test that acted on everything it returned would retag
+      // whatever another test file had just set up and assert against. That is
+      // not hypothetical: it is what made this suite pass alone and fail beside
+      // the observability tests, which stage a stale document and then check
+      // the gauge reports it.
+      claim: async (limit: number) => (await claimStale(pool, limit)).filter((d) => d.orgId === ORG),
       tagsFor: (orgId: string, layerId: string) => tagsForLayer(pool, orgId, layerId, 'nacre_app'),
       retag: async (input: { documentId: string }) => {
         written.push(input.documentId)
@@ -297,7 +305,7 @@ when('PostgresDocumentStore · markTagged', () => {
 
     let guard = 0
     for (;;) {
-      const pass = await retagOnce(ports, 100, 4)
+      const pass = await retagOnce(ports, 1000, 4)
       expect(pass.failed).toBe(0)
       if (pass.retagged === 0) break
       if (++guard > 50) throw new Error('the pass never drained; claimStale is not narrowing')

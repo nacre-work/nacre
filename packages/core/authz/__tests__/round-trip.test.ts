@@ -151,10 +151,13 @@ when('pipeline round trip · the worker and the search path agree', () => {
         [ids.open, 'open'],
         [ids.shut, 'shut'],
       ] as const) {
+        // slug and name are separate parameters even though the value is the
+        // same: slug is citext and name is text, and Postgres refuses to deduce
+        // one type for a parameter feeding both.
         await c.query(
           `INSERT INTO layers (id, org_id, workspace_id, slug, name, provider_id, vector_name)
-           VALUES ($1,$2,$3,$4,$4,$5,$6) ON CONFLICT DO NOTHING`,
-          [id, ORG, ids.ws, slug, ids.provider, VECTOR],
+           VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`,
+          [id, ORG, ids.ws, slug, slug, ids.provider, VECTOR],
         )
       }
       // Alice reads `open` and nothing else. Bob is granted nothing at all.
@@ -179,6 +182,22 @@ when('pipeline round trip · the worker and the search path agree', () => {
       vectorName: VECTOR,
       role: 'nacre_app',
     })
+
+    // The collection was just recreated empty, so the documents have to be
+    // gone from Postgres too. Ingest is idempotent on (layer, external_id) plus
+    // content_hash — rows left behind by an earlier run satisfy that key, the
+    // pipeline returns `unchanged` without writing a single vector, and every
+    // assertion below then fails against an empty index for a reason that has
+    // nothing to do with what is under test.
+    await withOrg(
+      pool,
+      ORG,
+      async (c) => {
+        await c.query('DELETE FROM chunks WHERE org_id = $1', [ORG])
+        await c.query('DELETE FROM documents WHERE org_id = $1', [ORG])
+      },
+      AS_APP,
+    )
 
     await index(ids.open, 'handbook', 'New engineers get repository access on their first day.')
     await index(ids.shut, 'salaries', 'Compensation bands for the engineering ladder.')
