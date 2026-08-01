@@ -20,11 +20,20 @@ export interface Documents {
   /**
    * The document, or undefined.
    *
-   * **Undefined must mean the same thing for "does not exist" and "exists in
-   * another organization".** If this ever grows a third answer, the 403/404
+   * **Undefined must mean the same thing for every reason it can be
+   * undefined** — absent, another organization's, or one this caller has no
+   * grant reaching. If this ever grows a second answer, the 403/404
    * distinction leaks through whatever the caller does with it.
+   *
+   * It takes the whole `AuthContext` and not an `orgId`, and that is the
+   * point: with an organization alone the implementation is structurally
+   * incapable of consulting the resolver, and the first version of this
+   * signature was exactly that. Search filtered correctly while
+   * `GET /v1/documents/{id}` returned the title of any document in the
+   * organization to anyone holding any token for it — including a caller whose
+   * grant had been revoked, and a service account with `write` and no `read`.
    */
-  read(orgId: string, documentId: string): Promise<{ id: string; title: string } | undefined>
+  read(auth: AuthContext, documentId: string): Promise<{ id: string; title: string } | undefined>
 }
 
 export interface SearchService {
@@ -69,8 +78,12 @@ export interface Job {
 }
 
 export interface Jobs {
-  /** `undefined` for absent and for another organization's job alike. */
-  read(orgId: string, jobId: string): Promise<Job | undefined>
+  /**
+   * `undefined` for absent, for another organization's, and for one the caller
+   * has no grant reaching — a job names a document and carries its error
+   * string, so it is exactly as much of an oracle as the document is.
+   */
+  read(auth: AuthContext, jobId: string): Promise<Job | undefined>
 }
 
 export interface Layer {
@@ -459,7 +472,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
     if (req.method === 'GET' && documentMatch) {
       const id = decodeURIComponent(documentMatch[1] as string)
-      const document = await options.documents.read(auth.orgId, id)
+      const document = await options.documents.read(auth, id)
 
       if (document === undefined) {
         // T8. The same response for "no such document" and "another
@@ -493,7 +506,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     const jobMatch = /^\/v1\/jobs\/([^/]+)$/.exec(instance)
     if (req.method === 'GET' && jobMatch && options.jobs !== undefined) {
       const id = decodeURIComponent(jobMatch[1] as string)
-      const job = await options.jobs.read(auth.orgId, id)
+      const job = await options.jobs.read(auth, id)
 
       if (job === undefined) {
         // A job names a document, so it is as much of an oracle as the document

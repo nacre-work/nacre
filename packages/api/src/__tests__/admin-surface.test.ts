@@ -91,8 +91,8 @@ describe('the administrative surface', () => {
         },
       },
       jobs: {
-        read: async (orgId, jobId) =>
-          orgId === ORG_A && jobId === DOC
+        read: async (a, jobId) =>
+          a.orgId === ORG_A && jobId === DOC
             ? { jobId: DOC, documentId: DOC, status: 'indexed', progress: 1 }
             : undefined,
       },

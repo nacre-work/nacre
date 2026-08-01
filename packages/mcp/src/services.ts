@@ -166,7 +166,7 @@ export function buildServices(config: Config): Services {
         case 'get_document': {
           const id = args.document_id
           if (typeof id !== 'string') throw new Error('document_id is required')
-          const document = await documents.read(auth.orgId, id)
+          const document = await documents.read(auth, id)
           await audit.write({
             orgId: auth.orgId,
             actor: `${auth.principal.type}:${auth.principal.id}`,

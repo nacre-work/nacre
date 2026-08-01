@@ -52,13 +52,17 @@ export class PostgresDocuments implements Documents {
   constructor(private readonly pool: Pool, private readonly role?: string) {}
 
   /**
-   * Undefined for absent and for another organization's document alike.
+   * Undefined for absent, for another organization's, and for one this caller
+   * has no grant reaching — one answer for all three.
    *
-   * The query is scoped twice on purpose: `withOrg` sets the row-level security
-   * context, and `org_id` is named in the WHERE clause anyway. Either alone
-   * would do; both means a mistake in one is not a leak.
+   * The query is scoped three ways on purpose: `withOrg` sets the row-level
+   * security context, `org_id` is named in the WHERE clause anyway, and the
+   * plan decides whether the layer it landed in is reachable. Any one alone
+   * would do for tenancy; only the third does anything about permissions
+   * inside a tenant, and it is the one that was missing.
    */
-  async read(orgId: string, documentId: string): Promise<{ id: string; title: string } | undefined> {
+  async read(auth: AuthContext, documentId: string): Promise<{ id: string; title: string } | undefined> {
+    const orgId = auth.orgId
     // A malformed id must not reach Postgres as a cast error — an error
     // distinguishable from "not found" is an oracle for the id format.
     if (!/^[0-9a-f-]{36}$/i.test(documentId)) return undefined
@@ -67,13 +71,31 @@ export class PostgresDocuments implements Documents {
       this.pool,
       orgId,
       async (client) => {
-        const { rows } = await client.query<{ id: string; title: string | null }>(
-          `SELECT id, title FROM documents
+        // The plan first. Reading the row and then checking is the same
+        // information leak with extra steps if the check is ever forgotten,
+        // and the layer a document sits in is what the grant is on.
+        const plan = resolve(await contextFor(client, auth), 'read')
+        if (plan.kind === 'none') return undefined
+
+        const { rows } = await client.query<{ id: string; title: string | null; layer_id: string }>(
+          `SELECT id, title, layer_id FROM documents
             WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
           [orgId, documentId],
         )
         const row = rows[0]
-        return row === undefined ? undefined : { id: row.id, title: row.title ?? '' }
+        if (row === undefined) return undefined
+
+        // `all` is org_admin, which reaches everything by rule 3. Otherwise the
+        // document has to sit in a layer the plan reached, or be named
+        // explicitly by a document-scoped grant — and not be denied by one.
+        if (plan.kind === 'scoped') {
+          if (plan.deniedDocs.includes(documentId)) return undefined
+          const reachable =
+            plan.layers.includes(row.layer_id) || plan.extraDocs.includes(documentId)
+          if (!reachable) return undefined
+        }
+
+        return { id: row.id, title: row.title ?? '' }
       },
       this.role === undefined ? {} : { role: this.role },
     )
@@ -246,14 +268,32 @@ export { aclTags }
  * and a check that asked for `read` would refuse exactly the caller this
  * endpoint exists for. Asking for `admin` would refuse them too.
  */
+export interface IngestDeps {
+  readonly pool: Pool
+  /**
+   * What takes a document out of results. Narrower than `VectorStore` on
+   * purpose: the delete path has no business searching, and a port that could
+   * would let a later change reach the index without a plan.
+   */
+  readonly tombstone: DocumentTombstone
+  /** Resolved per organization; the collection name is derived from it. */
+  readonly orgSlug: (orgId: string) => Promise<string | undefined>
+  readonly role?: string
+}
+
+export interface DocumentTombstone {
+  tombstone(orgSlug: string, documentId: string): Promise<void>
+}
+
 export class NacreIngest implements Ingest {
-  constructor(
-    private readonly pool: Pool,
-    private readonly role?: string,
-  ) {}
+  constructor(private readonly deps: IngestDeps) {}
+
+  private get pool() {
+    return this.deps.pool
+  }
 
   private get scope() {
-    return this.role === undefined ? {} : { role: this.role }
+    return this.deps.role === undefined ? {} : { role: this.deps.role }
   }
 
   /** The layers this caller may write to, by slug. */
@@ -342,6 +382,12 @@ export class NacreIngest implements Ingest {
   async remove(auth: AuthContext, documentId: string): Promise<boolean> {
     if (!/^[0-9a-f-]{36}$/i.test(documentId)) return false
 
+    const slug = await this.deps.orgSlug(auth.orgId)
+    // The token names an organization that is not there. Refusing rather than
+    // deleting only in Postgres: a tombstone we cannot mirror into the index is
+    // a document that stays searchable while the API reports it gone.
+    if (slug === undefined) return false
+
     return withOrg(
       this.pool,
       auth.orgId,
@@ -360,13 +406,37 @@ export class NacreIngest implements Ingest {
         )
         const layerId = rows[0]?.layer_id
         if (layerId === undefined) return false
-        if (plan.kind === 'scoped' && !plan.layers.includes(layerId) && !plan.extraDocs.includes(documentId)) {
-          return false
+        if (plan.kind === 'scoped') {
+          // deniedDocs first. `resolve` populates it precisely so a deny beats
+          // an allow at any depth (rule 5), and checking only `layers` let a
+          // document inside an allowed layer be deleted despite an explicit
+          // deny on it. The read path already honoured this — buildFilter emits
+          // must_not from the same list — so this was the write path drifting
+          // away from the read path rather than a rule nobody had implemented.
+          if (plan.deniedDocs.includes(documentId)) return false
+          if (!plan.layers.includes(layerId) && !plan.extraDocs.includes(documentId)) return false
         }
 
-        // A tombstone, not a delete. Physical removal of the points is a
-        // background job, and the document has to leave results before it runs
-        // — depending on the sweep's timing is how invariant I5 breaks.
+        // The index first, then the row — the reverse of ingest, and the order
+        // is the whole point.
+        //
+        // `deleted = false` is what the pre-filter tests, and that flag lives on
+        // the points. Writing only the Postgres tombstone leaves the document in
+        // every answer until the collector reaches it, which is precisely the
+        // window invariant I5 forbids; the collector runs on a schedule measured
+        // in minutes, so this is not a narrow race.
+        //
+        // Postgres-first also fails in the unrecoverable direction: the row says
+        // deleted, so nothing queues the document for retagging or re-ingest,
+        // and the only job that would ever touch its points again is the sweep —
+        // which purges rather than repairs. Index-first fails the other way: the
+        // points are marked, the row is not, the caller sees an error and
+        // retries, and in the meantime the document is already invisible.
+        await this.deps.tombstone.tombstone(slug, documentId)
+
+        // A tombstone, not a delete, on this side too. Physical removal of the
+        // points is the collector's job, and `deleted_at` is what puts the
+        // document in its queue.
         await client.query(
           `UPDATE documents SET deleted_at = now(), updated_at = now()
             WHERE org_id = $1 AND id = $2`,
@@ -393,26 +463,40 @@ export class PostgresJobs implements Jobs {
     private readonly role?: string,
   ) {}
 
-  async read(orgId: string, jobId: string): Promise<Job | undefined> {
+  async read(auth: AuthContext, jobId: string): Promise<Job | undefined> {
+    const orgId = auth.orgId
     if (!/^[0-9a-f-]{36}$/i.test(jobId)) return undefined
 
     return withOrg(
       this.pool,
       orgId,
       async (client) => {
+        // A job id is a document id, so this is the document read with a
+        // different projection — and needs the same check. The status and the
+        // error string are both facts about a document the caller may not be
+        // allowed to know exists.
+        const plan = resolve(await contextFor(client, auth), 'read')
+        if (plan.kind === 'none') return undefined
+
         const { rows } = await client.query<{
           id: string
           status: string
           error: string | null
           chunk_count: number
+          layer_id: string
         }>(
-          `SELECT id, status, error, chunk_count FROM documents
+          `SELECT id, status, error, chunk_count, layer_id FROM documents
             WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
           [orgId, jobId],
         )
 
         const row = rows[0]
         if (row === undefined) return undefined
+
+        if (plan.kind === 'scoped') {
+          if (plan.deniedDocs.includes(jobId)) return undefined
+          if (!plan.layers.includes(row.layer_id) && !plan.extraDocs.includes(jobId)) return undefined
+        }
 
         const status = (
           ['queued', 'parsing', 'embedding', 'indexed', 'failed'].includes(row.status)
