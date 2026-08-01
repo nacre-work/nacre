@@ -15,5 +15,12 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
+  },
+  "dependencies": {
+    "@nacre.work/core": "workspace:*",
+    "jose": "^6.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1"
   }
 }

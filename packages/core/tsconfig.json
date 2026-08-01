@@ -1,7 +1,19 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "rootDir": ".", "outDir": "dist" },
-  "include": ["**/*.ts"],
-  "comment": "test-plan.ts is the T1-T15 inventory, not library API — it is read by the coverage test and by scripts/authz-pending.ts, both from source, and has no business in a published package.",
-  "exclude": ["dist", "**/__tests__/**", "authz/test-plan.ts"]
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "**/*.ts"
+  ],
+  "comment": "test-plan.ts is the T1-T15 inventory, not library API \u2014 it is read by the coverage test and by scripts/authz-pending.ts, both from source, and has no business in a published package.",
+  "exclude": [
+    "dist",
+    "**/__tests__/**",
+    "authz/test-plan.ts"
+  ]
 }

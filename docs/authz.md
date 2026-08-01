@@ -236,15 +236,17 @@ implementation (`reference.ts`), effective principals (`principals.ts`), the
 pre-filter builder (`filter.ts`), and the implication table
 (`permissions.ts`).
 
-**11 of the 15 cases run**, against a real Postgres and a real Qdrant. T1, T3–T7, T9, T10, T13–T15, plus the full truth table
+**13 of the 15 cases run**, against a real Postgres, a real Qdrant, and the
+HTTP surface over a real socket. T1–T10 and T13–T15, plus the full truth table
 checked against both implementations and a property-based comparison between
 them. `test-plan.ts` is the inventory, and `packages/core/authz/__tests__/coverage.test.ts`
 fails if a case is marked implemented without a test carrying its marker — so
 the list cannot drift in either direction. `pnpm authz:pending` prints what is
 outstanding, and the CI job prints it on green runs too.
 
-Outstanding: T2 and T8 need the HTTP surface, T11 needs Redis and the
-propagation job, T12 needs the reindex pipeline.
+Outstanding: T11 needs Redis and the propagation job, T12 needs the reindex
+pipeline. Both are about *change* under load rather than about a single
+decision, which is why they come last.
 
 **T9 and T10 were the ones to weigh, and they now run.** They are what catches
 a post-filter: an implementation that fetches k results and removes the ones the
