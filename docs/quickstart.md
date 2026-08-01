@@ -1,20 +1,17 @@
 # Quickstart
 
-> **The commands below have been run, and one step is missing.** The API,
-> worker and parser processes were started against a real Postgres and a real
-> Qdrant, and every request on this page was issued in order: create a layer,
-> issue a grant, ingest, poll the job to `indexed`, search as a granted user and
-> get the chunk, search as a user without the grant and get nothing. Revoking
-> the grant then removed it from the results while the points were still in the
-> index. Three bugs were found doing it and are fixed.
+> **Every command below has been run, start to finish, from an empty database.**
+> The API, worker and parser processes were started against a real Postgres and
+> a real Qdrant; `init` created the organization; and each request on this page
+> was issued in order — create a layer, issue a grant, ingest, poll the job to
+> `indexed`, search as a granted user and get the chunk, search as a user
+> without the grant and get nothing. Revoking the grant then removed it from the
+> results while the points were still in the index. Four bugs were found doing
+> it and are fixed.
 >
-> **What is missing is the first organization.** There is no command yet that
-> creates an organization, its first user, an embedding provider, a workspace,
-> and the Qdrant collection — all of that was inserted by hand to get to the
-> first request below, and a token was signed by hand too. Until that exists
-> this page starts one step after where a new installation actually starts.
-> `docker compose up` itself has not been run from a clean checkout; the
-> processes were started directly.
+> One thing is still unrehearsed: `docker compose up` itself. The processes were
+> started directly, so the compose file's wiring is checked by `lint:compose`
+> and not by having run it.
 
 ## What you will need
 
@@ -36,6 +33,37 @@ sidecar, and expects embeddings from an endpoint you name in
 `NACRE_DEFAULT_EMBEDDING_ENDPOINT`. Use `--profile full` to run the embedder and
 the reranker locally too; see [config.md](./config.md) for the difference.
 
+## The first organization
+
+Nothing exists yet — not an organization, not a user, not the Qdrant collection.
+One command creates all of it:
+
+```bash
+docker compose run --rm api node packages/api/dist/init.js \
+  --org acme --email you@example.com --name "Acme"
+```
+
+It prints the workspace id and an administrator token valid for one hour:
+
+```
+Organization acme is ready.
+
+  Workspace id  a2ebffde-29ac-4327-9891-a51f40edce0c
+  Admin user    you@example.com
+
+An administrator token, valid for one hour:
+
+  export NACRE_TOKEN=eyJhbGciOiJIUzI1NiJ9…
+```
+
+Run it twice and the second run changes nothing — it reports what already
+existed. That matters more than it sounds: a first install that dies halfway
+leaves exactly the state you would otherwise have to unpick by hand.
+
+The token is signed with `NACRE_JWT_SECRET`, printed to a terminal and probably
+into a shell history. It exists to get you through this page. Proper token
+issuance is not built yet, which is the honest reason it expires in an hour.
+
 ## A layer, and someone allowed to read it
 
 A document lives in a layer, and a layer lives in a workspace. Nothing is
@@ -49,6 +77,10 @@ curl -X POST http://localhost:8080/v1/layers \
   -H "Content-Type: application/json" \
   -d '{ "workspace_id": "…", "slug": "handbook", "name": "Handbook" }'
 ```
+
+The workspace id is the one `init` printed. A slug already in use answers `409`;
+a workspace you may not administer answers `404`, the same as one that does not
+exist.
 
 Then grant someone `read` on it:
 
