@@ -16,6 +16,8 @@ export type {
   LayerOutcome,
   Layers,
   SearchService,
+  ServiceAccountPort,
+  ServiceAccountView,
 } from './server.js'
 export { authenticate, findTenantOverride, rejectTenantOverride } from './auth.js'
 export type { AuthContext, VerifyOptions } from './auth.js'
@@ -31,3 +33,13 @@ export {
   PostgresLayers,
 } from './adapters.js'
 export type { Embedder, SearchDeps } from './adapters.js'
+export {
+  generateKey,
+  hashOf,
+  KEY_PREFIX,
+  looksLikeServiceKey,
+  PostgresServiceAccounts,
+  PostgresServiceKeys,
+  prefixOf,
+} from './service-keys.js'
+export type { ServiceAccount, ServiceAccounts, ServiceKeyResolver } from './service-keys.js'

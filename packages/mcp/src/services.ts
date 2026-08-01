@@ -18,6 +18,7 @@ import {
   withOrg,
   type Config,
 } from '@nacre.work/core'
+import { PostgresServiceKeys } from '@nacre.work/api'
 import type { Pool } from 'pg'
 
 import type { Layers, ToolRunner } from './server.js'
@@ -47,6 +48,8 @@ export function jwtKey(): Uint8Array {
 
 export interface Services {
   readonly pool: Pool
+  /** Resolves service account keys, which is what local mode authenticates with. */
+  readonly serviceKeys: PostgresServiceKeys
   readonly layers: Layers
   readonly tools: ToolRunner
 }
@@ -183,5 +186,5 @@ export function buildServices(config: Config): Services {
       }
     },
   }
-  return { pool, layers, tools }
+  return { pool, layers, tools, serviceKeys: new PostgresServiceKeys(pool, APP_ROLE) }
 }

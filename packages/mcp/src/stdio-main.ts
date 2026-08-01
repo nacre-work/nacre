@@ -25,11 +25,14 @@ async function main(): Promise<void> {
     ])
   }
 
-  const { pool, layers, tools } = buildServices(config)
+  const { pool, layers, tools, serviceKeys } = buildServices(config)
 
   try {
     await serveStdio({
-      verify: { key, issuer: config.jwtIssuer, audience: config.jwtAudience },
+      // Both credential types work here. A service account key is the one
+      // meant to outlive a session — a token from `init` expires in an hour,
+      // which is not a credential for an agent that runs for a week.
+      verify: { key, issuer: config.jwtIssuer, audience: config.jwtAudience, serviceKeys },
       serviceKey,
       layers,
       tools,

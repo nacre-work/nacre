@@ -130,6 +130,21 @@ export interface Grants {
   issue(auth: AuthContext, input: GrantInput): Promise<GrantRecord | undefined>
 }
 
+export interface ServiceAccountView {
+  readonly id: string
+  readonly name: string
+  readonly keyPrefix: string
+  readonly createdAt: string
+  readonly lastUsedAt: string | null
+  readonly revokedAt: string | null
+}
+
+export interface ServiceAccountPort {
+  list(auth: AuthContext): Promise<readonly ServiceAccountView[]>
+  create(auth: AuthContext, name: string): Promise<{ account: ServiceAccountView; key: string }>
+  revoke(auth: AuthContext, id: string): Promise<boolean>
+}
+
 export interface AuditEvent {
   readonly orgId: string
   readonly actor: string
@@ -155,12 +170,25 @@ export interface ApiOptions {
   readonly jobs?: Jobs
   readonly layers?: Layers
   readonly grants?: Grants
+  readonly serviceAccounts?: ServiceAccountPort
 }
 
 const MAX_BODY_BYTES = 1_000_000
 
 const PRINCIPAL_TYPES = ['user', 'group', 'service_account'] as const
 const PERMISSIONS = ['read', 'write', 'admin'] as const
+
+function accountJson(a: ServiceAccountView): Record<string, unknown> {
+  return {
+    id: a.id,
+    name: a.name,
+    // Never the key. It exists in the create response and nowhere else.
+    key_prefix: a.keyPrefix,
+    created_at: a.createdAt,
+    last_used_at: a.lastUsedAt,
+    revoked_at: a.revokedAt,
+  }
+}
 
 function grantJson(g: GrantRecord): Record<string, unknown> {
   return {
@@ -606,6 +634,80 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       }
 
       send(res, 201, grantJson(issued), requestId)
+      return
+    }
+
+    if (instance === '/v1/service-accounts' && options.serviceAccounts !== undefined) {
+      // org_admin, not "admin on some scope". A service account is a principal
+      // in the organization rather than an object inside a workspace, and there
+      // is no scope to check it against — someone holding admin on one layer
+      // must not be able to mint credentials.
+      if (auth.role !== 'org_admin') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      if (req.method === 'GET') {
+        send(res, 200, { items: (await options.serviceAccounts.list(auth)).map(accountJson) }, requestId)
+        return
+      }
+
+      if (req.method === 'POST') {
+        const name = ((body ?? {}) as Record<string, unknown>).name
+        if (typeof name !== 'string' || name.trim().length === 0) {
+          const problem = badRequest(instance, requestId, "'name' is required.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        const { account, key } = await options.serviceAccounts.create(auth, name.trim())
+
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `${auth.principal.type}:${auth.principal.id}`,
+          action: 'create_service_account',
+          result: 'allow',
+          // The prefix, never the key. This row is readable by anyone with the
+          // audit log, and the key is not recoverable from anywhere else by
+          // design — putting it here would undo that.
+          detail: { service_account_id: account.id, key_prefix: account.keyPrefix },
+          requestId,
+        })
+
+        // The only time the key exists outside the caller's process.
+        send(res, 201, { ...accountJson(account), key }, requestId)
+        return
+      }
+    }
+
+    const accountMatch = /^\/v1\/service-accounts\/([^/]+)$/.exec(instance)
+    if (req.method === 'DELETE' && accountMatch && options.serviceAccounts !== undefined) {
+      if (auth.role !== 'org_admin') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const id = decodeURIComponent(accountMatch[1] as string)
+      const revoked = await options.serviceAccounts.revoke(auth, id)
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'revoke_service_account',
+        result: revoked ? 'allow' : 'deny',
+        detail: { service_account_id: id },
+        requestId,
+      })
+
+      if (!revoked) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      send(res, 204, null, requestId)
       return
     }
 

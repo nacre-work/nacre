@@ -151,14 +151,32 @@ Over MCP, Streamable HTTP:
 https://api.nacre.work/mcp
 ```
 
-Locally, over STDIO, with a service account key:
+Locally, over STDIO, with a service account key. Mint one first — the token
+`init` printed expires in an hour and is not a credential for an agent:
 
 ```bash
-NACRE_SERVICE_KEY=… npx @nacre.work/mcp
+curl -X POST http://localhost:8080/v1/service-accounts \
+  -H "Authorization: Bearer $NACRE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "local-agent" }'
 ```
 
-The local mode carries exactly the service account's permissions. There is no
+The `key` in that response is the only time it exists outside your terminal —
+it is stored hashed, so it cannot be read back from the API, the database, or a
+backup. Lose it and you mint another. Then:
+
+```bash
+NACRE_SERVICE_KEY=nacre_sk_… npx @nacre.work/mcp
+```
+
+A new service account can reach nothing at all until you grant it something —
+it is a principal like any other, so give it `read` on a layer exactly as you
+would a user. The local mode carries exactly those permissions. There is no
 developer-convenience relaxation, and there will not be one.
+
+`DELETE /v1/service-accounts/{id}` revokes a key, and it stops working on the
+next request: unlike a token this credential has no expiry of its own, so
+revocation is the only thing that ever ends it.
 
 ## The one thing to get right before production
 

@@ -69,6 +69,16 @@ components:
         status:      { type: string, enum: [queued, parsing, embedding, indexed, failed] }
         progress:    { type: number }
         error:       { type: string }
+    ServiceAccount:
+      type: object
+      properties:
+        id:            { type: string, format: uuid }
+        name:          { type: string }
+        key_prefix:    { type: string, description: 'Not secret. Shown so two keys can be told apart.' }
+        key:           { type: string, description: 'Only on creation. Never returned again.' }
+        created_at:    { type: string, format: date-time }
+        last_used_at:  { type: [string, 'null'], format: date-time }
+        revoked_at:    { type: [string, 'null'], format: date-time }
     Grant:
       type: object
       required: [principal_type, principal_id, scope_type, scope_id, permission]
@@ -192,6 +202,46 @@ paths:
             docs/licensing.md. 400 rather than 404 because the caller is an
             administrator asking for a feature, not asking whether an object
             exists.
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /service-accounts:
+    get:
+      summary: >
+        Service accounts in the organization, with key prefixes and never keys.
+        Requires org_admin; anyone else gets 404.
+      responses:
+        '200': { description: The list }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+    post:
+      summary: >
+        Create a service account. The key is in this response and nowhere else,
+        ever again — it is stored hashed, so it cannot be recovered from the
+        database or from a backup.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '201':
+          description: Created. The only response that carries `key`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceAccount' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /service-accounts/{id}:
+    delete:
+      summary: >
+        Revoke. The key stops working on the next request — there is no TTL and
+        no propagation window, because unlike a token this credential has no
+        expiry of its own. The row is kept so the audit log's references resolve.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Revoked }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /jobs/{id}:
     get:

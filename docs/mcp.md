@@ -44,8 +44,18 @@ moving it later breaks every client's configuration at once.
 ## Local mode
 
 STDIO, for developer agents on a laptop. Authentication is a service account
-key from an environment variable. **Permissions are exactly the service
-account's** — local mode gets no relaxation of any kind.
+key from `NACRE_SERVICE_KEY`. **Permissions are exactly the service account's**
+— local mode gets no relaxation of any kind.
+
+The key is opaque, prefixed `nacre_sk_`, and stored only as a SHA-256 hash
+beside a non-secret prefix used for the lookup. It is returned once, when the
+account is created, and is not recoverable afterwards from the API, the
+database, or a backup. A service account carries the `member` role always;
+everything it can reach comes from a grant, which is what the sentence above
+has to mean if it means anything.
+
+Revocation takes effect on the next request. There is no TTL to wait out —
+that is the trade for a credential that does not expire on its own.
 
 ## Tools
 

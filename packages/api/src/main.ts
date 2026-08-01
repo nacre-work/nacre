@@ -22,6 +22,7 @@ import {
   PostgresJobs,
   PostgresLayers,
 } from './adapters.js'
+import { PostgresServiceAccounts, PostgresServiceKeys } from './service-keys.js'
 import { createApi } from './server.js'
 
 /**
@@ -93,7 +94,12 @@ async function main(): Promise<void> {
   registry.collect(collectDatabaseGauges(pool, metrics, APP_ROLE))
 
   const server = createApi({
-    verify: { key, issuer: config.jwtIssuer, audience: config.jwtAudience },
+    verify: {
+      key,
+      issuer: config.jwtIssuer,
+      audience: config.jwtAudience,
+      serviceKeys: new PostgresServiceKeys(pool, APP_ROLE),
+    },
     metrics: registry,
     documents: new PostgresDocuments(pool, APP_ROLE),
     search: new NacreSearchService({
@@ -109,6 +115,7 @@ async function main(): Promise<void> {
     jobs: new PostgresJobs(pool, APP_ROLE),
     layers: new PostgresLayers(pool, APP_ROLE),
     grants: new PostgresGrants(pool, APP_ROLE),
+    serviceAccounts: new PostgresServiceAccounts(pool, APP_ROLE),
   })
 
   const port = Number(process.env.PORT ?? 8080)
