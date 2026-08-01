@@ -236,17 +236,28 @@ implementation (`reference.ts`), effective principals (`principals.ts`), the
 pre-filter builder (`filter.ts`), and the implication table
 (`permissions.ts`).
 
-**13 of the 15 cases run**, against a real Postgres, a real Qdrant, and the
-HTTP surface over a real socket. T1–T10 and T13–T15, plus the full truth table
+**All 15 cases run**, against a real Postgres, a real Qdrant, and the HTTP
+surface over a real socket. T1–T10 and T13–T15, plus the full truth table
 checked against both implementations and a property-based comparison between
 them. `test-plan.ts` is the inventory, and `packages/core/authz/__tests__/coverage.test.ts`
 fails if a case is marked implemented without a test carrying its marker — so
 the list cannot drift in either direction. `pnpm authz:pending` prints what is
 outstanding, and the CI job prints it on green runs too.
 
-Outstanding: T11 needs Redis and the propagation job, T12 needs the reindex
-pipeline. Both are about *change* under load rather than about a single
-decision, which is why they come last.
+Nothing in the plan is outstanding. That makes `acl-invariants` a gate on what
+this document specifies — and only on that. A case nobody has thought to write
+down is still unguarded, and adding one here is how that changes.
+
+**T11 is satisfied more strongly than it asks.** The specification allows a
+revoked grant to be served for up to `ACL_PROPAGATION_SLA`; the effective
+principals cache is keyed on `organizations.groups_version`, which a database
+trigger increments on every membership change, so a revoked grant cannot be
+served at all. The stale entry is not invalidated — it is simply never asked
+for again, because the next request composes a different key. The TTL is a
+memory bound, not the correctness mechanism.
+
+`acl_tags` remains a cache the SLA does bound, which is why the layer filter
+and the tag filter both apply until a recomputation finishes.
 
 **T9 and T10 were the ones to weigh, and they now run.** They are what catches
 a post-filter: an implementation that fetches k results and removes the ones the

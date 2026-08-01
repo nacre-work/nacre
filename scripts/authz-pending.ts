@@ -20,7 +20,12 @@ const done = TEST_PLAN.length - outstanding.length
 console.log(`authz test plan: ${done}/${TEST_PLAN.length} implemented\n`)
 
 if (outstanding.length === 0) {
-  console.log('  all cases implemented')
+  console.log(
+    '  every case in the plan runs.\n\n' +
+      '  This job is now a gate on what docs/authz.md section 3.5 specifies.\n' +
+      '  It is not a gate on what nobody has thought to specify — adding a case\n' +
+      '  here is how that changes.',
+  )
 } else {
   for (const t of outstanding) {
     console.log(`  ${t.id}  [${t.group}]  ${t.scenario}`)
