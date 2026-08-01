@@ -63,6 +63,21 @@ const auth = async () => ({
   'content-type': 'application/json',
 })
 
+async function adminToken(): Promise<string> {
+  return new SignJWT({ org: ORG_A, principal_type: 'user', role: 'org_admin' })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setSubject('root')
+    .setIssuer(ISSUER)
+    .setAudience(AUDIENCE)
+    .setExpirationTime('5m')
+    .sign(SECRET)
+}
+
+const adminAuth = async () => ({
+  authorization: `Bearer ${await adminToken()}`,
+  'content-type': 'application/json',
+})
+
 describe('the administrative surface', () => {
   beforeAll(async () => {
     server = createApi({
@@ -94,6 +109,30 @@ describe('the administrative surface', () => {
                   kind: 'created' as const,
                   layer: { id: LAYER, slug: input.slug, name: input.name, workspaceId: WS_MINE },
                 },
+      },
+      serviceAccounts: {
+        list: async () => [
+          {
+            id: 'sa-1',
+            name: 'agent',
+            keyPrefix: 'nacre_sk_abcd1234',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastUsedAt: null,
+            revokedAt: null,
+          },
+        ],
+        create: async (_a, name) => ({
+          key: 'nacre_sk_abcd1234SECRETSECRETSECRET',
+          account: {
+            id: 'sa-2',
+            name,
+            keyPrefix: 'nacre_sk_abcd1234',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastUsedAt: null,
+            revokedAt: null,
+          },
+        }),
+        revoke: async (_a, id) => id === 'sa-1',
       },
       grants: {
         list: async () => [],
@@ -298,6 +337,83 @@ describe('the administrative surface', () => {
       })
       expect(res.status, JSON.stringify(body)).toBe(400)
     }
+  })
+
+  it('a member may not mint or revoke a service account', async () => {
+    // The fixture's token carries role 'member'. A service account is a
+    // principal in the organization rather than an object in a workspace, so
+    // there is no scope to check admin against — someone holding admin on one
+    // layer must not be able to mint a credential.
+    expect((await fetch(`${base}/v1/service-accounts`, { headers: await auth() })).status).toBe(404)
+
+    const created = await fetch(`${base}/v1/service-accounts`, {
+      method: 'POST',
+      headers: await auth(),
+      body: JSON.stringify({ name: 'agent' }),
+    })
+    expect(created.status).toBe(404)
+
+    const revoked = await fetch(`${base}/v1/service-accounts/sa-1`, {
+      method: 'DELETE',
+      headers: await auth(),
+    })
+    expect(revoked.status).toBe(404)
+  })
+
+  it('an org_admin creates a key, and it is in the response exactly once', async () => {
+    audited.length = 0
+    const res = await fetch(`${base}/v1/service-accounts`, {
+      method: 'POST',
+      headers: await adminAuth(),
+      body: JSON.stringify({ name: 'agent' }),
+    })
+
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { key?: string; key_prefix?: string }
+    expect(body.key).toBe('nacre_sk_abcd1234SECRETSECRETSECRET')
+
+    // The key must not reach the audit log. That row is readable by anyone with
+    // the access log, and the key is unrecoverable from anywhere else by
+    // design — writing it here would quietly undo that.
+    const event = audited.find((e) => e.action === 'create_service_account')
+    expect(event?.result).toBe('allow')
+    expect(JSON.stringify(event)).not.toContain('SECRETSECRETSECRET')
+    expect(event?.detail.key_prefix).toBe('nacre_sk_abcd1234')
+  })
+
+  it('listing never carries a key', async () => {
+    const res = await fetch(`${base}/v1/service-accounts`, { headers: await adminAuth() })
+    expect(res.status).toBe(200)
+
+    const text = await res.text()
+    expect(text).toContain('key_prefix')
+    // A listing that returned the key would make every operator's terminal
+    // history a credential store, and the whole point of hashing it is that it
+    // exists in exactly one response, once.
+    expect(JSON.parse(text) as { items: Record<string, unknown>[] }).toMatchObject({
+      items: [{ key_prefix: 'nacre_sk_abcd1234' }],
+    })
+    expect(text).not.toMatch(/"key"/)
+  })
+
+  it('revoking answers 204, and an unknown one 404', async () => {
+    expect(
+      (await fetch(`${base}/v1/service-accounts/sa-1`, { method: 'DELETE', headers: await adminAuth() }))
+        .status,
+    ).toBe(204)
+    expect(
+      (await fetch(`${base}/v1/service-accounts/sa-9`, { method: 'DELETE', headers: await adminAuth() }))
+        .status,
+    ).toBe(404)
+  })
+
+  it('a nameless service account is 400', async () => {
+    const res = await fetch(`${base}/v1/service-accounts`, {
+      method: 'POST',
+      headers: await adminAuth(),
+      body: JSON.stringify({ name: '   ' }),
+    })
+    expect(res.status).toBe(400)
   })
 
   it('the admin surface still refuses a body naming an organization', async () => {

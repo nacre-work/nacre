@@ -14,6 +14,16 @@ export interface VerifyOptions {
   readonly key: KeyObject | Uint8Array
   readonly issuer: string
   readonly audience: string
+  /**
+   * Resolves a service account key, when one is presented.
+   *
+   * Injected rather than imported so this module keeps no database of its own:
+   * the JWT path is pure and stays that way, and a surface with no service
+   * accounts simply does not pass this.
+   */
+  readonly serviceKeys?: {
+    resolve(key: string): Promise<AuthContext | undefined>
+  }
 }
 
 /**
@@ -97,6 +107,18 @@ export async function authenticate(
   const bearer = authorization?.startsWith('Bearer ') ? authorization.slice(7) : undefined
   if (bearer === undefined) {
     return unauthorized(instance, requestId, 'A bearer token is required.')
+  }
+
+  // A service account key is opaque and has nothing to verify locally, so it
+  // takes a different route — but only the route differs. It fails into the
+  // same 401 with the same wording as every JWT failure below, because
+  // "revoked key" and "wrong audience" and "expired" must be one answer.
+  if (bearer.startsWith('nacre_sk_')) {
+    if (options.serviceKeys === undefined) {
+      return unauthorized(instance, requestId, 'The token is not valid.')
+    }
+    const resolved = await options.serviceKeys.resolve(bearer)
+    return resolved ?? unauthorized(instance, requestId, 'The token is not valid.')
   }
 
   let claims: NacreClaims
