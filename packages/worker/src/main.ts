@@ -3,8 +3,18 @@ import { randomUUID } from 'node:crypto'
 import { QdrantClient } from '@qdrant/js-client-rest'
 import { ConfigError, createPool, loadConfig, withOrg } from '@nacre.work/core'
 
-import { claimStale, HttpParser, PostgresDocumentStore, QdrantVectorWriter, tagsForLayer } from './adapters.js'
+import {
+  claimPurgeable,
+  claimStale,
+  claimStranded,
+  HttpParser,
+  PostgresDocumentStore,
+  QdrantVectorWriter,
+  tagsForLayer,
+} from './adapters.js'
 import { ingest } from './ingest.js'
+import { collectOnce } from './collect.js'
+import { reapOnce } from './reap.js'
 import { retagOnce } from './retag.js'
 
 /**
@@ -20,11 +30,35 @@ import { retagOnce } from './retag.js'
 const APP_ROLE = 'nacre_app'
 const IDLE_MS = 2000
 
+// What a pass that only failed waits before the next one. A failing retag pass
+// used to skip the idle sleep along with the successful ones — the loop treated
+// "something happened" as "there is more to do" — so an unreachable vector store
+// turned the worker into a spin at full CPU, logging one line per attempt. The
+// cap is small on purpose: this backs off a broken dependency, it does not give
+// up on it, and propagation lag is accruing the whole time.
+const BACKOFF_MS = 2000
+const BACKOFF_MAX_MS = 30_000
+
 // The recomputation pass. Bounded because a revocation across a large layer can
 // touch every document in it, and an unbounded sweep would take the vector
 // store down at exactly the moment correctness depends on it being reachable.
 const RETAG_BATCH = 50
 const RETAG_CONCURRENCY = 4
+
+// Garbage collection. docs/architecture.md asks for "at least hourly", and this
+// runs far more often than that because it is cheap when there is nothing to do
+// — one indexed query returning no rows. The small batch is the point: nothing
+// waits on this finishing, and a sweep that deletes thousands of points at once
+// is trading search latency for a job with no deadline.
+const GC_BATCH = 20
+const GC_EVERY_MS = 60_000
+
+// Reclaiming abandoned claims. Runs on its own clock like collection, and more
+// often than it needs to: the query is one partial-index lookup that normally
+// returns nothing, and the thing it fixes is invisible until someone asks why a
+// document never indexed.
+const REAP_BATCH = 20
+const REAP_EVERY_MS = 60_000
 
 interface Claim {
   readonly orgId: string
@@ -72,7 +106,15 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
       return undefined
     }
 
-    await client.query(`UPDATE documents SET status = 'parsing', updated_at = now() WHERE id = $1`, [row.id])
+    // claimed_at starts the lease. Without it a worker that stops existing
+    // between here and the finish leaves this row in `parsing`, and nothing
+    // claims `parsing` — see reap.ts.
+    await client.query(
+      `UPDATE documents
+          SET status = 'parsing', claimed_at = now(), attempts = attempts + 1, updated_at = now()
+        WHERE id = $1`,
+      [row.id],
+    )
     await client.query('COMMIT')
 
     return {
@@ -104,8 +146,11 @@ async function markFailed(
     async (client) => {
       // The message, not the document. A parse failure that quotes the file
       // puts document contents in a column anyone with database access reads.
+      // The lease is released with the status. A failed row that keeps its
+      // claim would be reaped back into `pending` and retried, which is the
+      // opposite of what recording a failure means.
       await client.query(
-        `UPDATE documents SET status = 'failed', error = $3, updated_at = now()
+        `UPDATE documents SET status = 'failed', error = $3, claimed_at = NULL, updated_at = now()
           WHERE org_id = $1 AND id = $2`,
         [claim.orgId, claim.documentId, String(error).slice(0, 500)],
       )
@@ -151,6 +196,47 @@ async function main(): Promise<void> {
     },
   }
 
+  const collectPorts = {
+    claim: (limit: number, grace: number) => claimPurgeable(pool, limit, grace),
+    purge: vectors.purge.bind(vectors),
+    markPurged: documents.markPurged.bind(documents),
+    onError: (target: { documentId: string }, error: unknown) => {
+      console.error(
+        JSON.stringify({ msg: 'purge failed', document_id: target.documentId, error: String(error) }),
+      )
+    },
+  }
+
+  const reapPorts = {
+    claim: (limit: number, lease: number, max: number) => claimStranded(pool, limit, lease, max),
+    onReaped: (document: { documentId: string; heldSeconds: number; attempts: number }, outcome: string) => {
+      console.warn(
+        JSON.stringify({
+          msg: 'reclaimed an abandoned claim',
+          document_id: document.documentId,
+          held_seconds: Math.round(document.heldSeconds),
+          attempts: document.attempts,
+          outcome,
+        }),
+      )
+    },
+  }
+
+  // Not zero: a sweep on the first idle tick would run before the process has
+  // done anything, which is a destructive operation racing a cold start.
+  let lastCollect = Date.now()
+
+  // Zero, unlike collection. A worker starting up is very often a worker
+  // replacing one that died, and the documents that one abandoned are the first
+  // thing worth looking for. Reaping is also not destructive — the worst case
+  // is indexing a document twice, and ingest is idempotent.
+  let lastReap = 0
+
+  // Consecutive passes that did nothing but fail. Reset by any progress, so a
+  // single bad document among healthy ones never slows the loop down.
+  let barren = 0
+  const backoff = () => Math.min(BACKOFF_MS * 2 ** Math.min(barren, 5), BACKOFF_MAX_MS)
+
   let running = true
   const stop = (signal: string) => {
     console.log(JSON.stringify({ msg: 'draining', signal }))
@@ -172,6 +258,11 @@ async function main(): Promise<void> {
     }
 
     if (claim === undefined) {
+      // How long to wait at the bottom. A failing pass sets it higher; nothing
+      // below returns early on a failure, because an early return here is what
+      // let one unhealthy job hold the others hostage.
+      let wait = IDLE_MS
+
       // Indexing first, retagging in the gaps. A document nobody can find yet
       // is a worse outage than a permission cache a few seconds behind, and
       // the SLA the lag is measured against has room for the wait.
@@ -179,13 +270,75 @@ async function main(): Promise<void> {
         const pass = await retagOnce(retagPorts, RETAG_BATCH, RETAG_CONCURRENCY)
         if (pass.retagged > 0 || pass.failed > 0) {
           console.log(JSON.stringify({ msg: 'retagged', ...pass }))
+        }
+        // Only progress earns another immediate pass. A pass that retagged
+        // nothing and failed on everything will fail again in two milliseconds,
+        // and the claim it repeats is a query per attempt against every tenant.
+        if (pass.retagged > 0) {
+          barren = 0
           continue
+        }
+        if (pass.failed > 0) {
+          barren++
+          wait = backoff()
+        } else {
+          barren = 0
         }
       } catch (error) {
         console.error(JSON.stringify({ msg: 'retag pass failed', error: String(error) }))
+        barren++
+        wait = backoff()
       }
 
-      await new Promise((r) => setTimeout(r, IDLE_MS))
+      // Before collection, because this one puts work back into the queue and
+      // the loop is about to go to sleep for two seconds. Also on its own clock
+      // and never skipped by an unhealthy retag, for the same reason.
+      if (Date.now() - lastReap >= REAP_EVERY_MS) {
+        lastReap = Date.now()
+        try {
+          const reaped = await reapOnce(reapPorts, REAP_BATCH, config.indexLease, config.indexMaxAttempts)
+          if (reaped.requeued > 0) {
+            // Requeued documents are claimable right now, so go take one rather
+            // than sleeping first.
+            continue
+          }
+        } catch (error) {
+          console.error(JSON.stringify({ msg: 'reap pass failed', error: String(error) }))
+        }
+      }
+
+      // Rate-limited by its own clock rather than by the idle loop. Retagging
+      // affects what a query returns and should chase the backlog; collection
+      // only reclaims space, so running it every two seconds would be a query
+      // against every tenant's documents for no benefit.
+      //
+      // Reached whether or not retagging just failed, which it was not before:
+      // the retag branch returned early on failure, so a document whose
+      // collection no longer exists — one `Not Found` forever — meant the
+      // collector never ran again for as long as that row was in the queue.
+      // The two jobs share a loop, not a fate. A vector store that refuses
+      // setPayload can still accept a delete, and when it cannot, the sweep
+      // costs one indexed query that comes back empty.
+      if (Date.now() - lastCollect >= GC_EVERY_MS) {
+        lastCollect = Date.now()
+        try {
+          const swept = await collectOnce(collectPorts, GC_BATCH, config.gcGrace)
+          if (swept.purged > 0 || swept.failed > 0) {
+            console.log(JSON.stringify({ msg: 'collected', ...swept }))
+          }
+          // A full batch means the backlog is longer than one sweep, so the next
+          // one runs on the idle tick rather than a minute later. Anything less
+          // has drained the queue, and there is nothing to hurry back to.
+          if (swept.purged >= GC_BATCH) {
+            lastCollect = 0
+            continue
+          }
+        } catch (error) {
+          console.error(JSON.stringify({ msg: 'collect pass failed', error: String(error) }))
+        }
+      }
+
+      await new Promise((r) => setTimeout(r, wait))
       continue
     }
 
