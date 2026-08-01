@@ -106,12 +106,20 @@ post-filter.
 filter = {
   must:     [ {key: "org_id",   match: {value: org}},
               {key: "deleted",  match: {value: false}} ],
+  // At least one of these must match — that is what `should` means in Qdrant.
+  // Emit only the non-empty ones, and never an empty list: an empty `should`
+  // is no constraint at all, so the filter degrades to `must` and returns the
+  // whole collection.
   should:   [ {key: "layer_id", match: {any: plan.layers}},
               {key: "doc_id",   match: {any: plan.extra_docs}} ],
-  must_not: [ {key: "doc_id",   match: {any: plan.denied_docs}} ],
-  min_should: 1
+  must_not: [ {key: "doc_id",   match: {any: plan.denied_docs}} ]
 }
 ```
+
+> An earlier version of this sketch carried `min_should: 1` alongside `should`.
+> Qdrant has no scalar field of that name — `min_should` is an object,
+> `{ conditions, min_count }`, for the "at least N of these" case — and the API
+> rejects the query outright. Plain `should` already means at least one.
 
 ## Invariants
 

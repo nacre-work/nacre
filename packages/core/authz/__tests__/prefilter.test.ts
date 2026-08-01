@@ -71,13 +71,19 @@ describe('baseline · the pre-filter reaches every branch', () => {
     expect(query.limit).toBe(7)
   })
 
-  it('org_id and deleted are constraints, not scoring hints', () => {
+  it('org_id and deleted are unconditional, not one option among several', () => {
     const filter = buildFilter(ORG, scopedPlan())
-    // `must` is a constraint; `should` without min_should is a hint. Both
-    // clauses have to be in `must` or the filter matches the whole collection.
+    // Both belong in `must`. In `should` they would be satisfiable by any other
+    // clause matching, which for `deleted` means returning tombstoned documents.
     expect(filter.must).toContainEqual({ key: 'org_id', match: { value: ORG } })
     expect(filter.must).toContainEqual({ key: 'deleted', match: { value: false } })
-    expect(filter.min_should).toBe(1)
+  })
+
+  it('the should list is never empty', () => {
+    // An empty `should` is not "match nothing" — Qdrant drops the constraint,
+    // and the filter degrades to `must` alone.
+    const filter = buildFilter(ORG, scopedPlan())
+    expect(filter.should?.length ?? 0).toBeGreaterThan(0)
   })
 })
 

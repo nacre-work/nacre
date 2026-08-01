@@ -226,18 +226,31 @@ when('saturation · top_k returns k permitted results', () => {
     expect(() => VectorStore.assertTenant(ORG, hits)).not.toThrow()
   })
 
-  it('an empty layer set reaches nothing rather than everything', async () => {
-    // min_should: 1 with two empty `any` lists must match no point. Without it
-    // a Qdrant `should` is a scoring hint and the whole collection qualifies —
-    // the difference between "no access" and "all access" is this one field.
+  it('a plan reaching one document returns that document and nothing else', async () => {
+    const target = uuid('d0c', 3)
     const hits = await store.search({
       orgId: ORG,
       orgSlug: SLUG,
-      plan: planFor([]),
+      plan: { kind: 'scoped', layers: [], extraDocs: [target], deniedDocs: [] },
       branches: branches(0.4),
       topK: 10,
     })
 
-    expect(hits).toHaveLength(0)
+    expect(hits).toHaveLength(1)
+    expect(hits[0]?.payload.doc_id).toBe(target)
+  })
+
+  it('a denied document is excluded from inside an allowed layer', async () => {
+    const denied = uuid('d0c', 1)
+    const hits = await store.search({
+      orgId: ORG,
+      orgSlug: SLUG,
+      plan: { kind: 'scoped', layers: [ALLOWED], extraDocs: [], deniedDocs: [denied] },
+      branches: branches(0.6),
+      topK: 30,
+    })
+
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits.map((h) => h.payload.doc_id)).not.toContain(denied)
   })
 })
