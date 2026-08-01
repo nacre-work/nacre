@@ -1,9 +1,11 @@
 # Quickstart
 
-> **Nothing here runs yet.** The repository builds and its tests pass, but no
-> service is implemented — there is no `docker-compose.yml`, no API, and no MCP
-> server. This page describes the intended first run and exists so the shape is
-> agreed before the code arrives. Check
+> **This does not run end to end yet.** The compose file is real and its three
+> profiles are validated in CI; the API and MCP transports, the permission
+> model, and the ingest pipeline are implemented and tested. What is missing is
+> the wiring between them — the adapters behind the storage ports, the embedder
+> client, and the parser sidecar's body. Commands below are the intended shape,
+> not a working transcript. Check
 > [the issue tracker](https://github.com/nacre-work/nacre/issues) for where
 > things actually stand.
 

@@ -25,6 +25,11 @@ jobs:
       # The OpenAPI document is the contract and runs ahead of the code, so it
       # has nothing but this check keeping it honest.
       - run: pnpm lint:openapi
+      # The compose file is the distribution. It pins what each profile
+      # contains, because Compose accepts an unknown profile name silently and
+      # hands back the unprofiled services — so a typo starts a working stack
+      # and nobody notices.
+      - run: pnpm lint:compose
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test:unit

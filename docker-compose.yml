@@ -1,0 +1,146 @@
+# Nacre — the three deployment profiles from docs/config.md.
+#
+#   minimal    api, worker, postgres, qdrant, redis, parser.
+#              Embeddings come from an endpoint you name. Runs on a laptop.
+#   full       plus minio, an embedder, and a reranker. The typical install.
+#   airgapped  everything local, zero outbound traffic, local OIDC.
+#
+# Services with no `profiles` key belong to every profile — that is how Compose
+# works, and it is why the core six are unmarked rather than listed three times.
+#
+#   docker compose --profile minimal up -d
+#
+# Nothing here carries a real credential. Values come from .env, and in
+# production the secret-bearing ones are references into a secret store; see
+# docs/config.md, which also explains why NACRE_PG_URL must not name a
+# superuser.
+
+name: nacre
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  restart: unless-stopped
+  # Optional so a fresh clone resolves without copying .env first, and so CI
+  # can validate the file. Values still come from .env when it exists, and from
+  # the environment otherwise.
+  env_file:
+    - path: .env
+      required: false
+  depends_on:
+    postgres: { condition: service_healthy }
+    qdrant: { condition: service_started }
+    redis: { condition: service_healthy }
+
+services:
+  api:
+    <<: *app
+    command: ["node", "packages/api/dist/index.js"]
+    ports: ["8080:8080"]
+    environment:
+      PORT: 8080
+
+  mcp:
+    <<: *app
+    command: ["node", "packages/mcp/dist/index.js"]
+    ports: ["8081:8081"]
+    environment:
+      PORT: 8081
+
+  worker:
+    <<: *app
+    command: ["node", "packages/worker/dist/index.js"]
+    # No ports. The worker talks outward only.
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nacre
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nacre}
+      POSTGRES_DB: nacre
+    volumes: ["postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nacre -d nacre"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.1
+    restart: unless-stopped
+    volumes: ["qdrant:/qdrant/storage"]
+    # Not published by default. The vector store holds every embedding in the
+    # installation and has no per-tenant authorization of its own — reaching it
+    # directly bypasses the entire permission model.
+    expose: ["6333"]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1"]
+    volumes: ["redis:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  parser:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.parser
+    restart: unless-stopped
+    expose: ["8090"]
+
+  # ─────────────────────────── full ───────────────────────────
+
+  minio:
+    profiles: [full]
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${NACRE_S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${NACRE_S3_SECRET_KEY:-minioadmin}
+    volumes: ["minio:/data"]
+    expose: ["9000"]
+    # AGPLv3, which is why it is here and not in minimal. The default is an
+    # external S3-compatible endpoint; see docs/licensing.md before making this
+    # part of the standard install.
+
+  embedder:
+    profiles: [full, airgapped]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    restart: unless-stopped
+    command: ["--model-id", "BAAI/bge-m3"]
+    volumes: ["models:/data"]
+    expose: ["80"]
+
+  reranker:
+    profiles: [full, airgapped]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    restart: unless-stopped
+    command: ["--model-id", "BAAI/bge-reranker-base"]
+    volumes: ["models:/data"]
+    expose: ["80"]
+
+  # ───────────────────────── airgapped ─────────────────────────
+
+  keycloak:
+    profiles: [airgapped]
+    image: quay.io/keycloak/keycloak:26.0
+    restart: unless-stopped
+    command: ["start-dev"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_PASSWORD:-admin}
+    expose: ["8080"]
+
+volumes:
+  postgres:
+  qdrant:
+  redis:
+  minio:
+  models:
