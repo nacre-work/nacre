@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { ConfigError, loadConfig } from '@nacre.work/core'
 
 import { buildServices, jwtKey } from './services.js'
