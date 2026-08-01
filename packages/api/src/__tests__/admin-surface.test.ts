@@ -44,6 +44,7 @@ async function answerOnly(r: Response): Promise<Omit<ProblemBody, 'instance' | '
 
 const audited: AuditEvent[] = []
 const issued: GrantInput[] = []
+const revoked: string[] = []
 
 let server: Server
 let base: string
@@ -140,6 +141,11 @@ describe('the administrative surface', () => {
           if (input.scopeId !== LAYER) return undefined
           issued.push(input)
           return { ...input, id: 'grant-1', effect: 'allow', source: 'api' }
+        },
+        revoke: async (_a, id) => {
+          if (id !== 'grant-1') return false
+          revoked.push(id)
+          return true
         },
       },
     })
@@ -322,6 +328,41 @@ describe('the administrative surface', () => {
       }),
     })
     expect(res.status).toBe(201)
+  })
+
+  it('a grant can be withdrawn', async () => {
+    const res = await fetch(`${base}/v1/grants/grant-1`, { method: 'DELETE', headers: await auth() })
+
+    // 204 and no body. This is the operation the propagation SLA is written
+    // about, and until this endpoint existed the only way to perform it was a
+    // DELETE against the table by hand.
+    expect(res.status).toBe(204)
+    expect(revoked).toEqual(['grant-1'])
+  })
+
+  it('withdrawing a grant that is not there, or not the caller’s to touch, is 404', async () => {
+    const res = await fetch(`${base}/v1/grants/grant-nope`, { method: 'DELETE', headers: await auth() })
+
+    // Not 403. An administrator of one layer must not be able to tell an absent
+    // grant from one on a scope they cannot administer — that difference is an
+    // enumeration of the organization's grants.
+    expect(res.status).toBe(404)
+    expect(await answerOnly(res)).toEqual({
+      type: 'https://nacre.work/errors/not-found',
+      title: 'Not found',
+      status: 404,
+      detail: 'The requested resource does not exist or is not accessible.',
+    })
+  })
+
+  it('the refused revocation is audited too', async () => {
+    await fetch(`${base}/v1/grants/grant-nope`, { method: 'DELETE', headers: await auth() })
+
+    // An attempt to revoke someone else's grant is exactly what a refused one
+    // looks like, and it is the row an auditor asks for.
+    const attempt = audited.filter((e) => e.action === 'revoke_grant' && e.result === 'deny')
+    expect(attempt.length).toBeGreaterThan(0)
+    expect(attempt.at(-1)?.detail).toMatchObject({ grant_id: 'grant-nope' })
   })
 
   it('an unknown permission or principal type is 400', async () => {

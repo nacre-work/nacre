@@ -792,4 +792,58 @@ export class PostgresGrants implements Grants {
       this.scope,
     )
   }
+
+  /**
+   * Withdraw a grant.
+   *
+   * A real DELETE, not an effect flip. Setting `effect = 'deny'` would look
+   * equivalent and is not: a deny is a commercial capability this build refuses
+   * to issue, and it beats an allow at any depth — so a "revocation" written
+   * that way would also suppress a grant the principal holds through a group or
+   * a parent scope. Removing the row leaves whatever else they were given.
+   *
+   * Admin on the grant's own scope, resolved from the row rather than from
+   * anything the caller sent. Reading the scope first and checking it after is
+   * the only order that works: the caller names an id, and the permission
+   * question is about what that id points at.
+   */
+  async revoke(auth: AuthContext, grantId: string): Promise<boolean> {
+    if (!/^[0-9a-f-]{36}$/i.test(grantId)) return false
+
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const { rows } = await client.query<{ scope_type: string; scope_id: string }>(
+          `SELECT scope_type, scope_id FROM grants WHERE org_id = $1 AND id = $2`,
+          [auth.orgId, grantId],
+        )
+
+        const row = rows[0]
+        // Absent, another organization's, and one whose scope this caller
+        // cannot administer all answer the same. Rule 4 does not stop applying
+        // because the object is a grant rather than a document.
+        if (row === undefined) return false
+
+        const context = await contextFor(client, auth)
+        const scope = {
+          type: row.scope_type as 'workspace' | 'layer' | 'document',
+          id: row.scope_id,
+        }
+        if (!referenceAllows(context, scope, 'admin')) return false
+
+        const result = await client.query(`DELETE FROM grants WHERE org_id = $1 AND id = $2`, [
+          auth.orgId,
+          grantId,
+        ])
+
+        // The trigger on `grants` bumps groups_version, which is what makes the
+        // worker recompute the payload tags and what the propagation gauge then
+        // measures. Nothing here has to do that by hand, and nothing here
+        // should: a second place that bumps it is a second place to forget.
+        return (result.rowCount ?? 0) > 0
+      },
+      this.scope,
+    )
+  }
 }

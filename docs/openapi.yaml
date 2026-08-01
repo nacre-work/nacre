@@ -118,7 +118,12 @@ paths:
               schema:
                 type: object
                 properties:
-                  hits: { type: array, items: { $ref: '#/components/schemas/SearchHit' } }
+                  # `items`, not `hits`. Every collection response in this API
+                  # uses the same key, this one included, and the document said
+                  # `hits` while the server sent `items` — a contract that
+                  # disagrees with the code is worse than no contract, because
+                  # a client written against it compiles and returns nothing.
+                  items: { type: array, items: { $ref: '#/components/schemas/SearchHit' } }
         '429': { description: Rate limit exceeded }
   /documents:
     post:
@@ -202,6 +207,26 @@ paths:
             docs/licensing.md. 400 rather than 404 because the caller is an
             administrator asking for a feature, not asking whether an object
             exists.
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /grants/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      summary: >
+        Withdraw a grant. Requires admin on that grant's own scope, resolved
+        from the stored row rather than from anything the caller sends.
+      description: >
+        A removal, not an effect flip. Writing effect 'deny' would look
+        equivalent and is not: a deny beats an allow at any depth, so it would
+        also suppress access the principal holds through a group or a parent
+        scope, and deny is a commercial capability this build does not issue.
+        The change is reflected in results within ACL_PROPAGATION_SLA, which is
+        what nacre_acl_propagation_lag_seconds measures.
+      responses:
+        '204': { description: Withdrawn }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /service-accounts:
     get:

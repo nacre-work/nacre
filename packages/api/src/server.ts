@@ -141,6 +141,16 @@ export interface Grants {
   list(auth: AuthContext): Promise<readonly GrantRecord[]>
   /** `undefined` when the caller may not administer the scope, or it does not exist. */
   issue(auth: AuthContext, input: GrantInput): Promise<GrantRecord | undefined>
+  /**
+   * Withdraw a grant. `false` when it is absent, in another organization, or on
+   * a scope this caller may not administer — one answer for all three.
+   *
+   * This is the operation `nacre_acl_propagation_lag_seconds` measures and the
+   * one docs/authz.md builds its SLA around, and there was no way to perform it
+   * through the API at all. Three documents described revocation; the only
+   * implementation was a DELETE against the table by hand.
+   */
+  revoke(auth: AuthContext, grantId: string): Promise<boolean>
 }
 
 export interface ServiceAccountView {
@@ -650,6 +660,36 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       return
     }
 
+    const grantMatch = /^\/v1\/grants\/([^/]+)$/.exec(instance)
+    if (req.method === 'DELETE' && grantMatch && options.grants !== undefined) {
+      const id = decodeURIComponent(grantMatch[1] as string)
+      const revoked = await options.grants.revoke(auth, id)
+
+      // Written before the response either way. A revocation nobody can prove
+      // happened is not a revocation an auditor will accept, and a *refused*
+      // one is what an attempt to revoke someone else's grant looks like.
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'revoke_grant',
+        result: revoked ? 'allow' : 'deny',
+        detail: { grant_id: id },
+        requestId,
+      })
+
+      if (!revoked) {
+        // 404 for absent, for another organization's, and for one whose scope
+        // this caller cannot administer. Distinguishing them would let an
+        // administrator of one layer enumerate grants across the organization.
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      send(res, 204, null, requestId)
+      return
+    }
+
     if (instance === '/v1/service-accounts' && options.serviceAccounts !== undefined) {
       // org_admin, not "admin on some scope". A service account is a principal
       // in the organization rather than an object inside a workspace, and there
@@ -726,17 +766,47 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
     const problem = notFound(instance, requestId)
     send(res, problem.status, problem.toJSON(), requestId)
-  } catch {
+  } catch (error) {
+    // The 500 body says "whatever went wrong is in the journal under this
+    // request_id", and until this line nothing wrote it there: the error was
+    // discarded by a bare `catch`, and the audit row carried an empty detail.
+    // A caller reporting a 500 with a request id had nothing to be joined to.
+    //
+    // The message, not the request. A handler failure can carry a query string
+    // or a document body in its cause, and neither belongs in a log — see the
+    // list in CLAUDE.md. `String(error)` is the class and the message; the
+    // stack goes with it because that is what names the line.
+    console.error(
+      JSON.stringify({
+        msg: 'request failed',
+        request_id: requestId,
+        method: req.method,
+        instance,
+        org_id: auth.orgId,
+        error: String(error).slice(0, 500),
+        stack: error instanceof Error ? error.stack?.split('\n').slice(0, 6).join('\n') : undefined,
+      }),
+    )
+
     await options.audit
       .write({
         orgId: auth.orgId,
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: instance,
         result: 'error',
-        detail: {},
+        // The class alone. An audit row is read by more people than a log line
+        // and is retained far longer, so it says what kind of failure it was
+        // and points at the log for the rest.
+        detail: { error: error instanceof Error ? error.name : 'unknown' },
         requestId,
       })
-      .catch(() => {})
+      .catch((cause: unknown) => {
+        // Losing the audit row of a failed request is itself worth a line.
+        console.error(
+          JSON.stringify({ msg: 'audit write failed', request_id: requestId, error: String(cause) }),
+        )
+      })
+
     const problem = internal(instance, requestId)
     send(res, problem.status, problem.toJSON(), requestId)
   }
