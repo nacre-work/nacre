@@ -35,11 +35,27 @@ const SLUG = 'satcheck'
 const VECTOR = 'v_test_4'
 const DIM = 4
 
+/**
+ * Real UUIDs, because the payload indexes say `uuid` and Qdrant enforces it —
+ * a readable id like `layer-00` is rejected on upsert. Generated from a counter
+ * so a failure names something reproducible.
+ */
+const uuid = (prefix: string, n: number): string =>
+  `${prefix.padEnd(8, '0')}-0000-4000-8000-${String(n).padStart(12, '0')}`
+
 /** 20 layers, per T9. Layer 0 is the one the caller may read. */
-const LAYERS = Array.from({ length: 20 }, (_, i) => `layer-${String(i).padStart(2, '0')}`)
+const LAYERS = Array.from({ length: 20 }, (_, i) => uuid('1a1e5', i))
 const ALLOWED = LAYERS[0] as string
 /** A second allowed layer holding exactly five documents, per T10. */
-const SMALL = 'layer-small'
+const SMALL = uuid('5ma11', 0)
+
+const TOMBSTONED = uuid('70m85', 0)
+
+/** The client reports every rejection as `Bad Request`; the detail is in .data. */
+function explain(cause: unknown): string {
+  const data = (cause as { data?: unknown } | null)?.data
+  return data === undefined ? String(cause) : `${String(cause)} — ${JSON.stringify(data)}`
+}
 
 let client: QdrantClient
 let store: VectorStore
@@ -65,13 +81,22 @@ when('saturation · top_k returns k permitted results', () => {
     await client.deleteCollection(name).catch(() => {
       // Absent is the expected state on a fresh runner.
     })
-    await client.createCollection(name, collectionConfig(VECTOR, DIM) as never)
+    try {
+      await client.createCollection(name, collectionConfig(VECTOR, DIM) as never)
+    } catch (cause) {
+      throw new Error(`createCollection rejected: ${explain(cause)}`, { cause })
+    }
+
     for (const index of PAYLOAD_INDEXES) {
-      await client.createPayloadIndex(name, {
-        field_name: index.field_name,
-        field_schema: index.field_schema as never,
-        wait: true,
-      })
+      try {
+        await client.createPayloadIndex(name, {
+          field_name: index.field_name,
+          field_schema: index.field_schema as never,
+          wait: true,
+        })
+      } catch (cause) {
+        throw new Error(`payload index ${index.field_name} rejected: ${explain(cause)}`, { cause })
+      }
     }
 
     const points: unknown[] = []
@@ -90,7 +115,7 @@ when('saturation · top_k returns k permitted results', () => {
           payload: {
             org_id: ORG,
             layer_id: layer,
-            doc_id: `${layer}-doc-${d}`,
+            doc_id: uuid('d0c', d + 1000 * LAYERS.indexOf(layer)),
             deleted: false,
           },
         })
@@ -105,7 +130,7 @@ when('saturation · top_k returns k permitted results', () => {
           [VECTOR]: [Math.random(), Math.random(), Math.random(), 1],
           bm25: { indices: [1, 2], values: [Math.random(), Math.random()] },
         },
-        payload: { org_id: ORG, layer_id: SMALL, doc_id: `${SMALL}-doc-${d}`, deleted: false },
+        payload: { org_id: ORG, layer_id: SMALL, doc_id: uuid('5d0c', d), deleted: false },
       })
     }
 
@@ -116,10 +141,14 @@ when('saturation · top_k returns k permitted results', () => {
         [VECTOR]: [1, 1, 1, 1],
         bm25: { indices: [1, 2], values: [1, 1] },
       },
-      payload: { org_id: ORG, layer_id: ALLOWED, doc_id: 'tombstoned', deleted: true },
+      payload: { org_id: ORG, layer_id: ALLOWED, doc_id: TOMBSTONED, deleted: true },
     })
 
-    await client.upsert(name, { wait: true, points: points as never })
+    try {
+      await client.upsert(name, { wait: true, points: points as never })
+    } catch (cause) {
+      throw new Error(`upsert rejected: ${explain(cause)}`, { cause })
+    }
   }, 120_000)
 
   afterAll(async () => {
@@ -183,7 +212,7 @@ when('saturation · top_k returns k permitted results', () => {
       topK: 30,
     })
 
-    expect(hits.map((h) => h.payload.doc_id)).not.toContain('tombstoned')
+    expect(hits.map((h) => h.payload.doc_id)).not.toContain(TOMBSTONED)
   })
 
   it('the tenant check passes on results that came through the filter', async () => {
