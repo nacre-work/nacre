@@ -27,5 +27,8 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "dependencies": {
+    "pg": "^8.22.0"
+  }
 }

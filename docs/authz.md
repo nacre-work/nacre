@@ -185,6 +185,25 @@ straight from the rules above. At least 10 000 cases in the nightly build.
 correct: when the optimized `resolve.ts` drifts, the property test catches the
 drift. An optimized reference just agrees with the bug.
 
+## The second line of defense
+
+Every table carrying `org_id` has a row-level security policy keyed on
+`app.current_org`, set per transaction by `withOrg`. The application filters by
+organization anyway, and invariant I1 is re-checked at serialization; RLS is
+there so that one forgotten `WHERE` returns nothing rather than another
+tenant's rows.
+
+Two details decide whether it works at all:
+
+- **`FORCE ROW LEVEL SECURITY`, not just `ENABLE`.** Policies do not apply to
+  the role that owns the tables, and migrations run as the owner. Until
+  migration 0002 this schema had policies that were enabled and inert.
+- **The application must not connect as a superuser.** Superusers bypass RLS
+  whatever the tables say.
+
+There is an integration test for each of those, and a test that no table is
+left enabled-but-not-forced.
+
 ## Denormalization into the vector payload
 
 Each chunk's payload carries `acl_tags`: hashes of the principals allowed to

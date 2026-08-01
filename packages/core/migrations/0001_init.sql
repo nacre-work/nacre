@@ -14,9 +14,9 @@ CREATE TABLE organizations (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     slug                citext UNIQUE NOT NULL,
     name                text NOT NULL,
-    vector_collection   text NOT NULL,          one Qdrant collection per organization
+    vector_collection   text NOT NULL,          -- one Qdrant collection per organization
     quotas              jsonb NOT NULL DEFAULT '{}'::jsonb,
-    groups_version      bigint NOT NULL DEFAULT 1,  permission cache invalidation
+    groups_version      bigint NOT NULL DEFAULT 1,  -- permission cache invalidation
     created_at          timestamptz NOT NULL DEFAULT now(),
     deleted_at          timestamptz
 );
@@ -34,11 +34,11 @@ CREATE TABLE sso_configs (
 CREATE TABLE users (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id       uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    external_id  text,                          sub from the IdP
+    external_id  text,                          -- sub from the IdP
     email        citext NOT NULL,
     role         text NOT NULL DEFAULT 'member'
                  CHECK (role IN ('platform_admin','org_admin','workspace_admin','member')),
-    password_hash text,                         NULL when SSO-only
+    password_hash text,                         -- NULL when SSO-only
     disabled_at  timestamptz,
     created_at   timestamptz NOT NULL DEFAULT now(),
     UNIQUE (org_id, email),
@@ -68,7 +68,7 @@ CREATE TABLE service_accounts (
     org_id        uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name          text NOT NULL,
     key_hash      text NOT NULL,
-    key_prefix    text NOT NULL,                first 8 characters, for display only
+    key_prefix    text NOT NULL,                -- first 8 characters, for display only
     last_used_at  timestamptz,
     revoked_at    timestamptz,
     created_at    timestamptz NOT NULL DEFAULT now(),
@@ -80,12 +80,12 @@ CREATE INDEX ON service_accounts (key_prefix) WHERE revoked_at IS NULL;
 
 CREATE TABLE embedding_providers (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id      uuid REFERENCES organizations(id) ON DELETE CASCADE,  NULL = global default
+    org_id      uuid REFERENCES organizations(id) ON DELETE CASCADE,  -- NULL = global default
     name        text NOT NULL,
-    endpoint    text NOT NULL,                  OpenAI-compatible URL
+    endpoint    text NOT NULL,                  -- OpenAI-compatible URL
     model       text NOT NULL,
     dimensions  int  NOT NULL,
-    credentials_ref text,                       a reference into the secret store, never the secret
+    credentials_ref text,                       -- a reference into the secret store, never the secret
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
@@ -109,7 +109,7 @@ CREATE TABLE layers (
     -- from, so it is user-facing copy, not an internal note.
     description   text NOT NULL DEFAULT '',
     provider_id   uuid NOT NULL REFERENCES embedding_providers(id),
-    vector_name   text NOT NULL,                named vector inside the collection
+    vector_name   text NOT NULL,                -- named vector inside the collection
     chunk_config  jsonb NOT NULL DEFAULT '{"size":800,"overlap":120,"strategy":"recursive"}'::jsonb,
     reindex_state jsonb,                        -- {"status":"running","shadow_vector":"v2",...}
     created_at    timestamptz NOT NULL DEFAULT now(),
@@ -121,7 +121,7 @@ CREATE TABLE documents (
     id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id        uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     layer_id      uuid NOT NULL REFERENCES layers(id) ON DELETE CASCADE,
-    external_id   text,                         client-side idempotency key
+    external_id   text,                         -- client-side idempotency key
     source_type   text NOT NULL CHECK (source_type IN ('s3','url','external_id','inline')),
     source_ref    text,
     title         text,
@@ -132,7 +132,7 @@ CREATE TABLE documents (
     error         text,
     metadata      jsonb NOT NULL DEFAULT '{}'::jsonb,
     chunk_count   int NOT NULL DEFAULT 0,
-    deleted_at    timestamptz,                  tombstone; GC clears the vectors
+    deleted_at    timestamptz,                  -- tombstone; GC clears the vectors
     vectors_purged_at timestamptz,
     created_at    timestamptz NOT NULL DEFAULT now(),
     updated_at    timestamptz NOT NULL DEFAULT now(),
@@ -153,7 +153,7 @@ CREATE TABLE chunks (
     ordinal       int  NOT NULL,
     text          text NOT NULL,
     token_count   int,
-    point_id      uuid NOT NULL,                point id in Qdrant
+    point_id      uuid NOT NULL,                -- point id in Qdrant
     UNIQUE (document_id, ordinal)
 );
 
@@ -189,7 +189,7 @@ CREATE TABLE audit_events (
     actor_label text NOT NULL,
     action      text NOT NULL,
     surface     text NOT NULL CHECK (surface IN ('api','mcp','admin','system')),
-    client      text,                           MCP client name from _meta
+    client      text,                           -- MCP client name from _meta
     target      jsonb NOT NULL,
     result      text NOT NULL CHECK (result IN ('allow','deny','error')),
     detail      jsonb NOT NULL DEFAULT '{}'::jsonb,

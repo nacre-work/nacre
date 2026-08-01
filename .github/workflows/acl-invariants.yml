@@ -30,6 +30,19 @@ jobs:
   acl-invariants:
     name: acl-invariants
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_PASSWORD: test, POSTGRES_DB: nacre_test }
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+        ports: ["5432:5432"]
+    env:
+      # The integration tests refuse to skip when CI is set — a tenant-isolation
+      # test that turns itself off because a variable is missing is the failure
+      # mode this whole job exists to avoid.
+      NACRE_PG_URL: postgres://postgres:test@localhost:5432/nacre_test
     steps:
       - uses: actions/checkout@v4
       # No version here: pnpm/action-setup refuses to run when the version is
@@ -39,6 +52,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      - run: pnpm migrate
 
       # Split by group so a leak reads as "T3 failed" in the checks list rather
       # than as one number among fifty. The selector is `-t`, an alias of

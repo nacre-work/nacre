@@ -61,6 +61,12 @@ NACRE_AUDIT_QUERY_TEXT=false           # true stores query text verbatim
 NACRE_AUDIT_SIEM_WEBHOOK=
 ```
 
+**`NACRE_PG_URL` must not name a superuser, and should not name the role that
+owns the tables.** Row-level security does not apply to a superuser at all, and
+applies to the owner only where the table is forced. Connecting as either turns
+the tenant-isolation policies into decoration. Migrations run as the owner;
+the application runs as `nacre_app`.
+
 **The application validates the whole configuration at startup and exits if
 anything required is missing or contradictory.** Silent defaults for secrets and
 URLs are not allowed — a default that quietly points at localhost is how a
