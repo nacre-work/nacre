@@ -5,6 +5,7 @@ import {
   loadGrants,
   loadScopeTree,
   PostgresGroupGraph,
+  referenceAllows,
   resolve,
   VectorStore,
   withOrg,
@@ -18,9 +19,16 @@ import type {
   AuditEvent,
   AuditSink,
   Documents,
+  GrantInput,
+  GrantRecord,
+  Grants,
   Ingest,
   IngestOutcome,
   IngestRequest,
+  Job,
+  Jobs,
+  Layer,
+  Layers,
   SearchService,
 } from './server.js'
 import type { AuthContext } from './auth.js'
@@ -363,6 +371,320 @@ export class NacreIngest implements Ingest {
           [auth.orgId, documentId],
         )
         return true
+      },
+      this.scope,
+    )
+  }
+}
+
+/**
+ * Ingest job status.
+ *
+ * The job id is the document id — ingest writes a row and the worker moves its
+ * status, so there is no separate job table to drift out of step with it. That
+ * also means the visibility rule is the document's: absent and another
+ * organization's answer identically.
+ */
+export class PostgresJobs implements Jobs {
+  constructor(
+    private readonly pool: Pool,
+    private readonly role?: string,
+  ) {}
+
+  async read(orgId: string, jobId: string): Promise<Job | undefined> {
+    if (!/^[0-9a-f-]{36}$/i.test(jobId)) return undefined
+
+    return withOrg(
+      this.pool,
+      orgId,
+      async (client) => {
+        const { rows } = await client.query<{
+          id: string
+          status: string
+          error: string | null
+          chunk_count: number
+        }>(
+          `SELECT id, status, error, chunk_count FROM documents
+            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+          [orgId, jobId],
+        )
+
+        const row = rows[0]
+        if (row === undefined) return undefined
+
+        const status = (
+          ['queued', 'parsing', 'embedding', 'indexed', 'failed'].includes(row.status)
+            ? row.status
+            : row.status === 'pending'
+              ? 'queued'
+              : 'queued'
+        ) as Job['status']
+
+        // Coarse on purpose. A percentage that moves smoothly would have to be
+        // written by the pipeline on every chunk, which is a write per chunk to
+        // make a progress bar prettier.
+        const progress = status === 'indexed' ? 1 : status === 'failed' ? 0 : 0.5
+
+        return {
+          jobId: row.id,
+          documentId: row.id,
+          status,
+          progress,
+          ...(row.error === null ? {} : { error: row.error }),
+        }
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+}
+
+/** The per-request permission context, loaded once and asked several questions. */
+async function contextFor(
+  client: import('pg').PoolClient,
+  auth: AuthContext,
+): Promise<{
+  orgId: string
+  role: AuthContext['role']
+  principals: ReadonlySet<import('@nacre.work/core').PrincipalRef>
+  grants: readonly import('@nacre.work/core').Grant[]
+  tree: import('@nacre.work/core').ScopeTree
+}> {
+  const graph = await PostgresGroupGraph.load(client, auth.orgId)
+  const principals = effectivePrincipals(auth.principal, graph)
+  const grants = await loadGrants(client, auth.orgId, principals)
+  const tree = await loadScopeTree(
+    client,
+    auth.orgId,
+    grants.filter((g) => g.scope.type === 'document').map((g) => g.scope.id),
+  )
+  return { orgId: auth.orgId, role: auth.role, principals, grants, tree }
+}
+
+export class PostgresLayers implements Layers {
+  constructor(
+    private readonly pool: Pool,
+    private readonly role?: string,
+  ) {}
+
+  private get scope() {
+    return this.role === undefined ? {} : { role: this.role }
+  }
+
+  /**
+   * The layers this caller may read.
+   *
+   * Narrowed by the plan in SQL rather than fetched and filtered afterwards.
+   * This is a listing rather than a search, so a post-filter here would not
+   * break invariant I2 — but writing it the other way keeps one habit for both
+   * and removes the question of which endpoints are allowed to be sloppy.
+   */
+  async list(auth: AuthContext): Promise<readonly Layer[]> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const plan = resolve(await contextFor(client, auth), 'read')
+        if (plan.kind === 'none') return []
+
+        const { rows } =
+          plan.kind === 'all'
+            ? await client.query<{ id: string; slug: string; name: string; workspace_id: string }>(
+                `SELECT id, slug, name, workspace_id FROM layers
+                  WHERE org_id = $1 AND deleted_at IS NULL ORDER BY slug`,
+                [auth.orgId],
+              )
+            : await client.query<{ id: string; slug: string; name: string; workspace_id: string }>(
+                `SELECT id, slug, name, workspace_id FROM layers
+                  WHERE org_id = $1 AND deleted_at IS NULL AND id = ANY($2::uuid[])
+                  ORDER BY slug`,
+                [auth.orgId, [...plan.layers]],
+              )
+
+        return rows.map((r) => ({
+          id: r.id,
+          slug: r.slug,
+          name: r.name,
+          workspaceId: r.workspace_id,
+        }))
+      },
+      this.scope,
+    )
+  }
+
+  async create(
+    auth: AuthContext,
+    input: { workspaceId: string; slug: string; name: string },
+  ): Promise<Layer | undefined> {
+    if (!/^[0-9a-f-]{36}$/i.test(input.workspaceId)) return undefined
+
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const context = await contextFor(client, auth)
+
+        // `referenceAllows` and not `resolve`: the question is "may they
+        // administer this one workspace", which is what the reference answers
+        // directly. Reading it out of a flattened plan would mean inferring a
+        // workspace permission from the layers it happens to contain — and an
+        // empty workspace contains none.
+        if (!referenceAllows(context, { type: 'workspace', id: input.workspaceId }, 'admin')) {
+          return undefined
+        }
+
+        // Checked after the permission, so a caller who may not administer the
+        // workspace gets the same answer whether or not it exists.
+        const { rows: workspaces } = await client.query<{ id: string }>(
+          `SELECT id FROM workspaces WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+          [auth.orgId, input.workspaceId],
+        )
+        if (workspaces[0] === undefined) return undefined
+
+        const { rows: providers } = await client.query<{ id: string }>(
+          `SELECT id FROM embedding_providers
+            WHERE org_id = $1 OR org_id IS NULL ORDER BY org_id NULLS LAST LIMIT 1`,
+          [auth.orgId],
+        )
+        const providerId = providers[0]?.id
+        if (providerId === undefined) {
+          throw new Error('no embedding provider is configured; a layer cannot be created without one')
+        }
+
+        const { rows } = await client.query<{
+          id: string
+          slug: string
+          name: string
+          workspace_id: string
+        }>(
+          `INSERT INTO layers (org_id, workspace_id, slug, name, provider_id, vector_name)
+           VALUES ($1,$2,$3,$4,$5,'default')
+           ON CONFLICT DO NOTHING
+           RETURNING id, slug, name, workspace_id`,
+          [auth.orgId, input.workspaceId, input.slug, input.name, providerId],
+        )
+
+        const row = rows[0]
+        if (row === undefined) return undefined
+
+        return { id: row.id, slug: row.slug, name: row.name, workspaceId: row.workspace_id }
+      },
+      this.scope,
+    )
+  }
+}
+
+export class PostgresGrants implements Grants {
+  constructor(
+    private readonly pool: Pool,
+    private readonly role?: string,
+  ) {}
+
+  private get scope() {
+    return this.role === undefined ? {} : { role: this.role }
+  }
+
+  /**
+   * Every grant in the organization, for a caller who may administer it.
+   *
+   * Not narrowed to the caller's own grants. Someone who can issue a grant on a
+   * scope can already see who else holds one there, and a partial list is worse
+   * than none — an administrator who cannot see an existing grant revokes the
+   * wrong thing.
+   */
+  async list(auth: AuthContext): Promise<readonly GrantRecord[]> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const context = await contextFor(client, auth)
+        const plan = resolve(context, 'admin')
+        if (plan.kind === 'none') return []
+
+        const { rows } = await client.query<{
+          id: string
+          principal_type: string
+          principal_id: string
+          scope_type: string
+          scope_id: string
+          permission: string
+          effect: string
+          source: string
+        }>(
+          `SELECT id, principal_type, principal_id, scope_type, scope_id, permission, effect, source
+             FROM grants WHERE org_id = $1 ORDER BY created_at`,
+          [auth.orgId],
+        )
+
+        return rows
+          .filter((r) =>
+            referenceAllows(
+              context,
+              { type: r.scope_type as 'workspace' | 'layer' | 'document', id: r.scope_id },
+              'admin',
+            ),
+          )
+          .map((r) => ({
+            id: r.id,
+            principalType: r.principal_type as GrantRecord['principalType'],
+            principalId: r.principal_id,
+            scopeType: r.scope_type as GrantRecord['scopeType'],
+            scopeId: r.scope_id,
+            permission: r.permission as GrantRecord['permission'],
+            effect: r.effect as GrantRecord['effect'],
+            source: r.source,
+          }))
+      },
+      this.scope,
+    )
+  }
+
+  async issue(auth: AuthContext, input: GrantInput): Promise<GrantRecord | undefined> {
+    if (!/^[0-9a-f-]{36}$/i.test(input.scopeId) || !/^[0-9a-f-]{36}$/i.test(input.principalId)) {
+      return undefined
+    }
+
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const context = await contextFor(client, auth)
+
+        // Admin on the scope being granted, not admin in general. Otherwise
+        // anyone holding admin on one layer could grant themselves another.
+        if (!referenceAllows(context, { type: input.scopeType, id: input.scopeId }, 'admin')) {
+          return undefined
+        }
+
+        const { rows } = await client.query<{ id: string; effect: string; source: string }>(
+          `INSERT INTO grants
+             (org_id, principal_type, principal_id, scope_type, scope_id, permission, effect, source)
+           VALUES ($1,$2,$3,$4,$5,$6,'allow','api')
+           ON CONFLICT (org_id, principal_type, principal_id, scope_type, scope_id, permission)
+             DO UPDATE SET effect = 'allow'
+           RETURNING id, effect, source`,
+          [
+            auth.orgId,
+            input.principalType,
+            input.principalId,
+            input.scopeType,
+            input.scopeId,
+            input.permission,
+          ],
+        )
+
+        const row = rows[0]
+        if (row === undefined) return undefined
+
+        return {
+          id: row.id,
+          principalType: input.principalType,
+          principalId: input.principalId,
+          scopeType: input.scopeType,
+          scopeId: input.scopeId,
+          permission: input.permission,
+          effect: row.effect as GrantRecord['effect'],
+          source: row.source,
+        }
       },
       this.scope,
     )
