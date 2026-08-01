@@ -16,6 +16,10 @@ model, and reworking it after search is written is expensive.
 
 ## Order of work
 
+All five steps below have landed at least once — this is the order they were
+built in, kept because it is the order the dependencies actually run in, and
+because anything reworking one of them still has to respect it.
+
 1. `authz.md` and `packages/core/migrations/0001_init.sql` — the permission
    model and the schema, **with the tests from the test plan**. The tests are
    written before search, not after. Written after, they get written to match

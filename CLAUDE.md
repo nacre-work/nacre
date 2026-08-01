@@ -70,15 +70,37 @@ workspace package. Do not add a `package.json` to it.
 
 ## State of the code
 
-Skeleton. `packages/core/authz/permissions.ts` (the implication table) is the
-only implemented logic; everything else is an empty entry point. The docs are
-ahead of the code deliberately — they are the specification to build against,
-not a description of what exists.
+It runs. The whole loop has been driven by hand against a real PostgreSQL and a
+real Qdrant: `init` creates an organization, `/v1/layers` and `/v1/grants` set
+up access, ingest goes through the worker to the index, and search returns what
+the caller is permitted to see and nothing else — over REST, over MCP Streamable
+HTTP, and over MCP STDIO alike. Revoking a grant drops the document from results
+while its vectors are still in the index, and the recomputation that refreshes
+the payload tags runs in the worker with `nacre_acl_propagation_lag_seconds`
+measuring how far behind it is.
 
-`acl-invariants` in CI passes today, but it tests one rule. **It is not
-evidence that anything holds** until T1–T15 from docs/authz.md actually run, and
-it must not be a required check on that basis before then. The workflow file
-says so at the top.
+Not built: no login (tokens come from `init`, service accounts from
+`/v1/service-accounts`), no reranking on the search path, no garbage collection
+for tombstoned vectors, and `packages/sdk` and `packages/admin` are empty.
+`docker compose up` has not been run from a clean checkout — its profiles are
+validated by `lint:compose` and nothing more.
+
+The docs are still normative rather than descriptive, and in places still ahead
+of the code. Where one disagrees with the tree, that is a bug in one of them —
+say which.
+
+**All 15 cases from docs/authz.md run** against real services, plus the truth
+table, a property-based comparison against the reference implementation, and a
+round trip that puts the worker and the search path against each other.
+`acl-invariants` is a gate on what that document specifies — and only on that.
+A leak nobody thought to write down is still unguarded, and adding a case to
+`test-plan.ts` is how that changes.
+
+**Test what you write by running it, not only by testing it.** Four of the worst
+defects found so far — the worker indexing nothing at all, layers naming a
+vector that did not exist, MCP answering in a shape no client can parse, and the
+propagation gauge that could never fire — were each invisible to a green suite
+and obvious within a minute of starting the processes.
 
 ## Conventions
 
