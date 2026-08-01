@@ -4,6 +4,7 @@ import type { PrincipalRef } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
 import type { DocumentStore, Parser, ParsedDocument, StoredDocument, VectorWriter } from './ingest.js'
+import type { StaleDocument } from './retag.js'
 
 /**
  * The adapters behind the ingest ports.
@@ -168,6 +169,33 @@ export class QdrantVectorWriter implements VectorWriter {
   }
 
   /**
+   * Replace the ACL tags on every point of a document.
+   *
+   * `setPayload` with a filter rather than a re-upsert: the vectors are
+   * unchanged and re-embedding a document because its permissions moved would
+   * make a revocation cost as much as an ingest, which is how a recomputation
+   * job ends up disabled in production.
+   *
+   * The filter carries `doc_id` alone and not `deleted`. A tombstoned document
+   * still has points until garbage collection takes them, and leaving stale
+   * tags on them would matter the moment a purge is late — I5 keeps them out of
+   * answers, but this job should not be the reason that is the only thing
+   * standing in the way.
+   */
+  async retag(input: {
+    orgSlug: string
+    documentId: string
+    aclTags: readonly string[]
+    aclVersion: number
+  }): Promise<void> {
+    await this.client.setPayload(collectionName(input.orgSlug), {
+      wait: true,
+      payload: { acl_tags: [...input.aclTags], acl_version: input.aclVersion },
+      filter: { must: [{ key: 'doc_id', match: { value: input.documentId } }] },
+    } as never)
+  }
+
+  /**
    * Tombstone every point of a document.
    *
    * Sets `deleted` rather than removing the points: physical removal is a
@@ -234,6 +262,51 @@ export class HttpParser implements Parser {
  * would then be recorded as tagged at a version whose grants it never saw —
  * a claim of freshness that is false in the direction nobody checks.
  */
+/**
+ * Documents whose ACL tags are behind their organization's permission version.
+ *
+ * Across tenants, so it runs under the worker role rather than `withOrg`. The
+ * oldest first: the lag gauge reports the worst laggard, so clearing the oldest
+ * is what actually moves the number an alert fires on.
+ *
+ * No `FOR UPDATE SKIP LOCKED` and no claim column. Retagging is idempotent —
+ * two replicas writing the same tags to the same points produce the same
+ * payload — so the cost of a double retag is a wasted call, while the cost of a
+ * claim that leaks on a crash is a document nothing retries. The version guard
+ * in `markTagged` is what keeps concurrent passes from disagreeing.
+ */
+export async function claimStale(pool: Pool, limit: number): Promise<readonly StaleDocument[]> {
+  const client = await pool.connect()
+  try {
+    const { rows } = await client.query<{
+      id: string
+      org_id: string
+      slug: string
+      layer_id: string
+    }>(
+      `SELECT d.id, d.org_id, o.slug, d.layer_id
+         FROM documents d
+         JOIN organizations o ON o.id = d.org_id
+        WHERE d.deleted_at IS NULL
+          AND o.deleted_at IS NULL
+          AND d.acl_version < o.groups_version
+          AND d.status = 'indexed'
+        ORDER BY COALESCE(d.acl_tagged_at, d.created_at)
+        LIMIT $1`,
+      [limit],
+    )
+
+    return rows.map((r) => ({
+      orgId: r.org_id,
+      orgSlug: r.slug,
+      documentId: r.id,
+      layerId: r.layer_id,
+    }))
+  } finally {
+    client.release()
+  }
+}
+
 export async function tagsForLayer(
   pool: Pool,
   orgId: string,

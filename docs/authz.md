@@ -263,13 +263,20 @@ and until then a revocation moved nothing — which left
 offered as evidence about.
 
 `acl_tags` remains a cache the SLA does bound, which is why the layer filter
-and the tag filter both apply until a recomputation finishes. **That
-recomputation does not exist yet.** The lag is measured and exported; nothing
-drains it. A document's tags are refreshed only when its content changes and it
-is reindexed, so after a grant change the gauge will climb and keep climbing.
-That is the honest reading of the current state, and it is why the measurement
-was built before the job: an unmeasured backlog is indistinguishable from no
-backlog.
+and the tag filter both apply until a recomputation finishes.
+
+The recomputation runs in the indexing worker, in the gaps between documents:
+`claimStale` returns documents whose `acl_version` is behind their
+organization's, oldest first, and each is retagged with `setPayload` rather than
+re-embedded. Indexing has priority — a document nobody can find yet is a worse
+outage than a permission cache a few seconds behind, and the SLA has room for
+the wait.
+
+A document that fails to retag is left behind rather than marked. It keeps its
+old `acl_version`, stays in the next claim, and keeps contributing to the lag.
+The alternative is a document that quietly stops being retried while the gauge
+reports everything is fine, which is the failure this subsystem exists to make
+impossible.
 
 **T9 and T10 were the ones to weigh, and they now run.** They are what catches
 a post-filter: an implementation that fetches k results and removes the ones the

@@ -3,8 +3,9 @@ import { randomUUID } from 'node:crypto'
 import { QdrantClient } from '@qdrant/js-client-rest'
 import { ConfigError, createPool, loadConfig, withOrg } from '@nacre.work/core'
 
-import { HttpParser, PostgresDocumentStore, QdrantVectorWriter, tagsForLayer } from './adapters.js'
+import { claimStale, HttpParser, PostgresDocumentStore, QdrantVectorWriter, tagsForLayer } from './adapters.js'
 import { ingest } from './ingest.js'
+import { retagOnce } from './retag.js'
 
 /**
  * The indexing worker.
@@ -18,6 +19,12 @@ import { ingest } from './ingest.js'
 
 const APP_ROLE = 'nacre_app'
 const IDLE_MS = 2000
+
+// The recomputation pass. Bounded because a revocation across a large layer can
+// touch every document in it, and an unbounded sweep would take the vector
+// store down at exactly the moment correctness depends on it being reachable.
+const RETAG_BATCH = 50
+const RETAG_CONCURRENCY = 4
 
 interface Claim {
   readonly orgId: string
@@ -132,6 +139,18 @@ async function main(): Promise<void> {
     },
   }
 
+  const retagPorts = {
+    claim: (limit: number) => claimStale(pool, limit),
+    tagsFor: (orgId: string, layerId: string) => tagsForLayer(pool, orgId, layerId, APP_ROLE),
+    retag: vectors.retag.bind(vectors),
+    markTagged: documents.markTagged.bind(documents),
+    onError: (document: { documentId: string }, error: unknown) => {
+      console.error(
+        JSON.stringify({ msg: 'retag failed', document_id: document.documentId, error: String(error) }),
+      )
+    },
+  }
+
   let running = true
   const stop = (signal: string) => {
     console.log(JSON.stringify({ msg: 'draining', signal }))
@@ -153,6 +172,19 @@ async function main(): Promise<void> {
     }
 
     if (claim === undefined) {
+      // Indexing first, retagging in the gaps. A document nobody can find yet
+      // is a worse outage than a permission cache a few seconds behind, and
+      // the SLA the lag is measured against has room for the wait.
+      try {
+        const pass = await retagOnce(retagPorts, RETAG_BATCH, RETAG_CONCURRENCY)
+        if (pass.retagged > 0 || pass.failed > 0) {
+          console.log(JSON.stringify({ msg: 'retagged', ...pass }))
+          continue
+        }
+      } catch (error) {
+        console.error(JSON.stringify({ msg: 'retag pass failed', error: String(error) }))
+      }
+
       await new Promise((r) => setTimeout(r, IDLE_MS))
       continue
     }

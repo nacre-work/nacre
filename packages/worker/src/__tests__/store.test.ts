@@ -1,8 +1,9 @@
-import { createPool, withOrg } from '@nacre.work/core'
+import { collectDatabaseGauges, createMetrics, createPool, Registry, withOrg } from '@nacre.work/core'
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { PostgresDocumentStore, tagsForLayer } from '../adapters.js'
+import { claimStale, PostgresDocumentStore, tagsForLayer } from '../adapters.js'
+import { retagOnce } from '../retag.js'
 
 /**
  * `markTagged`, against a real database.
@@ -192,6 +193,118 @@ when('PostgresDocumentStore · markTagged', () => {
     // health forever. Nothing about a wrong number here is visible except this.
     expect(version).toBe(current)
     expect(version).toBeLessThan(1_000_000)
+  })
+
+  it('claimStale finds a document behind its organization’s version, and stops finding it once marked', async () => {
+    const current = await withOrg(
+      pool,
+      ORG,
+      async (c) =>
+        Number(
+          (
+            await c.query<{ groups_version: string }>(
+              'SELECT groups_version FROM organizations WHERE id = $1',
+              [ORG],
+            )
+          ).rows[0]?.groups_version,
+        ),
+      AS_APP,
+    )
+
+    const mine = async () => (await claimStale(pool, 500)).filter((d) => d.documentId === ids.doc)
+
+    // Left at 0 by beforeEach, so it is behind whatever the version is now.
+    expect(await mine()).toHaveLength(1)
+    expect((await mine())[0]?.orgSlug).toBe('store')
+
+    await store.markTagged(ORG, ids.doc, current)
+
+    // The loop terminates only because this stops returning what it just
+    // handled. If the claim did not narrow on acl_version, the pass would retag
+    // the same documents forever, report progress every time, and never drain
+    // the lag it is meant to clear.
+    expect(await mine()).toHaveLength(0)
+  })
+
+  it('claimStale ignores deleted documents', async () => {
+    await withOrg(
+      pool,
+      ORG,
+      async (c) => {
+        await c.query('UPDATE documents SET deleted_at = now() WHERE org_id = $1 AND id = $2', [
+          ORG,
+          ids.doc,
+        ])
+      },
+      AS_APP,
+    )
+
+    // I5 keeps them out of every answer already, so retagging one spends a
+    // vector-store call on a document nothing can return.
+    expect((await claimStale(pool, 500)).filter((d) => d.documentId === ids.doc)).toHaveLength(0)
+
+    await withOrg(
+      pool,
+      ORG,
+      async (c) => {
+        await c.query('UPDATE documents SET deleted_at = NULL WHERE org_id = $1 AND id = $2', [
+          ORG,
+          ids.doc,
+        ])
+      },
+      AS_APP,
+    )
+  })
+
+  it('claimStale honours its limit', async () => {
+    expect((await claimStale(pool, 1)).length).toBeLessThanOrEqual(1)
+  })
+
+  it('a retag pass drains the propagation lag it was built to measure', async () => {
+    // The loop closed, end to end: a document behind the version, a gauge that
+    // says so, a pass, and a gauge that no longer does. Every piece of this
+    // subsystem exists for this one sentence to be true, and each of them is
+    // individually capable of being wrong in a way that reports success.
+    //
+    // Qdrant is the one port faked here — the payload write has no bearing on
+    // what Postgres reports, and standing one up would test the client rather
+    // than this.
+    const written: string[] = []
+    const ports = {
+      claim: (limit: number) => claimStale(pool, limit),
+      tagsFor: (orgId: string, layerId: string) => tagsForLayer(pool, orgId, layerId, 'nacre_app'),
+      retag: async (input: { documentId: string }) => {
+        written.push(input.documentId)
+      },
+      markTagged: (orgId: string, id: string, version: number) => store.markTagged(orgId, id, version),
+      onError: (_d: unknown, error: unknown) => {
+        throw error
+      },
+    }
+
+    const lag = async (): Promise<number | undefined> => {
+      const registry = new Registry()
+      const metrics = createMetrics(registry)
+      registry.collect(collectDatabaseGauges(pool, metrics, 'nacre_app'))
+      const line = (await registry.render())
+        .split('\n')
+        .find((l) => l.startsWith('nacre_acl_propagation_lag_seconds{org="store"} '))
+      return line === undefined ? undefined : Number(line.slice(line.lastIndexOf(' ') + 1))
+    }
+
+    // beforeEach reset it to version 0, which is behind.
+    expect(await lag()).toBeGreaterThan(0)
+
+    let guard = 0
+    for (;;) {
+      const pass = await retagOnce(ports, 100, 4)
+      expect(pass.failed).toBe(0)
+      if (pass.retagged === 0) break
+      if (++guard > 50) throw new Error('the pass never drained; claimStale is not narrowing')
+    }
+
+    expect(written).toContain(ids.doc)
+    expect(await lag()).toBe(0)
   })
 
   it('another organization cannot mark this one’s document', async () => {
