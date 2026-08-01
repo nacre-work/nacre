@@ -1,14 +1,20 @@
 # Quickstart
 
-> **The pieces are wired; the stack has not been run from this file.** The
-> adapters, the embedder client, and the parser sidecar exist now, and CI runs
-> the worker pipeline and the search path against a real Postgres and a real
-> Qdrant — a document is indexed and comes back bounded by its grants, which is
-> the claim that matters. What has *not* happened is somebody running
-> `docker compose up` from a clean checkout and following this page to the end.
-> Treat the commands as accurate but unrehearsed, and
-> [open an issue](https://github.com/nacre-work/nacre/issues) for whatever
-> this page gets wrong.
+> **The commands below have been run, and one step is missing.** The API,
+> worker and parser processes were started against a real Postgres and a real
+> Qdrant, and every request on this page was issued in order: create a layer,
+> issue a grant, ingest, poll the job to `indexed`, search as a granted user and
+> get the chunk, search as a user without the grant and get nothing. Revoking
+> the grant then removed it from the results while the points were still in the
+> index. Three bugs were found doing it and are fixed.
+>
+> **What is missing is the first organization.** There is no command yet that
+> creates an organization, its first user, an embedding provider, a workspace,
+> and the Qdrant collection — all of that was inserted by hand to get to the
+> first request below, and a token was signed by hand too. Until that exists
+> this page starts one step after where a new installation actually starts.
+> `docker compose up` itself has not been run from a clean checkout; the
+> processes were started directly.
 
 ## What you will need
 

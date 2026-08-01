@@ -28,6 +28,15 @@ export interface StoredDocument {
   readonly id: string
   readonly contentHash: string
   readonly chunkCount: number
+  /**
+   * Whether this content was actually indexed, as opposed to merely recorded.
+   *
+   * The API writes the row — content hash included — before the worker ever
+   * sees it, so the hash matching proves nothing on its own. Without this the
+   * worker finds the work order it was handed, mistakes it for a completed
+   * job, and returns `unchanged` having indexed nothing.
+   */
+  readonly indexed: boolean
 }
 
 export interface DocumentStore {
@@ -128,7 +137,13 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
 
   const hash = contentHash(parsed.text)
   const existing = await ports.documents.find(request.orgId, request.layerId, request.externalId)
-  if (existing !== undefined && existing.contentHash === hash) {
+  // `indexed` and not just the hash. The REST layer inserts the row with its
+  // content hash and status 'pending' — that row *is* the work order — so a
+  // hash match on its own means "somebody asked for this", not "this is
+  // already in the index". Checking only the hash made the worker claim every
+  // document, declare it unchanged, and index nothing at all, while the status
+  // stayed at 'parsing' and the API kept answering `queued` forever.
+  if (existing !== undefined && existing.contentHash === hash && existing.indexed) {
     // Deliberately not marked as tagged. Nothing was rewritten, so the points
     // still carry whichever acl_version they were written at; claiming the
     // current one would report a document as caught up while a revoked grant is

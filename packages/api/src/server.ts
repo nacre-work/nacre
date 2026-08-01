@@ -80,20 +80,33 @@ export interface Layer {
   readonly workspaceId: string
 }
 
+/**
+ * Three outcomes, not two.
+ *
+ * `denied` covers "may not administer this workspace" and "no such workspace"
+ * together, which is the usual rule. `conflict` is deliberately separate: the
+ * caller has already proved admin on the target workspace by the time it can
+ * happen, so the answer is about the resource rather than about what they can
+ * see.
+ *
+ * Folding it into `denied` was the first shape and it makes the endpoint
+ * unusable — an administrator who picks a name already in use gets a 404 and
+ * cannot tell it from having no permission, so the next move is to guess. It
+ * discloses exactly one bit, that the slug is taken somewhere in their own
+ * organization, and slugs are organization-unique by design (migration 0006).
+ */
+export type LayerOutcome =
+  | { readonly kind: 'created'; readonly layer: Layer }
+  | { readonly kind: 'denied' }
+  | { readonly kind: 'conflict' }
+
 export interface Layers {
   /** Only the layers this caller may read. The plan decides, not the caller. */
   list(auth: AuthContext): Promise<readonly Layer[]>
-  /**
-   * Create a layer, or refuse.
-   *
-   * `undefined` means the caller may not administer the workspace — and means
-   * the same for a workspace that does not exist, for the reason `Ingest.queue`
-   * documents.
-   */
   create(
     auth: AuthContext,
     input: { workspaceId: string; slug: string; name: string },
-  ): Promise<Layer | undefined>
+  ): Promise<LayerOutcome>
 }
 
 export interface GrantInput {
@@ -513,18 +526,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
-      const created = await options.layers.create(auth, { workspaceId, slug, name })
+      const outcome = await options.layers.create(auth, { workspaceId, slug, name })
 
       await options.audit.write({
         orgId: auth.orgId,
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'create_layer',
-        result: created === undefined ? 'deny' : 'allow',
-        detail: { workspace_id: workspaceId, slug },
+        result: outcome.kind === 'created' ? 'allow' : 'deny',
+        detail: { workspace_id: workspaceId, slug, outcome: outcome.kind },
         requestId,
       })
 
-      if (created === undefined) {
+      if (outcome.kind === 'denied') {
         // 404, not 403. A caller who may not administer a workspace must not be
         // able to tell it apart from one that does not exist.
         const problem = notFound(instance, requestId)
@@ -532,6 +545,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
+      if (outcome.kind === 'conflict') {
+        const problem = new Problem({
+          type: 'https://nacre.work/errors/conflict',
+          title: 'Conflict',
+          status: 409,
+          detail: `A layer with the slug '${slug}' already exists in this organization.`,
+          instance,
+          requestId,
+        })
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const created = outcome.layer
       send(
         res,
         201,

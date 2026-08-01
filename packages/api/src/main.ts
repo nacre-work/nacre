@@ -7,6 +7,7 @@ import {
   loadConfig,
   Registry,
   VectorStore,
+  vectorName,
   withOrg,
   ConfigError,
 } from '@nacre.work/core'
@@ -100,7 +101,7 @@ async function main(): Promise<void> {
       vectors,
       embedder,
       orgSlug,
-      vectorName: `v_${config.embeddingModel.replace(/[^a-z0-9]/gi, '_')}_${config.embeddingDim}`,
+      vectorName: vectorName(config.embeddingModel, config.embeddingDim),
       role: APP_ROLE,
     }),
     ingest: new NacreIngest(pool, APP_ROLE),

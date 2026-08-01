@@ -13,6 +13,7 @@ export type {
   Job,
   Jobs,
   Layer,
+  LayerOutcome,
   Layers,
   SearchService,
 } from './server.js'

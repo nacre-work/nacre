@@ -8,6 +8,7 @@ import {
   referenceAllows,
   resolve,
   VectorStore,
+  vectorName,
   withOrg,
   type Hit,
 } from '@nacre.work/core'
@@ -28,6 +29,7 @@ import type {
   Job,
   Jobs,
   Layer,
+  LayerOutcome,
   Layers,
   SearchService,
 } from './server.js'
@@ -514,8 +516,8 @@ export class PostgresLayers implements Layers {
   async create(
     auth: AuthContext,
     input: { workspaceId: string; slug: string; name: string },
-  ): Promise<Layer | undefined> {
-    if (!/^[0-9a-f-]{36}$/i.test(input.workspaceId)) return undefined
+  ): Promise<LayerOutcome> {
+    if (!/^[0-9a-f-]{36}$/i.test(input.workspaceId)) return { kind: 'denied' }
 
     return withOrg(
       this.pool,
@@ -529,7 +531,7 @@ export class PostgresLayers implements Layers {
         // workspace permission from the layers it happens to contain — and an
         // empty workspace contains none.
         if (!referenceAllows(context, { type: 'workspace', id: input.workspaceId }, 'admin')) {
-          return undefined
+          return { kind: 'denied' }
         }
 
         // Checked after the permission, so a caller who may not administer the
@@ -538,17 +540,28 @@ export class PostgresLayers implements Layers {
           `SELECT id FROM workspaces WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
           [auth.orgId, input.workspaceId],
         )
-        if (workspaces[0] === undefined) return undefined
+        if (workspaces[0] === undefined) return { kind: 'denied' }
 
-        const { rows: providers } = await client.query<{ id: string }>(
-          `SELECT id FROM embedding_providers
+        const { rows: providers } = await client.query<{
+          id: string
+          model: string
+          dimensions: number
+        }>(
+          `SELECT id, model, dimensions FROM embedding_providers
             WHERE org_id = $1 OR org_id IS NULL ORDER BY org_id NULLS LAST LIMIT 1`,
           [auth.orgId],
         )
-        const providerId = providers[0]?.id
-        if (providerId === undefined) {
+        const provider = providers[0]
+        if (provider === undefined) {
           throw new Error('no embedding provider is configured; a layer cannot be created without one')
         }
+
+        // Derived, never a literal. The worker writes points to the vector this
+        // column names and search looks for the one the configuration derives;
+        // a layer created with a placeholder here indexes into a vector the
+        // collection does not have, which fails every upsert with `Bad
+        // Request` and would return nothing even if it did not.
+        const vector = vectorName(provider.model, provider.dimensions)
 
         const { rows } = await client.query<{
           id: string
@@ -557,16 +570,22 @@ export class PostgresLayers implements Layers {
           workspace_id: string
         }>(
           `INSERT INTO layers (org_id, workspace_id, slug, name, provider_id, vector_name)
-           VALUES ($1,$2,$3,$4,$5,'default')
+           VALUES ($1,$2,$3,$4,$5,$6)
            ON CONFLICT DO NOTHING
            RETURNING id, slug, name, workspace_id`,
-          [auth.orgId, input.workspaceId, input.slug, input.name, providerId],
+          [auth.orgId, input.workspaceId, input.slug, input.name, provider.id, vector],
         )
 
         const row = rows[0]
-        if (row === undefined) return undefined
+        // ON CONFLICT DO NOTHING returns nothing, and by here the caller has
+        // already proved admin on the workspace — so the only way to get here
+        // is a slug already in use.
+        if (row === undefined) return { kind: 'conflict' }
 
-        return { id: row.id, slug: row.slug, name: row.name, workspaceId: row.workspace_id }
+        return {
+          kind: 'created',
+          layer: { id: row.id, slug: row.slug, name: row.name, workspaceId: row.workspace_id },
+        }
       },
       this.scope,
     )
