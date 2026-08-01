@@ -1,0 +1,222 @@
+/**
+ * A minimal Prometheus registry.
+ *
+ * Dependency-free because the exposition format is four lines of rules and this
+ * container reads documents for a living — every dependency in it is something
+ * to keep patched. If the needs here outgrow histograms and gauges, replace it
+ * with prom-client rather than growing this file.
+ */
+
+export type Labels = Readonly<Record<string, string>>
+
+const NAME = /^[a-zA-Z_:][a-zA-Z0-9_:]*$/
+
+function escapeLabel(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/"/g, '\\"')
+}
+
+function series(name: string, labels: Labels): string {
+  const pairs = Object.entries(labels)
+    .filter(([, v]) => v !== '')
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}="${escapeLabel(v)}"`)
+  return pairs.length === 0 ? name : `${name}{${pairs.join(',')}}`
+}
+
+interface Metric {
+  readonly name: string
+  readonly help: string
+  readonly type: 'counter' | 'gauge' | 'histogram'
+  render(): string[]
+}
+
+export class Counter implements Metric {
+  readonly type = 'counter' as const
+  readonly #values = new Map<string, { labels: Labels; value: number }>()
+
+  constructor(
+    readonly name: string,
+    readonly help: string,
+  ) {
+    if (!NAME.test(name)) throw new Error(`not a valid metric name: ${name}`)
+  }
+
+  inc(labels: Labels = {}, by = 1): void {
+    const key = series(this.name, labels)
+    const entry = this.#values.get(key) ?? { labels, value: 0 }
+    entry.value += by
+    this.#values.set(key, entry)
+  }
+
+  render(): string[] {
+    // A counter with no observations is still reported, at zero. An absent
+    // series and a zero series look the same on a graph and mean opposite
+    // things: "nothing happened" versus "the exporter is not running".
+    if (this.#values.size === 0) return [`${this.name} 0`]
+    return [...this.#values].map(([key, e]) => `${key} ${e.value}`)
+  }
+}
+
+export class Gauge implements Metric {
+  readonly type = 'gauge' as const
+  readonly #values = new Map<string, number>()
+
+  constructor(
+    readonly name: string,
+    readonly help: string,
+  ) {
+    if (!NAME.test(name)) throw new Error(`not a valid metric name: ${name}`)
+  }
+
+  set(value: number, labels: Labels = {}): void {
+    this.#values.set(series(this.name, labels), value)
+  }
+
+  reset(): void {
+    this.#values.clear()
+  }
+
+  render(): string[] {
+    if (this.#values.size === 0) return [`${this.name} 0`]
+    return [...this.#values].map(([key, v]) => `${key} ${v}`)
+  }
+}
+
+const DEFAULT_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+
+export class Histogram implements Metric {
+  readonly type = 'histogram' as const
+  readonly #series = new Map<string, { labels: Labels; counts: number[]; sum: number; count: number }>()
+
+  constructor(
+    readonly name: string,
+    readonly help: string,
+    readonly buckets: readonly number[] = DEFAULT_BUCKETS,
+  ) {
+    if (!NAME.test(name)) throw new Error(`not a valid metric name: ${name}`)
+  }
+
+  observe(seconds: number, labels: Labels = {}): void {
+    const key = series(this.name, labels)
+    const entry = this.#series.get(key) ?? {
+      labels,
+      counts: new Array<number>(this.buckets.length).fill(0),
+      sum: 0,
+      count: 0,
+    }
+    for (let i = 0; i < this.buckets.length; i++) {
+      if (seconds <= (this.buckets[i] as number)) entry.counts[i] = (entry.counts[i] as number) + 1
+    }
+    entry.sum += seconds
+    entry.count += 1
+    this.#series.set(key, entry)
+  }
+
+  /** Times `fn`, recording however it ends. A failure has a duration too. */
+  async time<T>(labels: Labels, fn: () => Promise<T>): Promise<T> {
+    const started = performance.now()
+    try {
+      return await fn()
+    } finally {
+      this.observe((performance.now() - started) / 1000, labels)
+    }
+  }
+
+  render(): string[] {
+    const lines: string[] = []
+    for (const entry of this.#series.values()) {
+      // Already cumulative, and deliberately so: `observe` increments every
+      // bucket whose bound the value is under, rather than only its own. The
+      // exposition format requires cumulative counts, and summing them here
+      // instead would be the same arithmetic done once per scrape rather than
+      // once per observation.
+      for (let i = 0; i < this.buckets.length; i++) {
+        lines.push(
+          `${series(`${this.name}_bucket`, { ...entry.labels, le: String(this.buckets[i]) })} ${entry.counts[i] as number}`,
+        )
+      }
+      lines.push(`${series(`${this.name}_bucket`, { ...entry.labels, le: '+Inf' })} ${entry.count}`)
+      lines.push(`${series(`${this.name}_sum`, entry.labels)} ${entry.sum}`)
+      lines.push(`${series(`${this.name}_count`, entry.labels)} ${entry.count}`)
+    }
+    return lines
+  }
+}
+
+export class Registry {
+  readonly #metrics: Metric[] = []
+  readonly #collectors: (() => Promise<void>)[] = []
+
+  register<T extends Metric>(metric: T): T {
+    if (this.#metrics.some((m) => m.name === metric.name)) {
+      throw new Error(`metric already registered: ${metric.name}`)
+    }
+    this.#metrics.push(metric)
+    return metric
+  }
+
+  /**
+   * A function run before every scrape, for values that are queries rather than
+   * counters — document counts, the propagation lag, pending tombstones.
+   */
+  collect(fn: () => Promise<void>): void {
+    this.#collectors.push(fn)
+  }
+
+  async render(): Promise<string> {
+    // A collector that fails must not blank the whole exposition: the metrics
+    // that still work are how you find out which one broke.
+    await Promise.allSettled(this.#collectors.map((fn) => fn()))
+
+    const lines: string[] = []
+    for (const metric of this.#metrics) {
+      lines.push(`# HELP ${metric.name} ${metric.help}`)
+      lines.push(`# TYPE ${metric.name} ${metric.type}`)
+      lines.push(...metric.render())
+    }
+    return `${lines.join('\n')}\n`
+  }
+}
+
+/**
+ * The metrics docs/config.md requires.
+ *
+ * `nacre_acl_propagation_lag_seconds` is the one with an alert on it, and the
+ * reason is worth restating where the metric is defined: it is the only
+ * external evidence that invariant I4 — a revoked grant reflected within the
+ * SLA — still holds. Everything else here describes how the system is doing.
+ * This one describes whether it is still correct.
+ */
+export function createMetrics(registry: Registry) {
+  return {
+    searchDuration: registry.register(
+      new Histogram('nacre_search_duration_seconds', 'Search latency, end to end', [
+        0.01, 0.025, 0.05, 0.1, 0.2, 0.5, 1, 2, 5,
+      ]),
+    ),
+    searchResults: registry.register(
+      new Counter('nacre_search_results_total', 'Results returned, by layer'),
+    ),
+    aclDenials: registry.register(
+      new Counter('nacre_acl_denials_total', 'Access denials, by reason'),
+    ),
+    aclPropagationLag: registry.register(
+      new Gauge(
+        'nacre_acl_propagation_lag_seconds',
+        'Age in seconds of the oldest document, per organization, whose ACL tags predate the current groups_version. Alert on max() over this. The only external evidence that invariant I4 holds',
+      ),
+    ),
+    ingestDuration: registry.register(
+      new Histogram('nacre_ingest_duration_seconds', 'Indexing latency, by stage'),
+    ),
+    documents: registry.register(new Gauge('nacre_documents_total', 'Documents, by organization and status')),
+    tombstonesPending: registry.register(
+      new Gauge(
+        'nacre_tombstones_pending_total',
+        'Deleted documents whose vectors are not yet purged. Climbing means garbage collection is losing',
+      ),
+    ),
+  }
+}
+
+export type Metrics = ReturnType<typeof createMetrics>

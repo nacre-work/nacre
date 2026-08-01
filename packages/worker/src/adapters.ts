@@ -39,6 +39,31 @@ export class PostgresDocumentStore implements DocumentStore {
   }
 
   /**
+   * Monotone on purpose: `<=` lets an equal version refresh the timestamp and
+   * refuses an older one outright. Two ingests of the same document can finish
+   * out of order, and without the guard the loser would walk `acl_version`
+   * backwards and invent lag that nothing is actually behind on.
+   *
+   * `version` and `updated_at` are left alone. This records a fact about
+   * tagging, not a change to the document, and bumping them would make every
+   * retag look like an edit to anything watching for one.
+   */
+  async markTagged(orgId: string, documentId: string, aclVersion: number): Promise<void> {
+    await withOrg(
+      this.pool,
+      orgId,
+      async (client) => {
+        await client.query(
+          `UPDATE documents SET acl_version = $3, acl_tagged_at = now()
+            WHERE org_id = $1 AND id = $2 AND acl_version <= $3`,
+          [orgId, documentId, aclVersion],
+        )
+      },
+      this.scope,
+    )
+  }
+
+  /**
    * The document and all of its chunks, in one transaction.
    *
    * Replacing the chunks rather than diffing them: a partial replacement would

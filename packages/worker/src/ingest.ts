@@ -33,6 +33,14 @@ export interface StoredDocument {
 export interface DocumentStore {
   /** The existing document for this idempotency key, if any. */
   find(orgId: string, layerId: string, externalId: string): Promise<StoredDocument | undefined>
+  /**
+   * Record which `groups_version` this document's vector tags were built from.
+   *
+   * Separate from `upsert` because it happens at a different moment — after the
+   * vectors are written, not with the row — and the difference is the whole
+   * point. See the call site.
+   */
+  markTagged(orgId: string, documentId: string, aclVersion: number): Promise<void>
   upsert(input: {
     orgId: string
     layerId: string
@@ -121,6 +129,11 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
   const hash = contentHash(parsed.text)
   const existing = await ports.documents.find(request.orgId, request.layerId, request.externalId)
   if (existing !== undefined && existing.contentHash === hash) {
+    // Deliberately not marked as tagged. Nothing was rewritten, so the points
+    // still carry whichever acl_version they were written at; claiming the
+    // current one would report a document as caught up while a revoked grant is
+    // still on its vectors. Re-tagging unchanged content is the recomputation
+    // job's work, and until that exists the lag gauge is supposed to say so.
     return { documentId: existing.id, chunkCount: existing.chunkCount, unchanged: true }
   }
 
@@ -137,6 +150,11 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
       chunks: [],
       metadata: parsed.metadata,
     })
+    // A document with no chunks has no points, so there is no stale tag it can
+    // leak through and it is trivially current. Leaving it behind the version
+    // forever would pin the lag gauge at the age of the oldest empty file and
+    // teach everyone to ignore the one alert that says a revocation is late.
+    await ports.documents.markTagged(request.orgId, stored.id, request.aclVersion)
     return { documentId: stored.id, chunkCount: 0, unchanged: false }
   }
 
@@ -180,6 +198,13 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
     aclTags: request.aclTags,
     aclVersion: request.aclVersion,
   })
+
+  // After the vector write, never before. The column is a claim that the points
+  // carry tags built from this groups_version, and the only moment that claim is
+  // true is once the write has returned. Marking first and then failing would
+  // leave a document reporting itself caught up while its points still carry a
+  // revoked grant — the exact state invariant I4 forbids, recorded as healthy.
+  await ports.documents.markTagged(request.orgId, stored.id, request.aclVersion)
 
   return { documentId: stored.id, chunkCount: withPoints.length, unchanged: false }
 }

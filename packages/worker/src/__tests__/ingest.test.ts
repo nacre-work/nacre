@@ -56,8 +56,10 @@ describe('chunking', () => {
   })
 })
 
-function ports(overrides: Partial<IngestPorts> = {}): IngestPorts & { written: unknown[]; embedded: number } {
-  const state = { written: [] as unknown[], embedded: 0 }
+function ports(
+  overrides: Partial<IngestPorts> = {},
+): IngestPorts & { written: unknown[]; embedded: number; tagged: { id: string; version: number }[] } {
+  const state = { written: [] as unknown[], embedded: 0, tagged: [] as { id: string; version: number }[] }
   let counter = 0
   const stored = new Map<string, StoredDocument>()
 
@@ -71,6 +73,9 @@ function ports(overrides: Partial<IngestPorts> = {}): IngestPorts & { written: u
     },
     documents: {
       find: async (org, layer, external) => stored.get(`${org}/${layer}/${external}`),
+      markTagged: async (_org, id, version) => {
+        state.tagged.push({ id, version })
+      },
       upsert: async (input) => {
         const key = `${input.orgId}/${input.layerId}/${input.externalId}`
         const doc: StoredDocument = {
@@ -90,7 +95,7 @@ function ports(overrides: Partial<IngestPorts> = {}): IngestPorts & { written: u
     newId: () => `point-${++counter}`,
     ...overrides,
     ...state,
-  } as IngestPorts & { written: unknown[]; embedded: number }
+  } as IngestPorts & { written: unknown[]; embedded: number; tagged: { id: string; version: number }[] }
 }
 
 const request = {
@@ -170,6 +175,10 @@ describe('ingest', () => {
       ...p,
       documents: {
         find: p.documents.find.bind(p.documents),
+        markTagged: async (o, i, v) => {
+          order.push('tagged')
+          return p.documents.markTagged(o, i, v)
+        },
         upsert: async (i) => {
           order.push('postgres')
           return p.documents.upsert(i)
@@ -188,7 +197,53 @@ describe('ingest', () => {
     // Vectors are rebuilt from Postgres and S3; the reverse does not hold. A
     // crash between the two must leave a document with no vectors — recoverable
     // by reindexing — rather than vectors with no document.
-    expect(order).toEqual(['postgres', 'vectors'])
+    //
+    // `tagged` comes last for a different reason: it is a claim that the points
+    // carry tags from this groups_version, and that claim is only true once the
+    // vector write has returned.
+    expect(order).toEqual(['postgres', 'vectors', 'tagged'])
+  })
+
+  it('a failed vector write leaves the document untagged', async () => {
+    const p = ports()
+    const wrapped: IngestPorts = {
+      ...p,
+      vectors: {
+        write: async () => {
+          throw new Error('qdrant is unreachable')
+        },
+      },
+    }
+
+    await expect(ingest(request, wrapped)).rejects.toThrow('qdrant is unreachable')
+
+    // Tagged-but-not-written is the one combination that lies in the dangerous
+    // direction: the lag gauge would report the document caught up while its
+    // points still carry whatever grants they had. Untagged over-reports lag,
+    // which is a false alarm and recoverable; the other way round is a leak
+    // nothing is watching for.
+    expect(p.tagged).toHaveLength(0)
+  })
+
+  it('an unchanged document is not marked as retagged', async () => {
+    const p = ports()
+    await ingest(request, p)
+    p.tagged.length = 0
+
+    // Same content, a newer groups_version. Nothing is rewritten, so the points
+    // still carry the old tags — claiming otherwise would hide exactly the
+    // window invariant I4 bounds.
+    const result = await ingest({ ...request, aclVersion: 99 }, p)
+
+    expect(result.unchanged).toBe(true)
+    expect(p.tagged).toHaveLength(0)
+  })
+
+  it('a document is tagged at the version its points were written with', async () => {
+    const p = ports()
+    const result = await ingest(request, p)
+
+    expect(p.tagged).toEqual([{ id: result.documentId, version: 42 }])
   })
 
   it('an empty document is recorded, so a retry does not reparse it forever', async () => {
@@ -198,6 +253,12 @@ describe('ingest', () => {
     expect(result.chunkCount).toBe(0)
     expect(result.documentId).toBeTruthy()
     expect(p.written, 'nothing to index means nothing written to the vector store').toHaveLength(0)
+
+    // No points means no stale tag to leak through, so it is current by
+    // construction. Left untagged it would sit behind the version forever and
+    // hold the lag gauge at the age of the oldest empty file — a permanent
+    // false alarm on the one metric that must stay believable.
+    expect(p.tagged).toEqual([{ id: result.documentId, version: 42 }])
   })
 
   it('the content hash covers the parsed text, not the request', async () => {

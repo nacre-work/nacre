@@ -76,6 +76,8 @@ export interface AuditSink {
 
 export interface ApiOptions {
   readonly verify: VerifyOptions
+  /** Rendered at /metrics. Absent means the endpoint answers 404. */
+  readonly metrics?: { render(): Promise<string> }
   readonly documents: Documents
   readonly search: SearchService
   readonly ingest: Ingest
@@ -119,6 +121,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   const requestId = randomUUID()
   const url = new URL(req.url ?? '/', 'http://localhost')
   const instance = url.pathname
+
+  if (req.method === 'GET' && instance === '/metrics') {
+    // Unauthenticated, like every Prometheus endpoint, and therefore carrying
+    // nothing that is not already a count. No document ids, no query text, no
+    // organization ids — organizations appear by slug, which is in the URL of
+    // every request that tenant makes anyway.
+    if (options.metrics === undefined) {
+      const problem = notFound(instance, requestId)
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+    const body = await options.metrics.render()
+    res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' })
+    res.end(body)
+    return
+  }
 
   if (req.method === 'GET' && instance === '/v1/health') {
     // Liveness touches no dependency. A health check that calls Postgres turns
