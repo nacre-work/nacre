@@ -75,6 +75,14 @@ jobs:
       - name: T11-T15 · adversarial
         run: pnpm test:acl:group "adversarial"
 
+      # Its own step for the same reason as the rest, and it needs one: the
+      # group selectors above are literal, so a file whose describe block
+      # matches none of them never runs here at all. This one exercises the
+      # worker pipeline and the search path against each other, which nothing
+      # else does — every other test in the suite holds one end still.
+      - name: round trip · the worker and the search path agree
+        run: pnpm test:acl:group "pipeline round trip"
+
       # Fast on a pull request, exhaustive at night. The nightly run is where a
       # rare interaction between deny and inheritance actually gets found.
       - name: property · resolve vs the reference implementation

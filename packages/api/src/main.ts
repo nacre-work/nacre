@@ -17,6 +17,9 @@ import {
   NacreSearchService,
   PostgresAudit,
   PostgresDocuments,
+  PostgresGrants,
+  PostgresJobs,
+  PostgresLayers,
 } from './adapters.js'
 import { createApi } from './server.js'
 
@@ -102,6 +105,9 @@ async function main(): Promise<void> {
     }),
     ingest: new NacreIngest(pool, APP_ROLE),
     audit: new PostgresAudit(pool, APP_ROLE),
+    jobs: new PostgresJobs(pool, APP_ROLE),
+    layers: new PostgresLayers(pool, APP_ROLE),
+    grants: new PostgresGrants(pool, APP_ROLE),
   })
 
   const port = Number(process.env.PORT ?? 8080)

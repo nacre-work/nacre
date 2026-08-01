@@ -60,6 +60,63 @@ export interface Ingest {
   remove(auth: AuthContext, documentId: string): Promise<boolean>
 }
 
+export interface Job {
+  readonly jobId: string
+  readonly documentId: string
+  readonly status: 'queued' | 'parsing' | 'embedding' | 'indexed' | 'failed'
+  readonly progress: number
+  readonly error?: string
+}
+
+export interface Jobs {
+  /** `undefined` for absent and for another organization's job alike. */
+  read(orgId: string, jobId: string): Promise<Job | undefined>
+}
+
+export interface Layer {
+  readonly id: string
+  readonly slug: string
+  readonly name: string
+  readonly workspaceId: string
+}
+
+export interface Layers {
+  /** Only the layers this caller may read. The plan decides, not the caller. */
+  list(auth: AuthContext): Promise<readonly Layer[]>
+  /**
+   * Create a layer, or refuse.
+   *
+   * `undefined` means the caller may not administer the workspace — and means
+   * the same for a workspace that does not exist, for the reason `Ingest.queue`
+   * documents.
+   */
+  create(
+    auth: AuthContext,
+    input: { workspaceId: string; slug: string; name: string },
+  ): Promise<Layer | undefined>
+}
+
+export interface GrantInput {
+  readonly principalType: 'user' | 'group' | 'service_account'
+  readonly principalId: string
+  readonly scopeType: 'workspace' | 'layer'
+  readonly scopeId: string
+  readonly permission: 'read' | 'write' | 'admin'
+}
+
+export interface GrantRecord extends GrantInput {
+  readonly id: string
+  readonly effect: 'allow' | 'deny'
+  readonly source: string
+}
+
+export interface Grants {
+  /** Grants in the caller's organization. Admin only; the caller is checked above. */
+  list(auth: AuthContext): Promise<readonly GrantRecord[]>
+  /** `undefined` when the caller may not administer the scope, or it does not exist. */
+  issue(auth: AuthContext, input: GrantInput): Promise<GrantRecord | undefined>
+}
+
 export interface AuditEvent {
   readonly orgId: string
   readonly actor: string
@@ -82,9 +139,78 @@ export interface ApiOptions {
   readonly search: SearchService
   readonly ingest: Ingest
   readonly audit: AuditSink
+  readonly jobs?: Jobs
+  readonly layers?: Layers
+  readonly grants?: Grants
 }
 
 const MAX_BODY_BYTES = 1_000_000
+
+const PRINCIPAL_TYPES = ['user', 'group', 'service_account'] as const
+const PERMISSIONS = ['read', 'write', 'admin'] as const
+
+function grantJson(g: GrantRecord): Record<string, unknown> {
+  return {
+    id: g.id,
+    principal_type: g.principalType,
+    principal_id: g.principalId,
+    scope_type: g.scopeType,
+    scope_id: g.scopeId,
+    permission: g.permission,
+    effect: g.effect,
+    source: g.source,
+  }
+}
+
+/**
+ * A grant body, or the reason it is not one.
+ *
+ * Two of the rejections here are the open/commercial boundary rather than
+ * validation. `docs/licensing.md` puts document-level ACLs and deny rules in
+ * the commercial half; the core is workspace- and layer-scoped allow-only RBAC.
+ * The resolver can already represent both — an enterprise resolver registered
+ * through `registerAuthzResolver` produces them — but the core must not issue
+ * what it does not implement the propagation for.
+ *
+ * `400` and not `404`: the caller is an administrator asking for a capability
+ * this build does not have, which is not a question about whether an object
+ * exists, so invariant I4 has no bearing and saying so plainly is right.
+ */
+function parseGrant(body: Record<string, unknown>): GrantInput | string {
+  const principalType = body.principal_type
+  const principalId = body.principal_id
+  const scopeType = body.scope_type
+  const scopeId = body.scope_id
+  const permission = body.permission
+  const effect = body.effect
+
+  if (typeof principalId !== 'string' || typeof scopeId !== 'string') {
+    return "'principal_id' and 'scope_id' are required."
+  }
+  if (typeof principalType !== 'string' || !PRINCIPAL_TYPES.includes(principalType as never)) {
+    return `'principal_type' must be one of ${PRINCIPAL_TYPES.join(', ')}.`
+  }
+  if (typeof permission !== 'string' || !PERMISSIONS.includes(permission as never)) {
+    return `'permission' must be one of ${PERMISSIONS.join(', ')}.`
+  }
+  if (scopeType === 'document') {
+    return 'Document-level grants are not available in this build. Grant on the layer or the workspace instead.'
+  }
+  if (scopeType !== 'workspace' && scopeType !== 'layer') {
+    return "'scope_type' must be 'workspace' or 'layer'."
+  }
+  if (effect !== undefined && effect !== 'allow') {
+    return 'Deny rules are not available in this build. Grants are allow-only; remove the grant to revoke it.'
+  }
+
+  return {
+    principalType: principalType as GrantInput['principalType'],
+    principalId,
+    scopeType,
+    scopeId,
+    permission: permission as GrantInput['permission'],
+  }
+}
 
 async function readBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = []
@@ -320,6 +446,139 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         requestId,
       })
       send(res, 200, document, requestId)
+      return
+    }
+
+    const jobMatch = /^\/v1\/jobs\/([^/]+)$/.exec(instance)
+    if (req.method === 'GET' && jobMatch && options.jobs !== undefined) {
+      const id = decodeURIComponent(jobMatch[1] as string)
+      const job = await options.jobs.read(auth.orgId, id)
+
+      if (job === undefined) {
+        // A job names a document, so it is as much of an oracle as the document
+        // is. Absent and another organization's answer identically.
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      send(
+        res,
+        200,
+        {
+          job_id: job.jobId,
+          document_id: job.documentId,
+          status: job.status,
+          progress: job.progress,
+          ...(job.error === undefined ? {} : { error: job.error }),
+        },
+        requestId,
+      )
+      return
+    }
+
+    if (req.method === 'GET' && instance === '/v1/layers' && options.layers !== undefined) {
+      const layers = await options.layers.list(auth)
+      // No audit event: this returns what the caller may already read, and one
+      // event per listing buries the ones that matter.
+      send(
+        res,
+        200,
+        {
+          items: layers.map((l) => ({
+            id: l.id,
+            slug: l.slug,
+            name: l.name,
+            workspace_id: l.workspaceId,
+          })),
+        },
+        requestId,
+      )
+      return
+    }
+
+    if (req.method === 'POST' && instance === '/v1/layers' && options.layers !== undefined) {
+      const body_ = (body ?? {}) as Record<string, unknown>
+      const workspaceId = body_.workspace_id
+      const slug = body_.slug
+      const name = body_.name
+
+      if (typeof workspaceId !== 'string' || typeof slug !== 'string' || typeof name !== 'string') {
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'workspace_id', 'slug' and 'name' are required.",
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const created = await options.layers.create(auth, { workspaceId, slug, name })
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'create_layer',
+        result: created === undefined ? 'deny' : 'allow',
+        detail: { workspace_id: workspaceId, slug },
+        requestId,
+      })
+
+      if (created === undefined) {
+        // 404, not 403. A caller who may not administer a workspace must not be
+        // able to tell it apart from one that does not exist.
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      send(
+        res,
+        201,
+        { id: created.id, slug: created.slug, name: created.name, workspace_id: created.workspaceId },
+        requestId,
+      )
+      return
+    }
+
+    if (req.method === 'GET' && instance === '/v1/grants' && options.grants !== undefined) {
+      const grants = await options.grants.list(auth)
+      send(res, 200, { items: grants.map(grantJson) }, requestId)
+      return
+    }
+
+    if (req.method === 'POST' && instance === '/v1/grants' && options.grants !== undefined) {
+      const body_ = (body ?? {}) as Record<string, unknown>
+      const parsed = parseGrant(body_)
+
+      if (typeof parsed === 'string') {
+        const problem = badRequest(instance, requestId, parsed)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const issued = await options.grants.issue(auth, parsed)
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'issue_grant',
+        result: issued === undefined ? 'deny' : 'allow',
+        detail: {
+          principal: `${parsed.principalType}:${parsed.principalId}`,
+          scope: `${parsed.scopeType}:${parsed.scopeId}`,
+          permission: parsed.permission,
+        },
+        requestId,
+      })
+
+      if (issued === undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      send(res, 201, grantJson(issued), requestId)
       return
     }
 

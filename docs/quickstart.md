@@ -1,13 +1,14 @@
 # Quickstart
 
-> **This does not run end to end yet.** The compose file is real and its three
-> profiles are validated in CI; the API and MCP transports, the permission
-> model, and the ingest pipeline are implemented and tested. What is missing is
-> the wiring between them — the adapters behind the storage ports, the embedder
-> client, and the parser sidecar's body. Commands below are the intended shape,
-> not a working transcript. Check
-> [the issue tracker](https://github.com/nacre-work/nacre/issues) for where
-> things actually stand.
+> **The pieces are wired; the stack has not been run from this file.** The
+> adapters, the embedder client, and the parser sidecar exist now, and CI runs
+> the worker pipeline and the search path against a real Postgres and a real
+> Qdrant — a document is indexed and comes back bounded by its grants, which is
+> the claim that matters. What has *not* happened is somebody running
+> `docker compose up` from a clean checkout and following this page to the end.
+> Treat the commands as accurate but unrehearsed, and
+> [open an issue](https://github.com/nacre-work/nacre/issues) for whatever
+> this page gets wrong.
 
 ## What you will need
 
@@ -28,6 +29,50 @@ docker compose --profile minimal up -d
 sidecar, and expects embeddings from an endpoint you name in
 `NACRE_DEFAULT_EMBEDDING_ENDPOINT`. Use `--profile full` to run the embedder and
 the reranker locally too; see [config.md](./config.md) for the difference.
+
+## A layer, and someone allowed to read it
+
+A document lives in a layer, and a layer lives in a workspace. Nothing is
+readable by default — there is no implicit grant to a creator, an owner, or an
+administrator of the workspace, which is deliberate and is the thing most
+permission systems do differently.
+
+```bash
+curl -X POST http://localhost:8080/v1/layers \
+  -H "Authorization: Bearer $NACRE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "workspace_id": "…", "slug": "handbook", "name": "Handbook" }'
+```
+
+Then grant someone `read` on it:
+
+```bash
+curl -X POST http://localhost:8080/v1/grants \
+  -H "Authorization: Bearer $NACRE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "principal_type": "user",
+    "principal_id": "…",
+    "scope_type": "layer",
+    "scope_id": "…",
+    "permission": "read"
+  }'
+```
+
+Both need `admin` on the scope in question — on the workspace to create a layer
+in it, on the layer to grant against it. Admin on one layer does not let you
+grant yourself another. A caller without it gets `404`, the same answer as for a
+scope that does not exist, because telling the two apart is how you enumerate
+what exists.
+
+Grants are allow-only here. To revoke, delete the grant; `effect: deny` and
+`scope_type: document` are commercial and this build refuses them with a `400`
+saying so.
+
+`write` does not imply `read` — someone with `write` on a layer can put
+documents in it and cannot search them. `admin` implies both. This is the
+opposite of most systems and it is not an oversight; see
+[authz.md](./authz.md).
 
 ## First document
 
