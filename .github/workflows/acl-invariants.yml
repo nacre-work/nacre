@@ -5,29 +5,26 @@ name: acl-invariants
 # instead of hiding among unit tests.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# STATUS: this job does NOT yet gate against leaks.
+# STATUS: 9 of the 15 cases in docs/authz.md section 3.5 run. The other six
+# need the HTTP surface, Qdrant, or Redis, and the `not yet covered` step below
+# prints them on every run — including green ones, deliberately.
 #
-# It runs the authz tests that exist, and what exists today is the permission
-# implication table — one rule of the model. T1-T15 from docs/authz.md section
-# 3.5 need the resolver, the schema, and the vector store, none of which are
-# written yet.
+# This job may be a required check for what it does test. It is not yet
+# evidence that the access-control invariants hold end to end, and the two
+# saturation cases are the reason to care: T9 and T10 are what catch a
+# post-filter, and an implementation that filters after ranking passes every
+# case that runs today.
 #
-# Do not add this job to the required checks as evidence of leak testing until
-# T1-T15 actually run. A required check that passes without running them is
-# worse than no check, because it gets believed. When the resolver lands,
-# restore what was removed here: the postgres and qdrant services, the
-# migration step, three named steps selecting baseline / saturation /
-# adversarial with `-t`, and the nightly property-based run against the
-# reference implementation.
-#
-# Note for whoever restores those steps: the selector is `-t` (alias of
-# --testNamePattern). The version of this file that shipped with the initial
-# commit used `--grep`, which vitest does not accept.
+# When the vector store lands, add the postgres and qdrant services back along
+# with a migration step, and move T9/T10 to implemented in test-plan.ts — the
+# coverage test fails if that claim is made without a test to back it.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
   push:    { branches: [main] }
   pull_request:
+  schedule:
+    - cron: "0 3 * * *"   # nightly: the exhaustive property-based run
 
 jobs:
   acl-invariants:
@@ -43,7 +40,29 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
 
-      # The acl project sets no passWithNoTests, at any level. If this step
-      # ever reports success having run zero tests, that is the bug.
-      - name: authz tests
-        run: pnpm test:acl
+      # Split by group so a leak reads as "T3 failed" in the checks list rather
+      # than as one number among fifty. The selector is `-t`, an alias of
+      # --testNamePattern; `--grep` is not a vitest flag and silently ran
+      # everything in the version of this file that shipped first.
+      #
+      # Each step goes through scripts/acl-group.mjs, which fails when the
+      # selector matches nothing. `vitest -t` skips what does not match and
+      # exits 0, so a renamed describe block would otherwise turn a leak-test
+      # step green while checking nothing.
+      - name: T1-T8 · baseline
+        run: pnpm test:acl:group "baseline"
+      - name: truth table · docs/authz.md 3.2
+        run: pnpm test:acl:group "truth table"
+      - name: T11-T15 · adversarial
+        run: pnpm test:acl:group "adversarial"
+
+      # Fast on a pull request, exhaustive at night. The nightly run is where a
+      # rare interaction between deny and inheritance actually gets found.
+      - name: property · resolve vs the reference implementation
+        run: pnpm test:acl:property
+        env:
+          PROPERTY_RUNS: ${{ github.event_name == 'schedule' && '10000' || '500' }}
+
+      # Prints on green runs too. A gap nobody sees is a gap nobody closes.
+      - name: not yet covered
+        run: pnpm authz:pending

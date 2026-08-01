@@ -83,6 +83,22 @@ resolve(principals, org, permission) -> AccessPlan:
     return AccessPlan(layers, extra_docs = allow_docs − deny_docs, denied_docs = deny_docs)
 ```
 
+> **The pseudocode above is incomplete, and the truth table wins.**
+>
+> `extra_docs = allow_docs − deny_docs` subtracts only *document-scoped*
+> denies. It therefore keeps a document that was allowed explicitly while its
+> workspace was denied — which is exactly the row
+> `deny read | allow read | allow read → none`, the one flagged above as the
+> row people get wrong.
+>
+> `resolve()` checks each granted document against its ancestors instead. Where
+> the two disagree, rule 5 governs: any applicable deny beats any applicable
+> allow, at any depth. The property-based test compares against the rules, not
+> against this sketch, which is how the discrepancy surfaced.
+>
+> A document whose layer cannot be found is refused rather than allowed —
+> invariant I3 applied to a scope that cannot be placed in the tree.
+
 The `AccessPlan` becomes a **pre-filter** on the vector query. Not a
 post-filter.
 
@@ -188,11 +204,22 @@ cannot leak.
 
 ## Current state
 
-`packages/core/authz/` holds the implication table and its test. The resolver,
-the reference implementation, the principal cache, and the filter builder are
-not written yet, and T1–T15 need the schema and the vector store as well as the
-resolver.
+`packages/core/authz/` holds the resolver (`resolve.ts`), the reference
+implementation (`reference.ts`), effective principals (`principals.ts`), the
+pre-filter builder (`filter.ts`), and the implication table
+(`permissions.ts`).
 
-Until they run, the `acl-invariants` CI job is **not** evidence that any of this
-holds. The workflow file says so, and it should not be a required check on that
-basis until the suite is real.
+**9 of the 15 cases run.** T1, T3–T7, T13–T15, plus the full truth table
+checked against both implementations and a property-based comparison between
+them. `test-plan.ts` is the inventory, and `packages/core/authz/__tests__/coverage.test.ts`
+fails if a case is marked implemented without a test carrying its marker — so
+the list cannot drift in either direction. `pnpm authz:pending` prints what is
+outstanding, and the CI job prints it on green runs too.
+
+Outstanding: T2 and T8 need the HTTP surface, T9 and T10 need Qdrant, T11 needs
+Redis and the propagation job, T12 needs the reindex pipeline.
+
+**T9 and T10 are the ones to weigh before trusting the job.** They are what
+catches a post-filter, and an implementation that filters after ranking passes
+every case that runs today. Until the vector store lands, `acl-invariants`
+attests to the resolver and not to the system.
