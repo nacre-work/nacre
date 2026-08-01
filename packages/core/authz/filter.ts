@@ -6,9 +6,22 @@ import type { AccessPlan } from './resolve.js'
  */
 export interface VectorFilter {
   readonly must: readonly FilterClause[]
+  /**
+   * At least one of these must match.
+   *
+   * That is Qdrant's meaning, not Elasticsearch's: a `should` list is a
+   * constraint, and a point that matches none of them does not pass the filter.
+   * There is no scalar `min_should` to go with it — Qdrant's `min_should` is an
+   * object, `{ conditions, min_count }`, for the "at least N" case. The filter
+   * sketch in docs/authz.md carried `min_should: 1` as an integer, which the
+   * API rejects outright; every query built from it came back 400.
+   *
+   * Never emit an empty `should`. An empty list is not "match nothing" — it is
+   * no constraint at all, so the filter degrades to `must` alone and the caller
+   * sees every point in the collection.
+   */
   readonly should?: readonly FilterClause[]
   readonly must_not?: readonly FilterClause[]
-  readonly min_should?: number
 }
 
 export type FilterClause =
@@ -55,16 +68,29 @@ export function buildFilter(orgId: string, plan: QueryablePlan): VectorFilter {
 
   if (plan.kind === 'all') return { must }
 
+  // Only non-empty lists become clauses. An empty `any` adds nothing and an
+  // empty `should` removes the constraint entirely.
+  const should: FilterClause[] = []
+  if (plan.layers.length > 0) should.push({ key: 'layer_id', match: { any: plan.layers } })
+  if (plan.extraDocs.length > 0) should.push({ key: 'doc_id', match: { any: plan.extraDocs } })
+
+  if (should.length === 0) {
+    // A scoped plan that reaches nothing. `resolve` never produces one — it
+    // returns `kind: 'none'` instead — so arriving here means the plan was
+    // assembled by hand. Refusing is rule I3 applied to the query builder: a
+    // permission set that cannot be expressed denies, and the alternative is a
+    // filter with no `should` at all, which returns the whole collection.
+    throw new Error(
+      'refusing to build a filter from a scoped plan that reaches no layer and ' +
+        'no document — a plan like this must be kind: "none"',
+    )
+  }
+
   return {
     must,
-    should: [
-      { key: 'layer_id', match: { any: plan.layers } },
-      { key: 'doc_id', match: { any: plan.extraDocs } },
-    ],
-    // At least one of the two `should` clauses has to hold. Without this a
-    // Qdrant `should` is a scoring hint rather than a constraint, and every
-    // point in the collection satisfies the filter.
-    min_should: 1,
-    must_not: [{ key: 'doc_id', match: { any: plan.deniedDocs } }],
+    should,
+    ...(plan.deniedDocs.length > 0
+      ? { must_not: [{ key: 'doc_id', match: { any: plan.deniedDocs } }] }
+      : {}),
   }
 }

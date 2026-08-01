@@ -5,19 +5,17 @@ name: acl-invariants
 # instead of hiding among unit tests.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# STATUS: 9 of the 15 cases in docs/authz.md section 3.5 run. The other six
-# need the HTTP surface, Qdrant, or Redis, and the `not yet covered` step below
-# prints them on every run — including green ones, deliberately.
+# STATUS: 11 of the 15 cases in docs/authz.md section 3.5 run, against a real
+# Postgres and a real Qdrant. The `not yet covered` step prints the rest on
+# every run, including green ones, deliberately.
 #
-# This job may be a required check for what it does test. It is not yet
-# evidence that the access-control invariants hold end to end, and the two
-# saturation cases are the reason to care: T9 and T10 are what catch a
-# post-filter, and an implementation that filters after ranking passes every
-# case that runs today.
+# T9 and T10 now run, which is the line worth knowing about: they are the cases
+# that catch a post-filter, and an implementation that filters after ranking
+# passes everything else in this suite. Outstanding are T2 and T8 (the HTTP
+# surface), T11 (Redis and the propagation job) and T12 (the reindex pipeline).
 #
-# When the vector store lands, add the postgres and qdrant services back along
-# with a migration step, and move T9/T10 to implemented in test-plan.ts — the
-# coverage test fails if that claim is made without a test to back it.
+# The integration tests refuse to skip when CI is set, so a missing service URL
+# fails the job instead of quietly reducing what it checks.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -38,11 +36,15 @@ jobs:
           --health-cmd pg_isready --health-interval 5s
           --health-timeout 5s --health-retries 10
         ports: ["5432:5432"]
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports: ["6333:6333"]
     env:
       # The integration tests refuse to skip when CI is set — a tenant-isolation
       # test that turns itself off because a variable is missing is the failure
       # mode this whole job exists to avoid.
       NACRE_PG_URL: postgres://postgres:test@localhost:5432/nacre_test
+      NACRE_QDRANT_URL: http://localhost:6333
     steps:
       - uses: actions/checkout@v4
       # No version here: pnpm/action-setup refuses to run when the version is
@@ -65,6 +67,8 @@ jobs:
       # step green while checking nothing.
       - name: T1-T8 · baseline
         run: pnpm test:acl:group "baseline"
+      - name: T9-T10 · result saturation
+        run: pnpm test:acl:group "saturation"
       - name: truth table · docs/authz.md 3.2
         run: pnpm test:acl:group "truth table"
       - name: T11-T15 · adversarial

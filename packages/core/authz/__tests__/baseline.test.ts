@@ -125,7 +125,20 @@ describe('baseline', () => {
     const p = plan([grant(alice, 'read', 'layer', 'contracts')])
     if (p.kind !== 'scoped') throw new Error('fixture should be scoped')
 
-    // Without min_should a Qdrant `should` is a hint and every point matches.
-    expect(buildFilter(ORG, p).min_should).toBe(1)
+    // `should` in Qdrant means at least one must match. The thing to guard is
+    // that it is never empty: an empty list is no constraint, and the filter
+    // would fall back to `must` and return the whole collection.
+    const filter = buildFilter(ORG, p)
+    expect(filter.should?.length ?? 0).toBeGreaterThan(0)
+    expect(filter.should).toContainEqual({ key: 'layer_id', match: { any: ['contracts'] } })
+  })
+
+  it('a scoped plan that reaches nothing is refused, not turned into a filter', () => {
+    // resolve() never produces this — it returns kind: 'none'. A hand-built one
+    // would otherwise become a filter with no `should` at all, which returns
+    // every point in the collection.
+    expect(() =>
+      buildFilter(ORG, { kind: 'scoped', layers: [], extraDocs: [], deniedDocs: [] }),
+    ).toThrow(/reaches no layer and no document/)
   })
 })

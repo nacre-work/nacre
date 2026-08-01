@@ -47,11 +47,9 @@ export const TEST_PLAN: readonly TestCase[] = [
   // ── saturation ──
   // These are the ones that catch a post-filter: an implementation that filters
   // after ranking passes every baseline case and fails both of these.
-  { id: 'T9', group: 'saturation', status: 'pending',
-    blockedBy: 'Qdrant: result counts are a property of the index traversal',
+  { id: 'T9', group: 'saturation', status: 'implemented',
     scenario: '20 layers, access to 1, top_k=10 returns exactly 10' },
-  { id: 'T10', group: 'saturation', status: 'pending',
-    blockedBy: 'Qdrant: as above',
+  { id: 'T10', group: 'saturation', status: 'implemented',
     scenario: 'The accessible layer holds 5 documents, top_k=10 returns 5 with no topping up' },
 
   // ── adversarial ──
