@@ -91,7 +91,11 @@ importers:
 
   packages/sdk: {}
 
-  packages/worker: {}
+  packages/worker:
+    devDependencies:
+      '@types/node':
+        specifier: ^26.1.2
+        version: 26.1.2
 
 packages:
 

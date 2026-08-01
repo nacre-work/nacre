@@ -1,3 +1,14 @@
-// Indexing pipeline: parse, chunk, embed. Contract: docs/architecture.md.
-// Nothing is implemented yet.
-export {}
+export { chunk, DEFAULT_CHUNK_CONFIG } from './chunk.js'
+export type { Chunk, ChunkConfig } from './chunk.js'
+export { contentHash, ingest } from './ingest.js'
+export type {
+  DocumentStore,
+  Embedder,
+  IngestPorts,
+  IngestRequest,
+  IngestResult,
+  Parser,
+  ParsedDocument,
+  StoredDocument,
+  VectorWriter,
+} from './ingest.js'

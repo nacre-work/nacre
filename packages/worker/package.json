@@ -15,5 +15,8 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2"
   }
 }
