@@ -250,14 +250,26 @@ down is still unguarded, and adding one here is how that changes.
 
 **T11 is satisfied more strongly than it asks.** The specification allows a
 revoked grant to be served for up to `ACL_PROPAGATION_SLA`; the effective
-principals cache is keyed on `organizations.groups_version`, which a database
-trigger increments on every membership change, so a revoked grant cannot be
-served at all. The stale entry is not invalidated — it is simply never asked
-for again, because the next request composes a different key. The TTL is a
-memory bound, not the correctness mechanism.
+principals cache is keyed on `organizations.groups_version`, which database
+triggers increment on every change to `groups`, `group_members` and `grants`,
+so a revoked grant cannot be served at all. The stale entry is not invalidated —
+it is simply never asked for again, because the next request composes a
+different key. The TTL is a memory bound, not the correctness mechanism.
+
+The column is the permission epoch rather than a group counter; the name is
+narrower than the meaning. `grants` was added to the list in migration 0005,
+and until then a revocation moved nothing — which left
+`nacre_acl_propagation_lag_seconds` reporting zero through the one event it is
+offered as evidence about.
 
 `acl_tags` remains a cache the SLA does bound, which is why the layer filter
-and the tag filter both apply until a recomputation finishes.
+and the tag filter both apply until a recomputation finishes. **That
+recomputation does not exist yet.** The lag is measured and exported; nothing
+drains it. A document's tags are refreshed only when its content changes and it
+is reindexed, so after a grant change the gauge will climb and keep climbing.
+That is the honest reading of the current state, and it is why the measurement
+was built before the job: an unmeasured backlog is indistinguishable from no
+backlog.
 
 **T9 and T10 were the ones to weigh, and they now run.** They are what catches
 a post-filter: an implementation that fetches k results and removes the ones the

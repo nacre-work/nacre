@@ -173,6 +173,54 @@ when('observability · the database gauges', () => {
     expect(gauge(await scrape(), 'nacre_acl_propagation_lag_seconds', '{org="obs"}')).toBe(0)
   })
 
+  it('revoking a grant makes the lag visible', async () => {
+    // The scenario the metric is named for, end to end. Everything current,
+    // then a grant is revoked; the version moves and the documents are behind
+    // it until something re-tags them.
+    //
+    // Until migration 0005 this reported zero. groups_version was bumped by
+    // triggers on groups and group_members but not on grants, so a revocation —
+    // the one event invariant I4 is about — moved nothing, and the gauge stayed
+    // flat through exactly the window it exists to expose.
+    const version = async () =>
+      withOrg(
+        pool,
+        ORG,
+        async (c) =>
+          Number(
+            (
+              await c.query<{ groups_version: string }>(
+                'SELECT groups_version FROM organizations WHERE id = $1',
+                [ORG],
+              )
+            ).rows[0]?.groups_version,
+          ),
+        AS_APP,
+      )
+
+    const before = await version()
+    await tag(ids.fresh, before, 30)
+    await tag(ids.stale, before, 30)
+    expect(gauge(await scrape(), 'nacre_acl_propagation_lag_seconds', '{org="obs"}')).toBe(0)
+
+    await withOrg(
+      pool,
+      ORG,
+      async (c) => {
+        await c.query(
+          `INSERT INTO grants (org_id, principal_type, principal_id, scope_type, scope_id, permission, effect)
+           VALUES ($1,'user',$2,'layer',$3,'read','allow')`,
+          [ORG, ids.ws, ids.layer],
+        )
+        await c.query(`DELETE FROM grants WHERE org_id = $1 AND scope_id = $2`, [ORG, ids.layer])
+      },
+      AS_APP,
+    )
+
+    expect(await version()).toBeGreaterThan(before)
+    expect(gauge(await scrape(), 'nacre_acl_propagation_lag_seconds', '{org="obs"}')).toBeGreaterThan(0)
+  })
+
   it('tombstones are counted separately, where a purge backlog belongs', async () => {
     const text = await scrape()
     expect(gauge(text, 'nacre_tombstones_pending_total', '{org="obs"}')).toBe(1)
