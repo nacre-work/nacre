@@ -50,10 +50,15 @@ jobs:
       # The entry points are what docker-compose runs. Until they existed it ran
       # a library barrel that exited zero without doing anything.
       - run: pnpm lint:entrypoints
-      # Every acl test must be reachable by one of the acl-invariants
-      # selectors, or it does not run in the job that gates leaks — while that
-      # job reports success, because every step it did run passed.
-      - run: pnpm lint:acl-groups
+      # lint:acl-groups is not here: it lists the acl project, which collects by
+      # importing, and those tests refuse to load when CI is set without a
+      # Qdrant to point at. It runs as the first step of acl-invariants, which
+      # has both services — the job it protects.
+      #
+      # This one is here rather than only in release, where it is a gate: an
+      # unpublishable manifest should fail on the pull request that wrote it,
+      # not months later on the tag that was supposed to ship it.
+      - run: pnpm lint:publish
       - run: pnpm migrate
       - run: pnpm test:unit
 
