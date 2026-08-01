@@ -11,6 +11,9 @@ importers:
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.8.0)
+      '@redocly/cli':
+        specifier: ^2.43.2
+        version: 2.43.2
       '@types/node':
         specifier: ^22.10.0
         version: 22.20.1
@@ -121,6 +124,11 @@ packages:
 
   '@oxc-project/types@0.142.0':
     resolution: {integrity: sha512-7W+2q5AKQVU36fkaryontrHn3YDt1RyUYXatw9i5H8ocYe2sPKSFB6eS8WNPeRKiN1qAWWZUPm7gwFzJGrccqQ==}
+
+  '@redocly/cli@2.43.2':
+    resolution: {integrity: sha512-0rPTyFiYWw4nDQgvGC/M0iwQSAuk+X42Bn3mFNTNLVllIsYDG2W3nFVkdNGqTBiR8C/8e7XrF0n3DZq8fDvZvg==}
+    engines: {node: '>=22.12.0 || >=20.19.0 <21.0.0', npm: '>=10'}
+    hasBin: true
 
   '@rolldown/binding-android-arm64@1.2.1':
     resolution: {integrity: sha512-02hOeOSryYxVrOIphmLAsqnCJWxwlzFk+pEt/N/i6OgT3lShHO7xGCU5cpgchRDHboAEbSjzgGh+O/u1GswQmA==}
@@ -919,6 +927,8 @@ snapshots:
     optional: true
 
   '@oxc-project/types@0.142.0': {}
+
+  '@redocly/cli@2.43.2': {}
 
   '@rolldown/binding-android-arm64@1.2.1':
     optional: true

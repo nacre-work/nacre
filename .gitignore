@@ -17,3 +17,6 @@ __pycache__/
 *.log
 /data/
 /tmp/
+
+# Claude Code: per-developer overrides, never committed
+.claude/settings.local.json

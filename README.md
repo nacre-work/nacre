@@ -54,9 +54,16 @@ packages/core       data model, permission resolver, shared types
 packages/sdk        TypeScript SDK
 packages/admin      community admin UI
 services/parser     Python sidecar: bytes → {text, blocks, metadata}
-charts/             Helm
-docs/               documentation
+docs/               specifications — normative, and ahead of the code
 ```
+
+## State
+
+Early. The repository builds and its tests pass, but no service is implemented
+yet: the packages are entry points, and `packages/core/authz/permissions.ts` is
+the only logic in the tree. `docs/` is the specification to build against, not a
+description of what exists — start with [docs/authz.md](./docs/authz.md), which
+everything else depends on.
 
 ## Invariants
 

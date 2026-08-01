@@ -22,6 +22,9 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      # The OpenAPI document is the contract and runs ahead of the code, so it
+      # has nothing but this check keeping it honest.
+      - run: pnpm lint:openapi
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test:unit
