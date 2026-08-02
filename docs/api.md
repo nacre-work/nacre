@@ -109,6 +109,17 @@ answering "not valid" to a request that was never checked is a lie the client
 will act on. It is not an oracle: it depends on how loaded the process is and
 not at all on whether the account exists.
 
+### The access log is readable
+
+`GET /v1/audit`, newest first, cursor-paged, as JSON, JSONL or CSV by content
+negotiation. Filters `from`, `to`, `actor_id`, `action` and `result` are all
+applied and a malformed one is a `400`.
+
+`org_admin` sees its organization's log in full. `platform_admin` sees
+administrative actions and never the record of who read what — rule 2 applied
+to the journal, and not a parameter the caller can drop. A `member` gets `404`.
+Reading it is recorded as `audit.read`. Full rules in [audit.md](./audit.md).
+
 ### Search parameters
 
 `layers`, `filters` and `include_content` were declared in the contract from the

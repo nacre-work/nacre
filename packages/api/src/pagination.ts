@@ -59,10 +59,23 @@ function decodeCursor(cursor: string): Position | undefined {
 
   const createdAt = decoded.slice(0, at)
   const id = decoded.slice(at + 1)
-  // A cursor that does not carry a timestamp and a uuid is not one this API
-  // issued, whatever it decodes to.
+  // A cursor that does not carry a timestamp and an identifier is not one this
+  // API issued, whatever it decodes to.
+  //
+  // A uuid **or** a run of digits: every paged collection here is keyed by uuid
+  // except `audit_events`, whose primary key is a bigserial — an audit log is
+  // append-only and strictly ordered, and a sequence says so in a way a random
+  // uuid does not.
+  //
+  // Widening the format does not weaken anything, and it is worth saying why
+  // rather than leaving the next reader to work it out. The cursor is not a
+  // security boundary: it is not signed, it is decodable by anyone, and a
+  // forged one selects a different page of the caller's *own* collection —
+  // which they could reach by paging. What this check is for is telling a
+  // client that built its own cursor that it has taken a dependency on a format
+  // allowed to change, before that becomes their problem.
   if (Number.isNaN(Date.parse(createdAt))) return undefined
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return undefined
+  if (!/^[0-9a-f-]{36}$/i.test(id) && !/^\d{1,19}$/.test(id)) return undefined
 
   return { createdAt, id }
 }

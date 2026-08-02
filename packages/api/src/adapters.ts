@@ -21,6 +21,9 @@ import { applyRanking, type Reranker } from './rerank.js'
 
 import type {
   AuditEvent,
+  AuditQuery,
+  AuditReader,
+  AuditRecord,
   AuditSink,
   Documents,
   GrantInput,
@@ -1192,4 +1195,144 @@ export class PostgresGrants implements Grants {
       this.scope,
     )
   }
+}
+
+
+/**
+ * Reading the access log back.
+ *
+ * Scoped through `withOrg` like every other tenant read, so the row-level
+ * policy on `audit_events` is the second line of defence behind the role check
+ * in the handler. `SELECT` is the only grant the application role has on this
+ * table and that stays true — nothing here writes.
+ *
+ * ## Newest first, and what that does to the cursor
+ *
+ * Every other paged collection here reads oldest-first, because a catalog is a
+ * set and the order is arbitrary. A log is not: the useful end is the recent
+ * one, and an auditor paging forward from the beginning of a 400-day retention
+ * window to find yesterday is not a feature. So this orders
+ * `(occurred_at, id) DESC` and the seek predicate is `<` rather than `>`.
+ *
+ * The cursor still means "everything after the last row you saw", which is the
+ * same contract read in the other direction. It is worth being explicit because
+ * copying the seek clause from the layers adapter — where it is `>` — would
+ * produce a first page that works and a second page that silently returns the
+ * beginning of the log.
+ */
+export class PostgresAuditReader implements AuditReader {
+  constructor(
+    private readonly pool: Pool,
+    private readonly role?: string,
+  ) {}
+
+  /**
+   * Actions that record a substantive access to a document's contents.
+   *
+   * Withheld from `platform_admin`, per rule 2 in docs/authz.md as
+   * docs/audit.md applies it to the journal. Named as a deny-list rather than
+   * an allow-list of administrative actions, and that is the uncomfortable
+   * direction: a new action defaults to *visible* to a platform administrator
+   * rather than hidden.
+   *
+   * Chosen anyway, because the alternative fails worse. An allow-list means a
+   * new administrative action is invisible to the operator who administers the
+   * installation until someone remembers to add it — a silent gap in an
+   * operational tool. This way a new *access* action is visible until someone
+   * adds it here, which is a disclosure to an already highly-privileged role
+   * within one installation. Both are bugs; only one of them is quiet.
+   *
+   * The `audit-event` skill's checklist is where this list is kept in step.
+   */
+  private static readonly DOCUMENT_ACCESS = ['search', 'document.read', 'document.get', 'chunk.read']
+
+  async read(auth: AuthContext, query: AuditQuery, page: Page): Promise<PageResult<AuditRecord>> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const where: string[] = ['org_id = $1']
+        const params: unknown[] = [auth.orgId]
+        const bind = (value: unknown): string => {
+          params.push(value)
+          return `$${params.length}`
+        }
+
+        if (query.from !== undefined) where.push(`occurred_at >= ${bind(query.from)}::timestamptz`)
+        if (query.to !== undefined) where.push(`occurred_at < ${bind(query.to)}::timestamptz`)
+        if (query.actorId !== undefined) where.push(`actor_id = ${bind(query.actorId)}::uuid`)
+        if (query.action !== undefined) where.push(`action = ${bind(query.action)}`)
+        if (query.result !== undefined) where.push(`result = ${bind(query.result)}`)
+        if (query.administrativeOnly === true) {
+          where.push(`action <> ALL(${bind(PostgresAuditReader.DOCUMENT_ACCESS)}::text[])`)
+        }
+
+        // Descending, and `<` to match. See the note on the class.
+        if (page.after !== undefined) {
+          where.push(
+            `(occurred_at, id) < (${bind(page.after.createdAt)}::timestamptz, ${bind(page.after.id)}::bigint)`,
+          )
+        }
+
+        // One more than asked for, so "is there another page" is answered
+        // without a second query and without a count — a count over a
+        // retention window is the expensive thing this endpoint must not do on
+        // every request.
+        const { rows } = await client.query<AuditRow>(
+          `SELECT id::text, occurred_at, actor_type, actor_id, actor_label, action,
+                  surface, client, target, result, detail, request_id
+             FROM audit_events
+            WHERE ${where.join(' AND ')}
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT ${page.limit + 1}`,
+          params,
+        )
+
+        const items = rows.slice(0, page.limit).map(
+          (r): AuditRecord => ({
+            id: r.id,
+            occurredAt: r.occurred_at.toISOString(),
+            actorType: r.actor_type,
+            actorId: r.actor_id,
+            actorLabel: r.actor_label,
+            action: r.action,
+            surface: r.surface,
+            client: r.client,
+            target: r.target ?? {},
+            result: r.result,
+            detail: r.detail ?? {},
+            requestId: r.request_id,
+          }),
+        )
+
+        const last = items[items.length - 1]
+        const nextCursor =
+          rows.length > page.limit && last !== undefined
+            ? encodeCursor({ createdAt: last.occurredAt, id: last.id })
+            : null
+
+        return { items, nextCursor }
+      },
+      this.scopeFor(),
+    )
+  }
+
+  private scopeFor(): { role?: string } {
+    return this.role === undefined ? {} : { role: this.role }
+  }
+}
+
+interface AuditRow {
+  readonly id: string
+  readonly occurred_at: Date
+  readonly actor_type: string
+  readonly actor_id: string | null
+  readonly actor_label: string
+  readonly action: string
+  readonly surface: string
+  readonly client: string | null
+  readonly target: Record<string, unknown> | null
+  readonly result: string
+  readonly detail: Record<string, unknown> | null
+  readonly request_id: string | null
 }

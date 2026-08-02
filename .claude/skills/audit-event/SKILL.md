@@ -68,3 +68,21 @@ filters the audit log needs the same care as one that filters documents.
 The table is append-only: `UPDATE` and `DELETE` are revoked from the application
 role at the database level. If a change seems to need mutating an event, it
 needs a new event instead.
+
+## A new action reaches `/v1/audit`
+
+`GET /v1/audit` shows `platform_admin` administrative actions only, never the
+record of who read what — rule 2 applied to the journal. The set of actions
+counted as document access is a deny-list in
+`PostgresAuditReader.DOCUMENT_ACCESS`.
+
+**If the action you are adding records a substantive access to a document's
+contents, add it to that list.** Left out, it is visible to a platform
+administrator, which is the disclosure that rule exists to prevent.
+
+The list is a deny-list on purpose: an allow-list would make a new
+*administrative* action invisible to the operator who administers the
+installation until someone remembered it, which is a silent gap in an
+operational tool. This way the gap is a disclosure to an already highly
+privileged role, and it is loud enough to be found. Both directions are bugs;
+this is the one that gets noticed.
