@@ -66,6 +66,7 @@ NACRE_INDEX_MAX_ATTEMPTS=5             # then the document is failed, not requeu
 # ─── limits ───
 NACRE_RATE_SEARCH_PER_MIN=60
 NACRE_RATE_INGEST_PER_HOUR=600
+NACRE_RATE_LOGIN_PER_15MIN=10          # per email address, not per organization
 NACRE_MAX_DOCUMENT_BYTES=52428800
 
 # ─── audit ───
@@ -126,6 +127,9 @@ per-variable check cannot catch them:
   would still be serving a revoked grant after the SLA it promises, while
   `nacre_acl_propagation_lag_seconds` reported compliance.
 - `NACRE_RERANKER_ENABLED=true` with no endpoint set.
+- `NACRE_REFRESH_TOKEN_TTL` no longer than `NACRE_ACCESS_TOKEN_TTL`. A refresh
+  token that expires no later than the access token it renews cannot renew
+  anything, so every session would end at the first refresh.
 - A plaintext or localhost `NACRE_CANONICAL_URL` in production. It is the OAuth
   issuer, it goes into every token ever issued, and over plaintext it is also
   what an attacker rewrites. Silent defaults for secrets and

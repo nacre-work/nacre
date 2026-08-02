@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 // Imported rather than taken from the global scope: `lib` is ES2023 with no
 // DOM, so the global URL is not typed here.
 import { URL } from 'node:url'
@@ -8,6 +8,7 @@ import { authenticate, rejectTenantOverride, type AuthContext, type VerifyOption
 import { badRequest, internal, notFound, Problem } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
+import type { Login, Tokens } from './login.js'
 import { readPage, type Page, type PageResult } from './pagination.js'
 export type { Page, PageResult }
 
@@ -286,6 +287,8 @@ export interface ApiOptions {
   readonly limitPolicies?: Readonly<Record<Resource, LimitPolicy>>
   /** `Idempotency-Key` on unsafe methods. Absent means the header is ignored. */
   readonly idempotency?: IdempotencyStore
+  /** Email and password sign-in. Absent means `/v1/auth/*` is 404. */
+  readonly login?: Login
   readonly documents: Documents
   readonly search: SearchService
   readonly ingest: Ingest
@@ -495,6 +498,172 @@ function resourceFor(method: string, instance: string): Resource | undefined {
  */
 const NEVER_CACHED: ReadonlySet<string> = new Set(['/v1/service-accounts', '/v1/documents'])
 
+/**
+ * `/v1/auth/*`: the endpoints that exist to produce a credential.
+ *
+ * Separate from `handle` because everything there assumes an `AuthContext`, and
+ * these three run before there is one. The refusals are deliberately
+ * indistinguishable: unknown address, wrong password, wrong organization,
+ * disabled account and an account with no password set are one `401` with one
+ * message, and `Login` spends the same time on each.
+ *
+ * Rate limited on the address rather than the organization, because there is no
+ * organization yet and because the thing being defended against is guessing one
+ * account's password. That is the one limit keyed on something a caller
+ * chooses, so it is normalized and hashed into the key rather than used raw —
+ * an unbounded string from an unauthenticated request should not become a Redis
+ * key, and an operator reading `KEYS nacre:rl:*` should not be reading a list
+ * of who has an account here.
+ */
+async function handleAuth(
+  req: IncomingMessage,
+  res: ServerResponse,
+  instance: string,
+  requestId: string,
+  options: ApiOptions,
+): Promise<void> {
+  if (options.login === undefined || req.method !== 'POST') {
+    const problem = notFound(instance, requestId)
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+  let body: unknown
+  try {
+    body = await readBody(req)
+  } catch {
+    const problem = badRequest(instance, requestId, 'The request body could not be read.')
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+  const refuse = (): void => {
+    const problem = new Problem({
+      type: 'https://nacre.work/errors/unauthorized',
+      title: 'Unauthorized',
+      status: 401,
+      // One message for every reason. A wrong password and an address with no
+      // account must not be tellable apart, or this endpoint enumerates users.
+      detail: 'Those credentials are not valid.',
+      instance,
+      requestId,
+    })
+    send(res, problem.status, problem.toJSON(), requestId)
+  }
+
+  if (instance === '/v1/auth/login') {
+    const { email, password, organization } = (body ?? {}) as {
+      email?: unknown
+      password?: unknown
+      organization?: unknown
+    }
+    if (typeof email !== 'string' || typeof password !== 'string') {
+      const problem = badRequest(instance, requestId, "'email' and 'password' are required.")
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+
+    if (options.limits !== undefined && options.limitPolicies?.login !== undefined) {
+      const subject = createHash('sha256').update(email.trim().toLowerCase()).digest('hex').slice(0, 32)
+      const decision = await options.limits.check(subject, 'login')
+      if (!decision.allowed) {
+        const problem = new Problem({
+          type: 'https://nacre.work/errors/rate-limited',
+          title: 'Too many requests',
+          status: 429,
+          detail: `Too many sign-in attempts. Try again in ${decision.reset} seconds.`,
+          instance,
+          requestId,
+        })
+        send(
+          res,
+          problem.status,
+          problem.toJSON(),
+          requestId,
+          limitHeaders(decision, options.limitPolicies.login, 'login'),
+        )
+        return
+      }
+    }
+
+    const tokens = await options.login.login({
+      email,
+      password,
+      ...(typeof organization === 'string' ? { organization } : {}),
+    })
+
+    if (tokens === undefined) {
+      // Logged rather than audited, and the difference is not laziness. The
+      // audit log is per-organization; an address that matches no user belongs
+      // to no tenant, and giving that row an owner would put one
+      // organization's failed attempts into another's access log. A security
+      // team watching for password spraying wants this across the whole
+      // installation anyway, which is what a log line is.
+      //
+      // The address, never the password, and never how far the attempt got —
+      // "no such user" and "wrong password" must not be tellable apart from a
+      // log any more than from a response.
+      console.warn(
+        JSON.stringify({ msg: 'sign-in refused', email: email.trim().toLowerCase(), request_id: requestId }),
+      )
+      refuse()
+      return
+    }
+
+    // The successful one does have an organization to belong to, and it is the
+    // event that answers "who has been in here". Awaited: a lost audit event is
+    // worse than a slow response.
+    await options.audit.write({
+      orgId: tokens.orgId,
+      actor: `user:${tokens.userId}`,
+      action: 'login',
+      result: 'allow',
+      detail: {},
+      requestId,
+    })
+
+    send(res, 200, tokenJson(tokens), requestId)
+    return
+  }
+
+  const token = (body as { refresh_token?: unknown } | undefined)?.refresh_token
+  if (typeof token !== 'string' || token === '') {
+    const problem = badRequest(instance, requestId, "'refresh_token' is required.")
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+  if (instance === '/v1/auth/refresh') {
+    const tokens = await options.login.refresh(token)
+    if (tokens === undefined) {
+      refuse()
+      return
+    }
+    send(res, 200, tokenJson(tokens), requestId)
+    return
+  }
+
+  if (instance === '/v1/auth/logout') {
+    // 204 whether or not the token was live. Saying "that token did not exist"
+    // tells whoever is holding a stolen one whether it is still worth using.
+    await options.login.logout(token)
+    send(res, 204, null, requestId)
+    return
+  }
+
+  const problem = notFound(instance, requestId)
+  send(res, problem.status, problem.toJSON(), requestId)
+}
+
+function tokenJson(tokens: Tokens): Record<string, unknown> {
+  return {
+    access_token: tokens.accessToken,
+    token_type: 'Bearer',
+    expires_in: tokens.expiresIn,
+    refresh_token: tokens.refreshToken,
+  }
+}
+
 export function createApi(options: ApiOptions): Server {
   return createServer((req, res) => {
     void handle(req, res, options).catch(() => {
@@ -530,6 +699,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     // Liveness touches no dependency. A health check that calls Postgres turns
     // one slow database into a cascading restart loop.
     send(res, 200, { status: 'ok' }, requestId)
+    return
+  }
+
+  // Sign-in, before authentication, because it is what produces the credential
+  // everything below this line requires.
+  //
+  // `rejectTenantOverride` does not apply here and must not: it refuses a body
+  // naming an organization, and naming one is exactly what a login on a
+  // multi-organization installation is allowed to do. The invariant is kept a
+  // different way — see login.ts. The organization in the issued token comes
+  // from the row that authenticated, never from the request.
+  if (instance.startsWith('/v1/auth/')) {
+    await handleAuth(req, res, instance, requestId, options)
     return
   }
 

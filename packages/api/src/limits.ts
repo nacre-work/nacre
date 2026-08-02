@@ -25,7 +25,17 @@ import type { Redis } from '@nacre.work/core'
  * operator alerts on.
  */
 
-export type Resource = 'search' | 'ingest'
+/**
+ * What a limit is counted against.
+ *
+ * `search` and `ingest` are counted per organization — a per-token limit is
+ * bypassed by issuing another key, and this API hands out keys. `login` is the
+ * exception and has to be: it runs before there is an organization, and the
+ * thing it defends against is guessing one account's password, so it counts per
+ * address. Failing open matters more there rather than less: a cache outage
+ * that locked everyone out of signing in would be the outage.
+ */
+export type Resource = 'search' | 'ingest' | 'login'
 
 export interface LimitDecision {
   readonly allowed: boolean

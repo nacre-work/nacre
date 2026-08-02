@@ -18,6 +18,7 @@ GET    /v1/grants        POST /v1/grants        DELETE /v1/grants/{id}
 GET    /v1/jobs/{id}
 GET    /v1/audit
 GET    /v1/health        /v1/ready               /metrics
+POST   /v1/auth/login    /v1/auth/refresh        /v1/auth/logout
 ```
 
 ## Errors — RFC 9457 (`application/problem+json`)
@@ -53,6 +54,59 @@ GET    /v1/health        /v1/ready               /metrics
 
 The 403/404 split is the whole point: 403 says "this exists and you may not
 touch it", so it may only be used where the caller can already see the object.
+
+## Signing in
+
+```
+POST /v1/auth/login     {email, password, organization?}  → {access_token, token_type, expires_in, refresh_token}
+POST /v1/auth/refresh   {refresh_token}                   → the same shape
+POST /v1/auth/logout    {refresh_token}                   → 204
+```
+
+Email and password. SSO is a commercial module; this is the one every
+self-hoster gets. `init` creates the first administrator and prints a generated
+password once.
+
+**`organization` is a lookup key, not a claim.** Invariant 1 governs
+authenticated requests, and login is the request that has no token yet — so the
+body may name an organization to disambiguate the address, but what goes into
+the issued token is the `org_id` on the row that authenticated, never the
+string the caller sent. Naming one organization while holding an account in
+another is a refusal, not a token for either. It may be omitted on a
+single-organization installation; omitted, the address must match exactly one
+user, and zero or several are the same refusal.
+
+**Every failure is one `401` with one message**, in the same time: unknown
+address, wrong password, wrong organization, disabled account, and an account
+with no password set. An early return on "no such user" would make the response
+time say which addresses have accounts.
+
+Sign-in is rate limited per address rather than per organization — there is no
+organization yet, and what it defends is one account's password.
+`NACRE_RATE_LOGIN_PER_15MIN`, default 10.
+
+### Refresh tokens rotate, and reuse ends the session
+
+Every refresh issues a new token and marks the old one used. A used token
+presented again is **not** treated as a client retry: the legitimate holder has
+already exchanged it, so a second presentation means two parties hold the same
+token and one of them took it. Which one is unknowable, so the whole family
+descended from that login is revoked and both sign in again.
+
+A fresh login starts a new family, so signing out on one device leaves the
+others alone. Disabling an account ends its sessions rather than only stopping
+new ones. `logout` answers `204` whether or not the token was live — saying "no
+such token" tells whoever holds a stolen one that it is no longer worth using.
+
+Tokens are stored as a SHA-256 and never in the clear: a refresh token outlives
+an access token by a month, so a database dump holding them would be a month of
+sessions rather than a list of identifiers.
+
+Passwords are hashed with scrypt at OWASP's minimum parameters, which are
+carried in the stored record so the cost can be raised without invalidating
+every password. Argon2id would be the first choice and needs a native
+dependency, which is a thing every operator of a self-hosted security product
+inherits; the encoding leaves room to move.
 
 ## Idempotency
 
@@ -163,7 +217,8 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 | `Idempotency-Key` on unsafe methods | 24 hours, `409` on reuse, service accounts excluded |
 | `429` and the `RateLimit-*` headers | search and ingest, counted per organization |
 | Cursor pagination | layers, grants, service accounts |
+| `POST /v1/auth/login`, `/refresh`, `/logout` | email and password, rotating refresh tokens |
 
 Not implemented, and the document describes them anyway because they are the
-contract they will be built to: login and refresh, OAuth discovery and dynamic
-client registration, and multipart upload on `POST /v1/documents`.
+contract they will be built to: OAuth discovery and dynamic client
+registration, and multipart upload on `POST /v1/documents`.

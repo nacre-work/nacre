@@ -75,10 +75,13 @@ Search is rate limited per organization, unsafe methods take an
 path when a deployment configures a reranker. Tombstoned vectors are collected,
 and the SDK and the admin UI are written.
 
-What is not built: no login — tokens are signed with a shared secret and issued
-by the `init` command, so there is no user-facing authentication yet. `docker
-compose up` has not been run from a clean checkout, though its profiles are
-validated in CI.
+Signing in works: email and password, with rotating refresh tokens that end the
+session if one is replayed. `init` creates the first administrator and prints a
+generated password once. SSO is a commercial module.
+
+What is not built: OAuth discovery and dynamic client registration, and
+multipart upload on ingest. `docker compose up` has not been run from a clean
+checkout, though its profiles are validated in CI.
 
 `docs/` is the specification, and it still runs ahead of the code in places —
 start with [docs/authz.md](./docs/authz.md), which everything else depends on.

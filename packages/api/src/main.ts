@@ -24,6 +24,7 @@ import {
   PostgresLayers,
 } from './adapters.js'
 import { Idempotency } from './idempotency.js'
+import { Login } from './login.js'
 import { rerankerFor } from './rerank.js'
 import { RateLimiter, type LimitPolicy, type Resource } from './limits.js'
 import { PostgresServiceAccounts, PostgresServiceKeys } from './service-keys.js'
@@ -105,6 +106,9 @@ async function main(): Promise<void> {
   const limitPolicies: Record<Resource, LimitPolicy> = {
     search: { limit: config.rateSearchPerMin, windowSeconds: 60 },
     ingest: { limit: config.rateIngestPerHour, windowSeconds: 3600 },
+    // Per address rather than per organization — there is no organization until
+    // the sign-in succeeds, and what this defends is one account's password.
+    login: { limit: config.rateLoginPer15Min, windowSeconds: 900 },
   }
 
   const limits = new RateLimiter({
@@ -141,6 +145,16 @@ async function main(): Promise<void> {
     },
   })
 
+  const login = new Login({
+    pool,
+    key,
+    issuer: config.jwtIssuer,
+    audience: config.jwtAudience,
+    accessTokenTtl: config.accessTokenTtl,
+    refreshTokenTtl: config.refreshTokenTtl,
+    role: APP_ROLE,
+  })
+
   const server = createApi({
     verify: {
       key,
@@ -152,6 +166,7 @@ async function main(): Promise<void> {
     limits,
     limitPolicies,
     idempotency,
+    login,
     documents: new PostgresDocuments(pool, APP_ROLE),
     search: new NacreSearchService({
       pool,

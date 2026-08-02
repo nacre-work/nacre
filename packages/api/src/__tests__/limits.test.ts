@@ -44,6 +44,7 @@ when('rate limiting', () => {
       policies: {
         search: { limit, windowSeconds: 60 },
         ingest: { limit, windowSeconds: 3600 },
+        login: { limit, windowSeconds: 900 },
       },
     })
 
@@ -109,7 +110,11 @@ when('rate limiting', () => {
     const degraded: unknown[] = []
     const rl = new RateLimiter({
       redis: broken,
-      policies: { search: { limit: 1, windowSeconds: 60 }, ingest: { limit: 1, windowSeconds: 3600 } },
+      policies: {
+        search: { limit: 1, windowSeconds: 60 },
+        ingest: { limit: 1, windowSeconds: 3600 },
+        login: { limit: 1, windowSeconds: 900 },
+      },
       onDegraded: (_r, e) => degraded.push(e),
     })
 

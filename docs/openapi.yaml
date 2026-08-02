@@ -116,6 +116,20 @@ components:
         created_at:    { type: string, format: date-time }
         last_used_at:  { type: [string, 'null'], format: date-time }
         revoked_at:    { type: [string, 'null'], format: date-time }
+    TokenPair:
+      type: object
+      required: [access_token, token_type, expires_in, refresh_token]
+      properties:
+        access_token:  { type: string, description: 'JWT. The organization in it comes from the authenticated row.' }
+        token_type:    { type: string, enum: [Bearer] }
+        expires_in:    { type: integer, description: 'Seconds; from NACRE_ACCESS_TOKEN_TTL' }
+        refresh_token:
+          type: string
+          description: >
+            Opaque, and stored as a SHA-256 rather than in the clear — it
+            outlives an access token by a month, so a database dump holding
+            these would be a month of sessions rather than a list of
+            identifiers. Rotated on every use.
     Grant:
       type: object
       required: [principal_type, principal_id, scope_type, scope_id, permission]
@@ -211,6 +225,105 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
 
 paths:
+  /auth/login:
+    post:
+      summary: Email and password sign-in
+      description: >
+        `organization` is a lookup key and not a claim. Invariant I1 governs
+        authenticated requests and this is the request with no token yet, so the
+        body may name an organization to disambiguate the address — but the
+        organization in the issued token comes from the row that authenticated,
+        never from the request. Naming one organization while holding an account
+        in another is a refusal, not a token for either. It may be omitted on a
+        single-organization installation; omitted, the address must match
+        exactly one user, and zero or several are the same refusal.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:        { type: string, format: email }
+                password:     { type: string, format: password }
+                organization: { type: string, description: Organization slug. Optional on a single-organization installation. }
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401':
+          description: >
+            One response for every failure, in the same time: unknown address,
+            wrong password, wrong organization, disabled account, and an account
+            with no password set. An early return on "no such user" would make
+            the response time say which addresses have accounts.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429':
+          description: >
+            Counted per address rather than per organization — there is no
+            organization until the sign-in succeeds, and what this defends is
+            one account's password.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /auth/refresh:
+    post:
+      summary: Exchange a refresh token for a new pair
+      description: >
+        Rotation on every use. A used token presented again is not tolerated as
+        a client retry: the legitimate holder already exchanged it, so a second
+        presentation means two parties hold it and one of them took it. Which is
+        unknowable from here, so the whole family descended from that login is
+        revoked and both sign in again.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          description: A new pair. The presented token is now spent.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401':
+          description: Expired, revoked, already used, unknown, or the account has since been disabled.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /auth/logout:
+    post:
+      summary: End the session this refresh token belongs to
+      description: >
+        Revokes the whole family, so the session ends rather than one token of
+        it. A fresh login starts a new family, so signing out on one device
+        leaves the others alone.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '204':
+          description: >
+            Whether or not the token was live. Answering "no such token" tells
+            whoever is holding a stolen one that it is no longer worth using.
   /search:
     post:
       summary: Semantic search, scoped to the caller's effective permissions

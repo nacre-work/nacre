@@ -113,8 +113,14 @@ is on relevance and changes which permitted results come back, never how many.
 See `packages/api/src/rerank.ts` — the argument is in the code because the next
 person to read the search path will see the widening and reach for the rule.
 
-Not built: no login (tokens come from `init`, service accounts from
-`/v1/service-accounts`). `docker compose up`
+Email and password sign-in is in, with rotating refresh tokens: replaying a
+used one revokes the whole family, because the legitimate holder has already
+exchanged it and there is no way to tell which of the two holders is genuine.
+Passwords use scrypt at OWASP's minimum, with the parameters carried in the
+stored record so the cost can be raised later without invalidating every one.
+
+Not built: OAuth discovery and dynamic client registration, and multipart
+upload on ingest. `docker compose up`
 has still not been run from a clean checkout; four separate things that made it
 impossible are fixed, and the path is validated by `lint:compose` and by
 reading, not by a machine that has done it.

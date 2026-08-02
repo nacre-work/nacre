@@ -39,6 +39,7 @@ export interface Config {
   readonly jwtIssuer: string
   readonly jwtAudience: string
   readonly accessTokenTtl: number
+  readonly refreshTokenTtl: number
 
   readonly aclCacheTtl: number
   readonly aclPropagationSla: number
@@ -69,6 +70,7 @@ export interface Config {
 
   readonly rateSearchPerMin: number
   readonly rateIngestPerHour: number
+  readonly rateLoginPer15Min: number
   readonly maxDocumentBytes: number
 
   readonly auditRetentionDays: number
@@ -186,6 +188,10 @@ export function loadConfig(env: Env = process.env): Config {
     jwtIssuer: r.required('NACRE_JWT_ISSUER'),
     jwtAudience: r.required('NACRE_JWT_AUDIENCE'),
     accessTokenTtl: r.number('NACRE_ACCESS_TOKEN_TTL', 900, { min: 60, max: 86_400 }),
+    // 30 days. The upper bound is a year rather than unbounded: a refresh token
+    // is the credential a stolen laptop still holds, and "never expires" is a
+    // choice nobody makes deliberately.
+    refreshTokenTtl: r.number('NACRE_REFRESH_TOKEN_TTL', 2_592_000, { min: 300, max: 31_536_000 }),
 
     aclCacheTtl: r.number('NACRE_ACL_CACHE_TTL', 60, { min: 0, max: 3600 }),
     aclPropagationSla: r.number('NACRE_ACL_PROPAGATION_SLA', 60, { min: 1, max: 3600 }),
@@ -200,6 +206,10 @@ export function loadConfig(env: Env = process.env): Config {
 
     rateSearchPerMin: r.number('NACRE_RATE_SEARCH_PER_MIN', 60, { min: 1 }),
     rateIngestPerHour: r.number('NACRE_RATE_INGEST_PER_HOUR', 600, { min: 1 }),
+    // Ten attempts per quarter hour, counted per email address. Low enough that
+    // guessing is not a strategy, high enough that someone who genuinely cannot
+    // remember which password they used is not locked out for the afternoon.
+    rateLoginPer15Min: r.number('NACRE_RATE_LOGIN_PER_15MIN', 10, { min: 1, max: 1000 }),
     maxDocumentBytes: r.number('NACRE_MAX_DOCUMENT_BYTES', 52_428_800, { min: 1024 }),
 
     auditRetentionDays: r.number('NACRE_AUDIT_RETENTION_DAYS', 400, { min: 1 }),
@@ -214,6 +224,14 @@ export function loadConfig(env: Env = process.env): Config {
       'NACRE_RERANKER_ENABLED is true but NACRE_RERANKER_ENDPOINT is not set. ' +
         'Turning reranking on is worth more than any chunking tuning, and it ' +
         'needs somewhere to send the request — the full profile provides one.',
+    )
+  }
+
+  if (config.refreshTokenTtl <= config.accessTokenTtl) {
+    r.problems.push(
+      'NACRE_REFRESH_TOKEN_TTL is not longer than NACRE_ACCESS_TOKEN_TTL. A refresh ' +
+        'token that expires no later than the access token it renews cannot renew ' +
+        'anything, so every session would end at the first refresh.',
     )
   }
 

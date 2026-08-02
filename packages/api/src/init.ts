@@ -2,12 +2,14 @@ import {
   collectionName,
   ConfigError,
   createPool,
+  hashPassword,
   loadConfig,
   vectorName,
   VectorStore,
 } from '@nacre.work/core'
 import { SignJWT } from 'jose'
 import type { Pool } from 'pg'
+import { randomInt } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 
 /**
@@ -37,6 +39,15 @@ export interface Options {
   readonly name: string
   readonly email: string
   readonly workspace: string
+  /**
+   * Set on the administrator, when there is one to set.
+   *
+   * Passed in already hashed rather than as a plaintext to hash here: `init`
+   * runs in a terminal and its arguments end up in a shell history and in
+   * `ps`, so the password is generated rather than accepted, and the plaintext
+   * exists in exactly one place — the line printed at the end.
+   */
+  readonly passwordHash?: string
 }
 
 export function parseArgs(argv: readonly string[]): Options | string {
@@ -125,10 +136,15 @@ export async function initialize(
     await client.query('SELECT set_config($1, $2, true)', ['app.current_org', org.id])
 
     const { rows: users } = await client.query<{ id: string }>(
-      `INSERT INTO users (org_id, email, role) VALUES ($1,$2,'org_admin')
-       ON CONFLICT (org_id, email) DO UPDATE SET email = EXCLUDED.email
+      // The password is set only when this run generated one — re-running init
+      // against an existing organization must not silently reset the
+      // administrator's password and lock them out of their own installation.
+      `INSERT INTO users (org_id, email, role, password_hash) VALUES ($1,$2,'org_admin',$3)
+       ON CONFLICT (org_id, email) DO UPDATE
+         SET email = EXCLUDED.email,
+             password_hash = COALESCE(users.password_hash, EXCLUDED.password_hash)
        RETURNING id`,
-      [org.id, options.email],
+      [org.id, options.email, options.passwordHash ?? null],
     )
     const userId = users[0]?.id
     if (userId === undefined) throw new Error('the user insert returned no row')
@@ -183,6 +199,32 @@ export async function initialize(
   }
 }
 
+/**
+ * Six words and a number, from the CSPRNG.
+ *
+ * Roughly 70 bits with this list, which is more than a person would choose and
+ * still something they can read off a terminal and type into a form once. A
+ * base64 string of the same strength gets copied wrong, and the recovery from
+ * that is re-running init against a live installation.
+ */
+function generatePassword(): string {
+  const words = [
+    'abalone', 'anchor', 'aurora', 'basalt', 'beacon', 'bramble', 'cinder', 'clover',
+    'compass', 'coral', 'crest', 'current', 'delta', 'drift', 'ember', 'estuary',
+    'fathom', 'ferry', 'fjord', 'granite', 'harbor', 'haven', 'iris', 'kelp',
+    'lantern', 'ledger', 'lichen', 'mantle', 'marlin', 'meadow', 'mica', 'nacre',
+    'nautilus', 'obsidian', 'onyx', 'opal', 'orbit', 'pearl', 'pelagic', 'pillar',
+    'plover', 'quarry', 'quartz', 'reef', 'ripple', 'salt', 'sextant', 'shale',
+    'shoal', 'silt', 'slate', 'spindrift', 'stratum', 'tide', 'trawler', 'trench',
+    'vellum', 'wharf', 'willow', 'zephyr',
+  ] as const
+
+  // randomInt rather than Math.random or a modulo of randomBytes: one is not a
+  // CSPRNG and the other is biased unless the range divides evenly.
+  const chosen = Array.from({ length: 6 }, () => words[randomInt(words.length)])
+  return `${chosen.join('-')}-${String(randomInt(10, 100))}`
+}
+
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2))
   if (typeof parsed === 'string') throw new ConfigError([parsed])
@@ -196,6 +238,13 @@ async function main(): Promise<void> {
     ])
   }
 
+  // Generated, never taken from an argument: `init` runs in a terminal, and an
+  // argument ends up in the shell history and in `ps` on a shared machine. Six
+  // words from the CSPRNG rather than a random string, because this is typed
+  // by a person into a sign-in form at least once.
+  const password = generatePassword()
+  const passwordHash = await hashPassword(password)
+
   const pool = createPool({ connectionString: config.pgUrl, max: 2 })
   const vector = vectorName(config.embeddingModel, config.embeddingDim)
   const collection = collectionName(parsed.slug)
@@ -203,7 +252,7 @@ async function main(): Promise<void> {
   try {
     const ids = await initialize(
       pool,
-      parsed,
+      { ...parsed, passwordHash },
       {
         endpoint: config.embeddingEndpoint,
         model: config.embeddingModel,
@@ -253,6 +302,14 @@ async function main(): Promise<void> {
     console.log('An administrator token, valid for one hour:')
     console.log('')
     console.log(`  export NACRE_TOKEN=${token}`)
+    console.log('')
+    console.log('And a password for signing in, which is not printed again:')
+    console.log('')
+    console.log(`  ${password}`)
+    console.log('')
+    console.log(`  curl -X POST ${config.canonicalUrl}/v1/auth/login \\`)
+    console.log(`    -H 'Content-Type: application/json' \\`)
+    console.log(`    -d '{"email":"${parsed.email}","password":"…"}'`)
     console.log('')
     console.log('Create a layer with it, then follow docs/quickstart.md:')
     console.log('')
