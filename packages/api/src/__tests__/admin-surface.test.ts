@@ -703,4 +703,62 @@ describe('the administrative surface', () => {
       expect((await fetch(`${base}${path}`)).status, path).toBe(401)
     }
   })
+
+  it('a token signed with the retired key still verifies during a rotation', async () => {
+    // The whole of a rotation with no outage. There is one signing key and no
+    // `kid`, so without this every outstanding access token fails at the same
+    // instant — and the SDK does not refresh on a 401, so applications see
+    // errors rather than a pause.
+    const retired = new TextEncoder().encode('b'.repeat(32))
+    const old = await new SignJWT({ org: ORG_A, principal_type: 'user', role: 'member' })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject('alice')
+      .setIssuer(ISSUER)
+      .setAudience(AUDIENCE)
+      .setExpirationTime('5m')
+      .sign(retired)
+
+    const rotating = createApi({
+      verify: { key: SECRET, alsoAccept: [retired], issuer: ISSUER, audience: AUDIENCE },
+      documents: { read: async () => undefined },
+      search: { search: async () => [] },
+      ingest: { queue: async () => undefined, remove: async () => false },
+      audit: { write: async () => {} },
+      layers: { list: async () => ({ items: [], nextCursor: null }), create: async () => ({ kind: 'denied' }) },
+    })
+    await new Promise<void>((resolve) => rotating.listen(0, '127.0.0.1', resolve))
+    const at = `http://127.0.0.1:${(rotating.address() as AddressInfo).port}`
+
+    // Both keys, and only those two.
+    expect((await fetch(`${at}/v1/layers`, { headers: { authorization: `Bearer ${old}` } })).status).toBe(200)
+    expect((await fetch(`${at}/v1/layers`, { headers: await auth() })).status).toBe(200)
+
+    const stranger = new TextEncoder().encode('c'.repeat(32))
+    const forged = await new SignJWT({ org: ORG_A, principal_type: 'user', role: 'member' })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject('alice')
+      .setIssuer(ISSUER)
+      .setAudience(AUDIENCE)
+      .setExpirationTime('5m')
+      .sign(stranger)
+    expect((await fetch(`${at}/v1/layers`, { headers: { authorization: `Bearer ${forged}` } })).status).toBe(401)
+
+    await new Promise<void>((resolve) => rotating.close(() => resolve()))
+  })
+
+  it('without the retired key the same token is refused', async () => {
+    // The negative half, so the test above cannot pass for the wrong reason.
+    const retired = new TextEncoder().encode('b'.repeat(32))
+    const old = await new SignJWT({ org: ORG_A, principal_type: 'user', role: 'member' })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject('alice')
+      .setIssuer(ISSUER)
+      .setAudience(AUDIENCE)
+      .setExpirationTime('5m')
+      .sign(retired)
+
+    expect(
+      (await fetch(`${base}/v1/layers`, { headers: { authorization: `Bearer ${old}` } })).status,
+    ).toBe(401)
+  })
 })

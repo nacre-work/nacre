@@ -43,6 +43,7 @@ NACRE_PARSER_ENDPOINT=http://parser:8090
 # one anybody reading the source can forge tokens with. Asymmetric keys through
 # NACRE_JWT_PRIVATE_KEY_REF are specified below and not implemented yet.
 NACRE_JWT_SECRET=                      # >= 32 bytes; a secret-store reference in production
+NACRE_JWT_SECRET_PREVIOUS=             # set only while rotating; see below
 NACRE_JWT_PRIVATE_KEY_REF=file:///run/secrets/jwt_ed25519   # not implemented yet
 NACRE_JWT_ISSUER=https://api.nacre.work   # must match NACRE_CANONICAL_URL in production
 NACRE_JWT_AUDIENCE=nacre
@@ -256,6 +257,43 @@ access is ever read from here.
 It is not a queue. Indexing work is claimed from Postgres under a lease
 (`NACRE_INDEX_LEASE`), so a Redis loss cannot strand a document.
 
+### Rotating the signing key
+
+`NACRE_JWT_SECRET_PREVIOUS` is **accepted on verification and never used to
+sign**. It exists because there is one signing key and no `kid`, so changing the
+secret used to invalidate every outstanding access token at the same instant —
+and the SDK does not refresh on a 401, so that reached applications as errors
+rather than as a pause.
+
+A rotation is therefore two restarts and no outage:
+
+1. Move the current secret to `NACRE_JWT_SECRET_PREVIOUS`, put the new one in
+   `NACRE_JWT_SECRET`, restart **`api` and `mcp` together**. Tokens already out
+   keep verifying; everything issued from now on is signed with the new key.
+2. After `NACRE_ACCESS_TOKEN_TTL` has elapsed — every token signed with the old
+   key has expired by then — unset `NACRE_JWT_SECRET_PREVIOUS` and restart
+   again.
+
+Both processes verify with the same secret, so a rotation that reaches one and
+not the other gives 401s on part of the traffic and not the rest. Each prints
+its key fingerprints at startup for exactly this comparison:
+
+```json
+{"msg":"api listening","jwt_key":"sha256:e4758d5c1f1f","jwt_key_previous":["sha256:dfdff7afb059"]}
+```
+
+`jwt_key_previous` appears only during a rotation. Its absence after step 2 is
+how you know the old key is out — leaving the variable set indefinitely keeps a
+retired key valid, which is the whole thing rotation was for.
+
+Refused at startup, both because they are what an operator does when they mean
+to rotate and mis-copy a line: a previous secret shorter than 32 bytes, and a
+previous secret equal to the current one. The second leaves an installation
+that believes it has rotated and has not.
+
+Asymmetric keys through `NACRE_JWT_PRIVATE_KEY_REF` are still not implemented,
+and `NACRE_JWT_SECRET` is still required.
+
 ## Compose profiles
 
 | Profile | Contains | For |
@@ -329,12 +367,10 @@ reason — an expired token, a forged signature and a revoked service account ke
 are one answer, deliberately — and a `reason` label would hand that distinction
 back through an endpoint that is unauthenticated by default.
 
-It exists for key rotation. `NACRE_JWT_SECRET` has no dual-key window: the API
-verifies with one key, with no set and no `kid`, so every outstanding access
-token fails at once and the operator has to watch `kind="jwt"` spike and drain
-over `NACRE_ACCESS_TOKEN_TTL`. `kind="service_key"` staying flat across the same
-window is the check that the rotation touched only what it was meant to.
-Nothing here logs requests, so before this there was no way to see either.
+It exists for key rotation. `kind="jwt"` is the series a rotation moves;
+`kind="service_key"` staying flat across the same window is the check that it
+touched only what it was meant to. Nothing here logs requests, so before this
+there was no way to see either.
 
 `nacre_acl_denials_total` counts what a denial looks like on each surface. On
 ingest that is a refused layer. On search there is no `403` to count, by design

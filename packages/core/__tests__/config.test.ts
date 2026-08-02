@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { ConfigError, loadConfig } from '../config.js'
+import { ConfigError, loadConfig, loadJwtKeys } from '../config.js'
 
 const COMPLETE = {
   NACRE_CANONICAL_URL: 'https://api.nacre.test',
@@ -203,5 +203,53 @@ describe('configuration', () => {
       problems({ ...env, NACRE_DEFAULT_EMBEDDING_ENDPOINT: 'http://embedder:80' }),
       'copying .env.example and naming an embedder must be enough to start',
     ).toEqual([])
+  })
+})
+
+const CURRENT = 'a'.repeat(40)
+const PREVIOUS = 'b'.repeat(40)
+
+describe('signing keys', () => {
+  it('carries no second key outside a rotation', () => {
+    expect(loadJwtKeys({ NACRE_JWT_SECRET: CURRENT }).alsoAccept).toEqual([])
+  })
+
+  it('accepts the previous key alongside the current one', () => {
+    // The whole of a rotation with no outage: tokens signed with the key on its
+    // way out keep verifying until they expire, and everything issued from now
+    // on is signed with the new one.
+    const keys = loadJwtKeys({
+      NACRE_JWT_SECRET: CURRENT,
+      NACRE_JWT_SECRET_PREVIOUS: PREVIOUS,
+    })
+    expect(new TextDecoder().decode(keys.key)).toBe(CURRENT)
+    expect(keys.alsoAccept.map((k) => new TextDecoder().decode(k))).toEqual([PREVIOUS])
+  })
+
+  it('refuses a previous key equal to the current one', () => {
+    // What an operator does when they mean to rotate and copy the wrong line.
+    // Deduplicating it silently would leave an installation that believes it
+    // has rotated and has not.
+    expect(() =>
+      loadJwtKeys({ NACRE_JWT_SECRET: CURRENT, NACRE_JWT_SECRET_PREVIOUS: CURRENT }),
+    ).toThrow(ConfigError)
+  })
+
+  it('holds the previous key to the same length floor', () => {
+    expect(() =>
+      loadJwtKeys({ NACRE_JWT_SECRET: CURRENT, NACRE_JWT_SECRET_PREVIOUS: 'short' }),
+    ).toThrow(/shorter than 32 bytes/)
+  })
+
+  it('treats an empty previous key as unset, which is how a rotation ends', () => {
+    // `NACRE_JWT_SECRET_PREVIOUS=` in an env file is how the second restart is
+    // usually written, and it has to mean the same as removing the line.
+    expect(loadJwtKeys({ NACRE_JWT_SECRET: CURRENT, NACRE_JWT_SECRET_PREVIOUS: '' }).alsoAccept).toEqual(
+      [],
+    )
+  })
+
+  it('still requires the current key', () => {
+    expect(() => loadJwtKeys({ NACRE_JWT_SECRET_PREVIOUS: PREVIOUS })).toThrow(ConfigError)
   })
 })

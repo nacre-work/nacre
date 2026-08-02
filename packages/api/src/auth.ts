@@ -11,7 +11,24 @@ export interface AuthContext {
 }
 
 export interface VerifyOptions {
+  /** The current key. Everything issued from now on is signed with this one. */
   readonly key: KeyObject | Uint8Array
+  /**
+   * Accepted on verification, never used to sign.
+   *
+   * This is the whole of a rotation with no outage. There is one signing key
+   * and no `kid`, so changing it used to invalidate every outstanding access
+   * token at the same instant — and the SDK does not refresh on a 401, so that
+   * reached applications as errors rather than as a pause. Carrying the
+   * previous key here for one access-token lifetime makes the change invisible:
+   * tokens already out keep verifying until they expire, and every token issued
+   * after the restart is signed with the new one.
+   *
+   * Deliberately one extra key and not a list. A list invites the question of
+   * which one signs, and it puts an unbounded number of HMAC verifications on
+   * the path every invalid token takes. Two is the number a rotation needs.
+   */
+  readonly alsoAccept?: readonly (KeyObject | Uint8Array)[]
   readonly issuer: string
   readonly audience: string
   /**
@@ -121,14 +138,24 @@ export async function authenticate(
     return resolved ?? unauthorized(instance, requestId, 'The token is not valid.')
   }
 
-  let claims: NacreClaims
-  try {
-    const verified = await jwtVerify<NacreClaims>(bearer, options.key, {
-      issuer: options.issuer,
-      audience: options.audience,
-    })
-    claims = verified.payload
-  } catch {
+  // The current key first, then whatever a rotation left behind. Every one of
+  // them fails into the same 401 with the same wording: which key a token was
+  // signed with is not something a caller is told, and neither is whether one
+  // of them is a key on its way out.
+  let claims: NacreClaims | undefined
+  for (const key of [options.key, ...(options.alsoAccept ?? [])]) {
+    try {
+      const verified = await jwtVerify<NacreClaims>(bearer, key, {
+        issuer: options.issuer,
+        audience: options.audience,
+      })
+      claims = verified.payload
+      break
+    } catch {
+      // Next key, or out of the loop into the single refusal below.
+    }
+  }
+  if (claims === undefined) {
     return unauthorized(instance, requestId, 'The token is not valid.')
   }
 

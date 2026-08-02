@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { ConfigError, loadConfig } from '@nacre.work/core'
+import { ConfigError, loadConfig, loadJwtKeys } from '@nacre.work/core'
 
-import { buildServices, jwtKey } from './services.js'
+import { buildServices } from './services.js'
 import { serveStdio } from './stdio.js'
 
 /**
@@ -16,7 +16,7 @@ import { serveStdio } from './stdio.js'
 
 async function main(): Promise<void> {
   const config = loadConfig()
-  const key = jwtKey()
+  const { key, alsoAccept } = loadJwtKeys()
 
   const serviceKey = process.env.NACRE_SERVICE_KEY
   if (serviceKey === undefined || serviceKey.length === 0) {
@@ -33,7 +33,13 @@ async function main(): Promise<void> {
       // Both credential types work here. A service account key is the one
       // meant to outlive a session — a token from `init` expires in an hour,
       // which is not a credential for an agent that runs for a week.
-      verify: { key, issuer: config.jwtIssuer, audience: config.jwtAudience, serviceKeys },
+      verify: {
+        key,
+        ...(alsoAccept.length === 0 ? {} : { alsoAccept }),
+        issuer: config.jwtIssuer,
+        audience: config.jwtAudience,
+        serviceKeys,
+      },
       serviceKey,
       layers,
       tools,

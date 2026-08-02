@@ -1,6 +1,7 @@
 export * from './types.js'
 export * from './authz/index.js'
-export { loadConfig, ConfigError } from './config.js'
+export { loadConfig, loadJwtKeys, ConfigError } from './config.js'
+export type { JwtKeys } from './config.js'
 export type { Config } from './config.js'
 export { acrossOrganizations, createPool, whileAuthenticating, withOrg } from './db/client.js'
 export type { DbOptions, WithOrgOptions } from './db/client.js'

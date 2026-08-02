@@ -4,6 +4,7 @@ import {
   ConfigError,
   installGuards,
   loadConfig,
+  loadJwtKeys,
   onListenError,
   Redis,
   Registry,
@@ -12,7 +13,7 @@ import { RateLimiter, type LimitPolicy, type Resource } from '@nacre.work/api'
 import { createHash } from 'node:crypto'
 
 import { createMcpServer } from './server.js'
-import { buildServices, jwtKey } from './services.js'
+import { buildServices } from './services.js'
 
 /**
  * The MCP process, Streamable HTTP.
@@ -28,7 +29,7 @@ import { buildServices, jwtKey } from './services.js'
 
 async function main(): Promise<void> {
   const config = loadConfig()
-  const key = jwtKey()
+  const { key, alsoAccept } = loadJwtKeys()
   const { pool, layers, tools, serviceKeys } = buildServices(config)
 
   // The same Redis, the same policies, the same keys the REST surface uses.
@@ -101,7 +102,13 @@ async function main(): Promise<void> {
     // account key is how an agent authenticates; leaving it out made every
     // `nacre_sk_` token 401 on this transport while the same key worked over
     // STDIO and REST — one credential, three surfaces, two of them agreeing.
-    verify: { key, issuer: config.jwtIssuer, audience: config.jwtAudience, serviceKeys },
+    verify: {
+      key,
+      ...(alsoAccept.length === 0 ? {} : { alsoAccept }),
+      issuer: config.jwtIssuer,
+      audience: config.jwtAudience,
+      serviceKeys,
+    },
     layers,
     tools,
     // Discovery lives on the API host, never on the apex — static hosting there
@@ -124,13 +131,14 @@ async function main(): Promise<void> {
     // outside. Comparing two printed fingerprints is how an operator sees it in
     // one line. The API has printed its own since it existed; this one did not,
     // which made the comparison impossible from the half that needed it.
-    const fingerprint = createHash('sha256').update(key).digest('hex').slice(0, 12)
+    const print = (k: Uint8Array) => `sha256:${createHash('sha256').update(k).digest('hex').slice(0, 12)}`
     console.log(
       JSON.stringify({
         msg: 'mcp listening',
         port,
         env: config.env,
-        jwt_key: `sha256:${fingerprint}`,
+        jwt_key: print(key),
+        ...(alsoAccept.length === 0 ? {} : { jwt_key_previous: alsoAccept.map(print) }),
       }),
     )
   })
