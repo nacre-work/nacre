@@ -9,7 +9,7 @@ import {
   withOrg,
 } from '@nacre.work/core'
 import { SignJWT } from 'jose'
-import type { Pool } from 'pg'
+import type { Pool, PoolClient } from 'pg'
 
 /**
  * Email and password sign-in.
@@ -265,42 +265,65 @@ export class Login {
 
     if (row.revoked_at !== null) return undefined
 
-    if (row.used_at !== null) {
-      // Reuse. End the session rather than deciding which holder is genuine.
-      await this.revokeFamily(row.org_id, row.family_id)
-      return undefined
-    }
-
     if (row.expires_at.getTime() <= this.clock.getTime()) return undefined
 
-    const user = await withOrg(
+    // Everything from here is one transaction, serialized on the family.
+    //
+    // The read above is diagnosis, not the decision. Checking `used_at` in
+    // application code and writing it later is a read-modify-write, and under
+    // concurrency every request reads null before any of them writes: eight
+    // simultaneous redemptions of one stolen token all succeeded, each with a
+    // fresh session, and the reuse detection never fired. Rotation without an
+    // atomic claim detects nothing — it only makes theft quieter.
+    //
+    // `used_at IS NULL` in the WHERE clause is the claim, and the advisory lock
+    // is what makes the revocation that follows a loss complete: without it a
+    // revoke whose statement began before this transaction committed cannot see
+    // the row inserted here, so the token the winner just obtained would
+    // survive the revocation meant to catch it.
+    const outcome = await withOrg(
       this.deps.pool,
       row.org_id,
-      async (client) => {
+      async (client): Promise<Tokens | 'lost' | 'gone'> => {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [row.family_id])
+
+        const claimed = await client.query<{ id: string }>(
+          `UPDATE refresh_tokens SET used_at = now()
+            WHERE id = $1 AND used_at IS NULL AND revoked_at IS NULL
+            RETURNING id`,
+          [row.id],
+        )
+        if (claimed.rows[0] === undefined) return 'lost'
+
         const { rows } = await client.query<UserRow>(
           `SELECT id, org_id, role, password_hash, disabled_at
              FROM users WHERE id = $1 AND org_id = $2`,
           [row.user_id, row.org_id],
         )
-        return rows[0]
+        const user = rows[0]
+        if (user === undefined || user.disabled_at !== null) return 'gone'
+
+        return this.issue(user, row.family_id, client)
       },
       this.scope,
     )
 
-    // Disabling an account has to end its sessions, or it only stops new ones.
-    if (user === undefined || user.disabled_at !== null) {
+    if (outcome === 'lost') {
+      // Someone already spent this one. Two parties hold the same token and
+      // there is no way to tell which is genuine, so the session ends for both.
       await this.revokeFamily(row.org_id, row.family_id)
       return undefined
     }
 
-    await withOrg(
-      this.deps.pool,
-      row.org_id,
-      (client) => client.query('UPDATE refresh_tokens SET used_at = now() WHERE id = $1', [row.id]),
-      this.scope,
-    )
+    if (outcome === 'gone') {
+      // Disabling an account has to end its sessions, or it only stops new
+      // ones. The claim above is committed, so the token is spent either way —
+      // a refusal here must not leave it redeemable.
+      await this.revokeFamily(row.org_id, row.family_id)
+      return undefined
+    }
 
-    return this.issue(user, row.family_id)
+    return outcome
   }
 
   /** Sign out. Ends the family, not just this token. */
@@ -322,15 +345,29 @@ export class Login {
     return true
   }
 
+  /**
+   * End every token descended from one login.
+   *
+   * Takes the same advisory lock the rotation path takes, and that is what
+   * makes it complete rather than approximately complete. Without it the two
+   * interleave badly: a statement's snapshot is fixed when the statement
+   * starts, so a revoke that begins before a rotation commits will not see the
+   * row that rotation inserts — and the token the racing party just obtained
+   * survives the revocation that was supposed to catch it. Serialized on the
+   * family, the revoke either runs first (and the rotation then finds the
+   * family revoked) or runs second (and sees the new row).
+   */
   private async revokeFamily(orgId: string, familyId: string): Promise<void> {
     await withOrg(
       this.deps.pool,
       orgId,
-      (client) =>
-        client.query(
+      async (client) => {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [familyId])
+        await client.query(
           'UPDATE refresh_tokens SET revoked_at = now() WHERE family_id = $1 AND revoked_at IS NULL',
           [familyId],
-        ),
+        )
+      },
       this.scope,
     )
   }
@@ -342,7 +379,11 @@ export class Login {
    * revoked together; a fresh login starts a new one, so signing out of one
    * device does not sign out of the others.
    */
-  private async issue(user: UserRow, family: string | undefined): Promise<Tokens> {
+  private async issue(
+    user: UserRow,
+    family: string | undefined,
+    client?: PoolClient,
+  ): Promise<Tokens> {
     const ttl = Math.max(ACCESS_MIN_SECONDS, this.deps.accessTokenTtl)
     const now = this.clock
 
@@ -364,15 +405,22 @@ export class Login {
     const refreshToken = mint()
     const expiresAt = new Date(now.getTime() + this.deps.refreshTokenTtl * 1000)
 
-    await withOrg(
+    const insert = (client: PoolClient): Promise<unknown> =>
+      client.query(
+        `INSERT INTO refresh_tokens (org_id, user_id, token_hash, family_id, expires_at)
+         VALUES ($1, $2, $3, COALESCE($4::uuid, gen_random_uuid()), $5)`,
+        [user.org_id, user.id, digest(refreshToken), family ?? null, expiresAt],
+      )
+
+    // On a rotation the caller hands in its own transaction, so the claim and
+    // the token that replaces it commit together — a crash between them would
+    // otherwise spend a token and issue nothing, ending a session for no
+    // reason. A fresh login has no transaction to join and opens its own.
+    if (client !== undefined) await insert(client)
+    else await withOrg(
       this.deps.pool,
       user.org_id,
-      (client) =>
-        client.query(
-          `INSERT INTO refresh_tokens (org_id, user_id, token_hash, family_id, expires_at)
-           VALUES ($1, $2, $3, COALESCE($4::uuid, gen_random_uuid()), $5)`,
-          [user.org_id, user.id, digest(refreshToken), family ?? null, expiresAt],
-        ),
+      insert,
       this.scope,
     )
 
