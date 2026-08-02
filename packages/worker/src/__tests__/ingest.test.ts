@@ -58,8 +58,8 @@ describe('chunking', () => {
 
 function ports(
   overrides: Partial<IngestPorts> = {},
-): IngestPorts & { written: unknown[]; embedded: number; tagged: { id: string; version: number }[] } {
-  const state = { written: [] as unknown[], embedded: 0, tagged: [] as { id: string; version: number }[] }
+): IngestPorts & { written: unknown[]; embedded: number } {
+  const state = { written: [] as unknown[], embedded: 0 }
   let counter = 0
   const stored = new Map<string, StoredDocument>()
 
@@ -73,9 +73,6 @@ function ports(
     },
     documents: {
       find: async (org, layer, external) => stored.get(`${org}/${layer}/${external}`),
-      markTagged: async (_org, id, version) => {
-        state.tagged.push({ id, version })
-      },
       upsert: async (input) => {
         const key = `${input.orgId}/${input.layerId}/${input.externalId}`
         const doc: StoredDocument = {
@@ -96,7 +93,7 @@ function ports(
     newId: () => `point-${++counter}`,
     ...overrides,
     ...state,
-  } as IngestPorts & { written: unknown[]; embedded: number; tagged: { id: string; version: number }[] }
+  } as IngestPorts & { written: unknown[]; embedded: number }
 }
 
 const request = {
@@ -107,8 +104,6 @@ const request = {
   vectorName: 'v_bge_m3_1024',
   externalId: 'handbook-2026',
   content: 'New engineers get repository access on their first day.',
-  aclTags: ['h:aaaa', 'h:bbbb'],
-  aclVersion: 42,
 }
 
 describe('ingest', () => {
@@ -143,7 +138,6 @@ describe('ingest', () => {
           chunkCount: 0,
           indexed: false,
         }),
-        markTagged: async () => undefined,
         upsert: async (input) => ({
           id: 'doc-1',
           contentHash: input.contentHash,
@@ -194,16 +188,6 @@ describe('ingest', () => {
     expect(p.written).toHaveLength(0)
   })
 
-  it('acl tags and version reach the vector payload', async () => {
-    const p = ports()
-    await ingest(request, p)
-
-    const write = p.written[0] as { aclTags: readonly string[]; aclVersion: number; orgId: string }
-    expect(write.aclTags).toEqual(request.aclTags)
-    expect(write.aclVersion).toBe(42)
-    expect(write.orgId).toBe('org-1')
-  })
-
   it('Postgres is written before the vector store', async () => {
     const order: string[] = []
     const p = ports()
@@ -211,10 +195,6 @@ describe('ingest', () => {
       ...p,
       documents: {
         find: p.documents.find.bind(p.documents),
-        markTagged: async (o, i, v) => {
-          order.push('tagged')
-          return p.documents.markTagged(o, i, v)
-        },
         upsert: async (i) => {
           order.push('postgres')
           return p.documents.upsert(i)
@@ -234,52 +214,7 @@ describe('ingest', () => {
     // crash between the two must leave a document with no vectors — recoverable
     // by reindexing — rather than vectors with no document.
     //
-    // `tagged` comes last for a different reason: it is a claim that the points
-    // carry tags from this groups_version, and that claim is only true once the
-    // vector write has returned.
-    expect(order).toEqual(['postgres', 'vectors', 'tagged'])
-  })
-
-  it('a failed vector write leaves the document untagged', async () => {
-    const p = ports()
-    const wrapped: IngestPorts = {
-      ...p,
-      vectors: {
-        write: async () => {
-          throw new Error('qdrant is unreachable')
-        },
-      },
-    }
-
-    await expect(ingest(request, wrapped)).rejects.toThrow('qdrant is unreachable')
-
-    // Tagged-but-not-written is the one combination that lies in the dangerous
-    // direction: the lag gauge would report the document caught up while its
-    // points still carry whatever grants they had. Untagged over-reports lag,
-    // which is a false alarm and recoverable; the other way round is a leak
-    // nothing is watching for.
-    expect(p.tagged).toHaveLength(0)
-  })
-
-  it('an unchanged document is not marked as retagged', async () => {
-    const p = ports()
-    await ingest(request, p)
-    p.tagged.length = 0
-
-    // Same content, a newer groups_version. Nothing is rewritten, so the points
-    // still carry the old tags — claiming otherwise would hide exactly the
-    // window invariant I4 bounds.
-    const result = await ingest({ ...request, aclVersion: 99 }, p)
-
-    expect(result.unchanged).toBe(true)
-    expect(p.tagged).toHaveLength(0)
-  })
-
-  it('a document is tagged at the version its points were written with', async () => {
-    const p = ports()
-    const result = await ingest(request, p)
-
-    expect(p.tagged).toEqual([{ id: result.documentId, version: 42 }])
+    expect(order).toEqual(['postgres', 'vectors'])
   })
 
   it('an empty document is recorded, so a retry does not reparse it forever', async () => {
@@ -295,12 +230,6 @@ describe('ingest', () => {
     // kind: no text left anywhere, still holding places in results.
     expect(p.written).toHaveLength(1)
     expect((p.written[0] as { points: unknown[] }).points).toHaveLength(0)
-
-    // No points means no stale tag to leak through, so it is current by
-    // construction. Left untagged it would sit behind the version forever and
-    // hold the lag gauge at the age of the oldest empty file — a permanent
-    // false alarm on the one metric that must stay believable.
-    expect(p.tagged).toEqual([{ id: result.documentId, version: 42 }])
   })
 
   it('the content hash covers the parsed text, not the request', async () => {

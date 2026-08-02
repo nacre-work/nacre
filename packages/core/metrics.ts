@@ -157,7 +157,7 @@ export class Registry {
 
   /**
    * A function run before every scrape, for values that are queries rather than
-   * counters — document counts, the propagation lag, pending tombstones.
+   * counters — document counts and pending tombstones.
    */
   collect(fn: () => Promise<void>): void {
     this.#collectors.push(fn)
@@ -266,12 +266,6 @@ export function createMetrics(registry: Registry) {
       new Counter(
         'nacre_auth_failures_total',
         'Rejected credentials, by the kind presented: missing, jwt, service_key. Never by reason — the 401 is deliberately one answer',
-      ),
-    ),
-    aclPropagationLag: registry.register(
-      new Gauge(
-        'nacre_acl_propagation_lag_seconds',
-        'Age in seconds of the oldest document, per organization, whose ACL tags predate the current groups_version. Alert on max() over this. The only external evidence that invariant I4 holds',
       ),
     ),
     ingestDuration: registry.register(

@@ -1,5 +1,4 @@
 import {
-  aclTags,
   buildFilter,
   cachedEffectivePrincipals,
   documentKey,
@@ -862,7 +861,7 @@ export class HttpEmbedder implements Embedder {
   }
 }
 
-export { aclTags }
+
 
 
 /**
@@ -1919,6 +1918,36 @@ export class PostgresGrants implements Grants {
         if (!referenceAllows(context, { type: input.scopeType, id: input.scopeId }, 'admin')) {
           return undefined
         }
+
+        // And the scope has to exist in this organization, which the check
+        // above does not establish. `referenceAllows` returns `true` for
+        // `org_admin` on its third line — rule 3, admin on every scope
+        // implicitly — and it returns *before* the scope is placed, so an
+        // administrator naming any uuid at all passed.
+        //
+        // Not a leak, and the reason is worth stating rather than assumed: a
+        // grant on a scope that is not here becomes `should: layer_id = X`
+        // beside an unconditional `must: org_id = <this tenant>`, and points
+        // carrying layer X belong to another tenant and live in another
+        // collection. The second line of defence holds. What got written was a
+        // row that permits nothing and points at nothing.
+        //
+        // It still has to be refused. An administrator reading `/v1/grants`
+        // sees a grant they cannot explain on an id they cannot look up, and
+        // `404` stops meaning what invariant 4 says it means — "no permission"
+        // and "no such object" are one answer, which requires that naming a
+        // nonexistent object *reaches* that answer rather than succeeding.
+        //
+        // Written out per table rather than assembled, so the table name can
+        // never come from a caller-supplied string. `scopeType` is a checked
+        // union already; this makes it structural.
+        const exists = await client.query(
+          input.scopeType === 'workspace'
+            ? `SELECT 1 FROM workspaces WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`
+            : `SELECT 1 FROM layers WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+          [auth.orgId, input.scopeId],
+        )
+        if (exists.rowCount !== 1) return undefined
 
         const { rows } = await client.query<{ id: string; effect: string; source: string }>(
           `INSERT INTO grants

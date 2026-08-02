@@ -19,7 +19,6 @@ import {
   claimPurgeable,
   claimReindexable,
   dueChecks,
-  claimStale,
   claimStranded,
   dueCollections,
   dueVectors,
@@ -37,7 +36,6 @@ import {
   QdrantVectorWriter,
   recordCheck,
   recordReindexPass,
-  tagsForLayer,
 } from './adapters.js'
 import { ingest } from './ingest.js'
 import { collectOnce } from './collect.js'
@@ -45,7 +43,6 @@ import { pruneOnce } from './prune.js'
 import { reapOnce } from './reap.js'
 import { reindexOnce } from './reindex.js'
 import { recallOnce, type RecallPorts } from './recall.js'
-import { retagOnce } from './retag.js'
 import { retireOnce, retireVectorsOnce } from './retire.js'
 
 /**
@@ -63,21 +60,6 @@ const APP_ROLE = 'nacre_app'
 /** See the call site. Two minutes, and never unbounded. */
 const EMBED_TIMEOUT_MS = 120_000
 const IDLE_MS = 2000
-
-// What a pass that only failed waits before the next one. A failing retag pass
-// used to skip the idle sleep along with the successful ones — the loop treated
-// "something happened" as "there is more to do" — so an unreachable vector store
-// turned the worker into a spin at full CPU, logging one line per attempt. The
-// cap is small on purpose: this backs off a broken dependency, it does not give
-// up on it, and propagation lag is accruing the whole time.
-const BACKOFF_MS = 2000
-const BACKOFF_MAX_MS = 30_000
-
-// The recomputation pass. Bounded because a revocation across a large layer can
-// touch every document in it, and an unbounded sweep would take the vector
-// store down at exactly the moment correctness depends on it being reachable.
-const RETAG_BATCH = 50
-const RETAG_CONCURRENCY = 4
 
 // Garbage collection. docs/architecture.md asks for "at least hourly", and this
 // runs far more often than that because it is cheap when there is nothing to do
@@ -289,26 +271,6 @@ async function main(): Promise<void> {
   // object. `loadConfig` refuses a half-configured block, so this is either
   // fully usable or not there.
   const objects = config.s3 === undefined ? undefined : new S3(config.s3)
-
-  const retagPorts = {
-    // The configured lease, not the function's default.
-    //
-    // Both background sweeps took the 900-second default in their own
-    // signatures, so `NACRE_INDEX_LEASE` reached the reaper and nothing else.
-    // An operator lowering it to shorten a stall — the documented response to a
-    // climbing propagation alert — changed the reaper's behaviour and left the
-    // sweep parking rows for fifteen minutes regardless. A variable that is
-    // honoured in one of its two uses is worse than one that is honoured in
-    // neither: the number in the log matches the setting, and the behaviour
-    // does not.
-    claim: (limit: number) => claimStale(pool, limit, config.indexLease),
-    tagsFor: (orgId: string, layerId: string) => tagsForLayer(pool, orgId, layerId, APP_ROLE),
-    retag: vectors.retag.bind(vectors),
-    markTagged: documents.markTagged.bind(documents),
-    onError: (document: { documentId: string }, error: unknown) => {
-      logger.error('retag failed', { document_id: document.documentId, error: String(error) })
-    },
-  }
 
   const collectPorts = {
     claim: (limit: number, grace: number) => claimPurgeable(pool, limit, grace, config.indexLease),
@@ -598,11 +560,6 @@ async function main(): Promise<void> {
   // is indexing a document twice, and ingest is idempotent.
   let lastReap = 0
 
-  // Consecutive passes that did nothing but fail. Reset by any progress, so a
-  // single bad document among healthy ones never slows the loop down.
-  let barren = 0
-  const backoff = () => Math.min(BACKOFF_MS * 2 ** Math.min(barren, 5), BACKOFF_MAX_MS)
-
   let running = true
   // Woken by the signal handler so an idle sleep does not have to run out.
   let wake: (() => void) | undefined
@@ -654,41 +611,19 @@ async function main(): Promise<void> {
     }
 
     if (claim === undefined) {
-      // How long to wait at the bottom. A failing pass sets it higher; nothing
-      // below returns early on a failure, because an early return here is what
-      // let one unhealthy job hold the others hostage.
-      let wait = IDLE_MS
+      // The idle wait, one value for every background pass.
+      //
+      // It used to back off when the retag sweep failed repeatedly, and that
+      // sweep is gone — see migration 0016. No other pass ever set it: reap,
+      // collect, reindex and prune each catch, log, and fall through to the
+      // same sleep, so the loop's timing is now one number rather than one
+      // number and an exception.
+      const wait = IDLE_MS
 
-      // Indexing first, retagging in the gaps. A document nobody can find yet
-      // is a worse outage than a permission cache a few seconds behind, and
-      // the SLA the lag is measured against has room for the wait.
-      try {
-        const pass = await retagOnce(retagPorts, RETAG_BATCH, RETAG_CONCURRENCY)
-        if (pass.retagged > 0 || pass.failed > 0) {
-          logger.info('retagged', { ...pass })
-        }
-        // Only progress earns another immediate pass. A pass that retagged
-        // nothing and failed on everything will fail again in two milliseconds,
-        // and the claim it repeats is a query per attempt against every tenant.
-        if (pass.retagged > 0) {
-          barren = 0
-          continue
-        }
-        if (pass.failed > 0) {
-          barren++
-          wait = backoff()
-        } else {
-          barren = 0
-        }
-      } catch (error) {
-        logger.error('retag pass failed', { error: String(error) })
-        barren++
-        wait = backoff()
-      }
-
-      // Before collection, because this one puts work back into the queue and
-      // the loop is about to go to sleep for two seconds. Also on its own clock
-      // and never skipped by an unhealthy retag, for the same reason.
+      // Reaping first among the background passes, because it is the one that
+      // puts work back into the queue and the loop is about to sleep. On its
+      // own clock, and never skipped by another pass failing — the jobs share
+      // a loop, not a fate.
       if (Date.now() - lastReap >= REAP_EVERY_MS) {
         lastReap = Date.now()
         try {
@@ -836,7 +771,6 @@ async function main(): Promise<void> {
     }
 
     try {
-      const acl = await tagsForLayer(pool, claim.orgId, claim.layerId, APP_ROLE)
       // Three shapes, and the s3 one is a fetch rather than a field.
       //
       // A missing object is failed rather than indexed as empty. The bytes were
@@ -870,13 +804,6 @@ async function main(): Promise<void> {
           vectorName: claim.vectorName,
           externalId: claim.externalId,
           metadata: claim.metadata,
-          aclTags: acl.tags,
-          // The organization's groups_version, never a clock. The propagation
-          // gauge asks whether acl_version has fallen behind groups_version,
-          // and a millisecond timestamp is larger than that counter will ever
-          // be — so the comparison would never fire and the one metric that
-          // evidences invariant I4 would report perfect health forever.
-          aclVersion: acl.version,
           ...source,
         },
         {

@@ -56,12 +56,10 @@ NACRE_EMA_TRUSTED_ISSUERS=
 
 # ─── permissions ───
 NACRE_ACL_CACHE_TTL=60
-NACRE_ACL_PROPAGATION_SLA=60           # alert above this
-NACRE_ACL_TAG_HASH_BYTES=8
 
 # ─── the background worker ───
 NACRE_GC_GRACE=3600                    # tombstone to physical purge
-NACRE_INDEX_LEASE=900                  # any claim older than this is abandoned: indexing, retag, purge
+NACRE_INDEX_LEASE=900                  # any claim older than this is abandoned: indexing, purge
 NACRE_INDEX_MAX_ATTEMPTS=5             # then the document is failed, not requeued
 
 # ─── limits ───
@@ -132,11 +130,6 @@ deployment takes an afternoon.
 Three combinations parse individually and are refused together, because a
 per-variable check cannot catch them:
 
-- `NACRE_ACL_CACHE_TTL` longer than `NACRE_ACL_PROPAGATION_SLA`. Not because it
-  would delay a revocation — the effective-principals cache is keyed on the
-  permission epoch, so it cannot — but because a value above the SLA is what
-  someone sets who has read it as "how long a stale permission may live". The
-  TTL bounds memory. The refusal interrupts the misunderstanding.
 - `NACRE_RERANKER_ENABLED=true` with no endpoint set.
 - `NACRE_REFRESH_TOKEN_TTL` no longer than `NACRE_ACCESS_TOKEN_TTL`. A refresh
   token that expires no later than the access token it renews cannot renew
@@ -382,15 +375,19 @@ There is no metric for it. A gauge would carry one series per layer, and the
 number is read once per migration by someone already polling the reindex
 endpoint that carries it.
 
-Two variables are **refused** rather than ignored, because ignoring them would
+One variable is **refused** rather than ignored, because ignoring it would
 silently overrule a decision about isolation:
 
 - `NACRE_VECTOR_TENANCY=shared` — every collection is named per organization and
   no code path shares one. Accepting it would give you a single-collection
   deployment that believes it is isolated.
-- `NACRE_ACL_TAG_HASH_BYTES` other than 8 — the width is fixed in the code that
-  writes and matches tags, so setting it changes the collision probability you
-  think you have and nothing else.
+
+`NACRE_ACL_TAG_HASH_BYTES` was refused beside it and is now simply gone, with
+the tag cache it described. So is `NACRE_ACL_PROPAGATION_SLA`: nothing
+propagates asynchronously any more, so there is no window to bound. Both were
+removed rather than left on a "not implemented" list, on the same rule as
+`NACRE_OAUTH_CIMD_ENABLED` — a variable for a mechanism the product no longer
+has tells an operator it has a knob it will never have.
 
 ### What Redis is for
 
@@ -538,14 +535,13 @@ packaging one — see [licensing.md](./licensing.md).
   the excess. Concurrent scrapes share one collection rather than each starting
   their own.
 
-  One query per organization, not three. It was three — counts, tombstones, lag
-  — each in its own `withOrg`, which on eighteen organizations measured 271
-  statements per scrape against 91 now, and 1355 for five scrapes against zero.
+  One query per organization. It was three — counts, tombstones, lag — each in
+  its own `withOrg`, which on eighteen organizations measured 271 statements per
+  scrape against 91 after they were merged. The lag half is gone entirely now.
 
 Required metrics:
 
 ```
-nacre_acl_propagation_lag_seconds{org}     # target < 60
 nacre_documents_total{org,status}
 nacre_tombstones_pending_total{org}        # climbing means GC is losing
 nacre_collections_retired_total{org}       # superseded collections still on disk
@@ -599,25 +595,27 @@ It recorded nothing at all before — no registry, no endpoint — so everything
 above was true of REST and silent on the transport the product is actually for.
 An agent's search was not slow or failing; it was absent.
 
-The worker emits no metrics of any kind — it serves no port. Its only external
-signal is the propagation gauge above, which the API exports.
+The worker emits no metrics of any kind — it serves no port. What it does is
+visible through the API's gauges: `nacre_documents_total` by status, and
+`nacre_tombstones_pending_total` climbing when collection is losing.
 
-`nacre_acl_propagation_lag_seconds` is the one to alert on. It is the only
-external evidence that invariant I4 still holds.
+**There is no propagation alert, and that is the change worth reading twice.**
+`nacre_acl_propagation_lag_seconds` was here, described as "the only external
+evidence that invariant I4 still holds", with `max(...) > 60` as the rule. It
+measured how far the ACL tag cache had fallen behind — and no query ever read
+that cache. Migration 0016 removed it.
 
-```
-max(nacre_acl_propagation_lag_seconds) > 60
-```
+I4 is now stronger and is not a metric. A revoked grant is reflected in the next
+search because the permitted set is computed per request and the one cache in
+front of it is keyed on the permission epoch, which every write to `grants`
+moves. There is nothing asynchronous left to fall behind, so there is nothing to
+watch — the evidence is the T11 cases in `acl-invariants`, checked on every run
+rather than observed after the fact.
 
-Per organization rather than one aggregate, and the reason is not
-presentational: a single worst-across-tenants number lets one neglected tenant
-pin the gauge and hide every other tenant behind it, and when the alert fires it
-does not say who. `max()` is the same alert and does not depend on how many
-tenants exist.
-
-Every live organization reports a value on every scrape, zero included. An
-absent series and a zero one mean "not being measured" and "caught up", and on
-this metric those must not look alike.
+`nacre_tombstones_pending_total` is the gauge to alert on instead. It is the one
+number that climbs when a background job has stopped working, and unlike the
+lag gauge it corresponds to something a query can observe: a tombstoned
+document's vectors are still on disk until it drains.
 
 The value is the age of the oldest document whose `acl_version` is behind its
 organization's `groups_version`. Deleted documents are excluded — invariant I5

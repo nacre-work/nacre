@@ -201,7 +201,7 @@ components:
       required: [chunk_id, doc_id, layer, score]
       description: >
         What a result carries, and deliberately not what the vector store holds.
-        The payload the index keeps — acl_tags, acl_version, org_id, layer_id —
+        The payload the index keeps — org_id, layer_id, doc_id, deleted —
         never reaches a client. An acl tag is a hash over the grant set reaching
         a document, so publishing it would let a caller group documents by which
         permissions they share.
@@ -1172,7 +1172,7 @@ paths:
         - { $ref: '#/components/parameters/IdempotencyKey' }
       responses:
         '201':
-          description: 'Issued. Reflected in results within ACL_PROPAGATION_SLA.'
+          description: 'Issued. Reflected in the next search, not eventually.'
           headers:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
@@ -1199,8 +1199,10 @@ paths:
         equivalent and is not: a deny beats an allow at any depth, so it would
         also suppress access the principal holds through a group or a parent
         scope, and deny is a commercial capability this build does not issue.
-        The change is reflected in results within ACL_PROPAGATION_SLA, which is
-        what nacre_acl_propagation_lag_seconds measures.
+        The change is reflected in the next search rather than eventually: the
+        caller's permitted set is computed per request from `grants`, and the
+        one cache in front of it is keyed on the organization's permission
+        epoch, which every write to `grants` moves.
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
       responses:

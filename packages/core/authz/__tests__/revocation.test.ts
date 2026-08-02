@@ -8,13 +8,11 @@ import { createPool } from '../../db/client.js'
 import { loadGroupsVersion } from '../store.js'
 
 /**
- * Withdrawing a grant.
+ * Issuing and withdrawing a grant.
  *
- * `nacre_acl_propagation_lag_seconds` is the only external evidence that
- * invariant I4 holds — a revocation is reflected within the SLA — and the
- * operation it measures had no implementation on any surface. Three documents
- * described revocation; the only way to perform one was a DELETE against the
- * table by hand, which no permission check and no audit row went anywhere near.
+ * Revocation had no implementation on any surface at all: three documents
+ * described it, and the only way to perform one was a DELETE against the table
+ * by hand, which no permission check and no audit row went anywhere near.
  *
  * Two properties carry the risk here. Admin is resolved against the grant's own
  * scope, read from the stored row rather than from anything the caller sent —
@@ -212,10 +210,69 @@ when('baseline · grant revocation', () => {
     const after = await loadGroupsVersion(c, ORG)
     c.release()
 
-    // The trigger does this, not the adapter. If it ever stops, the worker
-    // never recomputes the payload tags, the lag gauge reports zero because
-    // nothing is behind, and the revocation is invisible to every piece of
-    // evidence the SLA rests on — while the grant really is gone from Postgres.
+    // The trigger does this, not the adapter. It is what makes the
+    // effective-principals cache safe: the next request composes a different
+    // key rather than being served the entry this revocation invalidated. If
+    // the trigger ever stops, a revoked grant is served from cache for the
+    // whole TTL while Postgres says it is gone.
     expect(after).toBeGreaterThan(before)
+  })
+
+  /**
+   * A grant has to name a scope that is here.
+   *
+   * `referenceAllows` returns `true` for `org_admin` on its third line — rule
+   * 3, admin on every scope in the organization, implicitly — and it returns
+   * before the scope is placed. So an administrator naming any uuid at all
+   * passed the permission check and the row was written.
+   *
+   * **Not a leak.** Such a grant becomes `should: layer_id = X` beside an
+   * unconditional `must: org_id = <this tenant>`, and points carrying layer X
+   * belong to another tenant and live in another collection. What got written
+   * was a row that permits nothing and points at nothing — one an administrator
+   * reading `/v1/grants` cannot explain or look up, and one that makes `404`
+   * stop meaning what invariant 4 says.
+   */
+  describe('issuing', () => {
+    const input = (scopeType: 'workspace' | 'layer', scopeId: string) => ({
+      principalType: 'user' as const,
+      principalId: ids.outsider,
+      scopeType,
+      scopeId,
+      permission: 'read' as const,
+    })
+
+    it('an org_admin issues on a scope that exists', async () => {
+      const issued = await grants.issue({ ...auth(ids.root), role: 'org_admin' }, input('layer', ids.open))
+      expect(issued?.scopeId).toBe(ids.open)
+      if (issued !== undefined) await grants.revoke({ ...auth(ids.root), role: 'org_admin' }, issued.id)
+    })
+
+    it('an org_admin cannot issue on a scope that does not exist here', async () => {
+      const absent = 'e5e5e5e5-9999-4000-8000-999999999999'
+      for (const scope of [input('layer', absent), input('workspace', absent)]) {
+        const issued = await grants.issue({ ...auth(ids.root), role: 'org_admin' }, scope)
+        expect(issued, scope.scopeType).toBeUndefined()
+      }
+
+      const c = await pool.connect()
+      try {
+        const { rows } = await c.query('SELECT count(*)::int AS n FROM grants WHERE scope_id = $1', [
+          absent,
+        ])
+        expect((rows[0] as { n: number }).n).toBe(0)
+      } finally {
+        c.release()
+      }
+    })
+
+    // Same answer for both, which is what makes them indistinguishable from
+    // outside: `undefined` becomes the one 404 at the handler.
+    it('answers alike for a scope that is absent and one it may not administer', async () => {
+      const absent = await grants.issue(auth(ids.lena), input('layer', 'e5e5e5e5-9999-4000-8000-999999999998'))
+      const forbidden = await grants.issue(auth(ids.lena), input('layer', ids.other))
+      expect(absent).toBeUndefined()
+      expect(forbidden).toBeUndefined()
+    })
   })
 })

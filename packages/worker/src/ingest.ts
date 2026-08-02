@@ -49,7 +49,6 @@ export interface DocumentStore {
    * vectors are written, not with the row — and the difference is the whole
    * point. See the call site.
    */
-  markTagged(orgId: string, documentId: string, aclVersion: number): Promise<void>
   upsert(input: {
     orgId: string
     layerId: string
@@ -89,8 +88,6 @@ export interface VectorWriter {
       vector: readonly number[]
       docId: string
     }[]
-    aclTags: readonly string[]
-    aclVersion: number
   }): Promise<void>
 }
 
@@ -106,8 +103,6 @@ export interface IngestRequest {
   readonly title?: string
   readonly content?: string
   readonly url?: string
-  readonly aclTags: readonly string[]
-  readonly aclVersion: number
   readonly chunkConfig?: ChunkConfig
 }
 
@@ -195,15 +190,12 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
       documentId: stored.id,
       vectorName: request.vectorName,
       points: [],
-      aclTags: request.aclTags,
-      aclVersion: request.aclVersion,
     })
 
     // A document with no chunks has no points, so there is no stale tag it can
     // leak through and it is trivially current. Leaving it behind the version
     // forever would pin the lag gauge at the age of the oldest empty file and
     // teach everyone to ignore the one alert that says a revocation is late.
-    await ports.documents.markTagged(request.orgId, stored.id, request.aclVersion)
     return { documentId: stored.id, chunkCount: 0, unchanged: false }
   }
 
@@ -245,8 +237,6 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
       vector: vectors[i] as readonly number[],
       docId: stored.id,
     })),
-    aclTags: request.aclTags,
-    aclVersion: request.aclVersion,
   })
 
   // After the vector write, never before. The column is a claim that the points
@@ -254,7 +244,6 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
   // true is once the write has returned. Marking first and then failing would
   // leave a document reporting itself caught up while its points still carry a
   // revoked grant — the exact state invariant I4 forbids, recorded as healthy.
-  await ports.documents.markTagged(request.orgId, stored.id, request.aclVersion)
 
   return { documentId: stored.id, chunkCount: withPoints.length, unchanged: false }
 }
