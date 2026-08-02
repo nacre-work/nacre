@@ -905,6 +905,95 @@ export async function forgetCollection(
   })
 }
 
+/**
+ * Layers whose superseded vector slot may be reclaimed.
+ *
+ * A completed reindex leaves every point carrying two vectors: the one the
+ * layer now searches and the one it used to. The second is dead weight —
+ * a float per dimension per point, in memory by default — and nothing removed
+ * it. Qdrant cannot drop a named vector from a collection's schema, which is
+ * the constraint the whole migration design turns on, but it can drop the
+ * *data* for one from a chosen set of points, which is all that costs anything.
+ *
+ * Selected the same way collections are: only what a finished migration
+ * superseded, recorded by the statement that superseded it, and only past the
+ * rollback window. `previous_vector` present is the whole condition — a layer
+ * mid-reindex has no such key.
+ *
+ * The window is the same `NACRE_COLLECTION_RETENTION_DAYS`, and for the same
+ * reason: both are how long a completed migration can still be undone cheaply.
+ * Rolling `vector_name` back is instant while the old vectors are there and
+ * impossible afterwards.
+ */
+export async function dueVectors(
+  pool: Pool,
+  retentionDays: number,
+  limit: number,
+): Promise<readonly { orgId: string; layerId: string; collection: string; vectorName: string }[]> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{
+      org_id: string
+      layer_id: string
+      collection: string
+      previous_vector: string
+    }>(
+      `SELECT l.org_id, l.id AS layer_id, o.vector_collection AS collection,
+              l.reindex_state ->> 'previous_vector' AS previous_vector
+         FROM layers l
+         JOIN organizations o ON o.id = l.org_id
+        WHERE l.deleted_at IS NULL
+          AND o.deleted_at IS NULL
+          AND l.reindex_state ->> 'status' = 'complete'
+          AND l.reindex_state ? 'previous_vector'
+          -- Never the slot the layer is searching now. The switch writes both
+          -- in one statement so they cannot be equal, and a migration that
+          -- somehow landed back on its own name would otherwise delete the
+          -- vectors it is using.
+          AND l.reindex_state ->> 'previous_vector' IS DISTINCT FROM l.vector_name
+          AND (l.reindex_state ->> 'finished_at')::timestamptz
+                < now() - make_interval(days => $1::int)
+        ORDER BY (l.reindex_state ->> 'finished_at')::timestamptz
+        LIMIT $2`,
+      [retentionDays, limit],
+    )
+    return rows.map((r) => ({
+      orgId: r.org_id,
+      layerId: r.layer_id,
+      collection: r.collection,
+      vectorName: r.previous_vector,
+    }))
+  })
+}
+
+/**
+ * Forget the slot, once its data is gone.
+ *
+ * After the delete, never before: the key is the only record that there is
+ * anything to reclaim, and losing it first leaks the vectors permanently with
+ * nothing naming them. The other order costs at worst a second delete of
+ * something already gone, which Qdrant treats as a completed operation.
+ */
+export async function forgetVector(
+  pool: Pool,
+  orgId: string,
+  layerId: string,
+  role?: string,
+): Promise<void> {
+  await withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      await client.query(
+        `UPDATE layers
+            SET reindex_state = reindex_state - 'previous_vector'
+          WHERE org_id = $1 AND id = $2`,
+        [orgId, layerId],
+      )
+    },
+    role === undefined ? {} : { role },
+  )
+}
+
 export async function countRetiredCollections(pool: Pool): Promise<number> {
   return acrossOrganizations(pool, async (client) => {
     const { rows } = await client.query<{ n: string }>(
@@ -1018,7 +1107,13 @@ export async function finishReindexIfDone(
     orgId,
     async (client) => {
       const { rowCount } = await client.query(
-        `UPDATE layers l
+        // `before` captures the name being moved away from. RETURNING sees the
+        // new row — the same reason claimPurgeable reads the CTE's claimed_at
+        // and not the table's — so the old value is held before the SET runs.
+        `WITH before AS (
+           SELECT id, vector_name FROM layers WHERE org_id = $1 AND id = $2
+         )
+         UPDATE layers l
             SET vector_name = $3,
                 -- The provider moves with the vector, in the same statement.
                 --
@@ -1033,9 +1128,22 @@ export async function finishReindexIfDone(
                 -- the organization down with it.
                 provider_id = (l.reindex_state ->> 'provider_id')::uuid,
                 reindex_state = jsonb_set(
-                  jsonb_set(l.reindex_state, '{status}', '"complete"'),
-                  '{finished_at}', to_jsonb(now()::text))
-          WHERE l.org_id = $1 AND l.id = $2
+                  jsonb_set(
+                    jsonb_set(l.reindex_state, '{status}', '"complete"'),
+                    '{finished_at}', to_jsonb(now()::text)),
+                  -- The slot this layer just stopped using, so the sweep that
+                  -- reclaims it knows which one it is. Written by the statement
+                  -- that supersedes it, exactly like retired_collections: a
+                  -- vector nothing has moved off has no key here and cannot be
+                  -- selected for deletion.
+                  --
+                  -- In reindex_state rather than a new table because that is
+                  -- what the column is, the state of this layer's migration,
+                  -- and its CHECK constraint requires status and shadow_vector
+                  -- and permits anything else.
+                  '{previous_vector}', to_jsonb(b.vector_name))
+           FROM before b
+          WHERE l.org_id = $1 AND l.id = $2 AND b.id = l.id
             AND l.reindex_state ->> 'status' = 'running'
             AND l.reindex_state ->> 'shadow_vector' = $3
             AND NOT EXISTS (

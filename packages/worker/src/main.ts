@@ -21,10 +21,12 @@ import {
   claimStale,
   claimStranded,
   dueCollections,
+  dueVectors,
   failReindex,
   finishCopy,
   finishReindexIfDone,
   forgetCollection,
+  forgetVector,
   HttpParser,
   isLiveCollection,
   markReindexed,
@@ -41,7 +43,7 @@ import { pruneOnce } from './prune.js'
 import { reapOnce } from './reap.js'
 import { reindexOnce } from './reindex.js'
 import { retagOnce } from './retag.js'
-import { retireOnce } from './retire.js'
+import { retireOnce, retireVectorsOnce } from './retire.js'
 
 /**
  * The indexing worker.
@@ -349,6 +351,24 @@ async function main(): Promise<void> {
     },
     onError: (collection: { orgId: string; name: string }, error: unknown) => {
       logger.error('collection drop failed', { collection: collection.name, error: String(error) })
+    },
+  }
+
+  const vectorRetirePorts = {
+    due: (days: number, limit: number) => dueVectors(pool, days, limit),
+    drop: (collection: string, layerId: string, vectorName: string) =>
+      store.dropLayerVector(collection, layerId, vectorName),
+    forget: (target: { orgId: string; layerId: string }) =>
+      forgetVector(pool, target.orgId, target.layerId, APP_ROLE),
+    onDropped: (target: { layerId: string; vectorName: string }) => {
+      logger.info('vector slot reclaimed', { layer_id: target.layerId, vector: target.vectorName })
+    },
+    onError: (target: { layerId: string; vectorName: string }, error: unknown) => {
+      logger.error('vector slot reclaim failed', {
+        layer_id: target.layerId,
+        vector: target.vectorName,
+        error: String(error),
+      })
     },
   }
 
@@ -720,6 +740,23 @@ async function main(): Promise<void> {
           }
         } catch (error) {
           logger.error('retire pass failed', { error: String(error) })
+        }
+
+        // The slot inside the collection that survived the copy, on the same
+        // clock and the same window. Its own try/catch because an unreachable
+        // Qdrant must not look like a failed collection sweep, and the two
+        // reclaim different things.
+        try {
+          const slots = await retireVectorsOnce(
+            vectorRetirePorts,
+            config.collectionRetentionDays,
+            RETIRE_BATCH,
+          )
+          if (slots.dropped > 0 || slots.failed > 0) {
+            logger.info('vector slots retired', { ...slots })
+          }
+        } catch (error) {
+          logger.error('vector retire pass failed', { error: String(error) })
         }
       }
 

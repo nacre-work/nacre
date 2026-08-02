@@ -274,8 +274,13 @@ Two tables are swept by the worker, hourly, in bounded batches:
   is refused at startup**, not clamped: a deployment configured for a week of
   audit history should not come up believing it has one.
 
-On the same clock, and third, the worker reclaims **the collections a model
-migration replaced**, past `NACRE_COLLECTION_RETENTION_DAYS`. Each one is a full
+On the same clock, and third, the worker reclaims what a model migration left
+behind, past `NACRE_COLLECTION_RETENTION_DAYS`: **the collection it replaced**,
+and **the vector slot inside the collection that survived** — a completed
+reindex leaves every point in the layer carrying the vector it used to be
+searched by, which is a float per dimension per point and in memory by default.
+The slot stays declared in the collection's schema, because Qdrant cannot remove
+one; only the data goes. Each one is a full
 copy of an organization's vectors, and until this existed nothing removed them —
 disk that grew with every migration.
 
