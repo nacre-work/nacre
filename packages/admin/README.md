@@ -2,6 +2,10 @@
 
 The community admin UI. One organization, four screens, no framework.
 
+Search · Layers · Grants · Service accounts. The Layers screen carries the
+embedding model too: what a migration is doing, the reference queries the recall
+gate scores it against, and starting one.
+
 ```
 pnpm --filter @nacre.work/admin build   # -> dist/, static files
 ```

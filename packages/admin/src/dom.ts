@@ -7,6 +7,11 @@
  * framework here would be the largest dependency in the repository, and it
  * would be carrying four tables.
  *
+ * The one place that argument is worth re-examining is the migration panel,
+ * which polls and redraws itself — and it redraws by rebuilding, because four
+ * seconds apart is not a rate anybody can see and a diff is the thing a
+ * framework is for.
+ *
  * `h` builds elements and sets text through `textContent`, never `innerHTML`.
  * Everything on these screens — layer names, grant principals, document titles
  * — is text somebody else wrote, and an admin UI is exactly where a stored
