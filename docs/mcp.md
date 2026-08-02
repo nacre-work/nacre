@@ -112,13 +112,18 @@ the index traversal, on top of the permission constraint, so naming a layer you
 cannot read returns nothing from it — and is indistinguishable from naming one
 that does not exist, which is invariant I4 applied to a query parameter.
 
-**`filters` was here and is gone.** It was advertised and read by nothing, so a
-client that filtered a search got everything back and believed it had narrowed
-the query. Filtering on document metadata needs that metadata in the vector
-payload, which the worker does not write yet; an advertised parameter that does
-nothing is a lie told to an agent, which will act on it. The REST surface keeps
-it in the contract and answers `400` — it will be built. Here it is simply not
-offered, because a tool schema is what a model plans against.
+**`filters` was advertised, read by nothing, then removed, and is back now that
+it works.** A client that filtered a search and got everything back believed it
+had narrowed the query, which for an agent is worse than for a person: an agent
+acts on the answer without looking at it, and a tool schema is what a model
+plans against.
+
+It narrows exactly as `layers` does — each entry becomes a `must` on a
+namespaced payload key beside the permission constraint, so a filter can only
+remove documents the caller could already read. Keys are lower case letters,
+digits and underscores, and they live under a reserved namespace: filtering on
+`deleted` narrows on a metadata value with that name and cannot reach the
+tombstone flag. Equality only; a list value means any of those.
 
 Returns an array of `{ chunk_id, doc_id, layer, title, score, text?, source_url?,
 metadata }`. `source_url` is presigned, living for `NACRE_PRESIGN_TTL`.
@@ -158,6 +163,12 @@ Exactly one of `content` / `url` / an uploaded file. Idempotent on
 `(layer, external_id)` plus `content_hash`: a repeat with identical content is a
 no-op. The response is asynchronous: `{ document_id, job_id, status }`.
 Permission: `write`.
+
+`metadata` is what `search`'s `filters` reads back, and was dropped by the
+server for as long as `filters` did nothing. Keys are lower case letters, digits
+and underscores, at most 32 of them; values are scalars or lists of them, and a
+nested object is refused rather than flattened. Changing it alone re-indexes the
+document, because it is written into the payload of every chunk.
 
 ### `delete_document`
 

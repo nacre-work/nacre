@@ -108,24 +108,63 @@ describe('search parameters', () => {
     }
   })
 
-  it('refuses filters rather than ignoring it', async () => {
-    // The whole point. Accepting the parameter and applying nothing lets a
-    // search look narrower than it was, which is the one failure this product
-    // cannot afford to make quiet.
+  it('passes filters down, having been refused for as long as they did nothing', async () => {
+    // The parameter was in the contract from before there was a server, read by
+    // nothing, then answered 400 rather than ignored — because a caller who
+    // filters a search and gets everything back believes they scoped it. It is
+    // applied now; what has not changed is that it can only ever remove
+    // results, which is `buildFilter`'s job and is tested there.
     seen.length = 0
-    const response = await search({ query: 'anything', filters: { department: 'legal' } })
+    const response = await search({
+      query: 'anything',
+      filters: { department: 'legal', year: 2026, archived: false, team: ['risk', 'audit'] },
+    })
 
-    expect(response.status).toBe(400)
-    const body = (await response.json()) as { detail: string }
-    expect(body.detail).toContain('not implemented')
-    // And the search never ran, so nothing was returned that could look filtered.
+    expect(response.status).toBe(200)
+    expect(seen[0]?.filters).toEqual({
+      department: 'legal',
+      year: 2026,
+      archived: false,
+      team: ['risk', 'audit'],
+    })
+  })
+
+  it('treats an empty filters object as no restriction', async () => {
+    // `{}` is a client that built a filter and found nothing to put in it, the
+    // same shape as `layers: []`. It must not become a restriction that matches
+    // nothing.
+    seen.length = 0
+    expect((await search({ query: 'anything', filters: {} })).status).toBe(200)
+    expect(seen[0]?.filters).toBeUndefined()
+  })
+
+  it('refuses a filter key that could reach past its own namespace', async () => {
+    // A key is a payload field name, and Qdrant reads `.` as nested access and
+    // `[]` as array indexing. Refusing the characters is what keeps a caller
+    // filtering on what they wrote rather than on something adjacent.
+    seen.length = 0
+    for (const key of ['org.id', 'acl_tags[0]', 'Deleted', '', '9lives']) {
+      const response = await search({ query: 'anything', filters: { [key]: 'x' } })
+      expect(response.status, key).toBe(400)
+    }
     expect(seen).toEqual([])
   })
 
-  it('refuses an empty filters object too', async () => {
-    // `{}` is a client that built a filter and found nothing to put in it. It
-    // is still a client that believes filtering works.
-    expect((await search({ query: 'anything', filters: {} })).status).toBe(400)
+  it('refuses a filter list with no values rather than answering empty', async () => {
+    // buildFilter refuses to encode it, so without this the raise reached the
+    // request path as a 500. A client that built a list and put nothing in it
+    // has a bug, and an empty result would hide it.
+    seen.length = 0
+    const response = await search({ query: 'anything', filters: { team: [] } })
+    expect(response.status).toBe(400)
+    expect(((await response.json()) as { detail: string }).detail).toContain('match nothing')
+    expect(seen).toEqual([])
+  })
+
+  it('refuses a filter value that is not a scalar or a list of them', async () => {
+    for (const value of [{ nested: 1 }, [{ a: 1 }], [[1]]]) {
+      expect((await search({ query: 'anything', filters: { k: value } })).status).toBe(400)
+    }
   })
 
   it('passes include_content down when it is false', async () => {

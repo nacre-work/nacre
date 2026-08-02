@@ -118,6 +118,8 @@ interface Claim {
   readonly vectorName: string
   /** The layer's embedding provider. Never this process's configuration. */
   readonly providerId: string
+  /** What the caller tagged the document with. Written into every point's payload. */
+  readonly metadata: Record<string, unknown>
   readonly sourceRef: string | null
   readonly sourceType: string
 }
@@ -142,11 +144,12 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
       external_id: string | null
       vector_name: string
       provider_id: string
+      metadata: Record<string, unknown> | null
       source_ref: string | null
       source_type: string
     }>(
       `SELECT d.id, d.org_id, o.vector_collection AS collection, d.layer_id, d.external_id, l.vector_name,
-              l.provider_id, d.source_ref, d.source_type
+              l.provider_id, d.metadata, d.source_ref, d.source_type
          FROM documents d
          JOIN organizations o ON o.id = d.org_id
          JOIN layers l        ON l.id = d.layer_id
@@ -200,6 +203,7 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
       externalId: row.external_id ?? row.id,
       vectorName: row.vector_name,
       providerId: row.provider_id,
+      metadata: row.metadata ?? {},
       sourceRef: row.source_ref,
       sourceType: row.source_type,
     }
@@ -678,6 +682,7 @@ async function main(): Promise<void> {
           layerId: claim.layerId,
           vectorName: claim.vectorName,
           externalId: claim.externalId,
+          metadata: claim.metadata,
           aclTags: acl.tags,
           // The organization's groups_version, never a clock. The propagation
           // gauge asks whether acl_version has fallen behind groups_version,

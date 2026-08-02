@@ -1,5 +1,15 @@
 export * from './types.js'
 export * from './authz/index.js'
+export {
+  parseFilters,
+  parseMetadata,
+  MetadataError,
+  MAX_METADATA_KEYS,
+  MAX_METADATA_KEY_LENGTH,
+  MAX_METADATA_LIST,
+  MAX_METADATA_VALUE_LENGTH,
+} from './metadata.js'
+export type { Metadata } from './metadata.js'
 export { loadConfig, loadJwtKeys, ConfigError } from './config.js'
 export type { JwtKeys } from './config.js'
 export type { Config } from './config.js'

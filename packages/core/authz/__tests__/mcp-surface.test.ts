@@ -6,6 +6,8 @@ import { createMcpServer, searchDescription, TOOLS_TTL_MS, type Layer } from '@n
 import { SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { parseFilters } from '../../metadata.js'
+
 /**
  * The MCP surface.
  *
@@ -97,8 +99,14 @@ describe('baseline · the MCP surface', () => {
       resourceMetadataUrl: METADATA,
       layers: { forCaller: async (auth: AuthContext) => LAYERS[auth.orgId] ?? [] },
       tools: {
-        call: async (name) => {
-          if (name === 'search') return { items: [] }
+        call: async (name, args) => {
+          if (name === 'search') {
+            // The real runner validates filters here. What is under test is the
+            // transport's mapping of the two kinds of failure, so the stub
+            // raises the same two kinds.
+            parseFilters((args as { filters?: unknown } | undefined)?.filters)
+            return { items: [] }
+          }
           // Everything else pretends the object is not there, which is what a
           // real refusal looks like from outside.
           throw new Error('nope')
@@ -184,6 +192,32 @@ describe('baseline · the MCP surface', () => {
       ORG_A,
     )
     expect(res.status).toBe(403)
+  })
+
+  it('a malformed filter is named, and only a malformed filter', async () => {
+    // Everything else a tool can fail on answers one "not found", because a
+    // tool error that names a layer tells the caller the layer exists. A
+    // validation error is the one thing that names only what the caller
+    // already sent — and answering "not found" to a typo leaves an agent
+    // retrying the same call forever, since the one thing it cannot learn from
+    // that answer is that its arguments were wrong.
+    const bad = await rpc(
+      'tools/call',
+      { name: 'search', arguments: { query: 'x', filters: { 'Bad.Key': 'v' } } },
+      ORG_A,
+    )
+    expect(bad.status).toBe(400)
+    const body = (await bad.json()) as { error: { code: number; message: string } }
+    expect(body.error.code).toBe(-32602)
+    expect(body.error.message).toContain('Bad.Key')
+
+    // An unknown tool is still indistinguishable from one the caller may not
+    // reach. If this ever starts naming things, the carve-out above grew.
+    const unknown = await rpc('tools/call', { name: 'nope', arguments: {} }, ORG_A)
+    expect(unknown.status).toBe(404)
+    const other = (await unknown.json()) as { error: { code: number; message: string } }
+    expect(other.error.code).toBe(-32601)
+    expect(other.error.message).toBe('Not found')
   })
 
   it('a successful call answers with a CallToolResult, not the bare value', async () => {

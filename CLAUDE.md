@@ -175,11 +175,30 @@ default". Adding a second provider and creating a layer on it accepted documents
 and failed every one of them in the worker, forever, while the API answered
 `queued`.
 
+Search filters on document metadata. `metadata` was declared on ingest with no
+caveat and dropped by the handler, and the worker then overwrote the column with
+the parser's derived facts — the title bug again, with a tag disappearing rather
+than a name. It is stored now, written into the payload of every point under a
+reserved `meta` namespace, and read back by `filters`.
+
+The namespace is the security property and it is structural, not a check: a
+caller key can never collide with `org_id`, `deleted` or `acl_tags`, because
+`meta.deleted` is a different field. And a filter is a **narrowing**, the same
+mechanism `layers` uses — every entry becomes a `must` beside the permission
+constraint, so there is still no path by which a caller-assembled filter reaches
+the index. No negation, no ranges, no disjunction across keys: each is a way to
+widen if composed wrongly, and none is needed to answer "only documents from
+this source".
+
+Changing metadata alone re-indexes the document, because the row and the payload
+would otherwise disagree. The cheap path — a payload-only write, as the ACL
+retag sweep does — is not built, and `docs/api.md` says so rather than letting an
+operator find it on a bill.
+
 Not built: OAuth discovery and dynamic client registration, multipart upload on
 ingest, the recall check against a reference query set on a reindex, dropping
-the old vector after a rollback window, and filtering on document metadata — the
-worker writes no metadata to the vector payload, which is why `filters` answers
-`400` rather than being a silent no-op.
+the old vector after a rollback window, and a payload-only path for a metadata
+change.
 
 **`docker compose --profile minimal up` has now been run from a clean clone**,
 and the whole loop driven through it: init, layer, ingest, indexed, search,

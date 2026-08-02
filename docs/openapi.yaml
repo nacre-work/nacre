@@ -53,15 +53,26 @@ components:
             text.
         filters:
           type: object
-          additionalProperties: true
-          deprecated: true
           description: >
-            **Not implemented, and refused with 400 rather than ignored.**
-            Filtering on document metadata requires that metadata in the vector
-            payload, which the worker does not write yet. Accepting the parameter
-            and applying nothing would let a search look narrower than it was,
-            which for this product is the worst available failure. It stays in
-            the contract because it will be built to it.
+            Restrict to documents whose metadata matches. Equality; a list value
+            means any of those. **Narrowing only** — every entry becomes a `must`
+            beside the permission constraint inside the index traversal, so a
+            filter can only remove results the caller was already permitted to
+            see, and `top_k` still comes back full from the smaller set.
+
+            Keys are lower case letters, digits and underscores, and are read
+            under a reserved payload namespace: `filters: {"deleted": false}`
+            narrows on a metadata value called `deleted`, not on the tombstone
+            flag. No negation, no ranges and no disjunction across keys — each is
+            a way to widen if composed wrongly.
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: number
+              - type: boolean
+              - type: array
+                maxItems: 32
+                items: { type: [string, number, boolean] }
     ReindexStatus:
       type: object
       required: [layer_id, status, current_vector, shadow_vector, progress]
@@ -144,7 +155,7 @@ components:
         score:      { type: number }
         text:       { type: string }
         source_url: { type: string, description: 'Presigned, TTL from NACRE_PRESIGN_TTL. Not implemented yet.' }
-        metadata:   { type: object, additionalProperties: true, description: Not implemented yet. }
+        metadata:   { type: object, additionalProperties: true, description: 'The document''s metadata, as supplied on ingest.' }
     Layer:
       type: object
       required: [id, slug, name, workspace_id, document_count]
@@ -185,7 +196,25 @@ components:
         title:       { type: string }
         content:     { type: string }
         url:         { type: string, format: uri }
-        metadata:    { type: object, additionalProperties: true }
+        metadata:
+          type: object
+          description: >
+            Tags the document is filterable by. Keys are lower case letters,
+            digits and underscores; values are scalars or lists of them, and a
+            nested object is refused rather than flattened. At most 32 keys.
+
+            Written into the vector payload of every chunk, which is why
+            changing metadata alone re-indexes the document — the row and the
+            index would otherwise disagree, and the document would carry a tag
+            it does not answer to.
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: number
+              - type: boolean
+              - type: array
+                maxItems: 32
+                items: { type: [string, number, boolean] }
       oneOf:
         - required: [content]
         - required: [url]

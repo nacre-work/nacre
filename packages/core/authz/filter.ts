@@ -25,8 +25,11 @@ export interface VectorFilter {
 }
 
 export type FilterClause =
-  | { readonly key: string; readonly match: { readonly value: string | boolean } }
-  | { readonly key: string; readonly match: { readonly any: readonly string[] } }
+  | { readonly key: string; readonly match: { readonly value: string | number | boolean } }
+  | {
+      readonly key: string
+      readonly match: { readonly any: readonly (string | number | boolean)[] }
+    }
 
 /**
  * Plans that can be turned into a query at all.
@@ -71,8 +74,37 @@ export type QueryablePlan = Exclude<AccessPlan, { kind: 'none' }>
  * that "no such layer" and "no permitted results" stay the same answer. This
  * function refuses it rather than encoding the distinction.
  */
+/** A value a caller may narrow a search to. Scalars and lists of them, nothing else. */
+export type MetadataValue = string | number | boolean | readonly (string | number | boolean)[]
+
+/**
+ * Where a caller's metadata lands in the vector payload.
+ *
+ * Every key a caller supplies is written and read under this one object, so
+ * `meta.org_id` is a different field from `org_id` and there is no key a caller
+ * can choose that reaches a permission field. That is the whole reason for the
+ * prefix: without it, `filters: {"deleted": false}` would be a caller reaching
+ * invariant I5's clause, and `metadata: {"acl_tags": [...]}` on ingest would be
+ * a caller writing their own permission tags.
+ *
+ * Structural, not a check. A denylist of forbidden keys would have to stay in
+ * step with every payload field ever added; a namespace cannot fall out of step
+ * with anything.
+ */
+export const METADATA_PREFIX = 'meta'
+
 export interface Narrowing {
-  readonly layers: readonly string[]
+  readonly layers?: readonly string[]
+  /**
+   * Document metadata the caller asked to restrict to, key to value.
+   *
+   * Equality only, and every entry becomes a `must` — so like `layers`, this can
+   * only ever remove results. There is deliberately no negation, no range and no
+   * disjunction across keys: each of those is a way to *widen* if it is ever
+   * composed wrongly, and none of them is needed to answer "only documents from
+   * this source".
+   */
+  readonly metadata?: Readonly<Record<string, MetadataValue>>
 }
 
 export function buildFilter(
@@ -95,7 +127,7 @@ export function buildFilter(
     { key: 'deleted', match: { value: false } },
   ]
 
-  if (narrow !== undefined) {
+  if (narrow?.layers !== undefined) {
     if (narrow.layers.length === 0) {
       // See Narrowing. An empty `any` is not "match nothing" in Qdrant, it is a
       // clause that matches nothing *usefully* — and relying on that would put
@@ -110,6 +142,28 @@ export function buildFilter(
     // A `must`, so it intersects with the permission constraint rather than
     // replacing it. This can only ever remove results.
     must.push({ key: 'layer_id', match: { any: [...narrow.layers] } })
+  }
+
+  for (const [key, value] of Object.entries(narrow?.metadata ?? {})) {
+    // Namespaced, always. The caller chooses the key and never the field: a
+    // filter on `deleted` becomes a filter on `meta.deleted`, which is a
+    // different field and cannot touch invariant I5's clause.
+    const field = `${METADATA_PREFIX}.${key}`
+
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        // Same refusal as an empty layer list, for the same reason: an empty
+        // `any` is not "match nothing" in Qdrant. The caller decides what an
+        // impossible restriction means, and answers empty without querying.
+        throw new Error(
+          `refusing to build a filter narrowed to no values for ${key} — the ` +
+            'caller must return an empty result instead of querying',
+        )
+      }
+      must.push({ key: field, match: { any: [...value] } })
+    } else {
+      must.push({ key: field, match: { value: value as string | number | boolean } })
+    }
   }
 
   if (plan.kind === 'all') return { must }
