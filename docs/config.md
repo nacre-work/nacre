@@ -50,8 +50,6 @@ NACRE_JWT_AUDIENCE=nacre
 NACRE_ACCESS_TOKEN_TTL=900
 NACRE_REFRESH_TOKEN_TTL=2592000
 NACRE_OAUTH_AUTHORIZATION_SERVER=      # optional; the IdP in front of this installation
-NACRE_OAUTH_CIMD_ENABLED=true
-NACRE_OAUTH_DCR_ENABLED=false          # legacy; enable deliberately or not at all
 NACRE_EMA_ENABLED=false                # ID-JAG, commercial module
 NACRE_EMA_TRUSTED_ISSUERS=
 
@@ -153,8 +151,21 @@ should know that setting one changes nothing today:
 
 | Variable | What it would do |
 |---|---|
-| `NACRE_OAUTH_CIMD_ENABLED`, `NACRE_OAUTH_DCR_ENABLED`, `NACRE_EMA_*` | client registration and EMA are not built |
+| `NACRE_EMA_*` | ID-JAG is a commercial module and is not written |
 | `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
+
+`NACRE_OAUTH_CIMD_ENABLED` and `NACRE_OAUTH_DCR_ENABLED` **were on this list and
+are now gone entirely**, which is a different statement from "not built yet".
+Client registration, under either mechanism, is a transaction between a client
+and an authorization server, and the section above is unambiguous that Nacre is
+not one. There is no registration endpoint here to switch on and no client
+record to create; a deployment that wants either gets it from the identity
+provider it names in `NACRE_OAUTH_AUTHORIZATION_SERVER`.
+
+A variable for a role the product has declined is worse than a missing feature.
+An unimplemented one tells an operator to wait; one like these tells them the
+product has a knob it is never going to have, and they set it and believe
+something.
 
 ### Logging
 

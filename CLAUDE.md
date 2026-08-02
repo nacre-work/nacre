@@ -244,7 +244,16 @@ live slot is unaffected, and a point missing the queried vector does not error �
 it simply does not match, which is why the selection refuses the slot the layer
 is searching now.
 
-Not built: OAuth dynamic client registration and CIMD.
+**Client registration is not ours and no longer says it is.** `docs/mcp.md`
+carried "the MCP server is a resource server, not an authorization server" and,
+eleven lines later, "client registration is CIMD, DCR is kept as a legacy branch
+behind a flag" — and CIMD and DCR are both transactions between a client and an
+*authorization server*. `NACRE_OAUTH_CIMD_ENABLED` and `NACRE_OAUTH_DCR_ENABLED`
+were removed rather than moved further down the "not built yet" list, which is a
+different statement: a variable for a role the product has declined tells an
+operator it has a knob it will never have, and they set it and believe
+something. The whole OAuth surface a resource server has — the RFC 9728 document
+and local validation of an audience-bound token — is built.
 
 A reindex is gated on recall now, which was step 4 of the migration sequence in
 `docs/architecture.md` and had been listed as not built since before there was a

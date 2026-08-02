@@ -312,8 +312,14 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 | Cursor pagination | layers, grants, service accounts |
 | `POST /v1/auth/login`, `/refresh`, `/logout` | email and password, rotating refresh tokens |
 
-Not implemented, and the document describes it anyway because it is the
-contract it will be built to: OAuth discovery and dynamic client registration.
+Nothing on this surface is left unimplemented. The line that used to sit here
+named two things and was wrong about both: **OAuth discovery is served** —
+`/.well-known/oauth-protected-resource`, RFC 9728, by this API and by the MCP
+transport from one document built once — and **dynamic client registration is
+not ours to implement**. Registration, under DCR or under CIMD, is a transaction
+between a client and an authorization server, and Nacre is a resource server. A
+deployment that wants it gets it from the identity provider it names in
+`NACRE_OAUTH_AUTHORIZATION_SERVER`. See [mcp.md](./mcp.md).
 
 ### Uploading a file
 
