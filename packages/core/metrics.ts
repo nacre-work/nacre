@@ -252,6 +252,22 @@ export function createMetrics(registry: Registry) {
     aclDenials: registry.register(
       new Counter('nacre_acl_denials_total', 'Access denials, by reason'),
     ),
+    // Labelled by what was presented, never by why it failed. The 401 itself
+    // carries one message for every reason so a caller cannot tell an expired
+    // token from a forged one; a `reason` label would hand that distinction
+    // back through an endpoint that is unauthenticated by default.
+    //
+    // `kind="jwt"` is the series a key rotation moves, and it is why this
+    // exists: there is no dual-key window, so every outstanding access token
+    // fails at once and an operator has to watch that drain. `kind="service_key"`
+    // staying flat through the same window is the check that the rotation hit
+    // only what it was meant to.
+    authFailures: registry.register(
+      new Counter(
+        'nacre_auth_failures_total',
+        'Rejected credentials, by the kind presented: missing, jwt, service_key. Never by reason — the 401 is deliberately one answer',
+      ),
+    ),
     aclPropagationLag: registry.register(
       new Gauge(
         'nacre_acl_propagation_lag_seconds',

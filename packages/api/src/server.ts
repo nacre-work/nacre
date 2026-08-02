@@ -335,6 +335,7 @@ export interface RequestMetrics {
   searchResults: { inc(labels?: Record<string, string>, by?: number): void }
   aclDenials: { inc(labels?: Record<string, string>, by?: number): void }
   ingestDuration: { observe(seconds: number, labels?: Record<string, string>): void }
+  authFailures: { inc(labels?: Record<string, string>, by?: number): void }
 }
 
 export interface AuditSink {
@@ -1093,6 +1094,27 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
   const auth = await authenticate(req.headers.authorization, options.verify, instance, requestId)
   if (auth instanceof Problem) {
+    // Counted by what was presented, never by why it failed.
+    //
+    // `authenticate` answers one 401 with one message for every reason, on
+    // purpose — "revoked key" and "wrong audience" and "expired" must not be
+    // tellable apart by a caller. A label carrying the reason would put that
+    // distinction back on an endpoint that is unauthenticated by default, so
+    // this counts the *kind of credential* instead, which is what an operator
+    // actually needs and what no caller learns anything from.
+    //
+    // Rotating the signing key is the case it exists for: every outstanding
+    // access token 401s at once and there is no dual-key window, so an operator
+    // needs to watch that spike drain. Nothing here logs requests, so before
+    // this there was no way to see it at all.
+    const presented = req.headers.authorization
+    const kind =
+      presented === undefined || !presented.startsWith('Bearer ')
+        ? 'missing'
+        : presented.slice(7).startsWith('nacre_sk_')
+          ? 'service_key'
+          : 'jwt'
+    options.observe?.authFailures.inc({ kind })
     send(res, auth.status, auth.toJSON(), requestId)
     return
   }

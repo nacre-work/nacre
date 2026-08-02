@@ -60,7 +60,7 @@ NACRE_ACL_TAG_HASH_BYTES=8
 
 # ─── the background worker ───
 NACRE_GC_GRACE=3600                    # tombstone to physical purge
-NACRE_INDEX_LEASE=900                  # a claim older than this is abandoned
+NACRE_INDEX_LEASE=900                  # any claim older than this is abandoned: indexing, retag, purge
 NACRE_INDEX_MAX_ATTEMPTS=5             # then the document is failed, not requeued
 
 # ─── limits ───
@@ -320,7 +320,21 @@ nacre_search_results_total
 nacre_acl_denials_total{reason}
 nacre_ingest_duration_seconds{stage}       # the accept stage; the worker has no registry
 nacre_reindex_progress_ratio{layer}        # 0 to 1; absent for a layer never reindexed
+nacre_auth_failures_total{kind}            # missing | jwt | service_key
 ```
+
+`nacre_auth_failures_total` is labelled by the kind of credential presented and
+**never by why it failed**. The `401` itself carries one message for every
+reason — an expired token, a forged signature and a revoked service account key
+are one answer, deliberately — and a `reason` label would hand that distinction
+back through an endpoint that is unauthenticated by default.
+
+It exists for key rotation. `NACRE_JWT_SECRET` has no dual-key window: the API
+verifies with one key, with no set and no `kid`, so every outstanding access
+token fails at once and the operator has to watch `kind="jwt"` spike and drain
+over `NACRE_ACCESS_TOKEN_TTL`. `kind="service_key"` staying flat across the same
+window is the check that the rotation touched only what it was meant to.
+Nothing here logs requests, so before this there was no way to see either.
 
 `nacre_acl_denials_total` counts what a denial looks like on each surface. On
 ingest that is a refused layer. On search there is no `403` to count, by design
@@ -342,6 +356,7 @@ registry:
 nacre_mcp_tool_duration_seconds{tool}
 nacre_mcp_tool_calls_total{tool,result}
 nacre_acl_denials_total{reason}           # the same name and reasons as REST
+nacre_auth_failures_total{kind}           # likewise, so one dashboard adds up
 ```
 
 Not the database gauges: those are one process's job, and a second exporter

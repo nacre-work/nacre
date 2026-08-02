@@ -253,7 +253,17 @@ async function main(): Promise<void> {
   )
   const documents = new PostgresDocumentStore(pool, APP_ROLE)
   const retagPorts = {
-    claim: (limit: number) => claimStale(pool, limit),
+    // The configured lease, not the function's default.
+    //
+    // Both background sweeps took the 900-second default in their own
+    // signatures, so `NACRE_INDEX_LEASE` reached the reaper and nothing else.
+    // An operator lowering it to shorten a stall — the documented response to a
+    // climbing propagation alert — changed the reaper's behaviour and left the
+    // sweep parking rows for fifteen minutes regardless. A variable that is
+    // honoured in one of its two uses is worse than one that is honoured in
+    // neither: the number in the log matches the setting, and the behaviour
+    // does not.
+    claim: (limit: number) => claimStale(pool, limit, config.indexLease),
     tagsFor: (orgId: string, layerId: string) => tagsForLayer(pool, orgId, layerId, APP_ROLE),
     retag: vectors.retag.bind(vectors),
     markTagged: documents.markTagged.bind(documents),
@@ -265,7 +275,7 @@ async function main(): Promise<void> {
   }
 
   const collectPorts = {
-    claim: (limit: number, grace: number) => claimPurgeable(pool, limit, grace),
+    claim: (limit: number, grace: number) => claimPurgeable(pool, limit, grace, config.indexLease),
     purge: vectors.purge.bind(vectors),
     markPurged: documents.markPurged.bind(documents),
     onError: (target: { documentId: string }, error: unknown) => {
