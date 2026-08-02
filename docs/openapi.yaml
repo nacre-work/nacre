@@ -303,6 +303,8 @@ paths:
               properties:
                 name: { type: string }
       responses:
+        '409':
+          description: A service account with that name already exists in this organization.
         '201':
           description: Created. The only response that carries `key`.
           content:

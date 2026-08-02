@@ -220,7 +220,11 @@ export interface ServiceAccountView {
 
 export interface ServiceAccountPort {
   list(auth: AuthContext): Promise<readonly ServiceAccountView[]>
-  create(auth: AuthContext, name: string): Promise<{ account: ServiceAccountView; key: string }>
+  /** `undefined` when the name is already taken in this organization. */
+  create(
+    auth: AuthContext,
+    name: string,
+  ): Promise<{ account: ServiceAccountView; key: string } | undefined>
   revoke(auth: AuthContext, id: string): Promise<boolean>
 }
 
@@ -779,7 +783,33 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           return
         }
 
-        const { account, key } = await options.serviceAccounts.create(auth, name.trim())
+        const created = await options.serviceAccounts.create(auth, name.trim())
+
+        if (created === undefined) {
+          // 409, not 500. The name is unique per organization and a duplicate
+          // is something the caller typed — it surfaced as an internal error
+          // with the constraint name in the log and nothing on screen.
+          await options.audit.write({
+            orgId: auth.orgId,
+            actor: `${auth.principal.type}:${auth.principal.id}`,
+            action: 'create_service_account',
+            result: 'deny',
+            detail: { name: name.trim(), reason: 'name taken' },
+            requestId,
+          })
+          const problem = new Problem({
+            type: 'https://nacre.work/errors/conflict',
+            title: 'Conflict',
+            status: 409,
+            detail: `A service account named '${name.trim()}' already exists in this organization.`,
+            instance,
+            requestId,
+          })
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        const { account, key } = created
 
         await options.audit.write({
           orgId: auth.orgId,

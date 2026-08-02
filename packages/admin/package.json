@@ -1,19 +1,17 @@
 {
   "name": "@nacre.work/admin",
   "version": "0.0.0",
-  "description": "Community admin UI",
+  "description": "Community admin UI — single organization",
   "type": "module",
   "scripts": {
-    "build": "tsc -b",
-    "dev": "tsx watch src/index.ts"
+    "build": "tsc -b && node ./scripts/build.mjs",
+    "dev": "node ./scripts/build.mjs --watch"
   },
   "private": true,
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
+  "dependencies": {
+    "@nacre.work/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
   }
 }

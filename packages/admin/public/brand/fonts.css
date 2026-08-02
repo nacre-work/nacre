@@ -1,0 +1,56 @@
+/* Nacre — web fonts
+   The three faces tokens.css names, self-hosted.
+
+   Self-hosted rather than loaded from a font CDN, and that is a product
+   decision rather than a performance one: the pitch is that nothing phones
+   home, and a landing page that opens a connection to a third party while
+   saying so is the wrong first impression to make on a security engineer.
+
+   Latin subsets. If a page ever needs Cyrillic or Greek, subset again from the
+   upstream files rather than reaching for a CDN — see fonts/README.md.
+
+   Load this next to tokens.css. It sets no colours and no sizes; the font
+   stacks themselves live in tokens.css and fall back to system-ui, so a page
+   that forgets this file degrades in shape rather than breaking. */
+
+@font-face {
+  font-family: "Bricolage Grotesque";
+  font-style: normal;
+  font-weight: 400;
+  /* swap, not block: the display face carries the headline, and a headline
+     that is invisible for 100ms is worse than one that reflows. */
+  font-display: swap;
+  src: url("fonts/bricolage-grotesque-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Bricolage Grotesque";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/bricolage-grotesque-700.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/instrument-sans-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/instrument-sans-700.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/ibm-plex-mono-400.woff2") format("woff2");
+}

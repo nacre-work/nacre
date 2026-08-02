@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nacre admin</title>
+
+<!-- Not indexed and not linked from anywhere public. An admin surface in a
+     search result is an invitation to try tokens against it. -->
+<meta name="robots" content="noindex, nofollow">
+
+<meta name="theme-color" content="#F1F5F6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0A1017" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="brand/nacre-favicon.svg" type="image/svg+xml">
+
+<!-- Everything is same-origin and there is no inline script: the app is one
+     bundled module, so `script-src 'self'` needs no hash and no nonce. The API
+     is reachable from a different origin when an operator configures one, which
+     is why connect-src is not narrowed to 'self'.
+
+     frame-ancestors is deliberately absent: a browser ignores it in a meta
+     element, so putting it here would be a clickjacking defence that reports
+     itself as present and does nothing. Serve this directory with
+     `X-Frame-Options: DENY` or a CSP header — see the deployment notes in
+     README.md. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src *; base-uri 'none'; form-action 'none'">
+
+<!-- /brand/ is a mirror of the private brand repository. Do not edit in place:
+     an edit here is lost the next time the brand is synced. -->
+<link rel="stylesheet" href="brand/tokens.css">
+<link rel="stylesheet" href="brand/fonts.css">
+<link rel="stylesheet" href="admin.css">
+</head>
+<body>
+<noscript>
+  <main class="signin">
+    <div class="card">
+      <h1>JavaScript is required</h1>
+      <p class="lede">This screen talks to the REST API from the browser. Everything it does is available directly — see <code>docs/api.md</code>.</p>
+    </div>
+  </main>
+</noscript>
+<script type="module" src="app.js"></script>
+</body>
+</html>

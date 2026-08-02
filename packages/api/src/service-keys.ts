@@ -129,8 +129,15 @@ export interface ServiceAccount {
 
 export interface ServiceAccounts {
   list(auth: AuthContext): Promise<readonly ServiceAccount[]>
-  /** The key is in the result and nowhere else, ever again. */
-  create(auth: AuthContext, name: string): Promise<{ account: ServiceAccount; key: string }>
+  /**
+   * The key is in the result and nowhere else, ever again.
+   *
+   * `undefined` when the name is already taken in this organization. Not an
+   * exception: a duplicate name is something the caller typed, and the unique
+   * constraint used to surface as a 500 — an error page for a form validation,
+   * with the constraint name in the server log and nothing useful on screen.
+   */
+  create(auth: AuthContext, name: string): Promise<{ account: ServiceAccount; key: string } | undefined>
   /** False when it does not exist in this organization, or is already revoked. */
   revoke(auth: AuthContext, id: string): Promise<boolean>
 }
@@ -179,21 +186,32 @@ export class PostgresServiceAccounts implements ServiceAccounts {
     )
   }
 
-  async create(auth: AuthContext, name: string): Promise<{ account: ServiceAccount; key: string }> {
+  async create(
+    auth: AuthContext,
+    name: string,
+  ): Promise<{ account: ServiceAccount; key: string } | undefined> {
     const key = generateKey()
 
     return withOrg(
       this.pool,
       auth.orgId,
       async (client) => {
+        // DO NOTHING rather than catching a unique violation: inside the
+        // transaction withOrg opens, a raised constraint error aborts
+        // everything after it, so recovering would mean a savepoint. The empty
+        // result says the same thing and says it without one.
         const { rows } = await client.query<{ id: string; created_at: Date }>(
           `INSERT INTO service_accounts (org_id, name, key_hash, key_prefix)
-           VALUES ($1,$2,$3,$4) RETURNING id, created_at`,
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (org_id, name) DO NOTHING
+           RETURNING id, created_at`,
           [auth.orgId, name, hashOf(key), prefixOf(key)],
         )
 
         const row = rows[0]
-        if (row === undefined) throw new Error('the service account insert returned no row')
+        // Taken. The name is the caller's own input and this organization's
+        // own namespace, so saying so discloses nothing they did not send.
+        if (row === undefined) return undefined
 
         return {
           key,

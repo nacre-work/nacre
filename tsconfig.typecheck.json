@@ -13,9 +13,15 @@
       "@nacre.work/core/*": ["./packages/core/*"],
       "@nacre.work/api": ["./packages/api/src/index.ts"],
       "@nacre.work/mcp": ["./packages/mcp/src/index.ts"],
-      "@nacre.work/worker": ["./packages/worker/src/index.ts"]
+      "@nacre.work/worker": ["./packages/worker/src/index.ts"],
+      "@nacre.work/sdk": ["./packages/sdk/src/index.ts"]
     }
   },
   "include": ["packages/**/*.ts", "*.ts", "*.js"],
-  "exclude": ["**/dist/**", "**/node_modules/**"]
+  // packages/admin is excluded because it is the one package that targets a
+  // browser: `types: ["node"]` and a lib without DOM are right for everything
+  // that runs on a server, and would let a Node global compile in the one place
+  // it would fail at runtime. Its own `tsc -b` typechecks it against DOM, and
+  // `pnpm build` runs that — so it is checked, just not here.
+  "exclude": ["**/dist/**", "**/node_modules/**", "packages/admin/**"]
 }
