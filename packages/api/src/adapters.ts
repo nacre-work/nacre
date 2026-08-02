@@ -1,10 +1,12 @@
 import {
   aclTags,
   buildFilter,
+  cachedEffectivePrincipals,
   documentKey,
   effectivePrincipals,
   fromStateJson,
   loadGrants,
+  loadGroupsVersion,
   loadScopeTree,
   PostgresGroupGraph,
   referenceAllows,
@@ -14,6 +16,7 @@ import {
   VectorStore,
   vectorName,
   withOrg,
+  type CacheStore,
   type Hit,
   type Metadata,
   type Narrowing,
@@ -85,6 +88,8 @@ export class PostgresDocuments implements Documents {
      */
     private readonly payload: DocumentMetadataWriter,
     private readonly role?: string,
+    /** See `principalsFor`. Absent means recompute the closure every time. */
+    private readonly principalsCache?: PrincipalsCache,
   ) {}
 
   /**
@@ -110,7 +115,7 @@ export class PostgresDocuments implements Documents {
         // The plan first. Reading the row and then checking is the same
         // information leak with extra steps if the check is ever forgotten,
         // and the layer a document sits in is what the grant is on.
-        const plan = resolve(await contextFor(client, auth), 'read')
+        const plan = resolve(await contextFor(client, auth, this.principalsCache), 'read')
         if (plan.kind === 'none') return undefined
 
         const { rows } = await client.query<{
@@ -198,7 +203,7 @@ export class PostgresDocuments implements Documents {
         const collection = orgs[0]?.vector_collection
         if (collection === undefined) return false
 
-        const plan = resolve(await contextFor(client, auth), 'write')
+        const plan = resolve(await contextFor(client, auth, this.principalsCache), 'write')
         if (plan.kind === 'none') return false
 
         const { rows } = await client.query<{ layer_id: string }>(
@@ -240,6 +245,8 @@ export interface DocumentMetadataWriter {
 
 export interface SearchDeps {
   readonly pool: Pool
+  /** See `principalsFor`. Absent means recompute the closure every time. */
+  readonly principalsCache?: PrincipalsCache
   readonly vectors: VectorStore
   /**
    * The query embedder for a given provider.
@@ -307,8 +314,7 @@ export class NacreSearchService implements SearchService {
         const collection = orgs[0]?.vector_collection
         if (collection === undefined) return undefined
 
-        const graph = await PostgresGroupGraph.load(client, auth.orgId)
-        const principals = effectivePrincipals(auth.principal, graph)
+        const principals = await principalsFor(client, auth, this.deps.principalsCache)
         const grants = await loadGrants(client, auth.orgId, principals)
         const tree = await loadScopeTree(
           client,
@@ -841,6 +847,8 @@ export { aclTags }
  */
 export interface IngestDeps {
   readonly pool: Pool
+  /** See `principalsFor`. Absent means recompute the closure every time. */
+  readonly principalsCache?: PrincipalsCache
   /**
    * What takes a document out of results. Narrower than `VectorStore` on
    * purpose: the delete path has no business searching, and a port that could
@@ -885,8 +893,7 @@ export class NacreIngest implements Ingest {
     auth: AuthContext,
     layerSlug: string,
   ): Promise<string | undefined> {
-    const graph = await PostgresGroupGraph.load(client, auth.orgId)
-    const principals = effectivePrincipals(auth.principal, graph)
+    const principals = await principalsFor(client, auth, this.deps.principalsCache)
     const grants = await loadGrants(client, auth.orgId, principals)
     const tree = await loadScopeTree(
       client,
@@ -1014,8 +1021,7 @@ export class NacreIngest implements Ingest {
         const collection = orgs[0]?.vector_collection
         if (collection === undefined) return false
 
-        const graph = await PostgresGroupGraph.load(client, auth.orgId)
-        const principals = effectivePrincipals(auth.principal, graph)
+        const principals = await principalsFor(client, auth, this.deps.principalsCache)
         const grants = await loadGrants(client, auth.orgId, principals)
         const tree = await loadScopeTree(client, auth.orgId, [documentId])
         const plan = resolve({ orgId: auth.orgId, role: auth.role, principals, grants, tree }, 'write')
@@ -1083,6 +1089,8 @@ export class PostgresJobs implements Jobs {
   constructor(
     private readonly pool: Pool,
     private readonly role?: string,
+    /** See `principalsFor`. Absent means recompute the closure every time. */
+    private readonly principalsCache?: PrincipalsCache,
   ) {}
 
   async read(auth: AuthContext, jobId: string): Promise<Job | undefined> {
@@ -1097,7 +1105,7 @@ export class PostgresJobs implements Jobs {
         // different projection — and needs the same check. The status and the
         // error string are both facts about a document the caller may not be
         // allowed to know exists.
-        const plan = resolve(await contextFor(client, auth), 'read')
+        const plan = resolve(await contextFor(client, auth, this.principalsCache), 'read')
         if (plan.kind === 'none') return undefined
 
         const { rows } = await client.query<{
@@ -1146,10 +1154,67 @@ export class PostgresJobs implements Jobs {
   }
 }
 
+/**
+ * Where the effective-principals cache is consulted, and the only place.
+ *
+ * `NACRE_ACL_CACHE_TTL` was validated at startup and read by nothing: the cache
+ * in `packages/core/authz/cache.ts` was written, tested and never called, so
+ * every request recomputed the transitive group closure. `docs/authz.md` went
+ * further and described the cache as the reason T11 is satisfied *more strongly*
+ * than specified — a claim about a code path that did not run.
+ *
+ * The safety of caching a permission input at all rests on one property, and it
+ * is structural rather than temporal: **the key carries
+ * `organizations.groups_version`**, which database triggers bump on every change
+ * to `groups`, `group_members` and `grants`. A revoked grant is not served
+ * stale, it is not served at all — the next request composes a different key.
+ * Checked against a running database rather than read: create a group, add a
+ * member, remove one, grant, revoke, delete the group; the version moved for
+ * every one.
+ *
+ * So the TTL is a memory bound. It is not what makes revocation take effect,
+ * and lowering it does not make anything safer.
+ *
+ * Absent cache means compute it. That is the pre-existing behaviour and it is
+ * the slow direction, never the permissive one — which is also why
+ * `cachedEffectivePrincipals` may swallow a Redis failure without touching
+ * invariant I3: the fallback computes the same answer from the same rows.
+ */
+export interface PrincipalsCache {
+  readonly store: CacheStore
+  readonly ttlSeconds: number
+}
+
+async function principalsFor(
+  client: import('pg').PoolClient,
+  auth: AuthContext,
+  cache: PrincipalsCache | undefined,
+): Promise<ReadonlySet<import('@nacre.work/core').PrincipalRef>> {
+  if (cache === undefined) {
+    return effectivePrincipals(auth.principal, await PostgresGroupGraph.load(client, auth.orgId))
+  }
+
+  // In the same transaction as the grants that follow, so the key and the grant
+  // set describe one instant. Read separately, there is a window where the
+  // version says "fresh" about a set loaded before a change.
+  const groupsVersion = await loadGroupsVersion(client, auth.orgId)
+  return cachedEffectivePrincipals(
+    {
+      orgId: auth.orgId,
+      principal: auth.principal,
+      groupsVersion,
+      ttlSeconds: cache.ttlSeconds,
+    },
+    cache.store,
+    () => PostgresGroupGraph.load(client, auth.orgId),
+  )
+}
+
 /** The per-request permission context, loaded once and asked several questions. */
 async function contextFor(
   client: import('pg').PoolClient,
   auth: AuthContext,
+  cache?: PrincipalsCache,
 ): Promise<{
   orgId: string
   role: AuthContext['role']
@@ -1157,8 +1222,7 @@ async function contextFor(
   grants: readonly import('@nacre.work/core').Grant[]
   tree: import('@nacre.work/core').ScopeTree
 }> {
-  const graph = await PostgresGroupGraph.load(client, auth.orgId)
-  const principals = effectivePrincipals(auth.principal, graph)
+  const principals = await principalsFor(client, auth, cache)
   const grants = await loadGrants(client, auth.orgId, principals)
   const tree = await loadScopeTree(
     client,
@@ -1194,6 +1258,8 @@ export class PostgresLayers implements Layers {
      */
     private readonly vectors: { vectorsOf(collection: string): Promise<Record<string, number>> },
     private readonly role?: string,
+    /** See `principalsFor`. Absent means recompute the closure every time. */
+    private readonly principalsCache?: PrincipalsCache,
   ) {}
 
   private get scope() {
@@ -1213,7 +1279,7 @@ export class PostgresLayers implements Layers {
       this.pool,
       auth.orgId,
       async (client) => {
-        const plan = resolve(await contextFor(client, auth), 'read')
+        const plan = resolve(await contextFor(client, auth, this.principalsCache), 'read')
         if (plan.kind === 'none') return { items: [], nextCursor: null }
 
         // The count comes from the same statement. It is what a catalog is
@@ -1277,7 +1343,7 @@ export class PostgresLayers implements Layers {
     layerId: string,
     input: { name?: string; description?: string },
   ): Promise<boolean> {
-    return updateLayer(this.pool, auth, layerId, input, this.role)
+    return updateLayer(this.pool, auth, layerId, input, this.role, this.principalsCache)
   }
 
   async create(
@@ -1290,7 +1356,7 @@ export class PostgresLayers implements Layers {
       this.pool,
       auth.orgId,
       async (client) => {
-        const context = await contextFor(client, auth)
+        const context = await contextFor(client, auth, this.principalsCache)
 
         // `referenceAllows` and not `resolve`: the question is "may they
         // administer this one workspace", which is what the reference answers
@@ -1456,6 +1522,8 @@ export class PostgresWorkspaces implements Workspaces {
   constructor(
     private readonly pool: Pool,
     private readonly role?: string,
+    /** See `principalsFor`. Absent means recompute the closure every time. */
+    private readonly principalsCache?: PrincipalsCache,
   ) {}
 
   private get scope() {
@@ -1486,7 +1554,7 @@ export class PostgresWorkspaces implements Workspaces {
       this.pool,
       auth.orgId,
       async (client) => {
-        const context = await contextFor(client, auth)
+        const context = await contextFor(client, auth, this.principalsCache)
 
         // No early return on `plan.kind === 'none'`, and that is the whole
         // point of this endpoint.
@@ -1620,6 +1688,7 @@ async function updateLayer(
   layerId: string,
   input: { name?: string; description?: string },
   role?: string,
+  principalsCache?: PrincipalsCache,
 ): Promise<boolean> {
   if (!/^[0-9a-f-]{36}$/i.test(layerId)) return false
   if (input.name === undefined && input.description === undefined) return false
@@ -1628,7 +1697,7 @@ async function updateLayer(
     pool,
     auth.orgId,
     async (client) => {
-      const context = await contextFor(client, auth)
+      const context = await contextFor(client, auth, principalsCache)
 
       // The layer's workspace, before anything is decided — the grant is on the
       // workspace, so there is nothing to ask until we know which one.
@@ -1666,6 +1735,8 @@ export class PostgresGrants implements Grants {
   constructor(
     private readonly pool: Pool,
     private readonly role?: string,
+    /** See `principalsFor`. Absent means recompute the closure every time. */
+    private readonly principalsCache?: PrincipalsCache,
   ) {}
 
   private get scope() {
@@ -1698,7 +1769,7 @@ export class PostgresGrants implements Grants {
       this.pool,
       auth.orgId,
       async (client) => {
-        const context = await contextFor(client, auth)
+        const context = await contextFor(client, auth, this.principalsCache)
         const plan = resolve(context, 'admin')
         if (plan.kind === 'none') return { items: [], nextCursor: null }
 
@@ -1768,7 +1839,7 @@ export class PostgresGrants implements Grants {
       this.pool,
       auth.orgId,
       async (client) => {
-        const context = await contextFor(client, auth)
+        const context = await contextFor(client, auth, this.principalsCache)
 
         // Admin on the scope being granted, not admin in general. Otherwise
         // anyone holding admin on one layer could grant themselves another.
@@ -1843,7 +1914,7 @@ export class PostgresGrants implements Grants {
         // because the object is a grant rather than a document.
         if (row === undefined) return false
 
-        const context = await contextFor(client, auth)
+        const context = await contextFor(client, auth, this.principalsCache)
         const scope = {
           type: row.scope_type as 'workspace' | 'layer' | 'document',
           id: row.scope_id,
@@ -1893,6 +1964,8 @@ export class PostgresAuditReader implements AuditReader {
   constructor(
     private readonly pool: Pool,
     private readonly role?: string,
+    /** See `principalsFor`. Absent means recompute the closure every time. */
+    private readonly principalsCache?: PrincipalsCache,
   ) {}
 
   /**
@@ -2032,6 +2105,8 @@ export class PostgresReindex implements Reindex {
     private readonly pool: Pool,
     private readonly vectors: { vectorsOf(collection: string): Promise<Record<string, number>> },
     private readonly role?: string,
+    /** See `principalsFor`. Absent means recompute the closure every time. */
+    private readonly principalsCache?: PrincipalsCache,
   ) {}
 
   private get scope(): { role?: string } {
@@ -2051,7 +2126,7 @@ export class PostgresReindex implements Reindex {
         // vector in the layer and changes which model answers every future
         // query — `read` is nowhere near enough, and `write` is about putting
         // documents in rather than about the layer itself.
-        const plan = resolve(await contextFor(client, auth), 'admin')
+        const plan = resolve(await contextFor(client, auth, this.principalsCache), 'admin')
         if (plan.kind === 'none') return undefined
 
         // Locked for the whole decision. Two starts arriving together would
@@ -2197,7 +2272,7 @@ export class PostgresReindex implements Reindex {
         // being migrated is not an administrative fact — it explains why a
         // result set moved — and hiding it from someone who can already read
         // the layer buys nothing.
-        const plan = resolve(await contextFor(client, auth), 'read')
+        const plan = resolve(await contextFor(client, auth, this.principalsCache), 'read')
         if (plan.kind === 'none') return undefined
 
         const { rows } = await client.query<{

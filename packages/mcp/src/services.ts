@@ -8,6 +8,7 @@ import {
   PostgresDocuments,
   rerankerFor,
   type AuthContext,
+  type PrincipalsCache,
 } from '@nacre.work/api'
 import {
   createPool,
@@ -18,6 +19,8 @@ import {
   parseMetadata,
   PostgresGroupGraph,
   resolve,
+  cachedEffectivePrincipals,
+  loadGroupsVersion,
   S3,
   VectorStore,
   withOrg,
@@ -49,7 +52,11 @@ export interface Services {
   readonly tools: ToolRunner
 }
 
-export function buildServices(config: Config): Services {
+export function buildServices(
+  config: Config,
+  options: { principalsCache?: PrincipalsCache } = {},
+): Services {
+  const principalsCache = options.principalsCache
   const pool = createPool({ connectionString: config.pgUrl, max: config.pgPoolMax })
   const vectors = new VectorStore(
     config.qdrantApiKey === undefined
@@ -62,6 +69,7 @@ export function buildServices(config: Config): Services {
   const reranker = rerankerFor(config)
 
   const search = new NacreSearchService({
+    ...(principalsCache === undefined ? {} : { principalsCache }),
     pool,
     vectors,
     embedderFor: HttpEmbedder.pool(),
@@ -88,12 +96,13 @@ export function buildServices(config: Config): Services {
   const objects = config.s3 === undefined ? undefined : new S3(config.s3)
   const ingest = new NacreIngest({
     pool,
+    ...(principalsCache === undefined ? {} : { principalsCache }),
     tombstone: vectors,
     ...(objects === undefined ? {} : { objects }),
     role: APP_ROLE,
   })
 
-  const documents = new PostgresDocuments(pool, vectors, APP_ROLE)
+  const documents = new PostgresDocuments(pool, vectors, APP_ROLE, principalsCache)
   const audit = new PostgresAudit(pool, APP_ROLE)
 
   /**
@@ -110,8 +119,22 @@ export function buildServices(config: Config): Services {
         pool,
         auth.orgId,
         async (client) => {
-          const graph = await PostgresGroupGraph.load(client, auth.orgId)
-          const principals = effectivePrincipals(auth.principal, graph)
+          // The same cache the REST surface uses, or the same recomputation
+          // when there is none. Two surfaces resolving a principal differently
+          // is the shape `NACRE_RATE_*` had before both shared a bucket.
+          const principals =
+            principalsCache === undefined
+              ? effectivePrincipals(auth.principal, await PostgresGroupGraph.load(client, auth.orgId))
+              : await cachedEffectivePrincipals(
+                  {
+                    orgId: auth.orgId,
+                    principal: auth.principal,
+                    groupsVersion: await loadGroupsVersion(client, auth.orgId),
+                    ttlSeconds: principalsCache.ttlSeconds,
+                  },
+                  principalsCache.store,
+                  () => PostgresGroupGraph.load(client, auth.orgId),
+                )
           const grants = await loadGrants(client, auth.orgId, principals)
           const tree = await loadScopeTree(
             client,
