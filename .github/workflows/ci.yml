@@ -30,8 +30,19 @@ jobs:
           --health-cmd pg_isready --health-interval 5s
           --health-timeout 5s --health-retries 10
         ports: ["5432:5432"]
+      # For the rate limiter and the idempotency cache. Both are built out of
+      # exactly the behaviours a fake would be written to have — `INCR` under
+      # concurrency, and `SET NX` letting one caller win — so a fake of them
+      # tests the fake. Those tests refuse to skip when CI is set.
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+        ports: ["6379:6379"]
     env:
       NACRE_PG_URL: postgres://postgres:test@localhost:5432/nacre_test
+      NACRE_REDIS_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
       # No version here: pnpm/action-setup refuses to run when the version is
