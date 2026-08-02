@@ -79,11 +79,22 @@ while its vectors are still in the index, and the recomputation that refreshes
 the payload tags runs in the worker with `nacre_acl_propagation_lag_seconds`
 measuring how far behind it is.
 
+Deleting a document takes it out of results immediately — the points are
+flagged before the row is written, in that order, because the reverse fails
+unrecoverably. A collector reclaims them afterwards and nothing depends on when
+it runs. A worker that dies mid-document has its claim reclaimed by a lease
+rather than leaving the document stuck in `parsing` forever.
+
+`packages/sdk` is the TypeScript client and `packages/admin` is the community
+admin UI; both are written, and the admin UI has been driven in a browser
+against the running API.
+
 Not built: no login (tokens come from `init`, service accounts from
-`/v1/service-accounts`), no reranking on the search path, no garbage collection
-for tombstoned vectors, and `packages/sdk` and `packages/admin` are empty.
-`docker compose up` has not been run from a clean checkout — its profiles are
-validated by `lint:compose` and nothing more.
+`/v1/service-accounts`), no reranking on the search path, and no pagination,
+idempotency keys or rate limiting — all three are in the contract and none are
+in the code. `docker compose up` has still not been run from a clean checkout;
+four separate things that made it impossible are fixed, and the path is
+validated by `lint:compose` and by reading, not by a machine that has done it.
 
 The docs are still normative rather than descriptive, and in places still ahead
 of the code. Where one disagrees with the tree, that is a bug in one of them —
@@ -96,11 +107,16 @@ round trip that puts the worker and the search path against each other.
 A leak nobody thought to write down is still unguarded, and adding a case to
 `test-plan.ts` is how that changes.
 
-**Test what you write by running it, not only by testing it.** Four of the worst
-defects found so far — the worker indexing nothing at all, layers naming a
-vector that did not exist, MCP answering in a shape no client can parse, and the
-propagation gauge that could never fire — were each invisible to a green suite
-and obvious within a minute of starting the processes.
+**Test what you write by running it, not only by testing it.** Ten of the worst
+defects found so far were each invisible to a green suite and obvious within a
+minute of starting the processes: the worker indexing nothing at all, layers
+naming a vector that did not exist, MCP answering in a shape no client can
+parse, a propagation gauge that could never fire, a retag loop that starved
+garbage collection entirely, a document stranded in `parsing` with no error
+anywhere, `migrate()` throwing ENOENT from the built package, search returning
+no text at all — because every test asserted on the payload, which *was* the
+response — a duplicate service account name answering 500, and the worker
+erasing a document's title, which was visible only in a screenshot.
 
 ## Conventions
 
