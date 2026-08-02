@@ -136,6 +136,32 @@ per-variable check cannot catch them:
 URLs are not allowed — a default that quietly points at localhost is how a
 production deployment ends up talking to nothing and reporting success.
 
+### Accepted and not implemented
+
+These parse, and the code reads none of them. Listed rather than removed,
+because each is in the contract and will be built to it — but an operator
+should know that setting one changes nothing today:
+
+| Variable | What it would do |
+|---|---|
+| `NACRE_LOG_LEVEL`, `NACRE_LOG_FORMAT` | all logging is structured JSON at one level |
+| `NACRE_AUDIT_RETENTION_DAYS` | nothing prunes `audit_events`; see [audit.md](./audit.md) |
+| `NACRE_AUDIT_QUERY_TEXT` | query text is never written, with or without it |
+| `NACRE_ACL_CACHE_TTL` | the resolver cache is written and not wired in, so every search recomputes the group closure. Safe — it errs towards recomputing — and slower than it should be |
+| `NACRE_S3_*`, `NACRE_PRESIGN_TTL` | object storage is not wired; document bodies live in Postgres |
+| `NACRE_OAUTH_*`, `NACRE_EMA_*` | OAuth discovery, DCR and EMA are not built |
+| `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
+
+Two are **refused** rather than ignored, because ignoring them would silently
+overrule a decision about isolation:
+
+- `NACRE_VECTOR_TENANCY=shared` — every collection is named per organization and
+  no code path shares one. Accepting it would give you a single-collection
+  deployment that believes it is isolated.
+- `NACRE_ACL_TAG_HASH_BYTES` other than 8 — the width is fixed in the code that
+  writes and matches tags, so setting it changes the collision probability you
+  think you have and nothing else.
+
 ### What Redis is for
 
 `NACRE_REDIS_URL` holds the rate limit counters and the `Idempotency-Key` cache,

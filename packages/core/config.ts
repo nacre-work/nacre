@@ -227,6 +227,34 @@ export function loadConfig(env: Env = process.env): Config {
     )
   }
 
+  // ─── settings that would silently do nothing ───
+  //
+  // Eight variables were validated here and read nowhere. Most of those are
+  // quality-of-life and are documented as unimplemented; these two are not,
+  // because ignoring them changes something an operator is relying on.
+  //
+  // Refusing at startup rather than warning: an operator who sets these has
+  // made a decision about isolation or about collision probability, and a
+  // process that starts anyway has silently overruled them. `docs/config.md`
+  // already says a silent default is how a deployment talks to nothing and
+  // reports success — this is the same failure with a value supplied.
+  if (config.vectorTenancy !== 'collection') {
+    r.problems.push(
+      'NACRE_VECTOR_TENANCY=shared is not implemented. Every collection is named ' +
+        'per organization (org_{slug}) and there is no code path that shares one, ' +
+        'so accepting this would give you a single-collection deployment that ' +
+        'believes it is isolated. Use `collection`, which is the default.',
+    )
+  }
+
+  if (config.aclTagHashBytes !== 8) {
+    r.problems.push(
+      'NACRE_ACL_TAG_HASH_BYTES is not implemented: the tag width is fixed at 8 ' +
+        'bytes in the code that writes and matches tags. Setting it changes the ' +
+        'collision probability you think you have and nothing else. Leave it at 8.',
+    )
+  }
+
   if (config.refreshTokenTtl <= config.accessTokenTtl) {
     r.problems.push(
       'NACRE_REFRESH_TOKEN_TTL is not longer than NACRE_ACCESS_TOKEN_TTL. A refresh ' +

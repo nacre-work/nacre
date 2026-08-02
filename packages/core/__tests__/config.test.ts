@@ -91,6 +91,23 @@ describe('configuration', () => {
     expect(found.join('\n')).toContain('would still be served after the SLA')
   })
 
+  it('refuses a setting that would silently do nothing', () => {
+    // The dangerous half of eight variables that were validated here and read
+    // nowhere. An operator who asks for shared collections and gets per-org
+    // ones has been overruled without being told — which is the same failure
+    // as a silent default, with a value supplied.
+    expect(problems({ ...COMPLETE, NACRE_VECTOR_TENANCY: 'shared' }).join(' ')).toMatch(
+      /not implemented/,
+    )
+    expect(problems({ ...COMPLETE, NACRE_ACL_TAG_HASH_BYTES: '16' }).join(' ')).toMatch(
+      /fixed at 8 bytes/,
+    )
+
+    // The defaults still boot, which is the whole point of refusing only these.
+    expect(problems({ ...COMPLETE, NACRE_VECTOR_TENANCY: 'collection' })).toEqual([])
+    expect(problems({ ...COMPLETE, NACRE_ACL_TAG_HASH_BYTES: '8' })).toEqual([])
+  })
+
   it('reranking on without an endpoint is refused', () => {
     const { NACRE_RERANKER_ENDPOINT: _drop, ...withoutEndpoint } = COMPLETE
     void _drop
