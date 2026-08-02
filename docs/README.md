@@ -11,6 +11,7 @@ model, and reworking it after search is written is expensive.
 | [api.md](./api.md) | REST API conventions · contract in [openapi.yaml](./openapi.yaml) |
 | [config.md](./config.md) | Environment variables, Compose profiles, metrics |
 | [audit.md](./audit.md) | Access log schema and guarantees |
+| [extensions.md](./extensions.md) | The four points a commercial module plugs into, and what the core refuses |
 | [licensing.md](./licensing.md) | Open/commercial boundary, third-party licenses |
 | [quickstart.md](./quickstart.md) | First run, first document, first search |
 

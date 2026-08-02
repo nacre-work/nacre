@@ -4,6 +4,8 @@ import {
   createMetrics,
   createPool,
   loadConfig,
+  loadedExtensions,
+  loadModules,
   logger,
   loadJwtKeys,
   keyFingerprint,
@@ -57,6 +59,13 @@ async function main(): Promise<void> {
   // validated here and read by nothing, so every process wrote JSON at one level
   // whatever the deployment asked for.
   configureLogging({ level: config.logLevel, format: config.logFormat })
+
+  // Before anything is composed, and after the logger so a module's own startup
+  // lines obey the deployment's level. Registration closes when this returns, so
+  // everything below reads a registry that can no longer change — a module that
+  // registered later would be configured, look present, and never be consulted.
+  await loadModules(config.modules)
+
   const jwt = loadJwtKeys()
 
   const pool = createPool({ connectionString: config.pgUrl, max: config.pgPoolMax })
@@ -266,7 +275,12 @@ async function main(): Promise<void> {
         // finished and the old key is out.
         ...(jwt.alsoAccept.length === 0
           ? {}
-          : { jwt_key_previous: jwt.alsoAccept.map(keyFingerprint) }) })
+          : { jwt_key_previous: jwt.alsoAccept.map(keyFingerprint) }),
+        // What `NACRE_MODULES` actually produced, not what it named. A module
+        // that loads and registers nothing is the failure worth seeing here:
+        // the deployment is paying for it and the process is running without
+        // it, which is invisible everywhere else.
+        extensions: loadedExtensions() })
   })
 
   onListenError(server, 'api', port)

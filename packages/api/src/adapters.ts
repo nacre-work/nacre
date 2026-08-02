@@ -11,7 +11,7 @@ import {
   PostgresGroupGraph,
   referenceAllows,
   reindexProgress,
-  resolve,
+  activeResolver,
   toStateJson,
   VectorStore,
   vectorName,
@@ -40,7 +40,7 @@ import type {
   AuditQuery,
   AuditReader,
   AuditRecord,
-  AuditSink,
+  AuditWriter,
   Documents,
   GrantInput,
   GrantRecord,
@@ -125,7 +125,7 @@ export class PostgresDocuments implements Documents {
         // The plan first. Reading the row and then checking is the same
         // information leak with extra steps if the check is ever forgotten,
         // and the layer a document sits in is what the grant is on.
-        const plan = resolve(await contextFor(client, auth, this.principalsCache), 'read')
+        const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'read')
         if (plan.kind === 'none') return undefined
 
         const { rows } = await client.query<{
@@ -226,7 +226,7 @@ export class PostgresDocuments implements Documents {
         const collection = orgs[0]?.vector_collection
         if (collection === undefined) return false
 
-        const plan = resolve(await contextFor(client, auth, this.principalsCache), 'write')
+        const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'write')
         if (plan.kind === 'none') return false
 
         const { rows } = await client.query<{ layer_id: string }>(
@@ -344,7 +344,7 @@ export class NacreSearchService implements SearchService {
           auth.orgId,
           grants.filter((g) => g.scope.type === 'document').map((g) => g.scope.id),
         )
-        const plan = resolve(
+        const plan = activeResolver().resolve(
           { orgId: auth.orgId, role: auth.role, principals, grants, tree },
           'read',
         )
@@ -740,7 +740,7 @@ export class NacreSearchService implements SearchService {
  * by migration 0002, so a bug here cannot rewrite history and neither can
  * anyone holding these credentials.
  */
-export class PostgresAudit implements AuditSink {
+export class PostgresAudit implements AuditWriter {
   constructor(private readonly pool: Pool, private readonly role?: string) {}
 
   async write(event: AuditEvent): Promise<void> {
@@ -774,6 +774,11 @@ export class PostgresAudit implements AuditSink {
       },
       this.role === undefined ? {} : { role: this.role },
     )
+
+    // Forwarding to a module's sinks is deliberately *not* here. It is
+    // `withAuditSinks`, applied to whatever port a surface was handed, because
+    // a sink wants every recorded event and not every event this adapter
+    // happened to record.
   }
 }
 
@@ -923,7 +928,7 @@ export class NacreIngest implements Ingest {
       auth.orgId,
       grants.filter((g) => g.scope.type === 'document').map((g) => g.scope.id),
     )
-    const plan = resolve({ orgId: auth.orgId, role: auth.role, principals, grants, tree }, 'write')
+    const plan = activeResolver().resolve({ orgId: auth.orgId, role: auth.role, principals, grants, tree }, 'write')
     if (plan.kind === 'none') return undefined
 
     const { rows } = await client.query<{ id: string }>(
@@ -1047,7 +1052,7 @@ export class NacreIngest implements Ingest {
         const principals = await principalsFor(client, auth, this.deps.principalsCache)
         const grants = await loadGrants(client, auth.orgId, principals)
         const tree = await loadScopeTree(client, auth.orgId, [documentId])
-        const plan = resolve({ orgId: auth.orgId, role: auth.role, principals, grants, tree }, 'write')
+        const plan = activeResolver().resolve({ orgId: auth.orgId, role: auth.role, principals, grants, tree }, 'write')
         if (plan.kind === 'none') return false
 
         const { rows } = await client.query<{ layer_id: string }>(
@@ -1128,7 +1133,7 @@ export class PostgresJobs implements Jobs {
         // different projection — and needs the same check. The status and the
         // error string are both facts about a document the caller may not be
         // allowed to know exists.
-        const plan = resolve(await contextFor(client, auth, this.principalsCache), 'read')
+        const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'read')
         if (plan.kind === 'none') return undefined
 
         const { rows } = await client.query<{
@@ -1302,7 +1307,7 @@ export class PostgresLayers implements Layers {
       this.pool,
       auth.orgId,
       async (client) => {
-        const plan = resolve(await contextFor(client, auth, this.principalsCache), 'read')
+        const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'read')
         if (plan.kind === 'none') return { items: [], nextCursor: null }
 
         // The count comes from the same statement. It is what a catalog is
@@ -1589,7 +1594,7 @@ export class PostgresWorkspaces implements Workspaces {
         // administer, and therefore unable to create the first layer in it,
         // which is the deadlock this endpoint was added to break. It was
         // written that way first and caught by running it.
-        const plan = resolve(context, 'read')
+        const plan = activeResolver().resolve(context, 'read')
 
         const { rows } = await client.query<{
           id: string
@@ -1793,7 +1798,7 @@ export class PostgresGrants implements Grants {
       auth.orgId,
       async (client) => {
         const context = await contextFor(client, auth, this.principalsCache)
-        const plan = resolve(context, 'admin')
+        const plan = activeResolver().resolve(context, 'admin')
         if (plan.kind === 'none') return { items: [], nextCursor: null }
 
         const after = page?.after
@@ -2149,7 +2154,7 @@ export class PostgresReindex implements Reindex {
         // vector in the layer and changes which model answers every future
         // query — `read` is nowhere near enough, and `write` is about putting
         // documents in rather than about the layer itself.
-        const plan = resolve(await contextFor(client, auth, this.principalsCache), 'admin')
+        const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'admin')
         if (plan.kind === 'none') return undefined
 
         // Locked for the whole decision. Two starts arriving together would
@@ -2295,7 +2300,7 @@ export class PostgresReindex implements Reindex {
         // being migrated is not an administrative fact — it explains why a
         // result set moved — and hiding it from someone who can already read
         // the layer buys nothing.
-        const plan = resolve(await contextFor(client, auth, this.principalsCache), 'read')
+        const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'read')
         if (plan.kind === 'none') return undefined
 
         const { rows } = await client.query<{
@@ -2406,7 +2411,7 @@ export class PostgresReferenceQueries implements ReferenceQueries {
     auth: AuthContext,
     layerId: string,
   ): Promise<boolean> {
-    const plan = resolve(await contextFor(client, auth, this.principalsCache), 'admin')
+    const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'admin')
     if (plan.kind === 'none') return false
     if (plan.kind === 'scoped' && !plan.layers.includes(layerId)) return false
 

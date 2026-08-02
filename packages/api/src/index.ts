@@ -11,7 +11,7 @@ export type {
   ReferenceQueries,
   ReferenceQuery,
   RecallCheck,
-  AuditSink,
+  AuditWriter,
   DocumentView,
   Documents,
   GrantInput,

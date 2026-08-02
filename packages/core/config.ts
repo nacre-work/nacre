@@ -39,6 +39,15 @@ export interface Config {
   readonly logLevel: 'debug' | 'info' | 'warn' | 'error'
   readonly logFormat: 'json' | 'text'
 
+  /**
+   * Packages to import at startup so they can register extensions.
+   *
+   * Named rather than imported, because this repository's CI fails if its
+   * source mentions the commercial package at all — see `extensions.ts`. Empty
+   * is the default and is the whole open-core product.
+   */
+  readonly modules: readonly string[]
+
   readonly pgUrl: string
   readonly pgPoolMax: number
   readonly qdrantUrl: string
@@ -594,6 +603,15 @@ export function loadConfig(env: Env = process.env): Config {
     // this is the one tunable here that trades latency for quality directly,
     // and there is a value at which a search stops answering in time.
     rerankCandidates: r.number('NACRE_RERANK_CANDIDATES', 50, { min: 1, max: 500 }),
+
+    // Comma-separated, trimmed, empties dropped. A module that cannot be
+    // imported fails startup rather than warning: naming one is a statement
+    // that the deployment is paying for what it does, and coming up without it
+    // would silently be a different product.
+    modules: (env.NACRE_MODULES ?? '')
+      .split(',')
+      .map((m) => m.trim())
+      .filter((m) => m !== ''),
 
     jwtIssuer: r.required('NACRE_JWT_ISSUER'),
     jwtAudience: r.required('NACRE_JWT_AUDIENCE'),

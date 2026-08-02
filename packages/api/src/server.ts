@@ -15,7 +15,12 @@ import {
   parseMetadata,
   PROTECTED_RESOURCE_PATH,
   JWKS_PATH,
+  ADMIN_PREFIX,
+  adminRoutes,
+  withAuditSinks,
   TooBusy,
+  type AuditEvent,
+  type AuditWriter,
   type Metadata,
   type MultipartPart,
   type ProtectedResourceMetadata,
@@ -393,34 +398,15 @@ export interface ServiceAccountPort {
   revoke(auth: AuthContext, id: string): Promise<boolean>
 }
 
-export interface AuditEvent {
-  readonly orgId: string
-  readonly actor: string
-  readonly action: string
-  readonly result: 'allow' | 'deny' | 'error'
-  readonly detail: Record<string, unknown>
-  readonly requestId: string
-  /**
-   * Which surface the call came in on.
-   *
-   * Was hardcoded `'api'` in the adapter, and the MCP server shares that sink —
-   * so every agent's read was logged as though a human had made it over REST.
-   * The column existed, the schema declared the enum, and nothing could tell
-   * the two apart. Defaults to `api` so an omission is the common case rather
-   * than a lie.
-   */
-  readonly surface?: 'api' | 'mcp' | 'admin' | 'system'
-  /**
-   * What the call was about, as `docs/audit.md` specifies it.
-   *
-   * Was hardcoded `'{}'::jsonb`, so the `gin (target)` index built for it
-   * indexed nothing and the document's opening promise — "show me which
-   * documents your agent read last quarter" — could not be answered at all.
-   * Search fills in the layers and the ids it returned; the rest name what they
-   * touched.
-   */
-  readonly target?: Record<string, unknown>
-}
+/**
+ * One recorded access, as handed to a sink.
+ *
+ * Re-exported from `@nacre.work/core` rather than declared here. A sink can be
+ * registered by a module that knows neither package, so the shape has to live
+ * where both can see it — and two structurally-identical definitions are two
+ * things that must agree with nothing making them.
+ */
+export type { AuditEvent }
 
 /**
  * The counters and histograms the request path fills in.
@@ -437,10 +423,16 @@ export interface RequestMetrics {
   authFailures: { inc(labels?: Record<string, string>, by?: number): void }
 }
 
-export interface AuditSink {
-  /** Awaited before the response goes out. A lost event is worse than a slow response. */
-  write(event: AuditEvent): Promise<void>
-}
+/**
+ * Where a handler's events go. `AuditWriter` from the core, re-exported.
+ *
+ * It was `AuditSink` here, which then collided with `AuditSink` in
+ * `@nacre.work/core` — the thing a module registers to forward events *on* to.
+ * Two different concepts under one name in one product is a drift with a long
+ * fuse: the day someone reads `audit: AuditSink` as "a module sink", the
+ * journal becomes optional. One name, one meaning.
+ */
+export type { AuditWriter }
 
 /**
  * One event as it is read back, which is not the shape it was written in.
@@ -675,7 +667,7 @@ export interface ApiOptions {
   readonly documents: Documents
   readonly search: SearchService
   readonly ingest: Ingest
-  readonly audit: AuditSink
+  readonly audit: AuditWriter
   readonly jobs?: Jobs
   readonly layers?: Layers
   readonly grants?: Grants
@@ -1303,8 +1295,23 @@ function tokenJson(tokens: Tokens): Record<string, unknown> {
 }
 
 export function createApi(options: ApiOptions): Server {
+  // Applied once, here, so every event this surface records reaches a module's
+  // sinks whatever adapter is behind the port. It used to live inside the
+  // Postgres adapter, which made forwarding a property of how an event was
+  // stored rather than of it having been stored.
+  const withSinks: ApiOptions = {
+    ...options,
+    audit: withAuditSinks(options.audit, (sink, event, error) => {
+      logger.warn('audit sink failed; the event is still in the table', {
+        sink,
+        action: event.action,
+        error: String(error).slice(0, 200),
+      })
+    }),
+  }
+
   return createServer((req, res) => {
-    void handle(req, res, options).catch(() => {
+    void handle(req, res, withSinks).catch(() => {
       // handle() converts everything it can into a Problem. Reaching here means
       // the failure was in the error path itself; say nothing about it.
       if (!res.headersSent) send(res, 500, internal(req.url ?? '/', 'unknown').toJSON(), 'unknown')
@@ -2382,6 +2389,67 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       }
 
       send(res, 204, null, requestId)
+      return
+    }
+
+    // `/v1/admin/...` — routes a commercial module mounted.
+    //
+    // After authentication and after `rejectTenantOverride`, deliberately. A
+    // module gets an already-authenticated principal and a body that has
+    // already been scanned for a tenant override, so invariants 1 and 2 hold
+    // for its routes without it having to know they exist. It cannot opt out of
+    // either, because it never sees the request before this point.
+    //
+    // `platform_admin` and `org_admin` only. There is no module-supplied role
+    // check to get wrong: an administrative surface is administrative, and a
+    // member reaching one would be a widening decided in the closed half.
+    if (instance.startsWith(ADMIN_PREFIX)) {
+      // Role before route lookup. Both answer the same 404, so this is not
+      // about what a caller can tell apart — it is that a member must not
+      // reach module code at all, and "the module happened to have no matching
+      // route" is not a reason to be safe.
+      if (auth.role !== 'platform_admin' && auth.role !== 'org_admin') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const route = adminRoutes().find(
+        (r) => r.method === req.method && r.pattern.test(instance),
+      )
+
+      if (route === undefined) {
+        // 404 whether nothing is mounted or nothing matched — the two are the
+        // same answer, and a deployment without the module must not be
+        // distinguishable from one where the path is simply wrong.
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const url = new URL(req.url ?? '/', 'http://internal')
+      const matched = route.pattern.exec(instance)
+      const answer = await route.handle({
+        method: req.method ?? 'GET',
+        path: instance,
+        params: (matched ?? []).slice(1),
+        query: url.searchParams,
+        body,
+        auth,
+      })
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: `admin.${req.method?.toLowerCase() ?? 'get'}`,
+        surface: 'admin',
+        result: answer.status < 400 ? 'allow' : 'deny',
+        target: { path: instance },
+        detail: { status: answer.status },
+        requestId,
+      })
+
+      send(res, answer.status, answer.body ?? null, requestId)
       return
     }
 

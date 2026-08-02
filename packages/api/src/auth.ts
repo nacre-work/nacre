@@ -1,4 +1,4 @@
-import type { OrgRole, Principal } from '@nacre.work/core'
+import { authProviders, type OrgRole, type Principal, type ResolvedPrincipal } from '@nacre.work/core'
 import { jwtVerify, type JWTPayload, type KeyObject } from 'jose'
 
 import { forbidden, unauthorized, type Problem } from './errors.js'
@@ -172,6 +172,28 @@ export async function authenticate(
     }
   }
   if (claims === undefined) {
+    // A credential type this build does not understand — an ID-JAG, an SSO
+    // assertion — before the refusal, and only here. A provider cannot shadow a
+    // JWT this deployment can verify or a `nacre_sk_` key, because both were
+    // tried above and neither reached this line.
+    //
+    // `undefined` from a provider means "not mine", which is not "invalid".
+    // Either way the caller gets the one 401 with the one message: which
+    // provider declined, and whether any recognised the shape, is exactly the
+    // information invariant 4 exists to withhold.
+    for (const provider of authProviders()) {
+      let resolved: ResolvedPrincipal | undefined
+      try {
+        resolved = await provider.authenticate(bearer)
+      } catch {
+        // A provider that throws denies, like every other failure to evaluate
+        // a credential. Invariant 3 has no "could not compute it, let it
+        // through" path, and a network hiccup inside an SSO module is exactly
+        // the case that would otherwise open one.
+        resolved = undefined
+      }
+      if (resolved !== undefined) return resolved
+    }
     return unauthorized(instance, requestId, 'The token is not valid.')
   }
 
