@@ -185,6 +185,47 @@ export class NacreSearchService implements SearchService {
     // one mistake.
     if (plan.kind === 'none') return []
 
+    // The caller's own restriction, resolved before the query.
+    //
+    // `layers` was declared in openapi.yaml and in the MCP tool schema from the
+    // beginning and read by nothing, so a client scoping a search to one layer
+    // silently searched all of them. For a product whose selling point is that
+    // a search returns only what you may see, a scoping parameter that does
+    // nothing is the worst kind of no-op: the caller believes they narrowed it.
+    let narrow: { layers: readonly string[] } | undefined
+    if (options.layers !== undefined && options.layers.length > 0) {
+      const resolved = await this.layerIds(auth.orgId, options.layers)
+
+      // Intersected with what the plan actually reaches, before deciding
+      // whether to query at all.
+      //
+      // The filter would already return nothing for a layer this caller cannot
+      // read — `must` on layer_id against a `should` that names other layers
+      // matches no point. Doing it here as well closes a narrower hole: without
+      // it, an unreadable-but-existing layer runs the query and an absent one
+      // does not, so anything that makes the query path *fail* — the vector
+      // store being down — separates the two. That is invariant I4 leaking
+      // through a dependency outage, and it costs six lines to remove. It also
+      // saves a round trip in the ordinary case.
+      //
+      // Not intersected when the plan carries `extraDocs`: those are documents
+      // granted individually and they can sit in any layer, including one the
+      // caller reaches no other way. Dropping such a layer here would answer
+      // empty where the correct answer is "the documents you were granted".
+      const permitted =
+        plan.kind === 'scoped' && plan.extraDocs.length === 0
+          ? resolved.filter((id) => plan.layers.includes(id))
+          : resolved
+
+      // Nothing the caller named is reachable. That covers a slug that does not
+      // exist and one that does but sits outside their grants — and it has to,
+      // because invariant I4 makes those the same answer. Empty results, no
+      // error naming the layer, and no query.
+      if (permitted.length === 0) return []
+
+      narrow = { layers: permitted }
+    }
+
     const [vector] = await this.deps.embedder.embed([query])
     if (vector === undefined) throw new Error('the embedder returned no vector for the query')
 
@@ -205,6 +246,10 @@ export class NacreSearchService implements SearchService {
       // back and never how many. See rerank.ts — the distinction is the whole
       // argument for this being allowed at all.
       topK: reranking ? Math.max(topK, this.deps.rerankCandidates ?? 50) : topK,
+      // A `must` on layer_id inside the traversal, never a trim afterwards.
+      // Narrowing a search is still a pre-filter: `top_k` comes back full from
+      // the smaller set rather than being cut down from the larger one.
+      ...(narrow === undefined ? {} : { narrow }),
     })
 
     // Invariant I1, checked again on the way out. Raises rather than filtering:
@@ -213,9 +258,49 @@ export class NacreSearchService implements SearchService {
     if (checked.length === 0) return []
 
     const candidates = await this.hydrate(auth.orgId, checked)
-    if (!reranking) return candidates
+    const ranked = reranking ? await this.rerank(query, candidates, topK) : candidates
 
-    return this.rerank(query, candidates, topK)
+    // Last, because reranking scores the query against the text. Dropping it
+    // earlier would rerank against nothing.
+    return options.includeContent === false ? ranked.map((hit) => ({ ...hit, text: '' })) : ranked
+  }
+
+  /**
+   * Layer slugs to ids, within one organization.
+   *
+   * Scoped through `withOrg` like every other tenant read, so a slug belonging
+   * to another organization resolves to nothing rather than to their layer. The
+   * result is intersected with what the caller may reach by the filter itself —
+   * the ids become a `must` and the permission constraint stays a `should`, so
+   * a layer this caller cannot read contributes no results even when it
+   * resolves here.
+   *
+   * Unknown slugs are dropped rather than reported. Answering "no such layer"
+   * would separate "does not exist" from "you cannot see it", which is exactly
+   * the distinction invariant I4 exists to prevent.
+   */
+  private async layerIds(orgId: string, slugs: readonly string[]): Promise<readonly string[]> {
+    // Bounded, because this is an unauthenticated-shaped input on an
+    // authenticated path: an array of ten thousand slugs is one query with ten
+    // thousand parameters otherwise.
+    const wanted = [...new Set(slugs.map((s) => s.trim().toLowerCase()).filter((s) => s !== ''))].slice(
+      0,
+      64,
+    )
+    if (wanted.length === 0) return []
+
+    return withOrg(
+      this.deps.pool,
+      orgId,
+      async (client) => {
+        const { rows } = await client.query<{ id: string }>(
+          'SELECT id FROM layers WHERE org_id = $1 AND slug = ANY($2::text[])',
+          [orgId, wanted],
+        )
+        return rows.map((r) => r.id)
+      },
+      this.deps.role === undefined ? {} : { role: this.deps.role },
+    )
   }
 
   /**

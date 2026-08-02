@@ -30,15 +30,41 @@ components:
       type: object
       required: [query]
       properties:
-        query:   { type: string }
-        layers:  { type: array, items: { type: string } }
-        top_k:   { type: integer, default: 10, minimum: 1, maximum: 50 }
-        filters: { type: object, additionalProperties: true }
-        rerank:  { type: boolean, default: true }
-        include_content: { type: boolean, default: true }
+        query: { type: string }
+        layers:
+          type: array
+          items: { type: string }
+          maxItems: 64
+          description: >
+            Layer slugs to restrict the search to. Absent or empty means every
+            layer the caller can read. Narrowing only — it is a `must` inside the
+            index traversal, on top of the permission constraint, so it can never
+            reach a layer a grant does not. Naming a layer the caller cannot read
+            returns nothing from it and is indistinguishable from naming one that
+            does not exist, which is invariant I4 applied to a query parameter.
+        top_k: { type: integer, default: 10, minimum: 1, maximum: 50 }
+        rerank: { type: boolean, default: true }
+        include_content:
+          type: boolean
+          default: true
+          description: >
+            false omits `text` from every hit, leaving ids and scores. Applied
+            after reranking, because a reranker scores the query against the
+            text.
+        filters:
+          type: object
+          additionalProperties: true
+          deprecated: true
+          description: >
+            **Not implemented, and refused with 400 rather than ignored.**
+            Filtering on document metadata requires that metadata in the vector
+            payload, which the worker does not write yet. Accepting the parameter
+            and applying nothing would let a search look narrower than it was,
+            which for this product is the worst available failure. It stays in
+            the contract because it will be built to it.
     SearchHit:
       type: object
-      required: [chunk_id, doc_id, layer, score, text]
+      required: [chunk_id, doc_id, layer, score]
       description: >
         What a result carries, and deliberately not what the vector store holds.
         The payload the index keeps — acl_tags, acl_version, org_id, layer_id —

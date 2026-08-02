@@ -100,6 +100,20 @@ export interface SearchHit {
  */
 export interface SearchOptions {
   readonly rerank?: boolean
+  /**
+   * Layer slugs to restrict the search to. Narrowing only — a layer the caller
+   * cannot read contributes nothing whether or not they name it, and naming one
+   * that does not exist is the same answer as naming one they cannot see.
+   */
+  readonly layers?: readonly string[]
+  /**
+   * `false` omits the chunk text from every hit.
+   *
+   * For a client that wants ids and scores — a reranking front end, a citation
+   * index — and does not want to pay for the bodies. Applied after reranking,
+   * because a reranker scores the query against the text.
+   */
+  readonly includeContent?: boolean
 }
 
 export interface SearchService {
@@ -393,6 +407,9 @@ class BodyTooLarge extends Error {}
  * with the maximum — the same thing every paginated endpoint here does.
  */
 const MAX_TOP_K = 50
+const isStringArray = (value: unknown): value is readonly string[] =>
+  Array.isArray(value) && value.every((v) => typeof v === 'string')
+
 const boundedTopK = (value: unknown): number => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 10
   return Math.min(MAX_TOP_K, Math.max(1, Math.floor(value)))
@@ -1070,24 +1087,58 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
   try {
     if (req.method === 'POST' && instance === '/v1/search') {
-      const query = (body as { query?: unknown } | undefined)?.query
-      const topK = (body as { top_k?: unknown } | undefined)?.top_k
-      const rerank = (body as { rerank?: unknown } | undefined)?.rerank
+      const request = (body ?? {}) as {
+        query?: unknown
+        top_k?: unknown
+        rerank?: unknown
+        layers?: unknown
+        filters?: unknown
+        include_content?: unknown
+      }
+      const query = request.query
       if (typeof query !== 'string' || query.length === 0) {
         const problem = badRequest(instance, requestId, "'query' is required.")
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
 
+      if (request.layers !== undefined && !isStringArray(request.layers)) {
+        const problem = badRequest(instance, requestId, "'layers' must be an array of layer slugs.")
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      // Refused, not ignored, and that is the point.
+      //
+      // `filters` has been in the contract since before there was a server and
+      // read by nothing. Silently accepting it is the worst available
+      // behaviour for this product in particular: a caller who filters a search
+      // and gets everything back believes they scoped it. Filtering on document
+      // metadata needs the metadata in the vector payload, which the worker
+      // does not write yet — so until it does, this says so.
+      if (request.filters !== undefined) {
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'filters' is not implemented. Document metadata is not written to the " +
+            'vector payload yet, so a filter on it cannot be applied — and applying ' +
+            'nothing while accepting the parameter would let a search look narrower ' +
+            'than it was. Use \'layers\' to restrict a search today.',
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
       const started = process.hrtime.bigint()
-      const results = await options.search.search(
-        auth,
-        query,
-        boundedTopK(topK),
+      const results = await options.search.search(auth, query, boundedTopK(request.top_k), {
         // Only ever a way to turn it off; a deployment with no reranker
         // configured does not acquire one because a client asked.
-        rerank === false ? { rerank: false } : {},
-      )
+        ...(request.rerank === false ? { rerank: false } : {}),
+        ...(isStringArray(request.layers) && request.layers.length > 0
+          ? { layers: request.layers }
+          : {}),
+        ...(request.include_content === false ? { includeContent: false } : {}),
+      })
       // Measured around the whole thing — resolve, embed, traverse, hydrate,
       // rerank — because that is what a caller waits for and what the p95
       // target in docs/config.md is about. It was never observed at all, so the
@@ -1113,7 +1164,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         target: {
           returned_docs: [...new Set(results.map((r) => r.doc_id))],
           layers: [...new Set(results.map((r) => r.layer))],
-          top_k: boundedTopK(topK),
+          top_k: boundedTopK(request.top_k),
         },
         detail: { returned: results.length },
         requestId,

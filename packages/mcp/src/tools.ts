@@ -65,12 +65,25 @@ export function catalog(layers: readonly Layer[]): readonly ToolDefinition[] {
           layers: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Layers to search. Empty means all accessible ones.',
+            description:
+              'Layer slugs to restrict the search to. Empty or absent means every ' +
+              'layer you can read. Naming a layer you cannot read returns nothing ' +
+              'from it, and is indistinguishable from naming one that does not exist.',
+            maxItems: 64,
           },
           top_k: { type: 'integer', default: 10, minimum: 1, maximum: 50 },
-          filters: { type: 'object', description: 'Filter on document metadata fields' },
           rerank: { type: 'boolean', default: true },
-          include_content: { type: 'boolean', default: true },
+          include_content: {
+            type: 'boolean',
+            default: true,
+            description: 'false omits the chunk text, leaving ids and scores.',
+          },
+          // `filters` was here and read by nothing, so a client that filtered a
+          // search got everything back and believed it had narrowed the query.
+          // Removed rather than left in place: an advertised parameter that
+          // does nothing is a lie told to an agent, which will act on it.
+          // Filtering on document metadata needs that metadata in the vector
+          // payload, which the worker does not write yet.
         },
         required: ['query'],
         // No org_id, at any depth. The organization comes from the token, and a

@@ -95,17 +95,30 @@ Template: `Semantic search over corporate documents. Available: {layer.name} —
     "type": "object",
     "properties": {
       "query":   { "type": "string", "description": "Natural-language query" },
-      "layers":  { "type": "array", "items": { "type": "string" },
-                   "description": "Layers to search. Empty means all accessible ones." },
+      "layers":  { "type": "array", "items": { "type": "string" }, "maxItems": 64,
+                   "description": "Layer slugs to restrict the search to. Empty or absent means every layer you can read." },
       "top_k":   { "type": "integer", "default": 10, "minimum": 1, "maximum": 50 },
-      "filters": { "type": "object", "description": "Filter on document metadata fields" },
       "rerank":  { "type": "boolean", "default": true },
-      "include_content": { "type": "boolean", "default": true }
+      "include_content": { "type": "boolean", "default": true,
+                   "description": "false omits the chunk text, leaving ids and scores." }
     },
     "required": ["query"]
   }
 }
 ```
+
+`layers` narrows and can never widen: it becomes a `must` on `layer_id` inside
+the index traversal, on top of the permission constraint, so naming a layer you
+cannot read returns nothing from it — and is indistinguishable from naming one
+that does not exist, which is invariant I4 applied to a query parameter.
+
+**`filters` was here and is gone.** It was advertised and read by nothing, so a
+client that filtered a search got everything back and believed it had narrowed
+the query. Filtering on document metadata needs that metadata in the vector
+payload, which the worker does not write yet; an advertised parameter that does
+nothing is a lie told to an agent, which will act on it. The REST surface keeps
+it in the contract and answers `400` — it will be built. Here it is simply not
+offered, because a tool schema is what a model plans against.
 
 Returns an array of `{ chunk_id, doc_id, layer, title, score, text?, source_url?,
 metadata }`. `source_url` is presigned, living for `NACRE_PRESIGN_TTL`.

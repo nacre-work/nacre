@@ -224,10 +224,32 @@ export function buildServices(config: Config): Services {
             typeof raw !== 'number' || !Number.isFinite(raw)
               ? 10
               : Math.min(50, Math.max(1, Math.floor(raw)))
-          // The tool schema declares `rerank`, so it has to reach the search
-          // path; a declared parameter the server drops is worse than one that
-          // was never offered.
-          const hits = await search.search(auth, query, topK, args.rerank === false ? { rerank: false } : {})
+          // Every parameter the tool schema declares reaches the search path.
+          // A declared parameter the server drops is worse than one that was
+          // never offered — `layers` in particular, because a client scoping a
+          // search to one layer and silently getting all of them believes it
+          // narrowed the query.
+          const layerSlugs = Array.isArray(args.layers)
+            ? args.layers.filter((l): l is string => typeof l === 'string')
+            : undefined
+
+          // Refused rather than ignored, exactly as on REST. Filtering on
+          // document metadata needs the metadata in the vector payload, which
+          // the worker does not write yet. The tool schema is corrected to
+          // match, so a well-behaved client never sends this; the check is for
+          // the ones that do.
+          if (args.filters !== undefined) {
+            throw new Error(
+              'filters is not implemented: document metadata is not written to the ' +
+                'vector payload yet, so a filter on it cannot be applied. Use layers.',
+            )
+          }
+
+          const hits = await search.search(auth, query, topK, {
+            ...(args.rerank === false ? { rerank: false } : {}),
+            ...(layerSlugs !== undefined && layerSlugs.length > 0 ? { layers: layerSlugs } : {}),
+            ...(args.include_content === false ? { includeContent: false } : {}),
+          })
           await audit.write({
             orgId: auth.orgId,
             actor: `${auth.principal.type}:${auth.principal.id}`,

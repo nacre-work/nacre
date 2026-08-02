@@ -50,7 +50,36 @@ export type QueryablePlan = Exclude<AccessPlan, { kind: 'none' }>
  * Omitting it from one branch is a leak, and the branches are far enough apart
  * in the query document for that to look like a formatting difference.
  */
-export function buildFilter(orgId: string, plan: QueryablePlan): VectorFilter {
+/**
+ * A restriction the *caller* asked for, on top of the one the permissions
+ * impose.
+ *
+ * Only ever narrowing, and the type is what says so: a list of layer ids that
+ * results must be in. It becomes a `must` clause, which intersects with the
+ * permission `should` rather than replacing it — a caller asking for a layer
+ * they cannot read still gets nothing from it, because both constraints apply.
+ *
+ * The alternative shape, and the one to avoid, is narrowing `plan.layers`
+ * before building. That looks equivalent and is not: a scoped plan also carries
+ * `extraDocs` from document-level grants, which sit in the same `should`, so
+ * narrowing the plan would leave those documents matching regardless of which
+ * layers the caller asked for. `must` is the constraint the caller meant.
+ *
+ * An empty list must never reach here. `[]` as a `must` on `layer_id` matches
+ * nothing at all, which is the right answer for "you asked for layers you
+ * cannot read" — but it is the caller's job to spot that and skip the query, so
+ * that "no such layer" and "no permitted results" stay the same answer. This
+ * function refuses it rather than encoding the distinction.
+ */
+export interface Narrowing {
+  readonly layers: readonly string[]
+}
+
+export function buildFilter(
+  orgId: string,
+  plan: QueryablePlan,
+  narrow?: Narrowing,
+): VectorFilter {
   // org_id and deleted are unconditional.
   //
   // org_id is duplicated in the payload even when each tenant has its own
@@ -65,6 +94,23 @@ export function buildFilter(orgId: string, plan: QueryablePlan): VectorFilter {
     { key: 'org_id', match: { value: orgId } },
     { key: 'deleted', match: { value: false } },
   ]
+
+  if (narrow !== undefined) {
+    if (narrow.layers.length === 0) {
+      // See Narrowing. An empty `any` is not "match nothing" in Qdrant, it is a
+      // clause that matches nothing *usefully* — and relying on that would put
+      // the "the caller asked for a layer they cannot see" case in the query
+      // builder, where it becomes one refactor away from being dropped. The
+      // caller returns no results without querying.
+      throw new Error(
+        'refusing to build a filter narrowed to no layers — the caller must ' +
+          'return an empty result instead of querying',
+      )
+    }
+    // A `must`, so it intersects with the permission constraint rather than
+    // replacing it. This can only ever remove results.
+    must.push({ key: 'layer_id', match: { any: [...narrow.layers] } })
+  }
 
   if (plan.kind === 'all') return { must }
 

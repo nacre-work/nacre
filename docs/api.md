@@ -109,6 +109,21 @@ answering "not valid" to a request that was never checked is a lie the client
 will act on. It is not an oracle: it depends on how loaded the process is and
 not at all on whether the account exists.
 
+### Search parameters
+
+`layers`, `filters` and `include_content` were declared in the contract from the
+beginning and read by nothing. Now:
+
+| Parameter | |
+|---|---|
+| `layers` | Layer slugs. **Narrowing only** — a `must` on `layer_id` inside the index traversal, on top of the permission constraint, so it can never reach a layer a grant does not. Naming a layer you cannot read returns nothing from it and is indistinguishable from naming one that does not exist. Empty or absent means every readable layer. At most 64. |
+| `include_content` | `false` omits `text` from every hit, leaving ids and scores. Applied after reranking, because a reranker scores the query against the text. |
+| `filters` | **Refused with `400`, not ignored.** Filtering on document metadata needs that metadata in the vector payload, which the worker does not write yet. Accepting the parameter and applying nothing would let a search look narrower than it was — for this product, the worst available failure. It stays in the contract because it will be built to it. |
+
+Narrowing is still a pre-filter, so invariant 2 is untouched: `top_k` comes back
+full from the smaller permitted set rather than being cut down from the larger
+one.
+
 ### Refresh tokens rotate, and reuse ends the session
 
 Every refresh issues a new token and marks the old one used. A used token
