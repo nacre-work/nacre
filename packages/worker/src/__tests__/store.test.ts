@@ -149,6 +149,38 @@ when('PostgresDocumentStore · markTagged', () => {
     expect(taggedAt).not.toBeNull()
   })
 
+  it('releases the sweep lease, so the next revocation is not locked out', async () => {
+    // The bug this exists for, found by running a Compose stack rather than by
+    // any test here. `claimStale` writes `sweep_claimed_at` so two replicas do
+    // not retag one row at once; `markTagged` did not clear it. Held past the
+    // work, the claim stops *this* replica coming back — the next revocation
+    // makes the document stale again, the claim has not expired, and the row
+    // waits out the whole lease. Fifteen minutes by default, against a
+    // documented sixty-second propagation SLA, with the alerted gauge climbing
+    // the entire time and the worker log silent after one success.
+    const claimed = await claimStale(pool, 10)
+    expect(claimed.map((c) => c.documentId)).toContain(ids.doc)
+
+    // Claimed: a second worker cannot take it while the first is working.
+    expect((await claimStale(pool, 10)).map((c) => c.documentId)).not.toContain(ids.doc)
+
+    await store.markTagged(ORG, ids.doc, 7)
+
+    // And now the *second* revocation, which is the case that was broken.
+    // Set above the version just written rather than incremented: the fixture's
+    // groups_version is small, so `+ 1` leaves it under 7 and the document is
+    // not stale at all — the test would then pass for the wrong reason.
+    await withOrg(
+      pool,
+      ORG,
+      (c) => c.query('UPDATE organizations SET groups_version = 8 WHERE id = $1', [ORG]),
+      AS_APP,
+    )
+
+    const again = await claimStale(pool, 10)
+    expect(again.map((c) => c.documentId)).toContain(ids.doc)
+  })
+
   it('a late write with an older version is refused', async () => {
     await store.markTagged(ORG, ids.doc, 7)
     await store.markTagged(ORG, ids.doc, 4)

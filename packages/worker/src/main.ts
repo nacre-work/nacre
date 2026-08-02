@@ -197,13 +197,42 @@ async function main(): Promise<void> {
       // so an embedder that accepts connections and never answers stops
       // indexing for every tenant until undici's 300 s default gives up.
       // Generous, because a batch on a CPU-only endpoint is genuinely slow.
-      const response = await fetch(new URL('/embeddings', config.embeddingEndpoint), {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: config.embeddingModel, input: texts }),
-        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
-      })
-      if (!response.ok) throw new Error(`the embedding endpoint answered ${response.status}`)
+      const endpoint = new URL('/embeddings', config.embeddingEndpoint)
+
+      let response: Response
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: config.embeddingModel, input: texts }),
+          signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+        })
+      } catch (cause) {
+        // `TypeError: fetch failed` and nothing else is what an operator used to
+        // get here, in the job's `error` column and in the log. It does not say
+        // what was called, or that an embedding endpoint is a thing they have to
+        // supply — and this is the first failure anyone following the quickstart
+        // meets, because the documented `minimal` profile starts no embedder.
+        //
+        // undici puts the real reason in `cause`: ENOTFOUND for a name that does
+        // not resolve, ECONNREFUSED for a port with nothing on it, a timeout for
+        // one that accepts and never answers. Naming the URL matters as much:
+        // the endpoint comes from configuration, so "which one" is the question
+        // the message has to answer.
+        const reason = String((cause as { cause?: unknown })?.cause ?? cause)
+        throw new Error(
+          `the embedding endpoint at ${endpoint.href} could not be reached: ${reason}. ` +
+            'It is set by NACRE_DEFAULT_EMBEDDING_ENDPOINT and this deployment must ' +
+            'supply one — the minimal Compose profile deliberately starts no embedder.',
+          { cause },
+        )
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          `the embedding endpoint at ${endpoint.href} answered ${response.status}`,
+        )
+      }
       const body = (await response.json()) as { data?: { embedding?: number[] }[] }
       return (body.data ?? []).map((d) => d.embedding ?? [])
     },

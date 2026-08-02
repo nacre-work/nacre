@@ -70,8 +70,30 @@ export class PostgresDocumentStore implements DocumentStore {
       this.pool,
       orgId,
       async (client) => {
+        // `sweep_claimed_at = NULL` releases the lease, and leaving it out was
+        // a real stall rather than an untidiness.
+        //
+        // The claim exists so two replicas do not retag the same row at once.
+        // Held past the work, it stops *this* replica coming back: the next
+        // revocation makes the document stale again, `claimStale` refuses it
+        // because the claim has not expired, and the row waits out the whole
+        // NACRE_INDEX_LEASE — fifteen minutes by default, against a documented
+        // sixty-second propagation SLA.
+        //
+        // Observed exactly that way, from a running Compose stack: one
+        // "retagged" line in the worker log and then nothing, while
+        // nacre_acl_propagation_lag_seconds climbed by ten every ten seconds.
+        // The gauge was right and the loop could not act on it, which is the
+        // stuck-alert shape the predicate in observability.ts is commented
+        // against — it just went wrong through a column instead of a predicate.
+        //
+        // Released here rather than in the claim's own transaction because the
+        // work happens outside it; this is the only place that knows the sweep
+        // finished. `claimed_at` on the indexing path is cleared the same way
+        // for the same reason.
         await client.query(
-          `UPDATE documents SET acl_version = $3, acl_tagged_at = now()
+          `UPDATE documents
+              SET acl_version = $3, acl_tagged_at = now(), sweep_claimed_at = NULL
             WHERE org_id = $1 AND id = $2 AND acl_version <= $3`,
           [orgId, documentId, aclVersion],
         )
@@ -93,8 +115,15 @@ export class PostgresDocumentStore implements DocumentStore {
       this.pool,
       orgId,
       async (client) => {
+        // The lease goes with the completion, as on the retag path. It matters
+        // less here — `vectors_purged_at IS NULL` already keeps a purged
+        // document out of the queue for good — but a claim left set on a row
+        // nothing will claim again is a lie in the table, and the next person
+        // to read `sweep_claimed_at` should not have to work out which of the
+        // two sweeps left it there.
         await client.query(
-          `UPDATE documents SET vectors_purged_at = now()
+          `UPDATE documents
+              SET vectors_purged_at = now(), sweep_claimed_at = NULL
             WHERE org_id = $1 AND id = $2 AND vectors_purged_at IS NULL`,
           [orgId, documentId],
         )
