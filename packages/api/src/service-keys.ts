@@ -188,10 +188,13 @@ export class PostgresServiceAccounts implements ServiceAccounts {
           name: string
           key_prefix: string
           created_at: Date
+          /** Full precision, for the cursor. See `Position.createdAt`. */
+          created_at_text: string
           last_used_at: Date | null
           revoked_at: Date | null
         }>(
-          `SELECT id, name, key_prefix, created_at, last_used_at, revoked_at
+          `SELECT id, name, key_prefix, created_at, created_at::text AS created_at_text,
+                  last_used_at, revoked_at
              FROM service_accounts WHERE org_id = $1${seek} ORDER BY created_at, id${cap}`,
           after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
         )
@@ -208,7 +211,11 @@ export class PostgresServiceAccounts implements ServiceAccounts {
           revokedAt: r.revoked_at?.toISOString() ?? null,
         }))
 
-        return pageOf(accounts, page, (a) => ({ createdAt: a.createdAt, id: a.id }))
+        return pageOf(accounts, page, (a, i) => ({
+          // From the row, at full precision. See `Position.createdAt`.
+          createdAt: (rows[i] as { created_at_text: string }).created_at_text,
+          id: a.id,
+        }))
       },
       this.scope,
     )

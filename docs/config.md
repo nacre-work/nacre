@@ -149,14 +149,21 @@ production deployment ends up talking to nothing and reporting success.
 
 ### Accepted and not implemented
 
-These parse, and the code reads none of them. Listed rather than removed,
-because each is in the contract and will be built to it — but an operator
-should know that setting one changes nothing today:
+This build reads none of them. Listed rather than removed, because each is in
+the contract — but an operator should know that setting one changes nothing in
+this build:
 
 | Variable | What it would do |
 |---|---|
-| `NACRE_EMA_*` | ID-JAG is a commercial module and is not written |
-| `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
+| `NACRE_EMA_*` | ID-JAG is a commercial module; read by that module, not by this code |
+| `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module; read by that module, not by this code |
+
+**"These parse" was wrong about both, and is now corrected.** `loadConfig` has
+no field for either, so a malformed value is not caught at startup — it is not
+caught here at all. The commercial modules that read them validate them at load,
+which is the right place: the check belongs where the value is finally used, and
+a variable this build never reads is one this build cannot say anything useful
+about.
 
 `NACRE_OAUTH_CIMD_ENABLED` and `NACRE_OAUTH_DCR_ENABLED` **were on this list and
 are now gone entirely**, which is a different statement from "not built yet".

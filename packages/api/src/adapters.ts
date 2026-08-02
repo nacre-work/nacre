@@ -1268,6 +1268,8 @@ interface LayerRow {
   description: string | null
   document_count: string
   created_at: Date
+  /** Full precision, for the cursor. See `Position.createdAt`. */
+  created_at_text: string
 }
 
 export class PostgresLayers implements Layers {
@@ -1321,7 +1323,12 @@ export class PostgresLayers implements Layers {
         // grants exist — a commercial module — this becomes a number that
         // discloses more than the caller can reach, and it has to be recomputed
         // per caller or dropped.
+        // `created_at::text` beside `created_at`, and the cursor is built from
+        // it. See `Position.createdAt` — a timestamp that has been through a
+        // JavaScript `Date` is truncated to milliseconds, and a truncated bound
+        // matches the row it came from all over again.
         const projection = `l.id, l.slug, l.name, l.workspace_id, l.description, l.created_at,
+              l.created_at::text AS created_at_text,
               (SELECT count(*) FROM documents d
                 WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS document_count`
 
@@ -1360,7 +1367,10 @@ export class PostgresLayers implements Layers {
           createdAt: r.created_at.toISOString(),
         }))
 
-        return pageOf(layers, page, (l) => ({ createdAt: l.createdAt, id: l.id }))
+        return pageOf(layers, page, (l, i) => ({
+          createdAt: (rows[i] as LayerRow).created_at_text,
+          id: l.id,
+        }))
       },
       this.scope,
     )
@@ -1596,20 +1606,38 @@ export class PostgresWorkspaces implements Workspaces {
         // written that way first and caught by running it.
         const plan = activeResolver().resolve(context, 'read')
 
+        // Seek and limit in SQL.
+        //
+        // Neither was here: the statement fetched every workspace in the
+        // organization, ignored `page.after` entirely, and handed the whole
+        // list to `pageOf` — which then answered "there is another page"
+        // because the list was at least as long as the limit. So
+        // `GET /v1/workspaces` returned the same complete list on every page
+        // and never terminated, and a client following `next_cursor` looped
+        // forever. Found by a test that walked the listing one item at a time.
+        const after = page?.after
+        const seek = after === undefined ? '' : ' AND (w.created_at, w.id) > ($2::timestamptz, $3::uuid)'
+        // One extra, because the filter below removes rows the caller may not
+        // reach: without it a page whose last row is filtered out would report
+        // itself as the end of the collection.
+        const cap = page === undefined ? '' : ` LIMIT ${page.limit + 1}`
+
         const { rows } = await client.query<{
           id: string
           slug: string
           name: string
           created_at: Date
+          /** Full precision, for the cursor. See `Position.createdAt`. */
+          created_at_text: string
           layer_ids: string[] | null
         }>(
-          `SELECT w.id, w.slug, w.name, w.created_at,
+          `SELECT w.id, w.slug, w.name, w.created_at, w.created_at::text AS created_at_text,
                   (SELECT array_agg(l.id) FROM layers l
                     WHERE l.workspace_id = w.id AND l.deleted_at IS NULL) AS layer_ids
              FROM workspaces w
-            WHERE w.org_id = $1 AND w.deleted_at IS NULL
-            ORDER BY w.created_at, w.id`,
-          [auth.orgId],
+            WHERE w.org_id = $1 AND w.deleted_at IS NULL${seek}
+            ORDER BY w.created_at, w.id${cap}`,
+          after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
         )
 
         const reachable = rows.filter((w) => {
@@ -1626,15 +1654,31 @@ export class PostgresWorkspaces implements Workspaces {
           return referenceAllows(context, { type: 'workspace', id: w.id }, 'read')
         })
 
-        const items = reachable.map((w) => ({
-          id: w.id,
-          slug: w.slug,
-          name: w.name,
-          layerCount: (w.layer_ids ?? []).length,
-          createdAt: w.created_at.toISOString(),
-        }))
+        const fetched = page === undefined ? rows : rows.slice(0, page.limit)
+        const items = reachable
+          .filter((w) => fetched.some((f) => f.id === w.id))
+          .map((w) => ({
+            id: w.id,
+            slug: w.slug,
+            name: w.name,
+            layerCount: (w.layer_ids ?? []).length,
+            createdAt: w.created_at.toISOString(),
+          }))
 
-        return pageOf(items, page, (w) => ({ createdAt: w.createdAt, id: w.id }))
+        // From the last row **fetched**, not the last returned — the same rule
+        // the grant listing follows and for the same reason: the filter above
+        // removes rows the caller may not reach, and a cursor taken from a
+        // survivor would skip everything the filter dropped after it.
+        //
+        // Which makes a short page normal here rather than a signal, and
+        // `next_cursor` the only thing that says whether more exist.
+        const lastFetched = fetched[fetched.length - 1]
+        const nextCursor =
+          page !== undefined && rows.length > page.limit && lastFetched !== undefined
+            ? encodeCursor({ createdAt: lastFetched.created_at_text, id: lastFetched.id })
+            : null
+
+        return { items, nextCursor }
       },
       this.scope,
     )
@@ -1816,9 +1860,10 @@ export class PostgresGrants implements Grants {
           effect: string
           source: string
           created_at: Date
+          created_at_text: string
         }>(
           `SELECT id, principal_type, principal_id, scope_type, scope_id, permission, effect, source,
-                  created_at
+                  created_at, created_at::text AS created_at_text
              FROM grants WHERE org_id = $1${seek} ORDER BY created_at, id${cap}`,
           after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
         )
@@ -1849,7 +1894,7 @@ export class PostgresGrants implements Grants {
         const lastFetched = rows[rows.length - 1]
         const nextCursor =
           page !== undefined && rows.length >= page.limit && lastFetched !== undefined
-            ? encodeCursor({ createdAt: lastFetched.created_at.toISOString(), id: lastFetched.id })
+            ? encodeCursor({ createdAt: lastFetched.created_at_text, id: lastFetched.id })
             : null
 
         return { items: visible, nextCursor }
@@ -2049,7 +2094,8 @@ export class PostgresAuditReader implements AuditReader {
         // retention window is the expensive thing this endpoint must not do on
         // every request.
         const { rows } = await client.query<AuditRow>(
-          `SELECT id::text, occurred_at, actor_type, actor_id, actor_label, action,
+          `SELECT id::text, occurred_at, occurred_at::text AS occurred_at_text,
+                  actor_type, actor_id, actor_label, action,
                   surface, client, target, result, detail, request_id
              FROM audit_events
             WHERE ${where.join(' AND ')}
@@ -2075,10 +2121,20 @@ export class PostgresAuditReader implements AuditReader {
           }),
         )
 
+        // From the row rather than from the mapped record, because the record
+        // carries an ISO string and this cursor needs full precision.
+        //
+        // This one **skips** rather than repeats, and that is the same bug seen
+        // from the other side: the ordering is descending, so a bound truncated
+        // downwards excludes the row it came from *and* everything between the
+        // truncated value and the real one. On a listing that would lose a page
+        // of layers; on the access log it silently loses events, in the one
+        // place the product promises a precise answer.
+        const lastRow = rows[Math.min(page.limit, rows.length) - 1]
         const last = items[items.length - 1]
         const nextCursor =
-          rows.length > page.limit && last !== undefined
-            ? encodeCursor({ createdAt: last.occurredAt, id: last.id })
+          rows.length > page.limit && last !== undefined && lastRow !== undefined
+            ? encodeCursor({ createdAt: lastRow.occurred_at_text, id: last.id })
             : null
 
         return { items, nextCursor }
@@ -2095,6 +2151,8 @@ export class PostgresAuditReader implements AuditReader {
 interface AuditRow {
   readonly id: string
   readonly occurred_at: Date
+  /** Full precision, for the cursor. See `Position.createdAt`. */
+  readonly occurred_at_text: string
   readonly actor_type: string
   readonly actor_id: string | null
   readonly actor_label: string

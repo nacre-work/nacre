@@ -31,7 +31,25 @@ export const MAX_LIMIT = 200
 export const DEFAULT_LIMIT = 50
 
 export interface Position {
-  /** The sort key of the last item on the previous page. */
+  /**
+   * The sort key of the last item on the previous page, **as Postgres writes
+   * it** — `created_at::text`, never `Date.toISOString()`.
+   *
+   * `timestamptz` holds microseconds and a JavaScript `Date` holds
+   * milliseconds, so a value that has been through one is truncated. A
+   * truncated bound is *strictly less* than the row it came from, which means
+   * `(created_at, id) > (bound, id)` matches that row **again** — and the
+   * listing returns the same page forever.
+   *
+   * Not a rare case: `now()` produces microseconds, so every row this schema
+   * writes has them. Every paged listing here did this, and
+   * `GET /v1/layers?limit=1` returned the first layer eight times in a row
+   * against a real database before it was fixed.
+   *
+   * The cursor stays opaque and its format is unchanged, so cursors issued by
+   * the truncating version still decode — they simply seek one microsecond
+   * earlier than they meant to, which repeats at most the row they came from.
+   */
   readonly createdAt: string
   /** Tie-breaker, because timestamps collide under a bulk insert. */
   readonly id: string
@@ -155,9 +173,17 @@ export interface PageResult<T> {
 export function pageOf<T>(
   rows: readonly T[],
   page: Page | undefined,
-  positionOf: (row: T) => Position,
+  /**
+   * The position of one item. The index is the item's place in `rows`, so a
+   * caller can reach the database row it was mapped from — which is where the
+   * full-precision timestamp lives. See `Position.createdAt`.
+   */
+  positionOf: (row: T, index: number) => Position,
 ): PageResult<T> {
   if (page === undefined || rows.length < page.limit) return { items: rows, nextCursor: null }
   const last = rows[rows.length - 1]
-  return { items: rows, nextCursor: last === undefined ? null : encodeCursor(positionOf(last)) }
+  return {
+    items: rows,
+    nextCursor: last === undefined ? null : encodeCursor(positionOf(last, rows.length - 1)),
+  }
 }
