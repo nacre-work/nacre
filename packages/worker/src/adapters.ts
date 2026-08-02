@@ -5,6 +5,7 @@ import {
   explainQdrant as explain,
   loadGroupsVersion,
   METADATA_PREFIX,
+  MetadataIndexer,
   withOrg,
 } from '@nacre.work/core'
 import type { PrincipalRef } from '@nacre.work/core'
@@ -249,7 +250,11 @@ function collectionMissing(cause: unknown): boolean {
 }
 
 export class QdrantVectorWriter implements VectorWriter {
-  constructor(private readonly client: QdrantClient) {}
+  private readonly metadataIndexes: MetadataIndexer
+
+  constructor(private readonly client: QdrantClient) {
+    this.metadataIndexes = new MetadataIndexer(client)
+  }
 
   async write(input: {
     orgId: string
@@ -279,6 +284,11 @@ export class QdrantVectorWriter implements VectorWriter {
     } catch (cause) {
       throw new Error(`sweep of ${input.collection} rejected: ${explain(cause)}`, { cause })
     }
+
+    // Ingest is where a metadata key is used for the first time, so it is where
+    // the index for it gets built. Last, and it cannot fail the document: a
+    // filter without an index returns the same points, just by scanning.
+    await this.metadataIndexes.ensure(input.collection, Object.keys(input.metadata))
   }
 
   /**

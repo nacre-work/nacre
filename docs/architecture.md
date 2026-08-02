@@ -86,6 +86,20 @@ deleted    bool
 acl_tags   keyword, kept in memory — it participates in every single query
 ```
 
+Fixed, because the permission filter uses exactly these fields. The fields a
+`filters` narrowing reaches are not: they are `meta.<key>` for keys the caller
+chose, so their indexes are built when metadata is written — on ingest and on
+`PATCH /v1/documents/{id}` — and carried across when a reindex replaces the
+collection. All `keyword`: it is the type that helps a tag and a list of tags,
+which is what the narrowing exists for, and a number or a boolean under it
+indexes nothing and still matches.
+
+Bounded at 64 metadata keys per collection, and past that the filter is answered
+by scanning. That is a latency ceiling and never a wrong answer — a filter on an
+unindexed field returns exactly the points an indexed one would. Which is also
+why a failure to build one is logged and dropped rather than failing the write:
+nothing here decides who sees what.
+
 ## Search
 
 Dense vector plus sparse BM25, fused with Reciprocal Rank Fusion, then a
