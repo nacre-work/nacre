@@ -108,6 +108,36 @@ def fetch(url: str) -> bytes:
         return response.read(MAX_BYTES + 1)
 
 
+def _decode(raw: bytes) -> str:
+    """Bytes to text, or a refusal.
+
+    This used to be ``raw.decode("utf-8", errors="replace")``, which never
+    fails and is the worst possible behaviour for the input it exists to
+    handle. A PDF fetched by URL came back as a string of replacement
+    characters — six of them in the first fifty-eight bytes of a minimal file —
+    and that string was chunked, embedded, stored as the document body and
+    reported as ``indexed``. The document was not readable, the search results
+    were noise, and nothing anywhere said so.
+
+    Refusing is the honest answer because this parser extracts no binary
+    formats and is not going to: it is stdlib-only on purpose, since it runs
+    hostile input through whatever it depends on. A PDF needs a real extractor,
+    and adding one here is a decision about this process's dependency surface
+    rather than a missing branch.
+
+    So the failure names what happened and what would fix it, and the document
+    lands in ``failed`` with that reason where an operator can see it.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ParseError(
+            "the document is not UTF-8 text. This parser extracts no binary "
+            "formats — a PDF, a Word file or an image needs an extractor this "
+            "service deliberately does not carry."
+        ) from error
+
+
 def parse_source(source: dict) -> dict:
     content = source.get("content")
     url = source.get("url")
@@ -131,7 +161,7 @@ def parse_source(source: dict) -> dict:
             raise ParseError("the url could not be fetched") from error
         if len(raw) > MAX_BYTES:
             raise ParseError("document exceeds the size limit")
-        text = raw.decode("utf-8", errors="replace")
+        text = _decode(raw)
 
     # Plain text for now. Blocks stay empty rather than fabricated: a consumer
     # that sees an empty list knows there is no structure, and one that sees a

@@ -8,7 +8,7 @@ body, a path, or a header.
 Implemented:
 
 ```
-POST   /v1/documents                 ingest (json; multipart not built — see below)
+POST   /v1/documents                 ingest (json or multipart/form-data; text — see below)
 GET    /v1/documents/{id}
 PATCH  /v1/documents/{id}            metadata only; no re-embed
 DELETE /v1/documents/{id}            tombstone
@@ -23,8 +23,10 @@ GET    /.well-known/oauth-protected-resource        RFC 9728, unauthenticated
 POST   /v1/auth/login    /v1/auth/refresh        /v1/auth/logout
 ```
 
-Everything the contract describes is implemented. Multipart upload on
-`POST /v1/documents` is the one exception, and it is marked where it applies.
+Everything the contract describes is implemented, with one limit that is a
+property of the product rather than of the handler: an uploaded file must be
+UTF-8 text, and a binary one is refused at the edge. The section on multipart
+below says why, because "not built" would be the wrong summary of it.
 
 ## Errors — RFC 9457 (`application/problem+json`)
 
@@ -307,29 +309,72 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 | Cursor pagination | layers, grants, service accounts |
 | `POST /v1/auth/login`, `/refresh`, `/logout` | email and password, rotating refresh tokens |
 
-Not implemented, and the document describes them anyway because they are the
-contract they will be built to: OAuth discovery and dynamic client
-registration, and multipart upload on `POST /v1/documents`.
+Not implemented, and the document describes it anyway because it is the
+contract it will be built to: OAuth discovery and dynamic client registration.
 
-### What multipart upload actually costs
+### Uploading a file
 
-Worth stating, because the one-line "not built" above reads like a missing
-handler and it is not. **No binary document can be ingested today except by
-URL**, and the reason is that the whole ingest path carries text:
+```
+POST /v1/documents
+Content-Type: multipart/form-data; boundary=…
+
+--…
+Content-Disposition: form-data; name="layer"
+
+contracts
+--…
+Content-Disposition: form-data; name="file"; filename="q3-plan.md"
+Content-Type: text/markdown
+
+# Q3
+--…--
+```
+
+The file part is the one carrying a `filename`, or the one called `file`. Every
+other part is a field, and the fields are exactly the members of
+`IngestRequest`: `layer`, `external_id`, `title`, `metadata`. `metadata` carries
+a JSON object as text, because a multipart field is a string.
+
+Three things about the shape:
+
+- **`external_id` defaults to the filename.** A form that uploaded `q3-plan.md`
+  has already said what the document is called, and asking for the same string
+  twice is how one document ends up with two names. An explicit `external_id`
+  field wins.
+- **The filename reaches a database column and nothing else.** Object keys come
+  from `documentKey`, which hashes the external id, so a caller does not choose
+  the shape of anything in the bucket. There is no path, no extension check, and
+  no filename in an error message.
+- **A file alongside `content` or `url` is refused**, along with a second file
+  and a repeated field. Each is a caller who believes something different from
+  what would be stored.
+
+The parser is strict about the envelope for the reason every parser on a request
+path should be: nested multipart, `Content-Transfer-Encoding` other than
+`binary`, a boundary outside RFC 2046's grammar, more than 16 parts, and a
+header block over 8 KiB are all refusals rather than branches. `413` is the
+size limit, `400` is everything else, and neither is configurable.
+
+### The limit that is not the handler's
+
+**An uploaded file must be UTF-8 text, and a binary one is refused with `400`.**
+That is not a gap in this endpoint; the whole ingest path carries text:
 
 - `Parser.parse` takes `{ content?: string, url?: string }`. There is no bytes
   argument, so the sidecar that exists to turn bytes into text can only be
   handed a string or an address to fetch.
-- `documents.source_ref` is `text`. Without object storage there is nowhere in
-  the schema to put bytes at all.
-- `content_hash` is computed over the parsed text, so idempotency is defined on
-  the text rather than on what was uploaded.
+- `documents.source_ref` is `text`, and the object-storage path stores the same
+  UTF-8 and decodes it back on the way out. Bytes have nowhere to go that
+  survives the round trip.
+- `content_hash` is computed over the text, so idempotency is defined on the
+  text rather than on what was uploaded.
 
-So it is an end-to-end change — the parser port, the sidecar's contract, the
-ingest signature, and the hash — not a branch in the request handler. And it
-implies a rule worth deciding deliberately rather than discovering: **binary
-upload requires `NACRE_S3_*`**, because that is the only place bytes can live.
+Extracting a PDF is therefore an end-to-end change — the parser port, the
+sidecar's contract, the ingest signature, and the hash — and it implies a rule
+worth deciding deliberately rather than discovering: **binary upload requires
+`NACRE_S3_*`**, because that is the only place bytes can live.
 
-The half that would work today without any of that is a multipart envelope
-around a *text* document, which is the half nobody needs: JSON already carries
-text.
+Until then the refusal is at the edge, on the request, where the caller learns
+immediately and nothing is queued. It used not to be: the sidecar decoded with
+`errors="replace"`, so a PDF became a string of replacement characters that was
+chunked, embedded, stored as the document body, and reported as `indexed`.

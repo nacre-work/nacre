@@ -131,6 +131,35 @@ class ParseSourceTests(unittest.TestCase):
             with self.assertRaises(app.ParseError):
                 app.parse_source({"url": "http://example.com/big"})
 
+    def test_a_binary_document_is_refused_rather_than_mangled(self) -> None:
+        # This used to decode with errors="replace" and succeed. A minimal PDF
+        # came back as six replacement characters in its first fifty-eight
+        # bytes, and that string was chunked, embedded, stored as the document
+        # body and reported as indexed. Unreadable, unsearchable, and silent.
+        pdf = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<</Type/Catalog>>\nendobj\n"
+
+        with mock.patch.object(app, "fetch", return_value=pdf):
+            with self.assertRaises(app.ParseError) as caught:
+                app.parse_source({"url": "http://example.com/doc.pdf"})
+
+        # And it says what would fix it. "Could not parse" sends an operator
+        # looking for a bug; naming the missing extractor does not.
+        self.assertIn("not UTF-8", str(caught.exception))
+        self.assertIn("binary", str(caught.exception))
+
+    def test_valid_utf8_that_is_not_ascii_still_parses(self) -> None:
+        # The refusal has to be about decodability, not about being English.
+        with mock.patch.object(app, "fetch", return_value="слои и гранты".encode("utf-8")):
+            result = app.parse_source({"url": "http://example.com/doc"})
+        self.assertEqual(result["text"], "слои и гранты")
+
+    def test_a_lone_surrogate_byte_sequence_is_refused(self) -> None:
+        # The boundary case: bytes that are almost UTF-8. errors="replace"
+        # swallowed these too.
+        with mock.patch.object(app, "fetch", return_value=b"ok then \xed\xa0\x80 more"):
+            with self.assertRaises(app.ParseError):
+                app.parse_source({"url": "http://example.com/doc"})
+
 
 if __name__ == "__main__":
     unittest.main()

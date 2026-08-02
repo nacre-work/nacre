@@ -556,6 +556,25 @@ paths:
   /documents:
     post:
       summary: Add or update a document
+      description: >
+        Two envelopes for one operation. The multipart form carries the same
+        fields as the JSON body, with the document as a file part rather than
+        as `content`.
+
+
+        The file part is the one carrying a `filename`, or the one named
+        `file`. `external_id` defaults to that filename — a form that uploaded
+        `q3-plan.md` has already said what the document is called — and an
+        explicit `external_id` field wins. The filename reaches a database
+        column and nothing else: object keys are derived by hashing the
+        external id, so a caller does not choose the shape of anything in the
+        bucket.
+
+
+        **The file must be UTF-8 text.** A binary one is `400`, refused on the
+        request rather than queued: the parser extracts no binary formats, so
+        the alternative is a document stored as replacement characters and
+        reported as indexed. See docs/api.md for what changes that.
       requestBody:
         required: true
         content:
@@ -564,9 +583,18 @@ paths:
           multipart/form-data:
             schema:
               type: object
+              required: [layer, file]
               properties:
-                file:  { type: string, format: binary }
-                layer: { type: string }
+                # Every field here is a string, because a multipart field is
+                # one. `metadata` therefore carries a JSON object as text — the
+                # same value the JSON body sends as an object.
+                layer:       { type: string }
+                file:        { type: string, format: binary, description: "UTF-8 text. A binary file is refused with 400." }
+                external_id: { type: string, description: "Defaults to the file part's filename." }
+                title:       { type: string }
+                metadata:    { type: string, description: "A JSON object, as text." }
+            encoding:
+              file: { contentType: 'text/plain, text/markdown, application/octet-stream' }
       responses:
         '200': { description: Idempotent repeat; the document is unchanged }
         '202':
@@ -574,6 +602,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Job' }
+        '400':
+          description: >
+            A malformed multipart envelope, a file that is not UTF-8 text, a
+            file alongside `content` or `url`, a second file part, or a
+            repeated field.
         '413': { description: Document exceeds NACRE_MAX_DOCUMENT_BYTES }
         '429': { $ref: '#/components/responses/RateLimited' }
   /documents/{id}:
