@@ -95,6 +95,17 @@ export interface DocumentView {
   readonly updated_at: string
   /** What the caller tagged it with, and what `filters` reads back. */
   readonly metadata: Metadata
+  /**
+   * A presigned link to the original bytes, where a deployment stores them in
+   * object storage. Absent otherwise, and absent for a document whose source is
+   * inline or a URL.
+   *
+   * It is a bearer capability with a life of `NACRE_PRESIGN_TTL`: whoever holds
+   * it can fetch that object without a Nacre credential, and a revocation
+   * inside the window does not reach it. That is what presigning is; the
+   * lifetime is how long a deployment is willing for it to be true.
+   */
+  readonly source_url?: string
 }
 
 /**

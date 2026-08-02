@@ -90,6 +90,14 @@ export class PostgresDocuments implements Documents {
     private readonly role?: string,
     /** See `principalsFor`. Absent means recompute the closure every time. */
     private readonly principalsCache?: PrincipalsCache,
+    /**
+     * Where a `source_url` comes from, when a deployment has object storage.
+     *
+     * Absent leaves the field off the response entirely, which is what every
+     * deployment without a bucket should see: a document whose bytes are in
+     * `documents.source_ref` has nothing to link to.
+     */
+    private readonly presign?: { url(key: string): string },
   ) {}
 
   /**
@@ -127,9 +135,11 @@ export class PostgresDocuments implements Documents {
           chunk_count: number
           updated_at: Date
           metadata: Record<string, unknown> | null
+          source_type: string
+          source_ref: string | null
         }>(
           `SELECT d.id, d.title, d.layer_id, l.slug AS layer, d.status, d.chunk_count,
-                  d.updated_at, d.metadata
+                  d.updated_at, d.metadata, d.source_type, d.source_ref
              FROM documents d
              JOIN layers l ON l.id = d.layer_id AND l.org_id = d.org_id
             WHERE d.org_id = $1 AND d.id = $2 AND d.deleted_at IS NULL`,
@@ -159,6 +169,17 @@ export class PostgresDocuments implements Documents {
           // tag has no way to tell a successful write from a dropped one — and
           // this field was dropped by the handler for as long as it existed.
           metadata: (row.metadata ?? {}) as Metadata,
+          // Minted here and nowhere earlier: everything above this line is the
+          // permission check, so a link exists only for a caller who has just
+          // been found to hold `read` on this document. `write` alone does not
+          // reach here — rule 6 — and neither does a denied document.
+          //
+          // Only for `s3`. An `inline` document has no object, and a `url` one
+          // is somebody else's address that this system has no business
+          // signing.
+          ...(this.presign !== undefined && row.source_type === 's3' && row.source_ref !== null
+            ? { source_url: this.presign.url(row.source_ref) }
+            : {}),
         }
       },
       this.role === undefined ? {} : { role: this.role },

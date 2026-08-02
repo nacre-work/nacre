@@ -95,6 +95,9 @@ export interface Config {
   /** The reindex rollback window: how long a superseded collection survives. */
   readonly collectionRetentionDays: number
 
+  /** How long a presigned link to a document's bytes stays valid. */
+  readonly presignTtl: number
+
   /**
    * Object storage, or `undefined` when a deployment has none.
    *
@@ -456,6 +459,16 @@ export function loadConfig(env: Env = process.env): Config {
     // most likely to be found wrong. Setting it high costs disk: each retained
     // collection is a full copy of the organization's vectors.
     collectionRetentionDays: r.number('NACRE_COLLECTION_RETENTION_DAYS', 7, { min: 1 }),
+
+    // How long a `source_url` outlives the permission check that minted it.
+    //
+    // A presigned URL is a bearer capability: whoever holds it fetches that
+    // object without a Nacre credential, and a revocation inside the window
+    // does not reach it. So the ceiling is a week — SigV4's own maximum, and
+    // already far longer than any reason to hand one out — and the floor is a
+    // minute, because a link that expires while the client is still following
+    // the redirect is a link that never worked.
+    presignTtl: r.number('NACRE_PRESIGN_TTL', 900, { min: 60, max: 604_800 }),
 
     // All of it or none of it — see the cross-field check below. Read here so
     // that a malformed endpoint is a startup problem like any other; whether

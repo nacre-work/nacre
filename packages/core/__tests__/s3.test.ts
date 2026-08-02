@@ -163,3 +163,48 @@ describe('S3', () => {
     expect(calls[0]?.url).toBe('http://minio:9000/nacre/a')
   })
 })
+
+describe('presign', () => {
+  // What a valid link does against a real store is checked by running it
+  // against MinIO — a signature is only correct if an S3 accepts it. What is
+  // pinned here is the shape, because a missing parameter is a 403 with nothing
+  // in it about which one.
+  const url = () => new URL(new S3(options).presign('org/a/layer/b/c', 900))
+
+  it('carries everything that authenticates it in the query', () => {
+    const q = url().searchParams
+    expect(q.get('X-Amz-Algorithm')).toBe('AWS4-HMAC-SHA256')
+    expect(q.get('X-Amz-Credential')).toMatch(/^key\/\d{8}\/us-east-1\/s3\/aws4_request$/)
+    expect(q.get('X-Amz-Date')).toMatch(/^\d{8}T\d{6}Z$/)
+    expect(q.get('X-Amz-Expires')).toBe('900')
+    expect(q.get('X-Amz-SignedHeaders')).toBe('host')
+    expect(q.get('X-Amz-Signature')).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('points at the object and nothing else', () => {
+    expect(url().origin + url().pathname).toBe('http://minio:9000/nacre/org/a/layer/b/c')
+  })
+
+  it('sends no credential in a header, because a link has none', () => {
+    // The whole point is a URL a client can follow. Anything that has to be
+    // sent alongside it is a capability the holder does not have.
+    expect(new S3(options).presign('a', 900)).not.toContain('Authorization')
+  })
+
+  it('refuses to mint a link that expires immediately', () => {
+    expect(new URL(new S3(options).presign('a', 0)).searchParams.get('X-Amz-Expires')).toBe('1')
+  })
+
+  it('signs two keys differently', () => {
+    const s3 = new S3(options)
+    const a = new URL(s3.presign('org/a/layer/b/one', 900)).searchParams.get('X-Amz-Signature')
+    const b = new URL(s3.presign('org/a/layer/b/two', 900)).searchParams.get('X-Amz-Signature')
+    expect(a).not.toBe(b)
+  })
+
+  it('escapes the key the same way a request does', () => {
+    // Signed one way and requested another is the failure this shares with the
+    // header path.
+    expect(new S3(options).presign("a/b!c", 900)).toContain('/nacre/a/b%21c?')
+  })
+})

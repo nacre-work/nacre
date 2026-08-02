@@ -230,6 +230,69 @@ export class S3 {
   }
 
   /**
+   * A URL that fetches one object, for a while, without a credential.
+   *
+   * Query-string SigV4 rather than the header form: the point is a link a
+   * client can follow, so everything that authenticates it has to be in the
+   * URL. `host` is the only signed header, and the payload is unsigned because
+   * a GET has none.
+   *
+   * **This is a bearer capability and it leaves the permission model behind.**
+   * Nacre checks `read` once, when the link is minted, and the object store
+   * checks nothing afterwards — a revocation during the window does not reach a
+   * URL already handed out, and neither does a delete. That is what presigning
+   * is, in every implementation of it, and it is why the lifetime is a
+   * configured number rather than a constant: `NACRE_PRESIGN_TTL` is how long a
+   * deployment is willing for that to be true.
+   *
+   * It is also why the caller of this decides, not this: minting one per search
+   * hit would issue ten capabilities to answer a question about relevance, most
+   * never followed. See the note on the search response.
+   */
+  presign(key: string, ttlSeconds: number): string {
+    const { region, accessKey, secretKey } = this.#options
+    const url = this.#url(key)
+    const now = new Date()
+    const amzDate = now.toISOString().replace(/[-:]|\.\d{3}/g, '')
+    const dateStamp = amzDate.slice(0, 8)
+    const scope = `${dateStamp}/${region}/${SERVICE}/aws4_request`
+
+    // Sorted by key, and encoded the same way the canonical request will be —
+    // a mismatch between the query that is signed and the query that is sent is
+    // a 403 with nothing in it about which of the two was wrong.
+    const params: [string, string][] = [
+      ['X-Amz-Algorithm', ALGORITHM],
+      ['X-Amz-Credential', `${accessKey}/${scope}`],
+      ['X-Amz-Date', amzDate],
+      ['X-Amz-Expires', String(Math.max(1, Math.floor(ttlSeconds)))],
+      ['X-Amz-SignedHeaders', 'host'],
+    ]
+    const canonicalQuery = params
+      .map(([k, v]) => [encodeSegment(k), encodeSegment(v)] as const)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${k}=${v}`)
+      .join('&')
+
+    const canonicalRequest = [
+      'GET',
+      url.pathname,
+      canonicalQuery,
+      `host:${url.host}\n`,
+      'host',
+      UNSIGNED,
+    ].join('\n')
+
+    const stringToSign = [ALGORITHM, amzDate, scope, sha256(canonicalRequest)].join('\n')
+    const signingKey = hmac(
+      hmac(hmac(hmac(`AWS4${secretKey}`, dateStamp), region), SERVICE),
+      'aws4_request',
+    )
+    const signature = createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex')
+
+    return `${url.origin}${url.pathname}?${canonicalQuery}&X-Amz-Signature=${signature}`
+  }
+
+  /**
    * Whether the bucket answers, for readiness.
    *
    * A HEAD on the bucket rather than on an object: it needs no key to exist and

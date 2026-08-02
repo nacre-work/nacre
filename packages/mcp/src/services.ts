@@ -99,7 +99,18 @@ export function buildServices(
     role: APP_ROLE,
   })
 
-  const documents = new PostgresDocuments(pool, vectors, APP_ROLE, principalsCache)
+  // The same presigner as REST. `get_document` over MCP and `GET /v1/documents`
+  // describe the same document, and one of them handing back a link while the
+  // other does not is the two-surfaces divergence this repository keeps closing.
+  const documents = new PostgresDocuments(
+    pool,
+    vectors,
+    APP_ROLE,
+    principalsCache,
+    objects === undefined
+      ? undefined
+      : { url: (key: string) => objects.presign(key, config.presignTtl) },
+  )
   const audit = new PostgresAudit(pool, APP_ROLE)
 
   /**

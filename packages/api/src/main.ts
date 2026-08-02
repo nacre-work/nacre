@@ -199,7 +199,15 @@ async function main(): Promise<void> {
     login,
     auditReader: new PostgresAuditReader(pool, APP_ROLE, principalsCache),
     reindex: new PostgresReindex(pool, vectors, APP_ROLE, principalsCache),
-    documents: new PostgresDocuments(pool, vectors, APP_ROLE, principalsCache),
+    documents: new PostgresDocuments(
+      pool,
+      vectors,
+      APP_ROLE,
+      principalsCache,
+      objects === undefined
+        ? undefined
+        : { url: (key: string) => objects.presign(key, config.presignTtl) },
+    ),
     search: new NacreSearchService({
       principalsCache,
       pool,

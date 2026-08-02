@@ -148,9 +148,15 @@ digits and underscores, and they live under a reserved namespace: filtering on
 `deleted` narrows on a metadata value with that name and cannot reach the
 tombstone flag. Equality only; a list value means any of those.
 
-Returns an array of `{ chunk_id, doc_id, layer, title, score, text?, source_url?,
-metadata }`. `source_url` is presigned, living for `NACRE_PRESIGN_TTL`.
+Returns an array of `{ chunk_id, doc_id, layer, title, score, text?, metadata }`.
 Permission: `read`.
+
+No `source_url` here, and deliberately. A presigned link is a bearer capability
+that outlives the permission check which minted it, so answering a question
+about relevance by issuing one per hit hands out ten capabilities where the
+caller wanted an ordering — most never followed, each valid for
+`NACRE_PRESIGN_TTL`. `get_document` is where a caller asks for a document, and
+that is where the link is.
 
 ### `list_layers`
 
@@ -159,8 +165,11 @@ arguments. Permission: `read`.
 
 ### `get_document`
 
-`{ document_id }` or `{ external_id, layer }`. Returns metadata plus full text
-or a presigned link. Permission: `read`. No permission → `404`, not `403`.
+`{ document_id }` or `{ external_id, layer }`. Returns metadata, and
+`source_url` — a presigned link living for `NACRE_PRESIGN_TTL` — where the
+deployment stores document bytes in object storage. Absent otherwise, and
+absent for a document ingested inline or by URL. Permission: `read`. No
+permission → `404`, not `403`.
 
 ### `ingest_document`
 
