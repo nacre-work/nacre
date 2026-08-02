@@ -6,6 +6,7 @@ import {
   ConfigError,
   createPool,
   installGuards,
+  S3,
   VectorStore,
   loadConfig,
   withOrg,
@@ -265,6 +266,13 @@ async function main(): Promise<void> {
       : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
   )
   const documents = new PostgresDocumentStore(pool, APP_ROLE)
+
+  // Absent when a deployment has none, which is the supported default: document
+  // bytes then live in `documents.source_ref` and no target ever names an
+  // object. `loadConfig` refuses a half-configured block, so this is either
+  // fully usable or not there.
+  const objects = config.s3 === undefined ? undefined : new S3(config.s3)
+
   const retagPorts = {
     // The configured lease, not the function's default.
     //
@@ -290,6 +298,17 @@ async function main(): Promise<void> {
   const collectPorts = {
     claim: (limit: number, grace: number) => claimPurgeable(pool, limit, grace, config.indexLease),
     purge: vectors.purge.bind(vectors),
+    // Never reached on a deployment without object storage: no target carries
+    // a key there, so this is unreachable rather than a no-op that could later
+    // be mistaken for one that works.
+    removeObject: async (key: string) => {
+      if (objects === undefined) {
+        throw new Error(
+          `document names object ${key} but this worker has no object storage configured`,
+        )
+      }
+      await objects.remove(key)
+    },
     markPurged: documents.markPurged.bind(documents),
     onError: (target: { documentId: string }, error: unknown) => {
       console.error(
@@ -722,10 +741,30 @@ async function main(): Promise<void> {
 
     try {
       const acl = await tagsForLayer(pool, claim.orgId, claim.layerId, APP_ROLE)
-      const source =
-        claim.sourceType === 'url' && claim.sourceRef !== null
-          ? { url: claim.sourceRef }
-          : { content: claim.sourceRef ?? '' }
+      // Three shapes, and the s3 one is a fetch rather than a field.
+      //
+      // A missing object is failed rather than indexed as empty. The bytes were
+      // written before the row — that ordering is in NacreIngest — so an object
+      // that is not there means it was removed underneath us, and an empty
+      // document silently replacing it would delete the content from every
+      // answer while reporting success.
+      let source: { url: string } | { content: string }
+      if (claim.sourceType === 's3' && claim.sourceRef !== null) {
+        if (objects === undefined) {
+          throw new Error(
+            `document ${claim.documentId} is stored in object storage and this worker has none configured`,
+          )
+        }
+        const bytes = await objects.get(claim.sourceRef)
+        if (bytes === undefined) {
+          throw new Error(`object ${claim.sourceRef} is missing from the bucket`)
+        }
+        source = { content: new TextDecoder().decode(bytes) }
+      } else if (claim.sourceType === 'url' && claim.sourceRef !== null) {
+        source = { url: claim.sourceRef }
+      } else {
+        source = { content: claim.sourceRef ?? '' }
+      }
 
       const result = await ingest(
         {

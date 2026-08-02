@@ -627,6 +627,8 @@ export async function claimPurgeable(
         org_id: string
         collection: string
         age: string
+        source_type: string
+        source_ref: string | null
       }>(
         `WITH claimed AS (
            SELECT d.id
@@ -649,6 +651,7 @@ export async function claimPurgeable(
            JOIN organizations o ON TRUE
           WHERE d.id = c.id AND o.id = d.org_id
           RETURNING d.id, d.org_id, o.vector_collection AS collection,
+                    d.source_type, d.source_ref,
                     EXTRACT(EPOCH FROM (now() - d.deleted_at))::text AS age`,
         [limit, graceSeconds, leaseSeconds],
       )
@@ -658,6 +661,13 @@ export async function claimPurgeable(
         collection: r.collection,
         documentId: r.id,
         deletedAgeSeconds: Number(r.age),
+        // Only an `s3` document has bytes outside Postgres. An `inline` one
+        // carries them in the row that is about to be marked purged, and a
+        // `url` one never had a copy here at all — removing that key would be
+        // this system deleting somebody else's object.
+        ...(r.source_type === 's3' && r.source_ref !== null
+          ? { objectKey: r.source_ref }
+          : {}),
       }))
   })
 }

@@ -20,7 +20,13 @@ const target = (n: number): PurgeTarget => ({
 })
 
 function ports(overrides: Partial<CollectPorts> = {}) {
-  const state = { order: [] as string[], purged: [] as string[], marked: [] as string[], errors: 0 }
+  const state = {
+    order: [] as string[],
+    purged: [] as string[],
+    marked: [] as string[],
+    objects: [] as string[],
+    errors: 0,
+  }
   const base: CollectPorts = {
     claim: async (limit) => Array.from({ length: Math.min(limit, 3) }, (_, i) => target(i)),
     purge: async (_slug, id) => {
@@ -30,6 +36,10 @@ function ports(overrides: Partial<CollectPorts> = {}) {
     markPurged: async (_org, id) => {
       state.order.push(`mark:${id}`)
       state.marked.push(id)
+    },
+    removeObject: async (key) => {
+      state.order.push(`object:${key}`)
+      state.objects.push(key)
     },
     onError: () => {
       state.errors++

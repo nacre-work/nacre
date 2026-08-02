@@ -153,7 +153,7 @@ should know that setting one changes nothing today:
 | `NACRE_LOG_LEVEL`, `NACRE_LOG_FORMAT` | all logging is structured JSON at one level |
 | `NACRE_AUDIT_QUERY_TEXT` | query text is never written, with or without it |
 | `NACRE_ACL_CACHE_TTL` | the resolver cache is written and not wired in, so every search recomputes the group closure. Safe — it errs towards recomputing — and slower than it should be |
-| `NACRE_S3_*`, `NACRE_PRESIGN_TTL` | object storage is not wired; document bodies live in Postgres. **Not validated either** — `loadConfig` does not mention them, so a wrong endpoint or a missing credential is silent |
+| `NACRE_PRESIGN_TTL` | nothing hands out a presigned URL yet; `GET /v1/documents/{id}` returns metadata, never a link to the bytes |
 | `NACRE_OAUTH_CIMD_ENABLED`, `NACRE_OAUTH_DCR_ENABLED`, `NACRE_EMA_*` | client registration and EMA are not built |
 | `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
 
@@ -353,10 +353,15 @@ packaging one — see [licensing.md](./licensing.md).
   no credential to present — so it says which dependency is unhappy and never
   why.
 
-  Not s3, which nothing in the tree reads yet, and not the embedder: that is an
-  endpoint you supply, a search fails loudly without it, and making readiness
-  depend on somebody else's uptime turns their outage into a rollout that never
-  completes.
+  `s3` appears only when a deployment configured object storage, and then it is
+  checked: ingest writes the bytes before it writes the row, so an unreachable
+  bucket or a wrong credential is a surface that accepts nothing. A deployment
+  without it reports no `s3` key rather than `true` — "not configured" and
+  "configured and healthy" must not read the same.
+
+  Not the embedder: that is an endpoint you supply, a search fails loudly
+  without it, and making readiness depend on somebody else's uptime turns their
+  outage into a rollout that never completes.
 - `/metrics` — Prometheus. Unauthenticated by default, and carrying nothing
   that is not already a count: no document ids, no query text, no organization
   ids — organizations appear by slug, which is in the URL of every request that
@@ -479,12 +484,23 @@ are rebuilt **from Postgres**, never the other way round — the payload of a
 point carries identifiers and flags and not one line of text, so a Qdrant backup
 saves recomputing embeddings and never substitutes for a Postgres one.
 
-S3 is not in that chain today, and the gap is wider than "unimplemented":
-`NACRE_S3_*` is **not read anywhere, and not even validated at startup**.
-`loadConfig` does not mention it. So a deployment can set these to anything, or
-to nothing, and no process will say a word — while the `full` profile starts a
-MinIO with those credentials that nothing ever talks to.
+Where the document bytes are depends on whether you configured object storage,
+and the backup has one part or two because of it.
 
-Document bytes live in `documents.source_ref`, which is what makes the Postgres
-backup larger than it looks and means there is no separate object store to
-restore.
+**Without `NACRE_S3_*`** — the default — bytes live in `documents.source_ref`.
+That is what makes the Postgres backup larger than it looks, and it means there
+is no separate object store to restore.
+
+**With it**, `source_ref` holds an object key and `source_type` is `s3`. The
+bucket then belongs in the backup: Postgres knows which key each document has
+and nothing else does, so losing the bucket loses the originals even though
+every row survives. Restore Postgres first and the bucket second — the chain is
+still driven by Postgres, and a bucket restored alone names nothing.
+
+Either way, vectors are rebuilt from what is in Postgres and Qdrant is never
+the source.
+
+`NACRE_S3_*` is validated at startup as a group: all four of endpoint, bucket,
+access key and secret key, or none of them. Half is refused rather than
+accepted, because an endpoint with no credential parses fine and fails later, as
+a deployment that accepts documents and cannot store them.

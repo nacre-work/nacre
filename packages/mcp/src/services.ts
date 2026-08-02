@@ -18,6 +18,7 @@ import {
   parseMetadata,
   PostgresGroupGraph,
   resolve,
+  S3,
   VectorStore,
   withOrg,
   type Config,
@@ -80,7 +81,17 @@ export function buildServices(config: Config): Services {
   // write is allowed to do. `ingest_document` and `delete_document` were in the
   // tool catalog and in docs/mcp.md from the beginning with nothing behind them:
   // an agent listed the tools, called one, and was told it did not exist.
-  const ingest = new NacreIngest({ pool, tombstone: vectors, role: APP_ROLE })
+  // Same object storage as the API, for the same reason: MCP serves the same
+  // ingest tool, and a document sent over MCP has to land where a document sent
+  // over REST lands. Two surfaces disagreeing about where bytes live is the
+  // shape of bug that only shows up on the transport nobody tested.
+  const objects = config.s3 === undefined ? undefined : new S3(config.s3)
+  const ingest = new NacreIngest({
+    pool,
+    tombstone: vectors,
+    ...(objects === undefined ? {} : { objects }),
+    role: APP_ROLE,
+  })
 
   const documents = new PostgresDocuments(pool, vectors, APP_ROLE)
   const audit = new PostgresAudit(pool, APP_ROLE)

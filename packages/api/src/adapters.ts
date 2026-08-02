@@ -1,6 +1,7 @@
 import {
   aclTags,
   buildFilter,
+  documentKey,
   effectivePrincipals,
   fromStateJson,
   loadGrants,
@@ -846,7 +847,21 @@ export interface IngestDeps {
    * would let a later change reach the index without a plan.
    */
   readonly tombstone: DocumentTombstone
+  /**
+   * Where document bytes go, when a deployment has object storage.
+   *
+   * Absent is the supported default and not a degraded mode: bytes then live in
+   * `documents.source_ref`, which is what every deployment did before this. The
+   * difference is what a Postgres dump weighs — with this set it holds
+   * references, without it, every document in full.
+   */
+  readonly objects?: ObjectStore
   readonly role?: string
+}
+
+export interface ObjectStore {
+  put(key: string, body: Uint8Array, contentType?: string): Promise<void>
+  remove(key: string): Promise<void>
 }
 
 export interface DocumentTombstone {
@@ -902,9 +917,30 @@ export class NacreIngest implements Ingest {
         const layerId = await this.writableLayer(client, auth, request.layer)
         if (layerId === undefined) return undefined
 
-        const source = request.content !== undefined ? request.content : (request.url as string)
-        const sourceType = request.content !== undefined ? 'inline' : 'url'
+        const inline = request.content !== undefined
+        const source = inline ? request.content : (request.url as string)
         const hash = createHash('sha256').update(source, 'utf8').digest('hex')
+
+        // Bytes to object storage before the row, never after.
+        //
+        // The reverse fails unrecoverably, which is the same argument the
+        // delete path is ordered by: a row that names an object which was never
+        // written is a document the worker fails on every attempt, forever,
+        // with the API having answered `queued`. A PUT with no row is a stray
+        // object at a deterministic key that the next ingest overwrites.
+        //
+        // Only for inline content. A `url` document is a reference already, and
+        // copying somebody else's URL into our bucket at ingest time would be
+        // a fetch on the request path — which is exactly what the worker does
+        // later, with a timeout and a sandbox.
+        let sourceType: 'inline' | 'url' | 's3' = inline ? 'inline' : 'url'
+        let sourceRef = source
+        if (inline && this.deps.objects !== undefined) {
+          const key = documentKey(auth.orgId, layerId, request.externalId)
+          await this.deps.objects.put(key, new TextEncoder().encode(source), 'text/plain')
+          sourceType = 's3'
+          sourceRef = key
+        }
 
         const { rows } = await client.query<{ id: string; content_hash: string; status: string }>(
           `INSERT INTO documents
@@ -940,7 +976,7 @@ export class NacreIngest implements Ingest {
             layerId,
             request.externalId,
             sourceType,
-            source,
+            sourceRef,
             request.title ?? null,
             `sha256:${hash}`,
             JSON.stringify(request.metadata),
