@@ -114,17 +114,30 @@ export const PAYLOAD_INDEXES = [
  * loss inside one percent, which for corporate search is noise. Originals stay
  * on disk for rescoring.
  */
+/**
+ * The settings one named vector gets.
+ *
+ * Factored out because a reindex creates a collection carrying *several* — the
+ * ones the old collection had, plus the one being migrated to — and they have
+ * to be configured identically. A copy that quietly used different HNSW
+ * parameters would change recall, which shows up as "search got worse after the
+ * migration" and is very hard to attribute.
+ */
+export function vectorParams(size: number) {
+  return {
+    size,
+    distance: 'Cosine' as const,
+    hnsw_config: { m: 32, ef_construct: 256 },
+    quantization_config: {
+      scalar: { type: 'int8' as const, quantile: 0.99, always_ram: true },
+    },
+  }
+}
+
 export function collectionConfig(vectorName: string, size: number) {
   return {
     vectors: {
-      [vectorName]: {
-        size,
-        distance: 'Cosine' as const,
-        hnsw_config: { m: 32, ef_construct: 256 },
-        quantization_config: {
-          scalar: { type: 'int8' as const, quantile: 0.99, always_ram: true },
-        },
-      },
+      [vectorName]: vectorParams(size),
     },
     sparse_vectors: { bm25: {} },
     optimizers_config: { default_segment_number: 4 },

@@ -6,14 +6,21 @@ import {
   ConfigError,
   createPool,
   installGuards,
+  VectorStore,
   loadConfig,
   withOrg,
 } from '@nacre.work/core'
 
 import {
+  claimCopyable,
   claimPurgeable,
+  claimReindexable,
   claimStale,
   claimStranded,
+  failReindex,
+  finishCopy,
+  finishReindexIfDone,
+  markReindexed,
   HttpParser,
   PostgresDocumentStore,
   pruneAuditEvents,
@@ -25,6 +32,7 @@ import { ingest } from './ingest.js'
 import { collectOnce } from './collect.js'
 import { pruneOnce } from './prune.js'
 import { reapOnce } from './reap.js'
+import { reindexOnce } from './reindex.js'
 import { retagOnce } from './retag.js'
 
 /**
@@ -81,6 +89,15 @@ const REAP_EVERY_MS = 60_000
 // rows in three weeks without ever holding a lock long enough to be noticed.
 const PRUNE_BATCH = 2000
 const PRUNE_EVERY_MS = 3_600_000
+
+// Reindexing a layer onto a different model. Small batches on a slow clock,
+// because every document in one is an embedding round trip against the model
+// server a deployment sized for its own ingest rate — and a reindex is
+// background work with no deadline. The documented response to it being slow is
+// to leave it running, not to make it compete with the ingest it shares an
+// endpoint with.
+const REINDEX_BATCH = 10
+const REINDEX_EVERY_MS = 5000
 
 interface Claim {
   readonly orgId: string
@@ -190,6 +207,16 @@ async function main(): Promise<void> {
         : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
     ),
   )
+
+  // The same Qdrant, through the shared client rather than a second
+  // implementation. `copyCollection` lives there because the API needs
+  // `vectorsOf` from the same place, and two copies of "what does a collection
+  // look like" is how the two ends of a migration end up disagreeing.
+  const store = new VectorStore(
+    config.qdrantApiKey === undefined
+      ? { url: config.qdrantUrl }
+      : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
+  )
   const documents = new PostgresDocumentStore(pool, APP_ROLE)
   const embedder = {
     embed: async (texts: readonly string[]) => {
@@ -287,9 +314,118 @@ async function main(): Promise<void> {
     },
   }
 
+  /**
+   * Embedders, one per provider, built on first use.
+   *
+   * A reindex embeds with the *shadow* provider's model, which is not the one
+   * this process is configured with — that is the entire point of a reindex.
+   * The endpoint and model come from the `embedding_providers` row.
+   */
+  const embedders = new Map<string, (texts: readonly string[]) => Promise<readonly (readonly number[])[]>>()
+  const embedderFor = async (providerId: string) => {
+    const cached = embedders.get(providerId)
+    if (cached !== undefined) return cached
+
+    const { rows } = await acrossOrganizations(pool, (client) =>
+      client.query<{ endpoint: string; model: string }>(
+        'SELECT endpoint, model FROM embedding_providers WHERE id = $1',
+        [providerId],
+      ),
+    )
+    const provider = rows[0]
+    if (provider === undefined) throw new Error(`no embedding provider ${providerId}`)
+
+    const embed = async (texts: readonly string[]) => {
+      const endpoint = new URL('/embeddings', provider.endpoint)
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: provider.model, input: texts }),
+        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+      })
+      if (!response.ok) {
+        throw new Error(`the embedding endpoint at ${endpoint.href} answered ${response.status}`)
+      }
+      const body = (await response.json()) as { data?: { embedding?: number[] }[] }
+      return (body.data ?? []).map((d) => d.embedding ?? [])
+    }
+
+    embedders.set(providerId, embed)
+    return embed
+  }
+
+  /**
+   * The cheap half of a model migration, and the reason it exists.
+   *
+   * A named vector cannot be added to a live Qdrant collection. So the way to
+   * make room for a new model is to build a collection that already has the
+   * slot, move every point across carrying the vectors it already had, and
+   * switch which collection the organization points at.
+   *
+   * **No embeddings are computed here.** Vectors come out of the old collection
+   * and go into the new one unchanged; the new slot stays empty until a layer
+   * is reindexed into it. That is what makes this affordable to do once for the
+   * whole organization while the expensive half stays per layer.
+   *
+   * Search is unaffected throughout: it reads the old collection until the
+   * pointer moves, and the new one is byte-for-byte the same data afterwards.
+   */
+  const copyOnce = async (): Promise<number> => {
+    const targets = await claimCopyable(pool, 1)
+    let done = 0
+
+    for (const target of targets) {
+      // A name derived from the old one rather than random, so an operator
+      // looking at Qdrant can tell which collection replaced which.
+      const to = `${target.collection}_${target.shadowVector}`
+      try {
+        console.log(
+          JSON.stringify({ msg: 'copying collection', org: target.orgSlug, from: target.collection, to }),
+        )
+        await store.copyCollection({
+          from: target.collection,
+          to,
+          addVector: { name: target.shadowVector, size: target.dimensions },
+        })
+        await finishCopy(pool, target.orgId, to, APP_ROLE)
+        console.log(JSON.stringify({ msg: 'collection copied', org: target.orgSlug, collection: to }))
+        done++
+      } catch (error) {
+        // Failed rather than left running. A layer that sits in `copying`
+        // forever with nothing happening is the worst outcome here: the
+        // operator watches a progress number that will never move and has
+        // nothing to read. The old collection is untouched and still live, so
+        // failing costs only the attempt.
+        console.error(
+          JSON.stringify({ msg: 'collection copy failed', org: target.orgSlug, error: String(error) }),
+        )
+        await failReindex(pool, target.orgId, target.layerId, String(error), APP_ROLE).catch(() => {})
+      }
+    }
+
+    return done
+  }
+
+  const reindexPorts = {
+    claim: (limit: number) => claimReindexable(pool, limit),
+    embed: async (providerId: string, texts: readonly string[]) =>
+      (await embedderFor(providerId))(texts),
+    addVector: vectors.addVector.bind(vectors),
+    markReindexed: (orgId: string, documentId: string, shadow: string) =>
+      markReindexed(pool, orgId, documentId, shadow, APP_ROLE),
+    finishIfDone: (orgId: string, layerId: string, shadow: string) =>
+      finishReindexIfDone(pool, orgId, layerId, shadow, APP_ROLE),
+    onError: (target: { documentId: string }, error: unknown) => {
+      console.error(
+        JSON.stringify({ msg: 'reindex failed', document_id: target.documentId, error: String(error) }),
+      )
+    },
+  }
+
   // Not zero: a sweep on the first idle tick would run before the process has
   // done anything, which is a destructive operation racing a cold start.
   let lastCollect = Date.now()
+  let lastReindex = 0
 
   // Same reasoning, and more of it. This one deletes rows outright, so a worker
   // that crash-loops must not get a prune attempt per restart.
@@ -434,6 +570,37 @@ async function main(): Promise<void> {
           }
         } catch (error) {
           console.error(JSON.stringify({ msg: 'collect pass failed', error: String(error) }))
+        }
+      }
+
+      // Before retention and after collection. A reindex is the only one of
+      // these an operator is watching in real time, and it is the only one that
+      // changes what a search returns when it finishes.
+      if (Date.now() - lastReindex >= REINDEX_EVERY_MS) {
+        lastReindex = Date.now()
+        try {
+          // The copy first. A layer in the copy phase has no room to embed
+          // into, so running the embedding pass before it would claim
+          // documents and fail every one on a vector that does not exist yet.
+          const copied = await copyOnce()
+          if (copied > 0) {
+            lastReindex = 0
+            continue
+          }
+
+          const pass = await reindexOnce(reindexPorts, REINDEX_BATCH)
+          if (pass.reindexed > 0 || pass.failed > 0 || pass.switched > 0) {
+            console.log(JSON.stringify({ msg: 'reindexed', ...pass }))
+          }
+          // A full batch means there is more, so come back now rather than in
+          // five seconds. A migration of a large layer should not be paced by
+          // an idle timer.
+          if (pass.reindexed >= REINDEX_BATCH) {
+            lastReindex = 0
+            continue
+          }
+        } catch (error) {
+          console.error(JSON.stringify({ msg: 'reindex pass failed', error: String(error) }))
         }
       }
 

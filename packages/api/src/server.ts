@@ -384,6 +384,58 @@ export interface AuditQuery {
   readonly administrativeOnly?: boolean
 }
 
+/**
+ * Moving a layer onto a different embedding model.
+ *
+ * Two operations and no more: start one, and ask how it is going. There is no
+ * cancel, and that is a decision rather than an omission — a half-written
+ * shadow vector is harmless (nothing reads it until the switch) and a cancel
+ * that has to decide whether to unwind it is a second, more dangerous path.
+ * Starting a reindex back onto the current model is how you undo one.
+ */
+export interface Reindex {
+  /**
+   * `undefined` for a layer the caller may not administer **and** for one that
+   * does not exist — the usual rule. `conflict` when a reindex is already
+   * running: that is not a permission answer, and the caller has already proved
+   * they can administer the layer by the time it can happen.
+   */
+  start(
+    auth: AuthContext,
+    layerId: string,
+    providerId: string,
+  ): Promise<ReindexOutcome | undefined>
+  status(auth: AuthContext, layerId: string): Promise<ReindexStatus | undefined>
+}
+
+export type ReindexOutcome =
+  | { readonly kind: 'started'; readonly status: ReindexStatus }
+  | { readonly kind: 'conflict'; readonly status: ReindexStatus }
+  | { readonly kind: 'unknown_provider' }
+  /** The provider names the vector the layer already uses. */
+  | { readonly kind: 'already_current'; readonly vectorName: string }
+
+export interface ReindexStatus {
+  readonly layerId: string
+  readonly status: 'running' | 'complete' | 'failed'
+  /**
+   * `copying` while the organization's collection is being rebuilt with room
+   * for the new model — org-wide, no embeddings computed. `embedding` while
+   * this layer's chunks are being embedded into that room.
+   */
+  readonly phase: 'copying' | 'embedding'
+  readonly shadowVector: string
+  readonly currentVector: string
+  readonly providerId: string
+  readonly startedAt: string
+  readonly finishedAt: string | null
+  readonly total: number
+  readonly done: number
+  readonly failed: number
+  readonly progress: number
+  readonly error: string | null
+}
+
 export interface AuditReader {
   read(auth: AuthContext, query: AuditQuery, page: Page): Promise<PageResult<AuditRecord>>
 }
@@ -428,6 +480,8 @@ export interface ApiOptions {
    * which is the default and is right for an internal port — see the handler.
    */
   readonly metricsToken?: string
+  /** Layer reindex. Absent means the reindex paths answer 404. */
+  readonly reindex?: Reindex
   /** Reads the access log back. Absent means `/v1/audit` answers 404. */
   readonly auditReader?: AuditReader
   /** `Idempotency-Key` on unsafe methods. Absent means the header is ignored. */
@@ -568,6 +622,28 @@ async function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<u
   }
   if (chunks.length === 0) return undefined
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+}
+
+/** The wire shape of a reindex, snake case like every other response here. */
+function reindexJson(status: ReindexStatus): Record<string, unknown> {
+  return {
+    layer_id: status.layerId,
+    status: status.status,
+    phase: status.phase,
+    // Both names, because "which model is search using right now" and "which
+    // one is being built" are different questions and an operator watching a
+    // migration needs to see them move independently.
+    current_vector: status.currentVector,
+    shadow_vector: status.shadowVector,
+    provider_id: status.providerId,
+    started_at: status.startedAt,
+    finished_at: status.finishedAt,
+    total: status.total,
+    done: status.done,
+    failed: status.failed,
+    progress: status.progress,
+    error: status.error,
+  }
 }
 
 function send(
@@ -1571,6 +1647,107 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       }
 
       send(res, 204, null, requestId)
+      return
+    }
+
+    // `/v1/layers/{id}/reindex`
+    const reindexPath = /^\/v1\/layers\/([0-9a-f-]{36})\/reindex$/i.exec(instance)
+    if (reindexPath !== null) {
+      const layerId = reindexPath[1] as string
+
+      if (options.reindex === undefined || (req.method !== 'POST' && req.method !== 'GET')) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      if (req.method === 'GET') {
+        const status = await options.reindex.status(auth, layerId)
+        if (status === undefined) {
+          // No reindex, no such layer, and no permission are one answer. The
+          // first is not a permission fact and the other two must not be
+          // separable, so all three are 404 — see invariant 4.
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        send(res, 200, reindexJson(status), requestId)
+        return
+      }
+
+      const providerId = (body as { provider_id?: unknown } | undefined)?.provider_id
+      if (typeof providerId !== 'string' || !/^[0-9a-f-]{36}$/i.test(providerId)) {
+        const problem = badRequest(instance, requestId, "'provider_id' must be a uuid.")
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const outcome = await options.reindex.start(auth, layerId, providerId)
+      if (outcome === undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      if (outcome.kind === 'unknown_provider') {
+        // 400 and not 404: the caller has already proved they administer this
+        // layer, so this is a statement about their request rather than about
+        // what exists. A provider is installation-level configuration, not a
+        // tenant object with visibility rules of its own.
+        const problem = badRequest(
+          instance,
+          requestId,
+          'No embedding provider with that id is available to this organization.',
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      if (outcome.kind === 'already_current') {
+        const problem = badRequest(
+          instance,
+          requestId,
+          `This layer already uses ${outcome.vectorName}. Reindexing onto the model it ` +
+            'is on would rewrite every vector to the same values.',
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      if (outcome.kind === 'conflict') {
+        const problem = new Problem({
+          type: 'https://nacre.work/errors/conflict',
+          title: 'Conflict',
+          status: 409,
+          detail:
+            `A reindex onto ${outcome.status.shadowVector} is already running for this layer. ` +
+            'Wait for it, or let it fail — two at once would race to switch vector_name.',
+          instance,
+          requestId,
+        })
+        // The problem body and not the status object: a 409 is an error
+        // response and RFC 9457 says what shape one has. `GET` on this same
+        // path is where the state lives, and the detail above names what to
+        // wait for.
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      await options.audit?.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'layer.reindex',
+        result: 'allow',
+        surface: 'api',
+        target: { layer_id: layerId, shadow_vector: outcome.status.shadowVector },
+        detail: { provider_id: providerId, total: outcome.status.total },
+        requestId,
+      })
+
+      // 202: the work happens in the worker. docs/api.md says an operation that
+      // outlives its request answers 202 with somewhere to poll, which is this
+      // same path with GET.
+      send(res, 202, reindexJson(outcome.status), requestId)
       return
     }
 

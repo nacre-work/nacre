@@ -262,6 +262,24 @@ export function createMetrics(registry: Registry) {
       new Histogram('nacre_ingest_duration_seconds', 'Indexing latency, by stage'),
     ),
     documents: registry.register(new Gauge('nacre_documents_total', 'Documents, by organization and status')),
+    // Specified in docs/config.md and registered by nothing until there was a
+    // reindex to measure.
+    //
+    // One series per layer that has ever been reindexed, and no series for the
+    // rest — a layer nobody has migrated has no progress to report, and
+    // inventing a zero for it would mean every layer in the installation
+    // permanently reads "reindex started, gone nowhere".
+    //
+    // With no reindexes at all the registry still emits a bare
+    // `nacre_reindex_progress_ratio 0`, because an unlabelled gauge with no
+    // values renders that way here. That is the "nothing to report" marker
+    // rather than a layer at zero: a real layer always carries a `layer` label.
+    reindexProgress: registry.register(
+      new Gauge(
+        'nacre_reindex_progress_ratio',
+        'How far a layer is through a reindex, 0 to 1. Absent when no reindex has run; 0 means one started and has moved nothing',
+      ),
+    ),
     tombstonesPending: registry.register(
       new Gauge(
         'nacre_tombstones_pending_total',

@@ -25,6 +25,7 @@ import {
   PostgresGrants,
   PostgresJobs,
   PostgresLayers,
+  PostgresReindex,
 } from './adapters.js'
 import { Idempotency } from './idempotency.js'
 import { Login } from './login.js'
@@ -202,6 +203,7 @@ async function main(): Promise<void> {
     idempotency,
     login,
     auditReader: new PostgresAuditReader(pool, APP_ROLE),
+    reindex: new PostgresReindex(pool, vectors, APP_ROLE),
     documents: new PostgresDocuments(pool, APP_ROLE),
     search: new NacreSearchService({
       pool,

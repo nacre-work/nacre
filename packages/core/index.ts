@@ -15,6 +15,8 @@ export type { Labels, Metrics } from './metrics.js'
 export { collectDatabaseGauges } from './observability.js'
 export { Redis, RedisError } from './redis.js'
 export type { RedisOptions } from './redis.js'
+export { reindexProgress, toStateJson, fromStateJson } from './reindex.js'
+export type { ReindexState } from './reindex.js'
 export {
   hashingLoad,
   hashPassword,

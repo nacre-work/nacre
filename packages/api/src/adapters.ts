@@ -2,24 +2,31 @@ import {
   aclTags,
   buildFilter,
   effectivePrincipals,
+  fromStateJson,
   loadGrants,
   loadScopeTree,
   PostgresGroupGraph,
   referenceAllows,
+  reindexProgress,
   resolve,
+  toStateJson,
   VectorStore,
   vectorName,
   withOrg,
   type Hit,
+  type ReindexState,
 } from '@nacre.work/core'
 import { createHash } from 'node:crypto'
 
-import type { Pool } from 'pg'
+import type { Pool, PoolClient } from 'pg'
 
 import { encodeCursor, pageOf } from './pagination.js'
 import { applyRanking, type Reranker } from './rerank.js'
 
 import type {
+  Reindex,
+  ReindexOutcome,
+  ReindexStatus,
   AuditEvent,
   AuditQuery,
   AuditReader,
@@ -1335,4 +1342,273 @@ interface AuditRow {
   readonly result: string
   readonly detail: Record<string, unknown> | null
   readonly request_id: string | null
+}
+
+/**
+ * Starting a reindex, and reporting on one.
+ *
+ * The work is the worker's. This writes the intent — `layers.reindex_state` —
+ * counts what there is to do, and declares the new named vector on the
+ * collection.
+ *
+ * That last part belongs here and an earlier version of this comment said the
+ * opposite: that Qdrant creates a named vector when a point is first written
+ * with it, so the worker's first batch would bring it into existence. It does
+ * not. `updateVectors` against an undeclared name answers
+ * `Not existing vector name error`, and the reindex that assumed otherwise
+ * started cleanly, reported `running`, and failed every document forever with
+ * the progress gauge sitting at zero — which is step 1 of the sequence in
+ * docs/architecture.md being skipped, and the document has it first for a
+ * reason.
+ *
+ * Doing it here rather than in the worker also puts the failure where somebody
+ * is looking: an operator who cannot create the vector finds out from the
+ * response to their own request, not by watching a counter not move.
+ */
+export class PostgresReindex implements Reindex {
+  constructor(
+    private readonly pool: Pool,
+    private readonly vectors: { vectorsOf(collection: string): Promise<Record<string, number>> },
+    private readonly role?: string,
+  ) {}
+
+  private get scope(): { role?: string } {
+    return this.role === undefined ? {} : { role: this.role }
+  }
+
+  async start(
+    auth: AuthContext,
+    layerId: string,
+    providerId: string,
+  ): Promise<ReindexOutcome | undefined> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client): Promise<ReindexOutcome | undefined> => {
+        // Administering a layer, not reading it. A reindex rewrites every
+        // vector in the layer and changes which model answers every future
+        // query — `read` is nowhere near enough, and `write` is about putting
+        // documents in rather than about the layer itself.
+        const plan = resolve(await contextFor(client, auth), 'admin')
+        if (plan.kind === 'none') return undefined
+
+        // Locked for the whole decision. Two starts arriving together would
+        // both read "no reindex running" and both write a state, and the loser
+        // would leave a shadow vector nothing is filling.
+        const { rows: layers } = await client.query<{
+          id: string
+          vector_name: string
+          reindex_state: unknown
+        }>(
+          `SELECT id, vector_name, reindex_state FROM layers
+            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
+            FOR UPDATE`,
+          [auth.orgId, layerId],
+        )
+        const layer = layers[0]
+        if (layer === undefined) return undefined
+        if (plan.kind === 'scoped' && !plan.layers.includes(layer.id)) return undefined
+
+        const running = fromStateJson(layer.reindex_state)
+        if (running?.status === 'running') {
+          // The live remaining count, not zero. A caller who collides with a
+          // running reindex is asking "how far has it got" as much as "why was
+          // I refused", and the answer they get should be the same one `GET`
+          // gives — not a placeholder that reads as finished.
+          const remaining = await this.remaining(client, auth.orgId, layerId, running.shadowVector)
+          return {
+            kind: 'conflict',
+            status: this.statusOf(layerId, layer.vector_name, running, remaining),
+          }
+        }
+
+        // The provider may be the organization's own or the installation-wide
+        // default, which is the one row with a NULL org_id. Same rule the
+        // policy on that table encodes; repeated here because a caller naming
+        // another tenant's provider must get "no such provider" rather than a
+        // reindex onto a model they cannot reach.
+        const { rows: providers } = await client.query<{ model: string; dimensions: number }>(
+          `SELECT model, dimensions FROM embedding_providers
+            WHERE id = $1 AND (org_id = $2 OR org_id IS NULL)`,
+          [providerId, auth.orgId],
+        )
+        const provider = providers[0]
+        if (provider === undefined) return { kind: 'unknown_provider' }
+
+        const shadow = vectorName(provider.model, provider.dimensions)
+        if (shadow === layer.vector_name) {
+          return { kind: 'already_current', vectorName: shadow }
+        }
+
+        // Counted now, and it is a starting figure rather than a bound.
+        // Documents ingested during the reindex have no shadow vector either,
+        // so the same pass picks them up and `done` can pass `total` — which is
+        // why the progress ratio is clamped rather than trusted.
+        // Which half this layer starts in.
+        //
+        // A named vector cannot be added to a live Qdrant collection, so the
+        // slot has to already exist. If the organization's collection has it —
+        // because an earlier reindex made it — this layer goes straight to
+        // embedding. If not, the collection has to be rebuilt with room for it
+        // first, and that is org-wide work the worker does.
+        const { rows: orgs } = await client.query<{ vector_collection: string }>(
+          'SELECT vector_collection FROM organizations WHERE id = $1',
+          [auth.orgId],
+        )
+        const collection = orgs[0]?.vector_collection
+        if (collection === undefined) return undefined
+
+        const present = await this.vectors.vectorsOf(collection)
+        const width = present[shadow]
+        if (width !== undefined && width !== provider.dimensions) {
+          // Same name, different width. The name is derived from model and
+          // dimensions so this cannot come from the API — it means the vector
+          // was made by hand, and writing 768 values into a 1024-wide slot is
+          // the kind of failure that surfaces months later as bad recall.
+          return { kind: 'unknown_provider' }
+        }
+        const phase = width === undefined ? ('copying' as const) : ('embedding' as const)
+
+        // One copy at a time for an organization. Two layers starting reindexes
+        // onto two different models would otherwise each rebuild the
+        // collection, and the second would throw away the first's work along
+        // with the pointer that made it live.
+        if (phase === 'copying') {
+          const { rows: busy } = await client.query<{ n: string }>(
+            `SELECT count(*)::text AS n FROM layers
+              WHERE org_id = $1 AND deleted_at IS NULL
+                AND reindex_state ->> 'status' = 'running'
+                AND reindex_state ->> 'phase' = 'copying'`,
+            [auth.orgId],
+          )
+          if (Number(busy[0]?.n ?? 0) > 0) {
+            const other = fromStateJson(layer.reindex_state) ?? {
+              status: 'running' as const,
+              phase: 'copying' as const,
+              shadowVector: shadow,
+              providerId,
+              startedAt: new Date().toISOString(),
+              total: 0,
+              done: 0,
+              failed: 0,
+            }
+            return { kind: 'conflict', status: this.statusOf(layerId, layer.vector_name, other, 0) }
+          }
+        }
+
+        const total = await this.remaining(client, auth.orgId, layerId, shadow)
+
+        const state: ReindexState = {
+          status: 'running',
+          phase,
+          shadowVector: shadow,
+          providerId,
+          startedAt: new Date().toISOString(),
+          total,
+          done: 0,
+          failed: 0,
+        }
+
+        await client.query(
+          'UPDATE layers SET reindex_state = $3::jsonb WHERE org_id = $1 AND id = $2',
+          [auth.orgId, layerId, JSON.stringify(toStateJson(state))],
+        )
+
+        // `remaining = total`: nothing has been reindexed yet, so `done` is 0.
+        // Passing 0 here said `done: total, progress: 1` on the 202 — a reindex
+        // reporting itself finished in the same breath as starting.
+        return {
+          kind: 'started',
+          status: this.statusOf(layerId, layer.vector_name, state, total),
+        }
+      },
+      this.scope,
+    )
+  }
+
+  async status(auth: AuthContext, layerId: string): Promise<ReindexStatus | undefined> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client): Promise<ReindexStatus | undefined> => {
+        // `read` here, not `admin`. Knowing that the layer you can search is
+        // being migrated is not an administrative fact — it explains why a
+        // result set moved — and hiding it from someone who can already read
+        // the layer buys nothing.
+        const plan = resolve(await contextFor(client, auth), 'read')
+        if (plan.kind === 'none') return undefined
+
+        const { rows } = await client.query<{
+          id: string
+          vector_name: string
+          reindex_state: unknown
+        }>(
+          `SELECT id, vector_name, reindex_state FROM layers
+            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+          [auth.orgId, layerId],
+        )
+        const layer = rows[0]
+        if (layer === undefined) return undefined
+        if (plan.kind === 'scoped' && !plan.layers.includes(layer.id)) return undefined
+
+        const state = fromStateJson(layer.reindex_state)
+        if (state === undefined) return undefined
+
+        // The live remaining count rather than a stored `done`, because the
+        // worker never writes one — the number is derived, so there is nothing
+        // to go stale between batches.
+        const left = await this.remaining(client, auth.orgId, layerId, state.shadowVector)
+        return this.statusOf(layerId, layer.vector_name, state, left)
+      },
+      this.scope,
+    )
+  }
+
+  /**
+   * Live documents in the layer that do not yet carry this vector.
+   *
+   * The same predicate the worker's claim uses and the same one the switch is
+   * guarded by. Three places, one meaning — and if they ever disagree, the
+   * switch is the one that is right, because it is the only one inside the
+   * statement that performs it.
+   */
+  private async remaining(
+    client: PoolClient,
+    orgId: string,
+    layerId: string,
+    shadowVector: string,
+  ): Promise<number> {
+    const { rows } = await client.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM documents
+        WHERE org_id = $1 AND layer_id = $2 AND deleted_at IS NULL AND chunk_count > 0
+          AND reindexed_vector IS DISTINCT FROM $3`,
+      [orgId, layerId, shadowVector],
+    )
+    return Number(rows[0]?.n ?? 0)
+  }
+
+  private statusOf(
+    layerId: string,
+    currentVector: string,
+    state: ReindexState,
+    remaining: number,
+  ): ReindexStatus {
+    const done = state.status === 'complete' ? state.total : Math.max(0, state.total - remaining)
+    const live: ReindexState = { ...state, done }
+    return {
+      layerId,
+      status: state.status,
+      phase: state.phase,
+      shadowVector: state.shadowVector,
+      currentVector,
+      providerId: state.providerId,
+      startedAt: state.startedAt,
+      finishedAt: state.finishedAt ?? null,
+      total: state.total,
+      done,
+      failed: state.failed,
+      progress: reindexProgress(live),
+      error: state.error ?? null,
+    }
+  }
 }

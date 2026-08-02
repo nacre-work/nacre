@@ -7,6 +7,7 @@ import type { DocumentStore, Parser, ParsedDocument, StoredDocument, VectorWrite
 import type { StaleDocument } from './retag.js'
 import type { PurgeTarget } from './collect.js'
 import type { StrandedDocument } from './reap.js'
+import type { ReindexTarget } from './reindex.js'
 
 /**
  * The adapters behind the ingest ports.
@@ -264,6 +265,39 @@ export class QdrantVectorWriter implements VectorWriter {
       await this.sweep(input.orgSlug, input.documentId, input.points.map((p) => p.pointId))
     } catch (cause) {
       throw new Error(`sweep of ${collectionName(input.orgSlug)} rejected: ${explain(cause)}`, { cause })
+    }
+  }
+
+  /**
+   * Add a named vector to points that already exist.
+   *
+   * `updateVectors` and not `upsert`: this must not touch the payload and must
+   * not disturb the vector the layer is currently searching on. A reindex adds
+   * a second named vector to the same point, and the old one keeps answering
+   * every query until `vector_name` switches — which is the whole of "search
+   * stays available throughout".
+   *
+   * An upsert here would be the quiet version of the bug: it would rewrite the
+   * payload from whatever this call happened to know, which is nothing about
+   * acl tags, so a reindex would strip the permission tags off every point it
+   * touched.
+   */
+  async addVector(
+    orgSlug: string,
+    vectorName: string,
+    points: readonly { pointId: string; vector: readonly number[] }[],
+  ): Promise<void> {
+    if (points.length === 0) return
+    try {
+      await this.client.updateVectors(collectionName(orgSlug), {
+        wait: true,
+        points: points.map((p) => ({ id: p.pointId, vector: { [vectorName]: [...p.vector] } })),
+      } as never)
+    } catch (cause) {
+      throw new Error(
+        `adding ${vectorName} to ${collectionName(orgSlug)} rejected: ${explain(cause)}`,
+        { cause },
+      )
     }
   }
 
@@ -765,4 +799,254 @@ export async function pruneAuditEvents(
     )
     return Number(rows[0]?.pruned ?? 0)
   })
+}
+
+/**
+ * Documents in a reindexing layer that do not yet carry the shadow vector.
+ *
+ * Cross-tenant, under the worker's BYPASSRLS role, so `org_id` comes back and
+ * is named explicitly by everything downstream. Joined to `layers` rather than
+ * driven from it: the interesting set is documents, and a layer with nothing
+ * outstanding produces no rows rather than an empty batch to discard.
+ *
+ * Chunks come back in the same query. A reindex re-embeds stored text — it does
+ * not re-parse a source or re-chunk anything — so the text and the point ids
+ * are the whole input, and fetching them per document would be a query each.
+ */
+export async function claimReindexable(
+  pool: Pool,
+  limit: number,
+): Promise<readonly ReindexTarget[]> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{
+      org_id: string
+      slug: string
+      layer_id: string
+      document_id: string
+      shadow_vector: string
+      provider_id: string
+      chunks: { point_id: string; text: string }[]
+    }>(
+      `SELECT d.org_id, o.slug, d.layer_id, d.id AS document_id,
+              l.reindex_state ->> 'shadow_vector' AS shadow_vector,
+              l.reindex_state ->> 'provider_id'   AS provider_id,
+              (SELECT json_agg(json_build_object('point_id', c.point_id, 'text', c.text)
+                               ORDER BY c.ordinal)
+                 FROM chunks c WHERE c.document_id = d.id) AS chunks
+         FROM documents d
+         JOIN layers l        ON l.id = d.layer_id
+         JOIN organizations o ON o.id = d.org_id
+        WHERE l.reindex_state ->> 'status' = 'running'
+          AND l.deleted_at IS NULL
+          AND o.deleted_at IS NULL
+          AND d.deleted_at IS NULL
+          AND d.chunk_count > 0
+          AND d.reindexed_vector IS DISTINCT FROM (l.reindex_state ->> 'shadow_vector')
+        ORDER BY d.created_at
+        LIMIT $1`,
+      [limit],
+    )
+
+    return rows
+      .filter((r) => r.chunks !== null && r.chunks.length > 0)
+      .map((r) => ({
+        orgId: r.org_id,
+        orgSlug: r.slug,
+        layerId: r.layer_id,
+        documentId: r.document_id,
+        shadowVector: r.shadow_vector,
+        providerId: r.provider_id,
+        chunks: r.chunks.map((c) => ({ pointId: c.point_id, text: c.text })),
+      }))
+  })
+}
+
+/** Record that a document carries the shadow vector. */
+export async function markReindexed(
+  pool: Pool,
+  orgId: string,
+  documentId: string,
+  shadowVector: string,
+  role?: string,
+): Promise<void> {
+  await withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      await client.query(
+        'UPDATE documents SET reindexed_vector = $3 WHERE org_id = $1 AND id = $2',
+        [orgId, documentId, shadowVector],
+      )
+    },
+    role === undefined ? {} : { role },
+  )
+}
+
+/**
+ * Switch `vector_name` if the layer has nothing outstanding.
+ *
+ * One statement. The check and the write cannot be separated: asking first and
+ * switching second leaves a window in which a document is ingested, gets no
+ * shadow vector, and is then excluded from an index that has already become the
+ * live one — a hole in a layer that reports itself migrated.
+ *
+ * `NOT EXISTS` over the same predicate the claim uses. The two must agree, and
+ * they are three lines apart in this file for that reason.
+ */
+export async function finishReindexIfDone(
+  pool: Pool,
+  orgId: string,
+  layerId: string,
+  shadowVector: string,
+  role?: string,
+): Promise<boolean> {
+  return withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      const { rowCount } = await client.query(
+        `UPDATE layers l
+            SET vector_name = $3,
+                reindex_state = jsonb_set(
+                  jsonb_set(l.reindex_state, '{status}', '"complete"'),
+                  '{finished_at}', to_jsonb(now()::text))
+          WHERE l.org_id = $1 AND l.id = $2
+            AND l.reindex_state ->> 'status' = 'running'
+            AND l.reindex_state ->> 'shadow_vector' = $3
+            AND NOT EXISTS (
+              SELECT 1 FROM documents d
+               WHERE d.org_id = l.org_id AND d.layer_id = l.id
+                 AND d.deleted_at IS NULL AND d.chunk_count > 0
+                 AND d.reindexed_vector IS DISTINCT FROM $3
+            )`,
+        [orgId, layerId, shadowVector],
+      )
+      return (rowCount ?? 0) > 0
+    },
+    role === undefined ? {} : { role },
+  )
+}
+
+/** A layer waiting on the organization's collection being rebuilt. */
+export interface CopyTarget {
+  readonly orgId: string
+  readonly orgSlug: string
+  readonly layerId: string
+  readonly collection: string
+  readonly shadowVector: string
+  readonly providerId: string
+  readonly dimensions: number
+}
+
+/**
+ * Layers stuck in the copy phase.
+ *
+ * At most one per organization, because the API refuses a second start while
+ * one is copying — but the query says so rather than assuming it, since the
+ * cost of two workers rebuilding one collection is losing whichever finished
+ * first.
+ */
+export async function claimCopyable(pool: Pool, limit: number): Promise<readonly CopyTarget[]> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{
+      org_id: string
+      slug: string
+      collection: string
+      layer_id: string
+      shadow_vector: string
+      provider_id: string
+      dimensions: number
+    }>(
+      `SELECT DISTINCT ON (l.org_id)
+              l.org_id, o.slug, o.vector_collection AS collection, l.id AS layer_id,
+              l.reindex_state ->> 'shadow_vector' AS shadow_vector,
+              l.reindex_state ->> 'provider_id'   AS provider_id,
+              p.dimensions
+         FROM layers l
+         JOIN organizations o      ON o.id = l.org_id
+         JOIN embedding_providers p ON p.id = (l.reindex_state ->> 'provider_id')::uuid
+        WHERE l.reindex_state ->> 'status' = 'running'
+          AND l.reindex_state ->> 'phase'  = 'copying'
+          AND l.deleted_at IS NULL AND o.deleted_at IS NULL
+        ORDER BY l.org_id, l.id
+        LIMIT $1`,
+      [limit],
+    )
+
+    return rows.map((r) => ({
+      orgId: r.org_id,
+      orgSlug: r.slug,
+      layerId: r.layer_id,
+      collection: r.collection,
+      shadowVector: r.shadow_vector,
+      providerId: r.provider_id,
+      dimensions: Number(r.dimensions),
+    }))
+  })
+}
+
+/**
+ * Point the organization at the rebuilt collection, and move every layer of it
+ * out of the copy phase.
+ *
+ * One statement each, one transaction. The pointer and the phases have to move
+ * together: a pointer that moved without the phases leaves layers waiting for a
+ * copy that already happened, and phases that moved without the pointer send
+ * the embedding pass at a collection nothing is searching.
+ *
+ * `vector_collection` is what every search resolves through, so this line is
+ * the moment the migration becomes visible — and it is a pointer swap rather
+ * than a data change, which is why it is atomic and why rolling back is the
+ * same statement with the old name.
+ */
+export async function finishCopy(
+  pool: Pool,
+  orgId: string,
+  collection: string,
+  role?: string,
+): Promise<void> {
+  await withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      await client.query('UPDATE organizations SET vector_collection = $2 WHERE id = $1', [
+        orgId,
+        collection,
+      ])
+      await client.query(
+        `UPDATE layers
+            SET reindex_state = jsonb_set(reindex_state, '{phase}', '"embedding"')
+          WHERE org_id = $1
+            AND reindex_state ->> 'status' = 'running'
+            AND reindex_state ->> 'phase'  = 'copying'`,
+        [orgId],
+      )
+    },
+    role === undefined ? {} : { role },
+  )
+}
+
+/** Record that a copy could not be made, so the layer stops looking running. */
+export async function failReindex(
+  pool: Pool,
+  orgId: string,
+  layerId: string,
+  error: string,
+  role?: string,
+): Promise<void> {
+  await withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      await client.query(
+        `UPDATE layers
+            SET reindex_state = jsonb_set(
+                  jsonb_set(reindex_state, '{status}', '"failed"'),
+                  '{error}', to_jsonb($3::text))
+          WHERE org_id = $1 AND id = $2 AND reindex_state ->> 'status' = 'running'`,
+        [orgId, layerId, error.slice(0, 500)],
+      )
+    },
+    role === undefined ? {} : { role },
+  )
 }

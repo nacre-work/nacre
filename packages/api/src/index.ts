@@ -5,6 +5,9 @@ export type {
   AuditQuery,
   AuditReader,
   AuditRecord,
+  Reindex,
+  ReindexOutcome,
+  ReindexStatus,
   AuditSink,
   DocumentView,
   Documents,
@@ -38,6 +41,7 @@ export {
   PostgresGrants,
   PostgresJobs,
   PostgresLayers,
+  PostgresReindex,
 } from './adapters.js'
 export type { DocumentTombstone, Embedder, IngestDeps, SearchDeps } from './adapters.js'
 export { applyRanking, HttpReranker, rerankerFor } from './rerank.js'
