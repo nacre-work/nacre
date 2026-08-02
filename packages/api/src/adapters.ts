@@ -402,6 +402,23 @@ export class NacreSearchService implements SearchService {
 
     const byVector = new Map<string, { provider: EmbeddingProvider; layerIds: string[] }>()
     for (const layer of reachable) {
+      // `vector_name` and `provider_id` have to agree, because the first says
+      // which slot to search and the second says which model to embed the query
+      // with. They disagreed once already — a reindex switched the vector and
+      // left the provider behind — and the symptom was Qdrant refusing the
+      // whole query on a dimension mismatch, which takes every *other* layer in
+      // the organization down with it. Named here rather than left to arrive as
+      // `Bad Request`, and raised rather than skipped: dropping the layer from
+      // the branch set would answer a search with a silently smaller corpus.
+      const expected = vectorName(layer.model, layer.dimensions)
+      if (expected !== layer.vector_name) {
+        throw new Error(
+          `layer ${layer.id} names vector ${layer.vector_name} but its provider is ` +
+            `${layer.model}/${layer.dimensions}, which is ${expected}. A reindex left the two ` +
+            'out of step; the layer cannot be searched until they agree.',
+        )
+      }
+
       const group = byVector.get(layer.vector_name) ?? {
         provider: {
           id: layer.provider_id,

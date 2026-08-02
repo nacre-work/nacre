@@ -3,6 +3,20 @@ import { QdrantClient } from '@qdrant/js-client-rest'
 import { buildFilter, type Narrowing, type QueryablePlan } from '../authz/filter.js'
 import { buildHybridQuery, collectionConfig, collectionName, PAYLOAD_INDEXES, vectorParams, type Branch } from './query.js'
 
+/**
+ * What Qdrant actually said.
+ *
+ * The REST client throws `Error: Bad Request` with the reason in a `data`
+ * property nobody looks at, so an unhandled one reaches a log as four words
+ * that name no collection, no vector and no cause. Both times a query in this
+ * repository was malformed, the message alone was useless and the reason was
+ * one line inside `data`.
+ */
+export function explainQdrant(cause: unknown): string {
+  const data = (cause as { data?: unknown } | null)?.data
+  return data === undefined ? String(cause) : `${String(cause)} — ${JSON.stringify(data)}`
+}
+
 export interface VectorStoreOptions {
   readonly url: string
   readonly apiKey?: string
@@ -233,7 +247,18 @@ export class VectorStore {
       limit: request.topK,
     })
 
-    const result = await this.#client.query(request.collection, query as never)
+    let result
+    try {
+      result = await this.#client.query(request.collection, query as never)
+    } catch (cause) {
+      // Named, because the query has as many branches as the organization has
+      // models and "Bad Request" does not say which one Qdrant objected to.
+      throw new Error(
+        `query against ${request.collection} using ` +
+          `${query.prefetch.map((b) => b.using).join(', ')} rejected: ${explainQdrant(cause)}`,
+        { cause },
+      )
+    }
 
     return result.points.map((p) => ({
       id: String(p.id),

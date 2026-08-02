@@ -1,5 +1,5 @@
 import { QdrantClient } from '@qdrant/js-client-rest'
-import { acrossOrganizations, aclTags, loadGroupsVersion, withOrg } from '@nacre.work/core'
+import { acrossOrganizations, aclTags, explainQdrant as explain, loadGroupsVersion, withOrg } from '@nacre.work/core'
 import type { PrincipalRef } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
@@ -218,11 +218,6 @@ export class PostgresDocumentStore implements DocumentStore {
  * nothing about why — a wrong vector name, a payload type the index disagrees
  * with, and a malformed id all look identical.
  */
-function explain(cause: unknown): string {
-  const data = (cause as { data?: unknown } | null)?.data
-  return data === undefined ? String(cause) : `${String(cause)} — ${JSON.stringify(data)}`
-}
-
 /**
  * Whether Qdrant is saying the collection is not there.
  *
@@ -907,6 +902,18 @@ export async function finishReindexIfDone(
       const { rowCount } = await client.query(
         `UPDATE layers l
             SET vector_name = $3,
+                -- The provider moves with the vector, in the same statement.
+                --
+                -- Leaving it behind is the quiet half of a half-finished
+                -- migration: vector_name says the layer is on the new model
+                -- and provider_id still names the old one, so everything that
+                -- asks the layer *which model* — the query embedder on the
+                -- search path, the ingest embedder in the worker — keeps
+                -- answering with the model the layer just moved off. Search
+                -- then embeds a 1024-dim query against a 768-dim slot and
+                -- Qdrant refuses the whole query, taking every other layer in
+                -- the organization down with it.
+                provider_id = (l.reindex_state ->> 'provider_id')::uuid,
                 reindex_state = jsonb_set(
                   jsonb_set(l.reindex_state, '{status}', '"complete"'),
                   '{finished_at}', to_jsonb(now()::text))
@@ -1039,7 +1046,25 @@ export async function finishCopy(
                            jsonb_set(l.reindex_state, '{phase}', '"embedding"'),
                            '{status}', '"complete"'),
                          '{finished_at}', to_jsonb(now()::text))
-                  END
+                  END,
+                -- And the same switch finishReindexIfDone makes, for the same
+                -- reason, on the path that skips it: a layer with nothing to
+                -- re-embed is finished the moment the collection exists, and
+                -- the two columns have to move together or the layer names one
+                -- model and embeds with another. A no-op for a layer created
+                -- against the new provider, which is already on both.
+                vector_name = CASE WHEN EXISTS (
+                    SELECT 1 FROM documents d
+                     WHERE d.org_id = l.org_id AND d.layer_id = l.id
+                       AND d.deleted_at IS NULL AND d.chunk_count > 0
+                       AND d.reindexed_vector IS DISTINCT FROM (l.reindex_state ->> 'shadow_vector')
+                  ) THEN l.vector_name ELSE l.reindex_state ->> 'shadow_vector' END,
+                provider_id = CASE WHEN EXISTS (
+                    SELECT 1 FROM documents d
+                     WHERE d.org_id = l.org_id AND d.layer_id = l.id
+                       AND d.deleted_at IS NULL AND d.chunk_count > 0
+                       AND d.reindexed_vector IS DISTINCT FROM (l.reindex_state ->> 'shadow_vector')
+                  ) THEN l.provider_id ELSE (l.reindex_state ->> 'provider_id')::uuid END
           WHERE l.org_id = $1
             AND l.reindex_state ->> 'status' = 'running'
             AND l.reindex_state ->> 'phase'  = 'copying'`,

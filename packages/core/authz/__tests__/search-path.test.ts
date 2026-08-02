@@ -92,7 +92,8 @@ when('baseline · the search path', () => {
       )
       await c.query(
         `INSERT INTO layers (id, org_id, workspace_id, slug, name, provider_id, vector_name) VALUES
-           ($1,$4,$6,'open','Open',$8,'v'), ($2,$4,$6,'shut','Shut',$8,'v'), ($3,$5,$7,'bee','Bee',$8,'v')
+           ($1,$4,$6,'open','Open',$8,'v_m_4'), ($2,$4,$6,'shut','Shut',$8,'v_m_4'),
+           ($3,$5,$7,'bee','Bee',$8,'v_m_4')
          ON CONFLICT DO NOTHING`,
         [ids.openA, ids.shutA, ids.layerB, A, B, ids.wsA, ids.wsB, ids.provider],
       )
