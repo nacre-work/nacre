@@ -239,12 +239,24 @@ dropping the old *named vector* from a collection after a rollback window —
 which is a different job from dropping the collection, and the cheaper half is
 the one still missing.
 
-**Object storage is not wired, and `NACRE_S3_*` is not even validated** —
-`loadConfig` does not mention it, so a wrong endpoint or a missing credential is
-silent while the `full` Compose profile starts a MinIO nothing talks to.
-Document bytes live in `documents.source_ref`, which is why the backup chain is
-Postgres → Qdrant and not the three parts `docs/architecture.md` used to
-describe.
+**Object storage is wired.** `NACRE_S3_*` spent its whole life in
+`docs/config.md` and in the `full` Compose profile while `loadConfig` did not
+mention it, so a wrong endpoint or a missing credential was silent and MinIO sat
+there talking to nobody. Configured, ingest writes the bytes to the bucket
+*before* it writes the row — the reverse strands a document the worker fails on
+forever while the API answered `queued` — `source_type` becomes `s3`, the worker
+fetches from the bucket, and the collector removes the object when it purges the
+vectors. Unconfigured is still supported and is the default: bytes stay in
+`documents.source_ref`.
+
+The client is SigV4 by hand rather than `@aws-sdk/client-s3`: four operations
+against a container whose job is reading other people's documents, and every one
+of them verified against a real MinIO, because a signing bug is a `403` that
+names none of its six inputs. The configuration is validated as a group — all
+four of endpoint, bucket, access key and secret key, or none — since an endpoint
+with no credential parses and fails later. Writing that check is what turned up
+`NACRE_S3_ENDPOINT=minio:9000` being accepted by `new URL`, as the scheme
+`minio:` with an empty host.
 
 **`docker compose --profile minimal up` has now been run from a clean clone**,
 and the whole loop driven through it: init, layer, ingest, indexed, search,

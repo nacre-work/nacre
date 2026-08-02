@@ -9,6 +9,7 @@ import {
   protectedResourceMetadata,
   Redis,
   Registry,
+  S3,
   VectorStore,
   withOrg,
   ConfigError,
@@ -56,6 +57,11 @@ async function main(): Promise<void> {
       ? { url: config.qdrantUrl }
       : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
   )
+  // Absent when a deployment has none, which is supported and is the default:
+  // document bytes then live in `documents.source_ref`. `loadConfig` refuses a
+  // half-configured block, so this is either fully usable or not there at all.
+  const objects = config.s3 === undefined ? undefined : new S3(config.s3)
+
   const registry = new Registry()
   const metrics = createMetrics(registry)
   registry.collect(collectDatabaseGauges(pool, metrics, APP_ROLE))
@@ -121,23 +127,34 @@ async function main(): Promise<void> {
     role: APP_ROLE,
   })
 
-  // What this process cannot serve a request without. S3 is in the documented
-  // list and is not checked, because nothing in the tree reads it yet — a probe
-  // that reported on a dependency the code never uses would be reporting on
-  // nothing. The embedder is not checked either: it is an external endpoint an
-  // operator supplies, a search fails loudly without it, and making readiness
-  // depend on somebody else's uptime turns their outage into a rollout that
-  // never completes.
+  // What this process cannot serve a request without.
+  //
+  // S3 is checked now, and only when a deployment configured it: ingest writes
+  // document bytes there before it writes the row, so a bucket that is
+  // unreachable or a credential that is wrong is a surface that accepts nothing.
+  // A deployment without object storage reports no s3 key at all rather than a
+  // `true` that means "not asked" — those must not look the same.
+  //
+  // The embedder is still not checked: it is an external endpoint an operator
+  // supplies, a search fails loudly without it, and making readiness depend on
+  // somebody else's uptime turns their outage into a rollout that never
+  // completes.
   const ready = async (): Promise<Record<string, boolean>> => {
-    const [postgres, qdrant, redisUp] = await Promise.all([
+    const [postgres, qdrant, redisUp, s3Up] = await Promise.all([
       withOrg(pool, '00000000-0000-0000-0000-000000000000', async (c) => {
         await c.query('SELECT 1')
         return true
       }, { role: APP_ROLE }).catch(() => false),
       vectors.ready().catch(() => false),
       redis.ping().catch(() => false),
+      objects === undefined ? Promise.resolve(undefined) : objects.ready().catch(() => false),
     ])
-    return { postgres, qdrant, redis: redisUp }
+    return {
+      postgres,
+      qdrant,
+      redis: redisUp,
+      ...(s3Up === undefined ? {} : { s3: s3Up }),
+    }
   }
 
   const server = createApi({
@@ -192,7 +209,12 @@ async function main(): Promise<void> {
         )
       },
     }),
-    ingest: new NacreIngest({ pool, tombstone: vectors, role: APP_ROLE }),
+    ingest: new NacreIngest({
+      pool,
+      tombstone: vectors,
+      ...(objects === undefined ? {} : { objects }),
+      role: APP_ROLE,
+    }),
     audit: new PostgresAudit(pool, APP_ROLE),
     jobs: new PostgresJobs(pool, APP_ROLE),
     layers: new PostgresLayers(pool, vectors, APP_ROLE),

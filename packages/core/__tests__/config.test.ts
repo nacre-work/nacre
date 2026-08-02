@@ -209,6 +209,84 @@ describe('configuration', () => {
 const CURRENT = 'a'.repeat(40)
 const PREVIOUS = 'b'.repeat(40)
 
+describe('object storage', () => {
+  const S3 = {
+    NACRE_S3_ENDPOINT: 'http://minio:9000',
+    NACRE_S3_BUCKET: 'nacre',
+    NACRE_S3_ACCESS_KEY: 'key',
+    NACRE_S3_SECRET_KEY: 'secret',
+  }
+
+  it('is absent when nothing is set, which is a supported deployment', () => {
+    // Not a degraded mode. Document bytes then live in `documents.source_ref`,
+    // which is what every deployment did before object storage existed.
+    expect(loadConfig(COMPLETE).s3).toBeUndefined()
+  })
+
+  it('loads as a block when all four are set', () => {
+    expect(loadConfig({ ...COMPLETE, ...S3 }).s3).toEqual({
+      endpoint: 'http://minio:9000',
+      bucket: 'nacre',
+      region: 'us-east-1',
+      accessKey: 'key',
+      secretKey: 'secret',
+      forcePathStyle: true,
+    })
+  })
+
+  it('refuses half of it, naming both what is set and what is missing', () => {
+    // The failure this exists to prevent: an endpoint with no credential parses
+    // as six independent optionals and fails later, as an ingest that cannot
+    // store bytes, on a deployment whose configuration looked accepted.
+    const said = problems({ ...COMPLETE, NACRE_S3_ENDPOINT: S3.NACRE_S3_ENDPOINT }).join(' ')
+    expect(said).toContain('half configured')
+    expect(said).toContain('NACRE_S3_ENDPOINT')
+    expect(said).toContain('NACRE_S3_SECRET_KEY')
+  })
+
+  it('refuses a credential with no bucket just as firmly as a bucket with no credential', () => {
+    for (const missing of Object.keys(S3)) {
+      const env: Record<string, string | undefined> = { ...COMPLETE, ...S3 }
+      delete env[missing]
+      expect(problems(env).join(' ')).toContain('half configured')
+    }
+  })
+
+  it('treats an empty string as unset, not as configured-with-nothing', () => {
+    expect(loadConfig({ ...COMPLETE, NACRE_S3_ENDPOINT: '', NACRE_S3_BUCKET: '' }).s3).toBeUndefined()
+  })
+
+  it('refuses an endpoint that is not http or https', () => {
+    // `new URL('minio:9000')` parses — `minio:` is the scheme and `9000` the
+    // path, with an empty host — so "is it a URL" accepts the likeliest typo in
+    // this variable and every request afterwards goes nowhere.
+    expect(problems({ ...COMPLETE, ...S3, NACRE_S3_ENDPOINT: 'minio:9000' }).join(' ')).toContain(
+      'must be an http or https URL',
+    )
+    expect(problems({ ...COMPLETE, ...S3, NACRE_S3_ENDPOINT: 's3://nacre' }).join(' ')).toContain(
+      'must be an http or https URL',
+    )
+  })
+
+  it('still refuses something that is not a URL at all', () => {
+    expect(problems({ ...COMPLETE, ...S3, NACRE_S3_ENDPOINT: 'not a url' }).join(' ')).toContain(
+      'NACRE_S3_ENDPOINT is not a URL',
+    )
+  })
+
+  it('defaults the region and path style, and lets AWS turn path style off', () => {
+    const config = loadConfig({
+      ...COMPLETE,
+      ...S3,
+      NACRE_S3_ENDPOINT: 'https://s3.eu-west-1.amazonaws.com',
+      NACRE_S3_REGION: 'eu-west-1',
+      NACRE_S3_FORCE_PATH_STYLE: 'false',
+    })
+    expect(config.s3?.region).toBe('eu-west-1')
+    expect(config.s3?.forcePathStyle).toBe(false)
+  })
+})
+
 describe('signing keys', () => {
   it('carries no second key outside a rotation', () => {
     expect(loadJwtKeys({ NACRE_JWT_SECRET: CURRENT }).alsoAccept).toEqual([])

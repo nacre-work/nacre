@@ -23,9 +23,27 @@ export interface PurgeTarget {
   readonly documentId: string
   /** How long it has been tombstoned, for the log and the grace check. */
   readonly deletedAgeSeconds: number
+  /**
+   * The object holding this document's bytes, when they are not in Postgres.
+   *
+   * `undefined` for an inline or url document, which is every document on a
+   * deployment without object storage. Present means the bucket has a copy that
+   * outlives the row unless this sweep removes it — a tombstone that reclaims
+   * the vectors and leaves the bytes is a document that is gone from every
+   * answer and still on somebody's disk.
+   */
+  readonly objectKey?: string
 }
 
 export interface CollectPorts {
+  /**
+   * Remove a document's bytes from object storage. Absent is success — the
+   * sweep must be able to run twice over the same target.
+   *
+   * Never called for a deployment without object storage, because no target
+   * carries a key there.
+   */
+  removeObject(key: string): Promise<void>
   /** Documents tombstoned longer than the grace period, oldest first. */
   claim(limit: number, graceSeconds: number): Promise<readonly PurgeTarget[]>
   /** Remove every point of a document. Physical, not a payload flag. */
@@ -75,6 +93,12 @@ export async function collectOnce(
   for (const target of targets) {
     try {
       await ports.purge(target.collection, target.documentId)
+      // Between the points and the row, and only when there is one. Its own
+      // failure fails the whole target, which leaves the row unpurged and the
+      // next pass repeating all three — every one of them is idempotent, and
+      // an object left behind by a half-finished purge is the leak this step
+      // exists to prevent.
+      if (target.objectKey !== undefined) await ports.removeObject(target.objectKey)
       await ports.markPurged(target.orgId, target.documentId)
       purged++
     } catch (error) {

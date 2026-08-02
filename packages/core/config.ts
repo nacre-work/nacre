@@ -91,6 +91,26 @@ export interface Config {
   readonly auditQueryText: boolean
   /** The reindex rollback window: how long a superseded collection survives. */
   readonly collectionRetentionDays: number
+
+  /**
+   * Object storage, or `undefined` when a deployment has none.
+   *
+   * Absent is a supported configuration and not a degraded one: document bytes
+   * then live in `documents.source_ref`, which is what every deployment did
+   * before this existed. What is *not* supported is half of it — see the
+   * cross-field check, and the reason it is a check rather than a set of
+   * independent optionals.
+   */
+  readonly s3:
+    | {
+        readonly endpoint: string
+        readonly bucket: string
+        readonly region: string
+        readonly accessKey: string
+        readonly secretKey: string
+        readonly forcePathStyle: boolean
+      }
+    | undefined
 }
 
 /**
@@ -245,6 +265,81 @@ class Reader {
   }
 }
 
+/** The protocol, or an empty string when the value does not parse at all. */
+function safeProtocol(url: string): string {
+  try {
+    return new URL(url).protocol
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * The object-storage block, present only when a deployment configured one.
+ *
+ * Written as a group because it *is* one. Six independent optionals would
+ * accept an endpoint with no credential, or a credential with no bucket, and
+ * every one of those parses — the failure arrives later, as an ingest that
+ * cannot store bytes, on a deployment whose configuration looked accepted.
+ *
+ * `NACRE_S3_*` spent its whole life in `docs/config.md` and in the `full`
+ * Compose profile without `loadConfig` mentioning it once, so a wrong endpoint
+ * or a missing key was silent while MinIO sat there talking to nobody. That is
+ * the specific failure this shape exists to make impossible.
+ */
+function s3From(r: Reader, env: Env): Config['s3'] {
+  const keys = [
+    'NACRE_S3_ENDPOINT',
+    'NACRE_S3_BUCKET',
+    'NACRE_S3_ACCESS_KEY',
+    'NACRE_S3_SECRET_KEY',
+  ] as const
+
+  const present = keys.filter((k) => (env[k] ?? '').trim() !== '')
+  if (present.length === 0) return undefined
+
+  if (present.length < keys.length) {
+    const missing = keys.filter((k) => !present.includes(k))
+    r.problems.push(
+      `object storage is half configured: ${present.join(', ')} set, ` +
+        `${missing.join(', ')} missing. Set all four to store document bytes in ` +
+        'object storage, or none to keep them in Postgres. There is no partial ' +
+        'mode — the endpoint without the credential is a deployment that accepts ' +
+        'documents and cannot store them.',
+    )
+    return undefined
+  }
+
+  // `r.url` only asks whether `new URL` parses, and `minio:9000` does — it
+  // reads as the scheme `minio:` with the path `9000`, with an empty host. That
+  // would start, and then every request would be built against a URL with
+  // nowhere to send it. A missing `http://` is the likeliest thing to be wrong
+  // in this variable, so it is the one thing worth checking twice.
+  const endpoint = r.url('NACRE_S3_ENDPOINT')
+  if (endpoint !== '' && !/^https?:$/.test(safeProtocol(endpoint))) {
+    r.problems.push(
+      `NACRE_S3_ENDPOINT must be an http or https URL, and is ${JSON.stringify(endpoint)}. ` +
+        'A bare host and port parses as a URL — the host ends up empty and every ' +
+        'request goes nowhere.',
+    )
+  }
+
+  return {
+    endpoint,
+    bucket: r.required('NACRE_S3_BUCKET'),
+    // A default is fine here and nowhere else in this block: the region names
+    // no host and carries no credential, MinIO ignores it entirely, and it is
+    // signed into every request so it has to be *something*.
+    region: r.optional('NACRE_S3_REGION') ?? 'us-east-1',
+    accessKey: r.required('NACRE_S3_ACCESS_KEY'),
+    secretKey: r.required('NACRE_S3_SECRET_KEY'),
+    // True by default because the default deployment is self-hosted: MinIO, or
+    // an endpoint reached by a name that is not a wildcard DNS entry. AWS
+    // proper is the case that has to say so.
+    forcePathStyle: r.boolean('NACRE_S3_FORCE_PATH_STYLE', true),
+  }
+}
+
 export function loadConfig(env: Env = process.env): Config {
   const r = new Reader(env)
 
@@ -358,6 +453,11 @@ export function loadConfig(env: Env = process.env): Config {
     // most likely to be found wrong. Setting it high costs disk: each retained
     // collection is a full copy of the organization's vectors.
     collectionRetentionDays: r.number('NACRE_COLLECTION_RETENTION_DAYS', 7, { min: 1 }),
+
+    // All of it or none of it — see the cross-field check below. Read here so
+    // that a malformed endpoint is a startup problem like any other; whether
+    // the *set* is coherent is a question no per-variable check can answer.
+    s3: s3From(r, env),
   }
 
   // Cross-field checks. Each one is a combination that parses fine and is
