@@ -98,7 +98,16 @@ describe('the administrative surface', () => {
             : undefined,
       },
       layers: {
-        list: async () => [{ id: LAYER, slug: 'handbook', name: 'Handbook', workspaceId: WS_MINE }],
+        list: async () => [
+          {
+            id: LAYER,
+            slug: 'handbook',
+            name: 'Handbook',
+            workspaceId: WS_MINE,
+            description: 'How things are done here',
+            documentCount: 12,
+          },
+        ],
         // `denied` for "may not administer" and "no such workspace" alike;
         // `conflict` only once the caller has proved admin on the workspace.
         create: async (_a: AuthContext, input) =>
@@ -108,7 +117,14 @@ describe('the administrative surface', () => {
               ? { kind: 'conflict' as const }
               : {
                   kind: 'created' as const,
-                  layer: { id: LAYER, slug: input.slug, name: input.name, workspaceId: WS_MINE },
+                  layer: {
+                    id: LAYER,
+                    slug: input.slug,
+                    name: input.name,
+                    workspaceId: WS_MINE,
+                    description: '',
+                    documentCount: 0,
+                  },
                 },
       },
       serviceAccounts: {

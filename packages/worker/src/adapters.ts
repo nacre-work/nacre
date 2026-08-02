@@ -131,7 +131,13 @@ export class PostgresDocumentStore implements DocumentStore {
            VALUES ($1,$2,$3,'inline',$4,$5,$6,'indexed',$7, now())
            ON CONFLICT (layer_id, external_id) DO UPDATE SET
              content_hash = EXCLUDED.content_hash,
-             title        = EXCLUDED.title,
+             -- COALESCE, not EXCLUDED.title. The API stores the title the
+             -- caller sent; the parser derives one only for formats that carry
+             -- it, and returns null otherwise. Overwriting meant a document
+             -- ingested with a title lost it the moment the worker finished —
+             -- visible in every listing, and looking like the API had dropped
+             -- the field.
+             title        = COALESCE(EXCLUDED.title, documents.title),
              metadata     = EXCLUDED.metadata,
              status       = 'indexed',
              chunk_count  = EXCLUDED.chunk_count,

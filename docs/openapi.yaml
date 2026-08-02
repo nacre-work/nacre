@@ -38,16 +38,53 @@ components:
         include_content: { type: boolean, default: true }
     SearchHit:
       type: object
-      required: [chunk_id, doc_id, layer, score]
+      required: [chunk_id, doc_id, layer, score, text]
+      description: >
+        What a result carries, and deliberately not what the vector store holds.
+        The payload the index keeps — acl_tags, acl_version, org_id, layer_id —
+        never reaches a client. An acl tag is a hash over the grant set reaching
+        a document, so publishing it would let a caller group documents by which
+        permissions they share.
       properties:
         chunk_id:   { type: string, format: uuid }
         doc_id:     { type: string, format: uuid }
-        layer:      { type: string }
-        title:      { type: string }
+        layer:      { type: string, description: The layer slug }
+        title:      { type: [string, 'null'] }
         score:      { type: number }
         text:       { type: string }
-        source_url: { type: string, description: 'Presigned, TTL from NACRE_PRESIGN_TTL' }
-        metadata:   { type: object, additionalProperties: true }
+        source_url: { type: string, description: 'Presigned, TTL from NACRE_PRESIGN_TTL. Not implemented yet.' }
+        metadata:   { type: object, additionalProperties: true, description: Not implemented yet. }
+    Layer:
+      type: object
+      required: [id, slug, name, workspace_id, document_count]
+      properties:
+        id:             { type: string, format: uuid }
+        slug:           { type: string, description: Unique within the organization }
+        name:           { type: string }
+        workspace_id:   { type: string, format: uuid }
+        description:    { type: string }
+        document_count:
+          type: integer
+          description: >
+            Live documents in the layer. Not "documents this caller may read" —
+            layer-scoped grants are all the open core has, so anyone who can see
+            the layer reaches everything in it. Document-level grants are a
+            commercial module, and when they exist this has to be computed per
+            caller or dropped.
+    Document:
+      type: object
+      required: [document_id, layer, status, chunk_count, updated_at]
+      description: >
+        A document's metadata. Not its text — chunks are what search returns,
+        and a whole-document body here would be a second, unpaginated way to
+        read everything.
+      properties:
+        document_id: { type: string, format: uuid }
+        layer:       { type: string, description: The layer slug }
+        title:       { type: [string, 'null'] }
+        status:      { type: string, enum: [pending, parsing, indexing, indexed, failed] }
+        chunk_count: { type: integer }
+        updated_at:  { type: string, format: date-time }
     IngestRequest:
       type: object
       required: [layer]
@@ -151,9 +188,13 @@ paths:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     get:
-      summary: Fetch a document
+      summary: Fetch a document's metadata
       responses:
-        '200': { description: The document }
+        '200':
+          description: The document
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Document' }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
     delete:
       summary: Delete a document — a tombstone; it leaves results immediately
@@ -164,13 +205,24 @@ paths:
     get:
       summary: Accessible layers. Narrowed by the caller's read plan, not filtered afterwards.
       responses:
-        '200': { description: The list }
+        '200':
+          description: The list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Layer' } }
     post:
       summary: >
         Create a layer. Requires admin on the workspace. A caller without it
         gets 404, identical to a workspace that does not exist.
       responses:
-        '201': { description: Created }
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Layer' }
         '409':
           description: >
             The slug is already in use in this organization. Deliberately not a

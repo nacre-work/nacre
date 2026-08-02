@@ -30,7 +30,9 @@ import type {
   Jobs,
   Layer,
   LayerOutcome,
+  DocumentView,
   Layers,
+  SearchHit,
   SearchService,
 } from './server.js'
 import type { AuthContext } from './auth.js'
@@ -61,7 +63,7 @@ export class PostgresDocuments implements Documents {
    * would do for tenancy; only the third does anything about permissions
    * inside a tenant, and it is the one that was missing.
    */
-  async read(auth: AuthContext, documentId: string): Promise<{ id: string; title: string } | undefined> {
+  async read(auth: AuthContext, documentId: string): Promise<DocumentView | undefined> {
     const orgId = auth.orgId
     // A malformed id must not reach Postgres as a cast error — an error
     // distinguishable from "not found" is an oracle for the id format.
@@ -77,9 +79,19 @@ export class PostgresDocuments implements Documents {
         const plan = resolve(await contextFor(client, auth), 'read')
         if (plan.kind === 'none') return undefined
 
-        const { rows } = await client.query<{ id: string; title: string | null; layer_id: string }>(
-          `SELECT id, title, layer_id FROM documents
-            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+        const { rows } = await client.query<{
+          id: string
+          title: string | null
+          layer_id: string
+          layer: string
+          status: string
+          chunk_count: number
+          updated_at: Date
+        }>(
+          `SELECT d.id, d.title, d.layer_id, l.slug AS layer, d.status, d.chunk_count, d.updated_at
+             FROM documents d
+             JOIN layers l ON l.id = d.layer_id AND l.org_id = d.org_id
+            WHERE d.org_id = $1 AND d.id = $2 AND d.deleted_at IS NULL`,
           [orgId, documentId],
         )
         const row = rows[0]
@@ -95,7 +107,14 @@ export class PostgresDocuments implements Documents {
           if (!reachable) return undefined
         }
 
-        return { id: row.id, title: row.title ?? '' }
+        return {
+          document_id: row.id,
+          layer: row.layer,
+          title: row.title,
+          status: row.status,
+          chunk_count: Number(row.chunk_count),
+          updated_at: row.updated_at.toISOString(),
+        }
       },
       this.role === undefined ? {} : { role: this.role },
     )
@@ -115,7 +134,7 @@ export interface SearchDeps {
 export class NacreSearchService implements SearchService {
   constructor(private readonly deps: SearchDeps) {}
 
-  async search(auth: AuthContext, query: string, topK: number): Promise<readonly Hit[]> {
+  async search(auth: AuthContext, query: string, topK: number): Promise<readonly SearchHit[]> {
     const slug = await this.deps.orgSlug(auth.orgId)
     if (slug === undefined) {
       // The token names an organization that is not there. Rule I3: a
@@ -161,7 +180,83 @@ export class NacreSearchService implements SearchService {
 
     // Invariant I1, checked again on the way out. Raises rather than filtering:
     // silently dropping the row would hide the bug that produced it.
-    return VectorStore.assertTenant(auth.orgId, hits)
+    const checked = VectorStore.assertTenant(auth.orgId, hits)
+    if (checked.length === 0) return []
+
+    return this.hydrate(auth.orgId, checked)
+  }
+
+  /**
+   * Turn hits into results a caller can read.
+   *
+   * The vector store holds no text — chunks live in Postgres, and the payload
+   * carries only what the filter needs. Returning the payload as the result,
+   * which is what happened before this existed, gave a caller identifiers and a
+   * score and nothing to show a user, and shipped `acl_tags` and `acl_version`
+   * along with it.
+   *
+   * This is a join and not a filter. The permitted set was decided inside the
+   * index traversal and is not narrowed here — with one exception, stated
+   * rather than left implicit: a chunk whose document has since been tombstoned
+   * in Postgres has no row to join to and does not appear. That is invariant I5
+   * enforced a second time on a different store, the same way row-level
+   * security backs up invariant I1, and it can only ever remove a document that
+   * is already meant to be gone.
+   *
+   * The order the index returned is kept. Postgres has no reason to preserve
+   * it, and re-sorting by anything else here would be a reranking step nobody
+   * asked for.
+   */
+  private async hydrate(orgId: string, hits: readonly Hit[]): Promise<readonly SearchHit[]> {
+    const chunkIds = hits.map((h) => String(h.payload.chunk_id ?? h.id))
+
+    const rows = await withOrg(
+      this.deps.pool,
+      orgId,
+      async (client) => {
+        const { rows } = await client.query<{
+          chunk_id: string
+          doc_id: string
+          layer: string
+          title: string | null
+          text: string
+        }>(
+          // point_id, not chunks.id. The payload's `chunk_id` is the vector
+          // store's point identifier — `chunks` keeps both, and they are
+          // different values. Joining on the wrong one matches nothing and
+          // returns an empty result set, which looks exactly like a permission
+          // working correctly.
+          `SELECT c.point_id AS chunk_id, c.document_id AS doc_id, l.slug AS layer, d.title, c.text
+             FROM chunks c
+             JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id
+             JOIN layers    l ON l.id = d.layer_id    AND l.org_id = d.org_id
+            WHERE c.org_id = $1
+              AND c.point_id = ANY($2::uuid[])
+              AND d.deleted_at IS NULL
+              AND l.deleted_at IS NULL`,
+          [orgId, chunkIds],
+        )
+        return rows
+      },
+      this.deps.role === undefined ? {} : { role: this.deps.role },
+    )
+
+    const byId = new Map(rows.map((r) => [r.chunk_id, r]))
+
+    return hits
+      .map((hit) => {
+        const row = byId.get(String(hit.payload.chunk_id ?? hit.id))
+        if (row === undefined) return undefined
+        return {
+          chunk_id: row.chunk_id,
+          doc_id: row.doc_id,
+          layer: row.layer,
+          title: row.title,
+          score: hit.score,
+          text: row.text,
+        }
+      })
+      .filter((r): r is SearchHit => r !== undefined)
   }
 
   /** Exposed so the filter can be inspected in tests without a vector store. */
@@ -546,6 +641,15 @@ async function contextFor(
   return { orgId: auth.orgId, role: auth.role, principals, grants, tree }
 }
 
+interface LayerRow {
+  id: string
+  slug: string
+  name: string
+  workspace_id: string
+  description: string | null
+  document_count: string
+}
+
 export class PostgresLayers implements Layers {
   constructor(
     private readonly pool: Pool,
@@ -572,17 +676,32 @@ export class PostgresLayers implements Layers {
         const plan = resolve(await contextFor(client, auth), 'read')
         if (plan.kind === 'none') return []
 
+        // The count comes from the same statement. It is what a catalog is
+        // for — an agent choosing where to search, or a person deciding
+        // whether a layer is worth opening — and the MCP catalog has always
+        // carried it, so a REST client had to be told to use MCP for that.
+        //
+        // It counts live documents in the layer, not documents this caller may
+        // read: layer-scoped grants are all this build has, so anyone who can
+        // see the layer can read everything in it. The moment document-level
+        // grants exist — a commercial module — this becomes a number that
+        // discloses more than the caller can reach, and it has to be recomputed
+        // per caller or dropped.
+        const projection = `l.id, l.slug, l.name, l.workspace_id, l.description,
+              (SELECT count(*) FROM documents d
+                WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS document_count`
+
         const { rows } =
           plan.kind === 'all'
-            ? await client.query<{ id: string; slug: string; name: string; workspace_id: string }>(
-                `SELECT id, slug, name, workspace_id FROM layers
-                  WHERE org_id = $1 AND deleted_at IS NULL ORDER BY slug`,
+            ? await client.query<LayerRow>(
+                `SELECT ${projection} FROM layers l
+                  WHERE l.org_id = $1 AND l.deleted_at IS NULL ORDER BY l.slug`,
                 [auth.orgId],
               )
-            : await client.query<{ id: string; slug: string; name: string; workspace_id: string }>(
-                `SELECT id, slug, name, workspace_id FROM layers
-                  WHERE org_id = $1 AND deleted_at IS NULL AND id = ANY($2::uuid[])
-                  ORDER BY slug`,
+            : await client.query<LayerRow>(
+                `SELECT ${projection} FROM layers l
+                  WHERE l.org_id = $1 AND l.deleted_at IS NULL AND l.id = ANY($2::uuid[])
+                  ORDER BY l.slug`,
                 [auth.orgId, [...plan.layers]],
               )
 
@@ -591,6 +710,8 @@ export class PostgresLayers implements Layers {
           slug: r.slug,
           name: r.name,
           workspaceId: r.workspace_id,
+          description: r.description ?? '',
+          documentCount: Number(r.document_count),
         }))
       },
       this.scope,
@@ -652,11 +773,12 @@ export class PostgresLayers implements Layers {
           slug: string
           name: string
           workspace_id: string
+          description: string | null
         }>(
           `INSERT INTO layers (org_id, workspace_id, slug, name, provider_id, vector_name)
            VALUES ($1,$2,$3,$4,$5,$6)
            ON CONFLICT DO NOTHING
-           RETURNING id, slug, name, workspace_id`,
+           RETURNING id, slug, name, workspace_id, description`,
           [auth.orgId, input.workspaceId, input.slug, input.name, provider.id, vector],
         )
 
@@ -668,7 +790,15 @@ export class PostgresLayers implements Layers {
 
         return {
           kind: 'created',
-          layer: { id: row.id, slug: row.slug, name: row.name, workspaceId: row.workspace_id },
+          layer: {
+            id: row.id,
+            slug: row.slug,
+            name: row.name,
+            workspaceId: row.workspace_id,
+            description: row.description ?? '',
+            // Just created, so this is a fact rather than a query.
+            documentCount: 0,
+          },
         }
       },
       this.scope,

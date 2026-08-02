@@ -33,11 +33,56 @@ export interface Documents {
    * organization to anyone holding any token for it — including a caller whose
    * grant had been revoked, and a service account with `write` and no `read`.
    */
-  read(auth: AuthContext, documentId: string): Promise<{ id: string; title: string } | undefined>
+  read(auth: AuthContext, documentId: string): Promise<DocumentView | undefined>
+}
+
+/**
+ * A document, as a caller sees it.
+ *
+ * It was `{ id, title }`, which is not enough to do anything with: no layer, no
+ * status, no size. A client that got a `202` from ingest and then wanted to
+ * know whether the document had indexed had to go to `/v1/jobs/{id}` and knew
+ * to only because the two ids happen to be the same value.
+ *
+ * Nothing here is permission data — the caller has already been resolved
+ * against this document, so every field describes something they may see. The
+ * text is not included: chunks are what search returns, and a whole-document
+ * body on this endpoint would be a second, unpaginated way to read everything.
+ */
+export interface DocumentView {
+  readonly document_id: string
+  readonly layer: string
+  readonly title: string | null
+  readonly status: string
+  readonly chunk_count: number
+  readonly updated_at: string
+}
+
+/**
+ * One result, as the contract describes it.
+ *
+ * Not the vector store's hit. That carried the raw payload — `acl_tags`,
+ * `acl_version`, `org_id`, `layer_id` — straight to the client, and carried no
+ * text at all, so the product's central operation answered with identifiers and
+ * a score and nothing a caller could read. `docs/openapi.yaml` had said
+ * otherwise since before there was a server.
+ *
+ * The tags are the part worth naming: an acl tag is a hash over the grant set
+ * reaching a document, so publishing it lets a client group documents by which
+ * permissions they share. Not a cross-tenant leak, and still the shape of the
+ * organization's access structure handed to anyone who can search.
+ */
+export interface SearchHit {
+  readonly chunk_id: string
+  readonly doc_id: string
+  readonly layer: string
+  readonly title: string | null
+  readonly score: number
+  readonly text: string
 }
 
 export interface SearchService {
-  search(auth: AuthContext, query: string, topK: number): Promise<readonly unknown[]>
+  search(auth: AuthContext, query: string, topK: number): Promise<readonly SearchHit[]>
 }
 
 export interface IngestRequest {
@@ -91,6 +136,17 @@ export interface Layer {
   readonly slug: string
   readonly name: string
   readonly workspaceId: string
+  readonly description: string
+  /**
+   * Live documents in the layer.
+   *
+   * Not "documents this caller may read": layer-scoped grants are all this
+   * build has, so anyone who can see the layer reaches everything in it. When
+   * document-level grants exist this stops being true, and the number has to be
+   * computed per caller or removed — a count is a small disclosure and still a
+   * disclosure.
+   */
+  readonly documentCount: number
 }
 
 /**
@@ -554,6 +610,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             slug: l.slug,
             name: l.name,
             workspace_id: l.workspaceId,
+            description: l.description,
+            document_count: l.documentCount,
           })),
         },
         requestId,
@@ -613,7 +671,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       send(
         res,
         201,
-        { id: created.id, slug: created.slug, name: created.name, workspace_id: created.workspaceId },
+        {
+          id: created.id,
+          slug: created.slug,
+          name: created.name,
+          workspace_id: created.workspaceId,
+          description: created.description,
+          document_count: created.documentCount,
+        },
         requestId,
       )
       return
