@@ -18,6 +18,17 @@
 export interface Config {
   readonly env: 'development' | 'production'
   readonly canonicalUrl: string
+  /**
+   * The identity provider in front of this installation, if there is one.
+   *
+   * Optional and empty by default, because a self-hosted Nacre usually has no
+   * OAuth authorization server at all: sign-in is email and password, and an
+   * agent presents a service account key. Named here only so the RFC 9728
+   * discovery document can point a client at the right place when a deployment
+   * *does* have one — see packages/core/oauth.ts for why pointing it at
+   * ourselves would be worse than leaving it out.
+   */
+  readonly oauthAuthorizationServer: string
   readonly logLevel: string
   readonly logFormat: 'json' | 'text'
 
@@ -238,6 +249,7 @@ export function loadConfig(env: Env = process.env): Config {
   const config: Config = {
     env: r.oneOf('NACRE_ENV', ['development', 'production'] as const, 'development'),
     canonicalUrl: r.url('NACRE_CANONICAL_URL'),
+    oauthAuthorizationServer: r.url('NACRE_OAUTH_AUTHORIZATION_SERVER', { required: false }),
     logLevel: r.oneOf('NACRE_LOG_LEVEL', ['debug', 'info', 'warn', 'error'] as const, 'info'),
     logFormat: r.oneOf('NACRE_LOG_FORMAT', ['json', 'text'] as const, 'json'),
 

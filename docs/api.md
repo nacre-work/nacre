@@ -17,6 +17,7 @@ GET    /v1/grants        POST /v1/grants        DELETE /v1/grants/{id}
 GET    /v1/service-accounts  POST  /v1/service-accounts  DELETE /v1/service-accounts/{id}
 GET    /v1/jobs/{id}
 GET    /v1/health        GET /v1/ready           GET /metrics
+GET    /.well-known/oauth-protected-resource        RFC 9728, unauthenticated
 POST   /v1/auth/login    /v1/auth/refresh        /v1/auth/logout
 ```
 

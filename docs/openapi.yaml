@@ -539,6 +539,53 @@ paths:
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '204': { description: Deleted }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /.well-known/oauth-protected-resource:
+    get:
+      summary: >
+        Protected resource metadata (RFC 9728). Unauthenticated, because it is
+        what a client reads before it has a credential.
+      security: []
+      responses:
+        '200':
+          description: >
+            The resource identifier every token is audience-bound to, and the
+            authorization server when the deployment has one.
+
+            `authorization_servers` is absent unless
+            `NACRE_OAUTH_AUTHORIZATION_SERVER` names one, and is deliberately
+            never pointed at Nacre itself: this is a resource server. Sign-in is
+            email and password and a service account key is a random string
+            matched against a hash — neither is an OAuth grant, so a client sent
+            here for a token endpoint would find nothing.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [resource, bearer_methods_supported, resource_documentation, scopes_supported]
+                properties:
+                  resource: { type: string, format: uri, description: 'No trailing slash; it is an audience value.' }
+                  authorization_servers: { type: array, items: { type: string, format: uri } }
+                  bearer_methods_supported:
+                    type: array
+                    items: { type: string }
+                    description: '`header` only. A token in a query string reaches access logs and browser history.'
+                  resource_documentation: { type: string, format: uri }
+                  scopes_supported:
+                    type: array
+                    items: { type: string }
+                    description: >
+                      Empty. Nacre does not scope tokens — a token carries an
+                      organization and a role, and permission on a document is
+                      computed per call against the grant graph.
+        '404':
+          description: >
+            The surface was built without the document. Not reachable in a
+            deployment — both entry points supply it from configuration that is
+            required at startup — and listed because a caller cannot tell that
+            from the outside, and a client following `WWW-Authenticate` needs to
+            know this answer is possible rather than treating it as a transport
+            fault.
+
   /layers:
     get:
       summary: Accessible layers. Narrowed by the caller's read plan, not filtered afterwards.

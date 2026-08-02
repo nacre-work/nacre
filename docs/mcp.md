@@ -24,7 +24,13 @@ The MCP server is a **resource server**, not an authorization server.
 
 - OAuth 2.1, PKCE S256, audience-bound tokens, validated locally.
 - `WWW-Authenticate` on every 401, pointing at
-  `/.well-known/oauth-protected-resource` (RFC 9728).
+  `/.well-known/oauth-protected-resource` (RFC 9728) — **which is served**, by
+  both this transport and the API, from one document built once. It names the
+  canonical resource identifier and, when a deployment configures one,
+  `authorization_servers`. That field is absent by default and is deliberately
+  not pointed at Nacre: this is a resource server, and sending a client here
+  for a token endpoint would be the same dead end as not serving the document
+  at all.
 - Client registration is **CIMD**. DCR is kept as a legacy branch behind a flag.
 - `iss` validation (RFC 9207) on the client side; `resource=` on every token
   request, including refresh.

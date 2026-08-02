@@ -7,6 +7,7 @@ import { SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { parseFilters } from '../../metadata.js'
+import { protectedResourceMetadata, PROTECTED_RESOURCE_PATH } from '../../oauth.js'
 
 /**
  * The MCP surface.
@@ -97,6 +98,7 @@ describe('baseline · the MCP surface', () => {
     server = createMcpServer({
       verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE, serviceKeys },
       resourceMetadataUrl: METADATA,
+      resourceMetadata: protectedResourceMetadata({ canonicalUrl: 'https://api.example.test' }),
       layers: { forCaller: async (auth: AuthContext) => LAYERS[auth.orgId] ?? [] },
       tools: {
         call: async (name, args) => {
@@ -274,6 +276,32 @@ describe('baseline · the MCP surface', () => {
     expect(res.status).toBe(401)
     // RFC 9728. Without this the client has nowhere to start.
     expect(res.headers.get('www-authenticate')).toContain(METADATA)
+  })
+
+  it('and the path it points at is served, unauthenticated', async () => {
+    // The header named this path for as long as it existed and nothing served
+    // it, so a client doing exactly what it was told got a 404 — the same
+    // failure as a parameter read by nothing, one hop further out.
+    //
+    // Unauthenticated by definition: it is what a client reads *because* it has
+    // no credential yet.
+    const res = await fetch(`${base}${PROTECTED_RESOURCE_PATH}`)
+    expect(res.status).toBe(200)
+
+    const body = (await res.json()) as {
+      resource: string
+      bearer_methods_supported: string[]
+      authorization_servers?: string[]
+    }
+    // The audience value every token is bound to, without a trailing slash —
+    // two strings that differ by one character are two different audiences to
+    // every check ever written.
+    expect(body.resource).toBe('https://api.example.test')
+    expect(body.bearer_methods_supported).toEqual(['header'])
+    // Absent, because this fixture configures no identity provider. Pointing
+    // the field at ourselves would be the same lie the 404 was, one redirect
+    // further along: we issue no OAuth token.
+    expect(body.authorization_servers).toBeUndefined()
   })
 
   it('there is no session to establish', async () => {

@@ -49,6 +49,7 @@ NACRE_JWT_ISSUER=https://api.nacre.work   # must match NACRE_CANONICAL_URL in pr
 NACRE_JWT_AUDIENCE=nacre
 NACRE_ACCESS_TOKEN_TTL=900
 NACRE_REFRESH_TOKEN_TTL=2592000
+NACRE_OAUTH_AUTHORIZATION_SERVER=      # optional; the IdP in front of this installation
 NACRE_OAUTH_CIMD_ENABLED=true
 NACRE_OAUTH_DCR_ENABLED=false          # legacy; enable deliberately or not at all
 NACRE_EMA_ENABLED=false                # ID-JAG, commercial module
@@ -152,8 +153,29 @@ should know that setting one changes nothing today:
 | `NACRE_AUDIT_QUERY_TEXT` | query text is never written, with or without it |
 | `NACRE_ACL_CACHE_TTL` | the resolver cache is written and not wired in, so every search recomputes the group closure. Safe — it errs towards recomputing — and slower than it should be |
 | `NACRE_S3_*`, `NACRE_PRESIGN_TTL` | object storage is not wired; document bodies live in Postgres |
-| `NACRE_OAUTH_*`, `NACRE_EMA_*` | OAuth discovery, DCR and EMA are not built |
+| `NACRE_OAUTH_CIMD_ENABLED`, `NACRE_OAUTH_DCR_ENABLED`, `NACRE_EMA_*` | client registration and EMA are not built |
 | `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
+
+### Discovery
+
+`GET /.well-known/oauth-protected-resource` is served by both the API and the
+MCP transport, unauthenticated, because it is what a client reads *before* it
+has a credential. It is the path every `401` from the MCP transport names in
+`WWW-Authenticate`, and for as long as that header existed nothing served it —
+a client doing exactly what it was told got a `404`.
+
+The document names the canonical resource identifier, which is the audience
+value every token is bound to, and `NACRE_OAUTH_AUTHORIZATION_SERVER` when a
+deployment has an identity provider in front of it. **Absent by default, and
+deliberately not pointed at ourselves**: Nacre is a resource server, not an
+authorization server — sign-in is email and password, a service account key is
+a random string matched against a hash, and neither is an OAuth grant. A client
+sent to us for a token endpoint would find nothing, which is the original 404
+one redirect further along.
+
+Both processes serve the same object, built once. Two builders would drift, and
+a client that read one and authenticated against the other would be
+audience-bound to a string neither agreed on.
 
 ### The limits apply to MCP too
 
@@ -434,5 +456,12 @@ investigation resolve against the same identifier.
 
 ## Backups
 
-See [architecture.md](./architecture.md#backups). The ordering matters:
-vectors are rebuilt from Postgres and S3, never the other way round.
+See [architecture.md](./architecture.md#backups). The ordering matters: vectors
+are rebuilt **from Postgres**, never the other way round — the payload of a
+point carries identifiers and flags and not one line of text, so a Qdrant backup
+saves recomputing embeddings and never substitutes for a Postgres one.
+
+S3 is not in that chain today. `NACRE_S3_*` is validated at startup and read by
+nothing, and document bytes live in `documents.source_ref`, which is what makes
+the Postgres backup larger than it looks and means there is no separate object
+store to restore.

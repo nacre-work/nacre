@@ -4,7 +4,15 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 // DOM, so the global URL is not typed here.
 import { URL } from 'node:url'
 
-import { MetadataError, parseFilters, parseMetadata, TooBusy, type Metadata } from '@nacre.work/core'
+import {
+  MetadataError,
+  parseFilters,
+  parseMetadata,
+  PROTECTED_RESOURCE_PATH,
+  TooBusy,
+  type Metadata,
+  type ProtectedResourceMetadata,
+} from '@nacre.work/core'
 
 import { authenticate, rejectTenantOverride, type AuthContext, type VerifyOptions } from './auth.js'
 import { badRequest, internal, notFound, Problem } from './errors.js'
@@ -502,6 +510,15 @@ export interface ApiOptions {
    * which is the default and is right for an internal port — see the handler.
    */
   readonly metricsToken?: string
+  /**
+   * The RFC 9728 document served at `/.well-known/oauth-protected-resource`.
+   *
+   * Passed in rather than built here so the API and the MCP transport serve
+   * byte-identical bytes: two builders would drift, and a client that read one
+   * and authenticated against the other would be audience-bound to a string
+   * neither agreed on.
+   */
+  readonly resourceMetadata?: ProtectedResourceMetadata
   /** Layer reindex. Absent means the reindex paths answer 404. */
   readonly reindex?: Reindex
   /** Reads the access log back. Absent means `/v1/audit` answers 404. */
@@ -1055,6 +1072,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     const body = await options.metrics.render()
     res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' })
     res.end(body)
+    return
+  }
+
+  if (req.method === 'GET' && instance === PROTECTED_RESOURCE_PATH) {
+    // RFC 9728 discovery, and unauthenticated by definition: it is what a
+    // client reads *because* it has no credential yet. Every 401 from the MCP
+    // transport names this path in `WWW-Authenticate`, and nothing served it —
+    // so a client doing exactly what the header told it to got a 404.
+    //
+    // Absent means the deployment did not configure a canonical URL, which
+    // cannot happen: it is required at startup.
+    if (options.resourceMetadata === undefined) {
+      const problem = notFound(instance, requestId)
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+    send(res, 200, options.resourceMetadata as unknown as Record<string, unknown>, requestId)
     return
   }
 
