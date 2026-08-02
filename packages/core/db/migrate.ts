@@ -75,6 +75,77 @@ export interface MigrateResult {
 }
 
 /**
+ * Just enough of `Client` to ask what the connected role may do — so the check
+ * below can be exercised without a database for its branches, having been
+ * verified against a real one for its premise.
+ */
+export interface RoleReader {
+  query<T>(sql: string): Promise<{ rows: T[] }>
+}
+
+/**
+ * Refuse, before applying anything, if the connected role cannot finish.
+ *
+ * Every tenant table has `FORCE ROW LEVEL SECURITY`, and `FORCE` is what makes
+ * the policy apply to the table's **owner** as well. Migrations run as the
+ * owner and several of them read a tenant table — 0006 checks for duplicate
+ * layer slugs, 0007 backfills a lease column, 0017 rewrites a role, 0018
+ * dedupes group members. Each of those evaluates
+ * `current_setting('app.current_org')`, which is unset during a migration, so
+ * the statement fails with:
+ *
+ *     ERROR: unrecognized configuration parameter "app.current_org"
+ *
+ * That message names nothing an operator can act on. It says nothing about
+ * roles, nothing about row-level security, and it arrives at migration 0006
+ * rather than at the start — five migrations of schema already applied.
+ *
+ * It has never been seen because development connects as a superuser, and a
+ * superuser bypasses row-level security entirely. It appears the moment an
+ * operator follows `docs/config.md` and stops doing that, which is the same
+ * shape as the two subsystems already found this way.
+ *
+ * So the requirement is stated once, up front, with the SQL that satisfies it.
+ * The `WITH ADMIN OPTION` line is in the message even though it is not what is
+ * being checked: migration 0008 runs `GRANT nacre_worker TO nacre_app` and
+ * plain membership is not enough to grant a role onward. That migration's own
+ * hint says to grant membership, which does not fix it — and 0008 has been
+ * applied everywhere, so its text is checksummed and cannot be corrected in
+ * place. Naming the whole block here is what stops an operator satisfying one
+ * requirement and meeting the next one on the following run.
+ *
+ * Only called when there is something to apply, so re-running `migrate` on an
+ * up-to-date database stays a no-op whatever role it connects as.
+ */
+export async function requireMigrationPrivileges(client: RoleReader): Promise<void> {
+  const { rows } = await client.query<{ superuser: boolean; bypassrls: boolean }>(
+    'SELECT rolsuper AS superuser, rolbypassrls AS bypassrls FROM pg_roles WHERE rolname = current_user',
+  )
+
+  const role = rows[0]
+  if (role === undefined || role.superuser || role.bypassrls) return
+
+  throw new Error(
+    'the role running migrations can neither bypass row-level security nor is a ' +
+      'superuser, and several migrations read tenant tables. Every one of those ' +
+      'tables has FORCE ROW LEVEL SECURITY, which applies the policy to the owner ' +
+      'too, and the policy reads app.current_org — unset during a migration. The ' +
+      'migration would fail partway through with "unrecognized configuration ' +
+      'parameter \\"app.current_org\\"", which names none of this.\n\n' +
+      'Run this once as a superuser:\n\n' +
+      '  ALTER ROLE <the role in NACRE_PG_URL> BYPASSRLS;\n' +
+      '  CREATE ROLE nacre_worker NOLOGIN BYPASSRLS;  -- if it does not exist\n' +
+      '  GRANT nacre_worker TO <the role in NACRE_PG_URL> WITH ADMIN OPTION;\n\n' +
+      'WITH ADMIN OPTION is required and plain membership is not: migration 0008 ' +
+      'grants nacre_worker onward to nacre_app, and only a member holding ADMIN ' +
+      'may do that.\n\n' +
+      'This role is the one that owns the tables and runs migrations. It is not ' +
+      'the role the application connects as — that one must not bypass row-level ' +
+      'security and must not be able to create tables.',
+  )
+}
+
+/**
  * Apply every migration that has not been applied yet.
  *
  * Two properties worth stating, because both are load-bearing:
@@ -108,6 +179,12 @@ export async function migrate(
       'SELECT name, checksum FROM schema_migrations',
     )
     const ledger = new Map(rows.map((r) => [r.name, r.checksum]))
+
+    // Only when there is work to do. A re-run against an up-to-date database
+    // applies nothing, so the privileges it would need are not needed.
+    if (migrations.some((m) => !ledger.has(m.name))) {
+      await requireMigrationPrivileges(client)
+    }
 
     for (const migration of migrations) {
       const sum = await checksum(migration.sql)

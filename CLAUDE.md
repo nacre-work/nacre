@@ -550,6 +550,34 @@ Neither was visible to a green suite, and for a reason worth naming: a test that
 asks for one page checks that a page comes back. Only walking the collection to
 its end catches a cursor that does not move, and nothing walked one.
 
+**Migrations could not run as anything but a superuser**, which is the third
+subsystem found this way and was discovered by writing the Helm chart's
+provisioning rather than by any test. Every tenant table is `FORCE`d, and
+`FORCE` is exactly what makes a policy apply to the table's *owner* — so the
+four migrations that read a tenant table (`0006` duplicate layer slugs, `0007` a
+lease backfill, `0017` a role rewrite, `0018` a group-member dedupe) each
+evaluated `current_setting('app.current_org')`, unset during a migration, and
+failed. `0001`–`0005` applied first, so the database was left half-built with a
+message naming a GUC and nothing about roles.
+
+`docs/config.md` had it backwards in a table — "the owner … applies (tables are
+`FORCE`d)" — which is the configuration that cannot work. The owning role needs
+`BYPASSRLS`; the application role must not have it, and still does not.
+
+The migrator refuses up front now, with the whole provisioning block, and only
+when there is something to apply — so a re-run on an up-to-date database stays a
+no-op whatever role it connects as. The block includes `WITH ADMIN OPTION`,
+which `0008` needs to grant `nacre_worker` onward to `nacre_app` and which plain
+membership does not confer. `0008`'s own hint says to grant membership, and
+following it exactly still fails; that migration is applied everywhere and its
+text is checksummed, so the correct remedy could only go in the runner.
+
+Verified by provisioning each shape against a real PostgreSQL and running the
+real migrator: a plain owner refused before touching the schema, a superuser
+applying all 18, a `BYPASSRLS` owner applying all 18, and `nacre_app` afterwards
+still unable to create a table, still subject to every policy, and still holding
+only `INSERT, SELECT` on `audit_events`.
+
 Two more, found by reading rather than by running, and both invisible to a green
 suite for the same reason: they are about *scale*, and the suite runs one of
 everything. Both background sweeps selected the same rows on every replica, so
