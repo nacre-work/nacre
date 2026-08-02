@@ -2,6 +2,7 @@ import type { Layer } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { clear, h, shortId } from '../dom.js'
+import { migratePanel } from './migrate.js'
 
 /**
  * Layers.
@@ -32,7 +33,7 @@ export async function layersView(root: HTMLElement): Promise<void> {
   try {
     const layers = await client().layers.list()
     clear(body)
-    body.append(layers.length === 0 ? empty() : table(layers))
+    body.append(layers.length === 0 ? empty() : table(layers, root))
   } catch (error) {
     clear(body)
     body.append(h('div', { class: 'error' }, explain(error)))
@@ -48,7 +49,7 @@ const empty = () =>
     h('p', {}, 'Either none exist yet, or this token has no grant reaching one. Both look the same from here, by design.'),
   )
 
-function table(layers: readonly Layer[]): HTMLElement {
+function table(layers: readonly Layer[], root: HTMLElement): HTMLElement {
   return h('table', { class: 'table' },
     h('thead', {},
       h('tr', {},
@@ -57,6 +58,7 @@ function table(layers: readonly Layer[]): HTMLElement {
         h('th', {}, 'Description'),
         h('th', { class: 'num' }, 'Documents'),
         h('th', {}, 'Id'),
+        h('th', {}, ''),
       ),
     ),
     h('tbody', {}, ...layers.map((l) =>
@@ -66,9 +68,66 @@ function table(layers: readonly Layer[]): HTMLElement {
         h('td', { class: 'muted' }, l.description || '—'),
         h('td', { class: 'num tabular' }, String(l.documentCount)),
         h('td', {}, shortId(l.id)),
+        h('td', { class: 'row-end' },
+          h('button', { class: 'btn btn-quiet', onclick: () => void rename(l, root) }, 'Rename'),
+          // The embedding model, and the recall gate in front of changing it.
+          // On the layer rather than a screen of its own: there is at most one
+          // migration running, and the layer is what an operator navigates by.
+          h('button', { class: 'btn btn-quiet', onclick: () => void migratePanel(l) }, 'Model'),
+        ),
       ),
     )),
   )
+}
+
+function rename(layer: Layer, root: HTMLElement): void {
+  const name = h('input', { class: 'input', value: layer.name, required: true })
+  const description = h('input', { class: 'input', value: layer.description })
+  const message = h('p', { class: 'form-message' })
+
+  const dialog = h('dialog', { class: 'dialog' },
+    h('form', { method: 'dialog', onsubmit: async (e: Event) => {
+      e.preventDefault()
+      message.className = 'form-message'
+      message.textContent = 'Saving…'
+      try {
+        // Name and description only. What model built the vectors is not
+        // editable here and that is not an omission: changing it is a reindex,
+        // and an edit form that quietly started one would be the most expensive
+        // operation in the product triggered by a text field.
+        const done = await client().layers.update(layer.id, {
+          name: name.value.trim(),
+          description: description.value.trim(),
+        })
+        if (!done) {
+          message.className = 'form-message error'
+          message.textContent = 'No such layer, or this token may not administer it.'
+          return
+        }
+        dialog.close()
+        void layersView(root)
+      } catch (error) {
+        message.className = 'form-message error'
+        message.textContent = explain(error)
+      }
+    } },
+      h('h2', {}, 'Rename layer'),
+      h('p', { class: 'hint' },
+        'The slug is not editable — every surface addresses a layer by it, and a',
+        ' grant, an ingest and a search all name it.'),
+      h('label', { class: 'field' }, h('span', {}, 'Name'), name),
+      h('label', { class: 'field' }, h('span', {}, 'Description'), description),
+      message,
+      h('div', { class: 'dialog-actions' },
+        h('button', { type: 'button', class: 'btn', onclick: () => dialog.close() }, 'Cancel'),
+        h('button', { type: 'submit', class: 'btn btn-primary' }, 'Save'),
+      ),
+    ),
+  )
+
+  document.body.append(dialog)
+  dialog.addEventListener('close', () => dialog.remove())
+  dialog.showModal()
 }
 
 function openCreate(root: HTMLElement): void {

@@ -113,6 +113,17 @@ it can be renewed, and signing out revokes the refresh token instead of only
 forgetting it. Pasting a token is still offered, because signing in as a service
 account is how an administrator checks what an agent can actually see.
 
+Moving a layer onto a different model is on that screen now too, with the
+reference query set beside it — until then the recall gate could only be set up
+by hand against the API. Two things there were found by looking at a screenshot
+rather than by a test. The progress bar rendered **full for every migration**,
+because the page's CSP is `style-src 'self'` and the browser dropped the inline
+`style="width:…"`; it is a `<progress>` now, which puts the width in the
+stylesheet and brings its own ARIA. And "No recall gate" sat directly above a
+saved reference query, because `check: null` means both "no set" and "not scored
+yet" and only the second was true — the panel already loads the set, so it can
+tell them apart and now does.
+
 Rate limiting, `Idempotency-Key` and cursor pagination are in, which is also
 what Redis is finally for — it had been required configuration, and in every
 Compose profile with the API waiting on its healthcheck, since before anything
