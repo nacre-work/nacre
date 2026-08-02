@@ -229,6 +229,49 @@ Tags are truncated to 8 bytes. A collision produces a false tag match, but the
 query is also bounded by the allowed `layer_id` list, so a single collision
 cannot leak.
 
+> **This section describes something the tree does not do, and the tree is not
+> the one that is wrong yet.**
+>
+> `buildFilter` is the only filter builder in the codebase, and it emits
+> `org_id`, `deleted`, the caller's `layers`/`extraDocs` as a `should`, a
+> `must_not` on `deniedDocs`, and whatever `filters` narrowed. **There is no
+> `acl_tags` clause anywhere.** So the whole tag subsystem — the worker's retag
+> sweep, its lease, `documents.acl_version`, the 8-byte hashing, and
+> `nacre_acl_propagation_lag_seconds` with its alert — keeps a payload field
+> fresh that no query reads.
+>
+> It is **not a leak**, and the reason is worth stating rather than assumed. The
+> tag filter would be an *additional* narrowing, and the `should` it would sit
+> beside is computed per request from `grants` — which is strictly fresher than
+> a cache of `grants`. Anything the tags would exclude, the live plan already
+> excludes. Revocation is reflected immediately, by the plan, not within the SLA
+> by the sweep.
+>
+> What that costs is the second line of defence this section is describing, and
+> what it makes misleading is the SLA: the gauge measures how far behind a cache
+> is, and the runbook offers it as "the only external evidence that revocation
+> still propagates". Revocation propagates by a different mechanism, and the
+> gauge is silent about that one.
+>
+> Deciding between building the clause and deleting the subsystem is a change to
+> the permission model: it needs the two approvals this path requires, a new row
+> in the truth table, and T-cases. Until then this paragraph says which of the
+> two disagrees with the other, which is the rule this document is held to.
+
+### `workspace_admin` is in the schema and in nothing else
+
+`users.role` is `CHECK (role IN ('platform_admin','org_admin','workspace_admin','member'))`
+and `OrgRole` is three values. A row carrying `workspace_admin` reads into a type
+that does not admit it and then behaves as `member`, because it matches neither
+of the two role branches in `resolve` and falls through to grant-based
+evaluation.
+
+That direction is the safe one — it denies rather than widens — and it is still
+a fourth role the schema offers, nothing implements, and nothing refuses. An
+operator who sets it gets a silently demoted user and no error. Either the rules
+here gain a fourth role or the constraint loses one; both are changes to this
+document first.
+
 ## Current state
 
 `packages/core/authz/` holds the resolver (`resolve.ts`), the reference

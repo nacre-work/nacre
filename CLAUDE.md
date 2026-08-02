@@ -377,7 +377,27 @@ success. Every test passed throughout.
 
 The docs are still normative rather than descriptive, and in places still ahead
 of the code. Where one disagrees with the tree, that is a bug in one of them —
-say which.
+say which. Three are said and not yet resolved, each written into the document
+that claims otherwise:
+
+- **The `acl_tags` pre-filter is not built.** `buildFilter` is the only filter
+  builder and emits no tag clause, so the whole tag subsystem — the retag sweep,
+  its lease, `acl_version`, the 8-byte hashes, and
+  `nacre_acl_propagation_lag_seconds` with its alert — keeps a payload field
+  fresh that no query reads. It is not a leak: the `should` the tags would sit
+  beside is computed per request from `grants`, which is strictly fresher than a
+  cache of `grants`, so revocation is immediate by a mechanism the SLA is not
+  measuring. Building the clause or deleting the subsystem is a change to the
+  permission model and needs the two approvals, a truth-table row and T-cases.
+- **`workspace_admin` is in `users.role`'s CHECK and in nothing else.** A row
+  carrying it behaves as `member` — safe, and still a role the schema offers
+  that nothing implements and nothing refuses.
+- **An `org_admin` can issue a grant naming any uuid.** `referenceAllows`
+  returns true for the role before the scope is placed, so `POST /v1/grants`
+  writes a row pointing at a scope that need not exist in the tenant. Not a
+  leak — the pre-filter's unconditional `must: org_id` holds — but a row an
+  administrator cannot look up, and `404` stops meaning what invariant 4 says.
+  `@nacre.work/enterprise-acl-advanced` checks existence; the core should too.
 
 **All 15 cases from docs/authz.md run** against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
@@ -500,6 +520,27 @@ subsystems that only ever worked because development connects to Postgres as a
 superuser — service account keys answered 500 and the worker indexed nothing
 the moment an operator followed the rule in `docs/config.md` about not doing
 that.
+
+**Cursor pagination did not advance.** `timestamptz` holds microseconds and a
+JavaScript `Date` holds milliseconds, so a cursor built from
+`created_at.toISOString()` is truncated — and a truncated bound is *strictly
+less* than the row it came from, so `(created_at, id) > (bound, id)` matches
+that row again. `GET /v1/layers?limit=1` returned the first layer eight times in
+a row against a real database, and a client following `next_cursor` looped
+forever. `GET /v1/audit` had the mirror image: it orders descending, so the same
+truncation **skipped** every event between the bound and the real value — a
+record silently missing from the one surface that promises a precise answer.
+Every listing carries `created_at::text` now.
+
+Found in the same test: **`GET /v1/workspaces` did not paginate at all.** The
+statement had no seek clause and no `LIMIT` — it fetched every workspace,
+filtered in application code, and handed the whole list to `pageOf`, which then
+reported another page because the list was at least as long as the limit. Every
+page was the complete list and there was always a next one.
+
+Neither was visible to a green suite, and for a reason worth naming: a test that
+asks for one page checks that a page comes back. Only walking the collection to
+its end catches a cursor that does not move, and nothing walked one.
 
 Two more, found by reading rather than by running, and both invisible to a green
 suite for the same reason: they are about *scale*, and the suite runs one of
