@@ -193,7 +193,10 @@ looked like monitoring.
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.
-- DCO, not a CLA: sign off with `git commit -s`.
+- **CLA, not a DCO.** [CLA.md](./CLA.md), signed by a pull request adding you to
+  `.github/cla/signatures.json`. Enforced by the `cla` job, which compares commit
+  author and committer emails against that list — read from the *base* branch, so
+  a pull request cannot sign itself. List every address you commit from.
 - Changes under `packages/core/authz` need **two maintainer approvals** and
   tests.
 - Don't optimize `authz/reference.ts` when it exists. Its whole value is being

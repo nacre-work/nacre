@@ -11,7 +11,7 @@
 - [ ] Tests added or updated
 - [ ] `pnpm lint && pnpm typecheck && pnpm test` passes locally
 - [ ] Docs updated if behavior changed
-- [ ] Commits signed off (`git commit -s`)
+- [ ] I have signed the [CLA](../blob/HEAD/CLA.md) — see `.github/cla/signatures.json`
 
 ## Does this touch the permission model?
 

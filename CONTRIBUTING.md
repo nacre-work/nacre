@@ -44,5 +44,56 @@ pnpm --filter @nacre.work/api dev
 
 ## Contribution license
 
-We use the DCO. Sign off your commits with `git commit -s`. No CLA is
-required for contributions to the core.
+Contributions are covered by the **Contributor License Agreement** in
+[CLA.md](./CLA.md). Read it once and sign it once; it then covers everything you
+send afterwards.
+
+**You keep the copyright in what you write.** This is not an assignment. What
+the agreement adds on top of Apache 2.0 is the right to sublicense — which is
+what lets the core's licence change in the future without tracking down every
+past contributor for permission. It cannot take back any licence already
+granted: every Apache 2.0 release stays Apache 2.0, permanently.
+
+If your employer has rights to what you write — which is more often true than
+people expect — section 4 of the agreement is the one to read before you sign.
+
+### Signing
+
+No third-party service, no account, nothing that leaves this repository. Open a
+pull request that adds you to `.github/cla/signatures.json` and changes nothing
+else:
+
+```json
+{
+  "github": "your-github-username",
+  "name": "Your Full Name",
+  "emails": ["every@address.you", "author@commits.from"],
+  "version": "1.0",
+  "date": "2026-08-02"
+}
+```
+
+with this in the body:
+
+> I have read the Nacre Contributor License Agreement version 1.0 and I agree to
+> it for my present and future Contributions to Nacre.
+
+List every address you commit from. The `cla` job compares commit metadata, not
+GitHub accounts, so an unlisted address reads as an unsigned contributor — which
+is the point: the commit is what carries the copyright.
+
+A pull request touching only that file skips the `cla` job, because otherwise
+signing would be blocked by the check it exists to satisfy. That is safe: the
+job reads the signature list from the base branch and never from the pull
+request under test, so a contribution cannot approve itself.
+
+Your actual work can be opened before or after signing — it just will not merge
+until the signature does.
+
+### This replaced a DCO that nothing enforced
+
+The previous rule was "sign off with `git commit -s`, no CLA required", and no
+job ever checked for a `Signed-off-by` line. A requirement stated and not in
+force is worth nothing legally and worse than nothing in practice: it reads as
+though provenance is being tracked when it is not. The `cla` job is why this
+line is different.
