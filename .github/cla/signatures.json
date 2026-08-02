@@ -14,19 +14,24 @@
     "themselves. 'machines' are non-human commit identities: tooling that commits",
     "on behalf of a human who is already covered above. Neither list is a way to",
     "skip the agreement — adding to either is a change to this file, reviewed",
-    "like any other."
+    "like any other.",
+    "",
+    "'claVersion' must match the version at the top of CLA.md. A signature",
+    "recorded against an older one is treated as no signature: the check will not",
+    "quietly accept agreement to a document that has since changed materially."
   ],
-
   "claVersion": "1.0",
-
   "owners": [
     {
       "github": "siarheidudko",
       "name": "Siarhei Dudko",
-      "emails": ["siarhei@dudko.dev", "slavianich@gmail.com"]
+      "emails": [
+        "siarhei@dudko.dev",
+        "slavianich@gmail.com"
+      ],
+      "legal": "I/E Siarhei Dudko, Individual Entrepreneur registered in Georgia — the counterparty named in CLA.md"
     }
   ],
-
   "machines": [
     {
       "email": "noreply@anthropic.com",
@@ -41,6 +46,5 @@
       "why": "The initial repository scaffolding commit."
     }
   ],
-
   "signatures": []
 }

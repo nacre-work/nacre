@@ -46,7 +46,9 @@ pnpm --filter @nacre.work/api dev
 
 Contributions are covered by the **Contributor License Agreement** in
 [CLA.md](./CLA.md). Read it once and sign it once; it then covers everything you
-send afterwards.
+send afterwards. The counterparty is **I/E Siarhei Dudko**, an Individual
+Entrepreneur registered in Georgia — the country — trading as Nacre, and the
+agreement is governed by Georgian law.
 
 **You keep the copyright in what you write.** This is not an assignment. What
 the agreement adds on top of Apache 2.0 is the right to sublicense — which is

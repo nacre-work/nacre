@@ -2,16 +2,21 @@
 
 **Version 1.0**
 
+> Still 1.0 after the Owner and the governing law were filled in, and that is a
+> deliberate call rather than an oversight: those two fields were published as
+> explicitly unsettled, the document said it did not govern anything until they
+> were, and nobody had signed. Nothing that was agreed to has changed.
+>
+> **Any material change from here bumps the version.** The `cla` job treats a
+> signature against an older version as no signature at all, which is what makes
+> that rule enforceable rather than a convention — so a version bump also means
+> asking every existing signer again, and is worth avoiding for wording.
+
 > **This document has not been reviewed by a lawyer.** It is adapted from the
 > Apache Software Foundation's Individual Contributor License Agreement v2.0,
 > which is the most widely used and most widely litigated-around template of its
 > kind, with the changes described in [Notes on this
-> adaptation](#notes-on-this-adaptation) at the end. Two fields in it are
-> deliberately unresolved and are marked where they appear: the **legal identity
-> of the Owner** and the **governing law**. Both must be settled before this
-> agreement governs a real contribution — an agreement with no identifiable
-> counterparty is not obviously enforceable, which would defeat the only reason
-> to have one.
+> adaptation](#notes-on-this-adaptation) at the end.
 
 ## Why this exists
 
@@ -50,13 +55,24 @@ indirect, to cause the direction or management of such entity, whether by
 contract or otherwise, (ii) ownership of fifty percent (50%) or more of the
 outstanding shares, or (iii) beneficial ownership of such entity.
 
-**"Owner"** means Nacre, the copyright holder identified in the `LICENSE` and
-`NOTICE` files of this repository.
+**"Owner"** means **Siarhei Dudko, registered as an Individual Entrepreneur
+(I/E) in Georgia**, trading as Nacre. "Nacre" as it appears in the `LICENSE` and
+`NOTICE` files of this repository is that person's project name, not a separate
+legal entity.
 
-> **Unresolved.** "Nacre" is a project name, not yet a stated legal entity. Before
-> this agreement is used, the Owner must be identified as a natural person or a
-> registered company. Section 9 is written so that incorporating later does not
-> invalidate signatures collected before.
+Two things follow from the Owner being an I/E rather than a company, and both are
+better stated than discovered:
+
+- **An Individual Entrepreneur in Georgia is a natural person with an
+  entrepreneurial registration, not a legal person distinct from that
+  individual.** The counterparty here is a human being acting in a business
+  capacity. Nothing in this agreement depends on the distinction, but a
+  contributor's employer reviewing it is entitled to know which they are dealing
+  with.
+- **Section 9 therefore matters more, not less.** If the Owner later
+  incorporates — an LLC in Georgia or anywhere else — the rights granted here
+  move to that company without anyone re-signing. That is the ordinary and
+  expected path for a project like this one.
 
 **"Contribution"** means any original work of authorship, including any
 modifications or additions to an existing work, that is intentionally submitted
@@ -157,8 +173,21 @@ again for that reason.
 
 ### 10. Governing law
 
-This agreement is governed by the laws of [**unresolved — see the note at the
-top**], excluding its conflict-of-law provisions.
+This agreement is governed by the laws of **Georgia — the country, whose capital
+is Tbilisi, and not the United States state of the same name** — excluding its
+conflict-of-law provisions.
+
+The parenthetical is not pedantry. "Governed by the laws of Georgia" is genuinely
+ambiguous in an English-language agreement signed over the internet, and a
+contributor in the United States will read it the other way round by default.
+An ambiguous choice-of-law clause is worth less than none, because it invites
+exactly the argument it was written to prevent.
+
+Georgia is a civil-law jurisdiction, which is also why this agreement grants a
+licence rather than taking an assignment: assigning copyright outright is
+restricted or impossible in much of continental Europe, and moral rights do not
+transfer at all. A broad, irrevocable, sublicensable licence achieves everything
+the Owner needs here and survives that difference.
 
 ## How to sign
 
@@ -207,16 +236,28 @@ procedure, the support disclaimer, and the notification duty.
 
 Changed:
 
-- **The counterparty is a project owner rather than a foundation.** Section 9
+- **The counterparty is one named person rather than a foundation.** Section 9
   was added for that reason: a foundation does not get incorporated later, and
-  this project might.
+  an Individual Entrepreneur very well might.
 - **The sublicence right is called out explicitly in prose**, in section 2 and in
   the opening. The Apache grant already contains it; leaving what it is *for*
   unstated is how a contributor ends up surprised by a licence change they
   technically permitted. Saying it plainly is the point of the whole document.
-- **Governing law was added as an explicit unresolved field.** The Apache ICLA
-  omits it; for a single owner rather than a foundation, leaving it silent means
-  the answer is decided by whoever sues first.
+- **Governing law was added**, which the Apache ICLA omits. For a single owner
+  rather than a foundation, silence means the answer is decided by whoever sues
+  first. It names Georgia and says which Georgia, because in an
+  English-language agreement signed over the internet that is a real ambiguity
+  and not a joke about it.
 - **The signing procedure is in-repository** rather than by scanned PDF or a
   hosted CLA service. This is a product whose pitch is that nothing phones home;
   the contribution process should not be the exception.
+
+Not added, and worth knowing they are absent:
+
+- **A venue or dispute-resolution clause.** Choice of law says which rules apply;
+  it does not say where a dispute is heard. The Apache ICLA has neither, and for
+  a project at this stage the asymmetry is tolerable — but they are different
+  questions and only one of them is answered above.
+- **The Owner's registration number.** The name and jurisdiction identify the
+  counterparty adequately; the number would pin it further and can be added
+  without a version bump, since it identifies rather than changes the party.

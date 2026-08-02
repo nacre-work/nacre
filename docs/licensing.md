@@ -28,7 +28,17 @@ must build and test with no access to the private one.
 
 **A CLA, not a DCO** — [CLA.md](../CLA.md), enforced by the `cla` job.
 Contributors keep their copyright; the agreement adds a sublicence right on top
-of the Apache 2.0 grant.
+of the Apache 2.0 grant. The counterparty is I/E Siarhei Dudko, an Individual
+Entrepreneur registered in Georgia, trading as Nacre, and Georgian law governs.
+
+That the Owner is a natural person with an entrepreneurial registration rather
+than a company is why section 9 of the agreement assigns it to a successor in
+interest: incorporating later moves the rights without anyone re-signing.
+Georgia being a civil-law jurisdiction is also why the agreement licenses rather
+than assigns — outright assignment of copyright is restricted across much of
+continental Europe and moral rights do not transfer at all, so an assignment
+clause would have been partly unenforceable against exactly the contributors
+most likely to read it.
 
 That right is the reason it is a CLA. Nothing in the plan above needs it: the
 core stays Apache 2.0 and the money is in the private repository, which the
