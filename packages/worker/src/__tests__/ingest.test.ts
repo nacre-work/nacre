@@ -287,7 +287,13 @@ describe('ingest', () => {
 
     expect(result.chunkCount).toBe(0)
     expect(result.documentId).toBeTruthy()
-    expect(p.written, 'nothing to index means nothing written to the vector store').toHaveLength(0)
+
+    // The vector store is still called, and with no points — which is not the
+    // same as not calling it. A document that had chunks and now parses to none
+    // keeps every point from its last pass otherwise, and those are the worst
+    // kind: no text left anywhere, still holding places in results.
+    expect(p.written).toHaveLength(1)
+    expect((p.written[0] as { points: unknown[] }).points).toHaveLength(0)
 
     // No points means no stale tag to leak through, so it is current by
     // construction. Left untagged it would sit behind the version forever and

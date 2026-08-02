@@ -62,6 +62,19 @@ export interface DocumentStore {
 }
 
 export interface VectorWriter {
+  /**
+   * Write a document's points, and remove the ones it no longer has.
+   *
+   * Both halves, because indexing is a **replacement** and not an append. Every
+   * pass mints fresh point ids, so an upsert on its own overwrites nothing: the
+   * previous pass's points stay in the index with `deleted = false`, match the
+   * permission filter, and occupy slots in every `top_k` — while hydration
+   * silently drops them, because their chunk rows are gone. A search asking for
+   * ten results starts returning six, permanently, and nothing fails.
+   *
+   * `points` empty is meaningful and not a no-op: it means this document has no
+   * points at all now, so all of them go.
+   */
   write(input: {
     orgId: string
     orgSlug: string
@@ -165,6 +178,21 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
       chunks: [],
       metadata: parsed.metadata,
     })
+    // Not a no-op. A document that had chunks and now parses to none — an
+    // emptied file, a parser that stopped recognising a format — keeps every
+    // point from its last pass unless they are swept here, and those are the
+    // worst kind: a document with no text left, still holding places in results.
+    await ports.vectors.write({
+      orgId: request.orgId,
+      orgSlug: request.orgSlug,
+      layerId: request.layerId,
+      documentId: stored.id,
+      vectorName: request.vectorName,
+      points: [],
+      aclTags: request.aclTags,
+      aclVersion: request.aclVersion,
+    })
+
     // A document with no chunks has no points, so there is no stale tag it can
     // leak through and it is trivially current. Leaving it behind the version
     // forever would pin the lag gauge at the age of the oldest empty file and
