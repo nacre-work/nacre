@@ -6,6 +6,10 @@ import { URL } from 'node:url'
 
 import { authenticate, rejectTenantOverride, type AuthContext, type VerifyOptions } from './auth.js'
 import { badRequest, internal, notFound, Problem } from './errors.js'
+import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
+import { limitHeaders, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
+import { readPage, type Page, type PageResult } from './pagination.js'
+export type { Page, PageResult }
 
 /**
  * What the API needs from the rest of the system, as ports.
@@ -136,6 +140,8 @@ export interface Layer {
   readonly slug: string
   readonly name: string
   readonly workspaceId: string
+  /** The cursor's sort key. Not serialized; it exists so paging is stable. */
+  readonly createdAt: string
   readonly description: string
   /**
    * Live documents in the layer.
@@ -170,8 +176,15 @@ export type LayerOutcome =
   | { readonly kind: 'conflict' }
 
 export interface Layers {
-  /** Only the layers this caller may read. The plan decides, not the caller. */
-  list(auth: AuthContext): Promise<readonly Layer[]>
+  /**
+   * Only the layers this caller may read. The plan decides, not the caller.
+   *
+   * Takes the page rather than returning everything for the handler to slice:
+   * slicing after the fact is the same mistake as a post-filter, one layer up —
+   * the database reads rows nobody will see, and the cost grows with the
+   * collection rather than with the page.
+   */
+  list(auth: AuthContext, page?: Page): Promise<PageResult<Layer>>
   create(
     auth: AuthContext,
     input: { workspaceId: string; slug: string; name: string },
@@ -194,7 +207,7 @@ export interface GrantRecord extends GrantInput {
 
 export interface Grants {
   /** Grants in the caller's organization. Admin only; the caller is checked above. */
-  list(auth: AuthContext): Promise<readonly GrantRecord[]>
+  list(auth: AuthContext, page?: Page): Promise<PageResult<GrantRecord>>
   /** `undefined` when the caller may not administer the scope, or it does not exist. */
   issue(auth: AuthContext, input: GrantInput): Promise<GrantRecord | undefined>
   /**
@@ -219,7 +232,7 @@ export interface ServiceAccountView {
 }
 
 export interface ServiceAccountPort {
-  list(auth: AuthContext): Promise<readonly ServiceAccountView[]>
+  list(auth: AuthContext, page?: Page): Promise<PageResult<ServiceAccountView>>
   /** `undefined` when the name is already taken in this organization. */
   create(
     auth: AuthContext,
@@ -246,6 +259,15 @@ export interface ApiOptions {
   readonly verify: VerifyOptions
   /** Rendered at /metrics. Absent means the endpoint answers 404. */
   readonly metrics?: { render(): Promise<string> }
+  /**
+   * Per-organization rate limiting. Absent means unlimited, which is the right
+   * default for a surface being tested and the wrong one for a deployment —
+   * `main.ts` always provides it.
+   */
+  readonly limits?: RateLimiter
+  readonly limitPolicies?: Readonly<Record<Resource, LimitPolicy>>
+  /** `Idempotency-Key` on unsafe methods. Absent means the header is ignored. */
+  readonly idempotency?: IdempotencyStore
   readonly documents: Documents
   readonly search: SearchService
   readonly ingest: Ingest
@@ -348,14 +370,112 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
 
-function send(res: ServerResponse, status: number, body: unknown, requestId: string): void {
+function send(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  requestId: string,
+  extra: Record<string, string> = {},
+): void {
+  // 204 means no content, and it meant it while this function wrote the four
+  // bytes `null` into the body. Some clients tolerate that and some treat a
+  // body on a 204 as a framing error.
+  if (status === 204) {
+    res.writeHead(204, { 'x-request-id': requestId, ...extra })
+    res.end()
+    return
+  }
+
   const json = JSON.stringify(body)
   res.writeHead(status, {
     'content-type': status >= 400 ? 'application/problem+json' : 'application/json',
     'x-request-id': requestId,
+    ...extra,
   })
   res.end(json)
 }
+
+/**
+ * Merge headers into whatever the handler writes, and capture the body.
+ *
+ * `writeHead` is patched rather than wrapped at each call site because the
+ * headers apply to every response on the request, including the ones produced
+ * deep inside a handler's error path. `end` is patched to hand the serialized
+ * body to the idempotency store — after the response is on the wire, since a
+ * cache write must never be what delays an answer.
+ */
+function decorate(
+  res: ServerResponse,
+  extra: Record<string, string>,
+  store: ((status: number, body: unknown) => Promise<void>) | undefined,
+): void {
+  if (Object.keys(extra).length === 0 && store === undefined) return
+
+  const writeHead = res.writeHead.bind(res)
+  let status = 200
+
+  res.writeHead = ((code: number, ...rest: unknown[]) => {
+    status = code
+    const headers = rest.find((r) => typeof r === 'object' && r !== null) as
+      | Record<string, string>
+      | undefined
+    return writeHead(code, { ...extra, ...(headers ?? {}) })
+  }) as typeof res.writeHead
+
+  if (store === undefined) return
+
+  const end = res.end.bind(res)
+  res.end = ((chunk?: unknown, ...rest: unknown[]) => {
+    if (typeof chunk === 'string' && chunk.length > 0) {
+      try {
+        // Only a JSON body is worth replaying. A 204 has none, and anything
+        // else on this API would be a bug rather than a response to cache.
+        void store(status, JSON.parse(chunk))
+      } catch {
+        // Not JSON — nothing to replay, and refusing to answer over it would
+        // be absurd.
+      }
+    } else if (status === 204) {
+      void store(status, null)
+    }
+    return end(chunk as never, ...(rest as []))
+  }) as typeof res.end
+}
+
+/**
+ * Which limit a request counts against, or none.
+ *
+ * Search and ingest are the two the contract names, and they are the two that
+ * cost real money — an embedding call each. Reads of metadata are cheap and are
+ * not counted; adding them later means adding a policy, not restructuring this.
+ */
+function resourceFor(method: string, instance: string): Resource | undefined {
+  if (method === 'POST' && instance === '/v1/search') return 'search'
+  if (method === 'POST' && instance === '/v1/documents') return 'ingest'
+  return undefined
+}
+
+/**
+ * Paths whose responses must never enter the idempotency cache.
+ *
+ * `/v1/service-accounts` is here because its response carries the key itself,
+ * once, and the key is stored hashed precisely so that it cannot be recovered
+ * from the database or from a backup. Caching that response puts the plaintext
+ * key in Redis for 24 hours and undoes the whole reason for hashing it — a
+ * convenience feature quietly weakening a credential store. The endpoint is
+ * already safe to retry without a cache: the unique name constraint answers a
+ * duplicate with `409` rather than minting a second key.
+ *
+ * `/v1/documents` is here for a different reason and not a security one: it is
+ * already idempotent on `(layer, external_id)` and the content hash, which
+ * survives this cache expiring and is therefore the stronger guarantee.
+ * Wrapping it would add a weaker one on top and a second thing to reason about.
+ *
+ * The test for adding a path: **would the response be a problem in a cache
+ * dump?** If a response is only ever shown once on purpose, it does not go in a
+ * store with a 24-hour TTL and no access control of its own.
+ */
+const NEVER_CACHED: ReadonlySet<string> = new Set(['/v1/service-accounts', '/v1/documents'])
 
 export function createApi(options: ApiOptions): Server {
   return createServer((req, res) => {
@@ -425,6 +545,103 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     send(res, override.status, override.toJSON(), requestId)
     return
   }
+
+  // Rate limiting, after the token is verified and before any work is done.
+  //
+  // After verification because the limit is per organization and the
+  // organization comes from the token — there is nothing to count against
+  // until it has been read. Before the handler because the point is to refuse
+  // before spending an embedding call.
+  //
+  // The headers go on the successful response too. A client that only learns
+  // its budget by being refused has to be refused to learn it.
+  let rateHeaders: Record<string, string> = {}
+  const resource = resourceFor(req.method ?? 'GET', instance)
+  if (resource !== undefined && options.limits !== undefined && options.limitPolicies !== undefined) {
+    const decision = await options.limits.check(auth.orgId, resource)
+    rateHeaders = limitHeaders(decision, options.limitPolicies[resource], resource)
+
+    if (!decision.allowed) {
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'rate_limited',
+        result: 'deny',
+        detail: { resource, limit: decision.limit },
+        requestId,
+      })
+      const problem = new Problem({
+        type: 'https://nacre.work/errors/rate-limited',
+        title: 'Too many requests',
+        status: 429,
+        detail: `The ${resource} limit for this organization is ${decision.limit} per ${
+          options.limitPolicies[resource].windowSeconds
+        } seconds. Try again in ${decision.reset} seconds.`,
+        instance,
+        requestId,
+      })
+      send(res, problem.status, problem.toJSON(), requestId, rateHeaders)
+      return
+    }
+  }
+
+  // Idempotency-Key, for the unsafe methods that are not already idempotent.
+  const idempotencyKey = req.headers['idempotency-key']
+  let storeIdempotent: ((status: number, value: unknown) => Promise<void>) | undefined
+
+  if (
+    typeof idempotencyKey === 'string' &&
+    idempotencyKey.length > 0 &&
+    options.idempotency !== undefined &&
+    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method ?? '') &&
+    !NEVER_CACHED.has(instance)
+  ) {
+    const outcome = await options.idempotency.begin(
+      idempotencyKey,
+      auth.orgId,
+      req.method ?? '',
+      instance,
+      body,
+    )
+
+    if (isReplay(outcome)) {
+      // `send` drops the body on a 204, so a replayed delete replays as a
+      // delete rather than as a 204 with `null` in it.
+      send(res, outcome.cached.status, outcome.cached.body, requestId, {
+        ...rateHeaders,
+        'idempotency-replayed': 'true',
+      })
+      return
+    }
+
+    if (isConflict(outcome)) {
+      // The same key with a different body, or the first attempt still running.
+      // Replaying a response that does not match what was asked for — or does
+      // not exist yet — is worse than saying so.
+      const problem = new Problem({
+        type: 'https://nacre.work/errors/conflict',
+        title: 'Conflict',
+        status: 409,
+        detail:
+          'This Idempotency-Key is in use for a different request, or the first ' +
+          'attempt has not finished. Use a new key, or retry the identical request.',
+        instance,
+        requestId,
+      })
+      send(res, problem.status, problem.toJSON(), requestId, rateHeaders)
+      return
+    }
+
+    storeIdempotent = outcome.store
+  }
+
+  // The response is decorated rather than every `send` call being rewritten.
+  //
+  // Thirty handlers each remembering to attach rate headers and to cache their
+  // body is thirty chances to forget, and the one that forgets is invisible
+  // until a client asks why its budget headers vanished on one endpoint. This
+  // patches `writeHead` and `end` once, so the handlers stay unaware.
+  decorate(res, rateHeaders, storeIdempotent)
 
   try {
     if (req.method === 'POST' && instance === '/v1/search') {
@@ -535,8 +752,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
-      res.writeHead(204, { 'x-request-id': requestId })
-      res.end()
+      send(res, 204, null, requestId)
       return
     }
 
@@ -602,14 +818,21 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     }
 
     if (req.method === 'GET' && instance === '/v1/layers' && options.layers !== undefined) {
-      const layers = await options.layers.list(auth)
+      const page = readPage(url.searchParams, instance, requestId)
+      if (page instanceof Problem) {
+        send(res, page.status, page.toJSON(), requestId)
+        return
+      }
+
+      const { items, nextCursor } = await options.layers.list(auth, page)
+
       // No audit event: this returns what the caller may already read, and one
       // event per listing buries the ones that matter.
       send(
         res,
         200,
         {
-          items: layers.map((l) => ({
+          items: items.map((l) => ({
             id: l.id,
             slug: l.slug,
             name: l.name,
@@ -617,6 +840,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             description: l.description,
             document_count: l.documentCount,
           })),
+          next_cursor: nextCursor,
         },
         requestId,
       )
@@ -689,8 +913,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     }
 
     if (req.method === 'GET' && instance === '/v1/grants' && options.grants !== undefined) {
-      const grants = await options.grants.list(auth)
-      send(res, 200, { items: grants.map(grantJson) }, requestId)
+      const page = readPage(url.searchParams, instance, requestId)
+      if (page instanceof Problem) {
+        send(res, page.status, page.toJSON(), requestId)
+        return
+      }
+
+      const { items, nextCursor } = await options.grants.list(auth, page)
+      send(res, 200, { items: items.map(grantJson), next_cursor: nextCursor }, requestId)
       return
     }
 
@@ -771,7 +1001,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       }
 
       if (req.method === 'GET') {
-        send(res, 200, { items: (await options.serviceAccounts.list(auth)).map(accountJson) }, requestId)
+        const page = readPage(url.searchParams, instance, requestId)
+        if (page instanceof Problem) {
+          send(res, page.status, page.toJSON(), requestId)
+          return
+        }
+
+        const { items, nextCursor } = await options.serviceAccounts.list(auth, page)
+        send(res, 200, { items: items.map(accountJson), next_cursor: nextCursor }, requestId)
         return
       }
 

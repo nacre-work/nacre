@@ -89,12 +89,18 @@ rather than leaving the document stuck in `parsing` forever.
 admin UI; both are written, and the admin UI has been driven in a browser
 against the running API.
 
+Rate limiting, `Idempotency-Key` and cursor pagination are in, which is also
+what Redis is finally for — it had been required configuration, and in every
+Compose profile with the API waiting on its healthcheck, since before anything
+connected to it. Both fail **open**, deliberately and against the grain of
+invariant 3: neither is an authorization control, and failing closed would turn
+a cache restart into an outage.
+
 Not built: no login (tokens come from `init`, service accounts from
-`/v1/service-accounts`), no reranking on the search path, and no pagination,
-idempotency keys or rate limiting — all three are in the contract and none are
-in the code. `docker compose up` has still not been run from a clean checkout;
-four separate things that made it impossible are fixed, and the path is
-validated by `lint:compose` and by reading, not by a machine that has done it.
+`/v1/service-accounts`) and no reranking on the search path. `docker compose up`
+has still not been run from a clean checkout; four separate things that made it
+impossible are fixed, and the path is validated by `lint:compose` and by
+reading, not by a machine that has done it.
 
 The docs are still normative rather than descriptive, and in places still ahead
 of the code. Where one disagrees with the tree, that is a bug in one of them —

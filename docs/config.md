@@ -97,6 +97,22 @@ per-variable check cannot catch them:
 URLs are not allowed — a default that quietly points at localhost is how a
 production deployment ends up talking to nothing and reporting success.
 
+### What Redis is for
+
+`NACRE_REDIS_URL` holds the rate limit counters and the `Idempotency-Key` cache,
+and nothing else. Both are **soft state**: losing it costs a window's counts and
+a day's cached responses, and neither is a permission decision or a durable
+record.
+
+That is why both fail **open**. If Redis is unreachable the request is served
+and the degradation is logged, which is the opposite of the rule for permissions
+(invariant 3) and deliberately so — a rate limit is availability protection, and
+failing closed would turn a cache restart into an outage. Nothing that decides
+access is ever read from here.
+
+It is not a queue. Indexing work is claimed from Postgres under a lease
+(`NACRE_INDEX_LEASE`), so a Redis loss cannot strand a document.
+
 ## Compose profiles
 
 | Profile | Contains | For |

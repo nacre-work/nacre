@@ -58,17 +58,48 @@ touch it", so it may only be used where the caller can already see the object.
 
 - `POST /v1/documents` is idempotent on `(layer, external_id)` plus
   `content_hash`. A repeat with identical content returns `200` and the existing
-  `document_id` without creating a version.
+  `document_id` without creating a version. It does **not** take an
+  `Idempotency-Key`: the content hash is the stronger guarantee, because it
+  survives a cache expiring.
 - Every other unsafe method accepts an `Idempotency-Key` header; the result is
-  cached for 24 hours.
+  cached for 24 hours and replayed with `Idempotency-Replayed: true`.
+- The key is scoped to the organization, the method, the path, and a hash of the
+  body. The same key with a different body is `409`, not a replay — a caller who
+  changed the payload and kept the key is not asking for the old answer. A
+  second attempt while the first is still in flight is `409` for the same
+  reason: there is no response to replay yet.
+- **`POST /v1/service-accounts` is excluded**, and a key sent to it is ignored
+  rather than honoured. Its response carries the account key itself, once; the
+  key is stored hashed so that it cannot be recovered from the database or from
+  a backup, and a copy in the cache would undo that for 24 hours. Retrying it is
+  already safe without a cache — a duplicate name answers `409` rather than
+  minting a second key.
+- The cache is not an authorization control, and it fails **open**: if it is
+  unreachable the request is processed normally and uncached.
 
 ## Pagination
 
 Cursor-based, never offset. `?limit=50&cursor=…`, response
-`{ items, next_cursor }`, `limit` capped at 200.
+`{ items, next_cursor }`, `limit` capped at 200. `next_cursor` is `null` on the
+last page.
 
 Offset is forbidden: it breaks under concurrent inserts and it invites
-enumeration.
+enumeration. `?offset=` is **refused with `400`** rather than ignored — ignoring
+it hands a client the first page over and over while they believe they are
+paging.
+
+The cursor is opaque. It is base64url of a sort key today, which anyone can
+decode and which carries nothing that was not already in the response it came
+from; it is not signed, because a forged cursor selects a different page of the
+caller's own collection. Constructing one rather than passing back `next_cursor`
+is a dependency on a format that is allowed to change, and a cursor this API did
+not issue is `400`.
+
+**A short page does not mean the end, and neither does an empty one.** Where a
+collection is filtered per caller after the database has applied the cursor —
+grants are, because who may see one is decided by walking the scope tree —
+`next_cursor` is taken from the last row *fetched*, not the last one returned.
+It is the only signal that more exist.
 
 ## Asynchrony
 
@@ -88,7 +119,21 @@ issuing more keys.
 | document size | 50 MB |
 | vectors per organization | from `organizations.quotas` |
 
-A `429` carries `Retry-After` and the `RateLimit-*` headers (RFC 9331).
+A `429` carries `Retry-After` and the `RateLimit-*` headers (RFC 9331). Every
+counted response carries `RateLimit-Limit`, `RateLimit-Remaining`,
+`RateLimit-Reset` and `RateLimit-Policy` — not only the refusals, so a client can
+slow down before it is refused rather than after.
+
+Search and ingest are counted; reads of metadata are not. The window is fixed
+rather than sliding, so a client that spends its budget at the end of one window
+and the start of the next can briefly exceed the nominal rate. That is the
+accepted cost of a counter that is one `INCR`.
+
+Limiting fails **open**: if the counter is unreachable the request is allowed and
+the degradation is logged. This is the opposite of the rule for permissions
+(invariant 3) and deliberately so — a rate limit is availability protection, not
+an authorization control, and failing closed would turn a Redis restart into an
+outage.
 
 ## Versioning
 
@@ -115,9 +160,10 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 | `GET`/`POST /v1/grants`, `DELETE /v1/grants/{id}` | |
 | `GET`/`POST /v1/service-accounts`, `DELETE /v1/service-accounts/{id}` | |
 | `GET /v1/health`, `GET /v1/ready`, `GET /metrics` | |
+| `Idempotency-Key` on unsafe methods | 24 hours, `409` on reuse, service accounts excluded |
+| `429` and the `RateLimit-*` headers | search and ingest, counted per organization |
+| Cursor pagination | layers, grants, service accounts |
 
 Not implemented, and the document describes them anyway because they are the
 contract they will be built to: login and refresh, OAuth discovery and dynamic
-client registration, `Idempotency-Key` on unsafe methods, `429` and the
-`RateLimit-*` headers, cursor pagination on the collection endpoints, and
-multipart upload on `POST /v1/documents`.
+client registration, and multipart upload on `POST /v1/documents`.
