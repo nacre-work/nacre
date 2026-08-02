@@ -29,10 +29,10 @@ NACRE_S3_FORCE_PATH_STYLE=true
 NACRE_PRESIGN_TTL=900
 
 # ─── models ───
-NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://embedder:8080
+NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://embedder:80
 NACRE_DEFAULT_EMBEDDING_MODEL=bge-m3
 NACRE_DEFAULT_EMBEDDING_DIM=1024
-NACRE_RERANKER_ENDPOINT=http://reranker:8081
+NACRE_RERANKER_ENDPOINT=http://reranker:80
 NACRE_RERANKER_ENABLED=false          # true needs an endpoint; minimal has none
 NACRE_RERANK_CANDIDATES=50            # fetched from the index, cut to top_k after scoring
 NACRE_PARSER_ENDPOINT=http://parser:8090
@@ -166,22 +166,42 @@ packaging one — see [licensing.md](./licensing.md).
 ## Health and observability
 
 - `/v1/health` — liveness, touching no dependency.
-- `/v1/ready` — readiness: postgres, qdrant, s3, embedder.
+- `/v1/ready` — readiness: postgres, qdrant, redis. `200 {status, checks}` or
+  `503` with the same shape, so an orchestrator can read the status code and a
+  human can read the body. Unauthenticated, like `/metrics`, because a probe has
+  no credential to present — so it says which dependency is unhappy and never
+  why.
+
+  Not s3, which nothing in the tree reads yet, and not the embedder: that is an
+  endpoint you supply, a search fails loudly without it, and making readiness
+  depend on somebody else's uptime turns their outage into a rollout that never
+  completes.
 - `/metrics` — Prometheus.
 
 Required metrics:
 
 ```
+nacre_acl_propagation_lag_seconds{org}     # target < 60. Emitted.
+nacre_documents_total{org,status}          # emitted
+nacre_tombstones_pending_total{org}        # emitted; climbing means GC is losing
+```
+
+Registered and **not yet emitted** — the series exist and stay at zero, which is
+worse than absent because it reads as health. Wiring them is outstanding work,
+not a decision:
+
+```
 nacre_search_duration_seconds{quantile}    # target p95 < 200ms at 10M vectors
 nacre_search_results_total{layer}
-nacre_acl_propagation_lag_seconds{org}     # target < 60
 nacre_acl_denials_total{reason}
 nacre_ingest_duration_seconds{stage}
-nacre_documents_total{org,status}
-nacre_reindex_progress_ratio{layer}
-nacre_vectors_total{org}
-nacre_tombstones_pending_total{org}        # climbing means GC is losing
 ```
+
+Specified and not registered at all, both tied to reindexing, which is not
+built: `nacre_reindex_progress_ratio{layer}`, `nacre_vectors_total{org}`.
+
+The worker emits no metrics of any kind — it serves no port. Its only external
+signal is the propagation gauge above, which the API exports.
 
 `nacre_acl_propagation_lag_seconds` is the one to alert on. It is the only
 external evidence that invariant I4 still holds.

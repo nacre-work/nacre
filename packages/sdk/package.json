@@ -1,7 +1,7 @@
 {
   "name": "@nacre.work/sdk",
   "version": "0.0.0",
-  "description": "TypeScript SDK",
+  "description": "TypeScript client for the Nacre REST API",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nacre-work/nacre.git",
@@ -26,6 +26,23 @@
     }
   },
   "files": [
-    "dist"
-  ]
+    "dist",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "keywords": [
+    "nacre",
+    "sdk",
+    "client",
+    "rag",
+    "permissions",
+    "typescript"
+  ],
+  "bugs": {
+    "url": "https://github.com/nacre-work/nacre/issues"
+  },
+  "author": "Nacre",
+  "engines": {
+    "node": ">=22"
+  }
 }

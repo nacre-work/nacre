@@ -5,20 +5,30 @@ body, a path, or a header.
 
 ## Endpoints
 
+Implemented:
+
 ```
-POST   /v1/documents                 ingest (multipart | json)
+POST   /v1/documents                 ingest (json; multipart not built)
 GET    /v1/documents/{id}
-PATCH  /v1/documents/{id}            metadata
 DELETE /v1/documents/{id}            tombstone
 POST   /v1/search
-GET    /v1/layers        POST /v1/layers        PATCH /v1/layers/{id}
+GET    /v1/layers        POST /v1/layers
+GET    /v1/grants        POST /v1/grants        DELETE /v1/grants/{id}
+GET    /v1/service-accounts  POST  /v1/service-accounts  DELETE /v1/service-accounts/{id}
+GET    /v1/jobs/{id}
+GET    /v1/health        GET /v1/ready           GET /metrics
+POST   /v1/auth/login    /v1/auth/refresh        /v1/auth/logout
+```
+
+Specified and **not** implemented. These answer `404` like any unknown path;
+they are listed because this is the contract they will be built to:
+
+```
+PATCH  /v1/documents/{id}            metadata
+PATCH  /v1/layers/{id}
 POST   /v1/layers/{id}/reindex
 GET    /v1/workspaces    POST /v1/workspaces
-GET    /v1/grants        POST /v1/grants        DELETE /v1/grants/{id}
-GET    /v1/jobs/{id}
 GET    /v1/audit
-GET    /v1/health        /v1/ready               /metrics
-POST   /v1/auth/login    /v1/auth/refresh        /v1/auth/logout
 ```
 
 ## Errors — RFC 9457 (`application/problem+json`)
@@ -36,7 +46,7 @@ POST   /v1/auth/login    /v1/auth/refresh        /v1/auth/logout
 
 - `detail` never reveals the existence of an inaccessible object. **No
   permission and no such object produce the same response**, down to the
-  wording. That is invariant I6; a different message is the leak.
+  wording. That is invariant 4; a different message is the leak.
 - No stack traces, no internal service names.
 - `request_id` is always present and matches the field in the audit log.
 
@@ -117,11 +127,19 @@ inherits; the encoding leaves room to move.
   survives a cache expiring.
 - Every other unsafe method accepts an `Idempotency-Key` header; the result is
   cached for 24 hours and replayed with `Idempotency-Replayed: true`.
-- The key is scoped to the organization, the method, the path, and a hash of the
-  body. The same key with a different body is `409`, not a replay — a caller who
+- The key is scoped to the organization, **the principal**, the method, the path,
+  and a hash of the body. The principal is in that list because two principals in
+  one organization see different things — scoped to the tenant alone, either
+  could replay the other's response, and a replay is sent before any handler runs.
+  Only successful responses are stored: a cached failure makes a transient fault
+  permanent for a day and denies the retry this exists to serve. The same key with a different body is `409`, not a replay — a caller who
   changed the payload and kept the key is not asking for the old answer. A
   second attempt while the first is still in flight is `409` for the same
   reason: there is no response to replay yet.
+- **`POST /v1/search` is excluded.** It is safe to repeat by definition, so
+  idempotency buys it nothing, and its response is made entirely of other
+  people's documents — caching it would put chunk text in a store with a
+  24-hour TTL and no access control of its own.
 - **`POST /v1/service-accounts` is excluded**, and a key sent to it is ignored
   rather than honoured. Its response carries the account key itself, once; the
   key is stored hashed so that it cannot be recovered from the database or from

@@ -279,6 +279,14 @@ export interface ApiOptions {
   /** Rendered at /metrics. Absent means the endpoint answers 404. */
   readonly metrics?: { render(): Promise<string> }
   /**
+   * Answered at `/v1/ready`. Absent means the endpoint answers 404.
+   *
+   * One boolean per dependency, and never an error string: this endpoint is
+   * unauthenticated, so what it says about the inside of the deployment is what
+   * anyone who can reach the port learns.
+   */
+  readonly ready?: () => Promise<Record<string, boolean>>
+  /**
    * Per-organization rate limiting. Absent means unlimited, which is the right
    * default for a surface being tested and the wrong one for a deployment —
    * `main.ts` always provides it.
@@ -710,6 +718,31 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     // Liveness touches no dependency. A health check that calls Postgres turns
     // one slow database into a cascading restart loop.
     send(res, 200, { status: 'ok' }, requestId)
+    return
+  }
+
+  if (req.method === 'GET' && instance === '/v1/ready') {
+    // Readiness, which is the opposite of liveness and touches everything this
+    // process cannot serve a request without.
+    //
+    // `docs/config.md` has told operators to point a Kubernetes readinessProbe
+    // here since before there was a server, and the path answered `401` — it
+    // fell through to the authenticator, so the probe never succeeded and the
+    // rollout never completed. Unauthenticated for the same reason `/metrics`
+    // is: a probe has no credential to present, and the body says only which
+    // dependency is unhappy, never why.
+    //
+    // `503` rather than `200` with a body to parse. An orchestrator reads the
+    // status code, and a readiness endpoint that answers 200 while saying it is
+    // not ready is a readiness endpoint that does nothing.
+    if (options.ready === undefined) {
+      const problem = notFound(instance, requestId)
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+    const checks = await options.ready()
+    const ok = Object.values(checks).every(Boolean)
+    send(res, ok ? 200 : 503, { status: ok ? 'ready' : 'not ready', checks }, requestId)
     return
   }
 

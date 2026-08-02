@@ -1,5 +1,8 @@
+import { randomUUID } from 'node:crypto'
+
 import {
   HttpEmbedder,
+  NacreIngest,
   NacreSearchService,
   PostgresAudit,
   PostgresDocuments,
@@ -103,6 +106,12 @@ export function buildServices(config: Config): Services {
       )
     },
   })
+  // The same adapter the REST surface uses, so the two cannot drift on what a
+  // write is allowed to do. `ingest_document` and `delete_document` were in the
+  // tool catalog and in docs/mcp.md from the beginning with nothing behind them:
+  // an agent listed the tools, called one, and was told it did not exist.
+  const ingest = new NacreIngest({ pool, tombstone: vectors, orgSlug, role: APP_ROLE })
+
   const documents = new PostgresDocuments(pool, APP_ROLE)
   const audit = new PostgresAudit(pool, APP_ROLE)
 
@@ -159,6 +168,49 @@ export function buildServices(config: Config): Services {
       ),
   }
 
+  /**
+   * The document this call is about, by id or by the caller's own identifier.
+   *
+   * `docs/mcp.md` has documented `{external_id, layer}` as an alternative to
+   * `{document_id}` from the beginning, and both tools declared the fields and
+   * then required the id — a declared parameter the server drops is worse than
+   * one that was never offered.
+   *
+   * Resolution is not an authorization decision and must not become one: it
+   * answers "which row is this" and nothing else. Every caller of it passes the
+   * result to `documents.read` or `ingest.remove`, which resolve permissions
+   * the same way they do for an id supplied directly. So a caller who names a
+   * document they may not see gets the id resolved and then the same refusal a
+   * nonexistent one gets — which is what invariant I4 asks for.
+   */
+  const resolveId = async (
+    auth: AuthContext,
+    args: Record<string, unknown>,
+  ): Promise<string | undefined> => {
+    if (typeof args.document_id === 'string' && args.document_id !== '') return args.document_id
+
+    const externalId = args.external_id
+    const layer = args.layer
+    if (typeof externalId !== 'string' || typeof layer !== 'string') return undefined
+
+    return withOrg(
+      pool,
+      auth.orgId,
+      async (client) => {
+        const { rows } = await client.query<{ id: string }>(
+          `SELECT d.id
+             FROM documents d
+             JOIN layers l ON l.id = d.layer_id AND l.org_id = d.org_id
+            WHERE d.org_id = $1 AND d.external_id = $2 AND l.slug = $3
+              AND d.deleted_at IS NULL AND l.deleted_at IS NULL`,
+          [auth.orgId, externalId, layer],
+        )
+        return rows[0]?.id
+      },
+      { role: APP_ROLE },
+    )
+  }
+
   const tools: ToolRunner = {
     call: async (name, args, auth) => {
       switch (name) {
@@ -183,8 +235,8 @@ export function buildServices(config: Config): Services {
         case 'list_layers':
           return layers.forCaller(auth)
         case 'get_document': {
-          const id = args.document_id
-          if (typeof id !== 'string') throw new Error('document_id is required')
+          const id = await resolveId(auth, args)
+          if (id === undefined) throw new Error('not found')
           const document = await documents.read(auth, id)
           await audit.write({
             orgId: auth.orgId,
@@ -199,6 +251,63 @@ export function buildServices(config: Config): Services {
           // into the same answer it gives for one that never did.
           if (document === undefined) throw new Error('not found')
           return document
+        }
+        case 'ingest_document': {
+          const layer = args.layer
+          if (typeof layer !== 'string' || layer === '') throw new Error('layer is required')
+          const content = typeof args.content === 'string' ? args.content : undefined
+          const url = typeof args.url === 'string' ? args.url : undefined
+          if (content === undefined && url === undefined) {
+            throw new Error('one of content or url is required')
+          }
+
+          const outcome = await ingest.queue(auth, {
+            layer,
+            // The schema calls this an idempotency key and does not require it.
+            // Absent, the document is new every time, which is what a caller
+            // who did not supply one has asked for.
+            externalId: typeof args.external_id === 'string' ? args.external_id : randomUUID(),
+            ...(typeof args.title === 'string' ? { title: args.title } : {}),
+            ...(content === undefined ? {} : { content }),
+            ...(url === undefined ? {} : { url }),
+          })
+
+          await audit.write({
+            orgId: auth.orgId,
+            actor: `${auth.principal.type}:${auth.principal.id}`,
+            action: 'ingest',
+            result: outcome === undefined ? 'deny' : 'allow',
+            detail: { surface: 'mcp', layer },
+            requestId: 'mcp',
+          })
+
+          // Undefined means the caller may not write to that layer — and it has
+          // to mean the same for a layer that does not exist, or ingest becomes
+          // the cheapest way to enumerate layer names.
+          if (outcome === undefined) throw new Error('not found')
+          return {
+            document_id: outcome.documentId,
+            job_id: outcome.jobId,
+            status: outcome.unchanged ? 'indexed' : 'queued',
+          }
+        }
+        case 'delete_document': {
+          const id = await resolveId(auth, args)
+          const removed = id === undefined ? false : await ingest.remove(auth, id)
+
+          await audit.write({
+            orgId: auth.orgId,
+            actor: `${auth.principal.type}:${auth.principal.id}`,
+            action: 'delete_document',
+            result: removed ? 'allow' : 'deny',
+            detail: { surface: 'mcp', document_id: id ?? null },
+            requestId: 'mcp',
+          })
+
+          // False for absent and for not-permitted alike, and the transport
+          // turns both into the answer an unknown tool would get.
+          if (!removed) throw new Error('not found')
+          return { document_id: id, deleted: true }
         }
         default:
           throw new Error(`unknown tool: ${name}`)

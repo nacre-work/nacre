@@ -6,5 +6,11 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
+  // A published client must not ship its own test suite. Without this the
+  // suites compile into dist/ and go out in the tarball — where they `import
+  // from 'vitest'`, which is a root devDependency and not a dependency of this
+  // package, so anything walking the package graph hits a module that cannot
+  // resolve. `@nacre.work/api@0.0.0` on npm contains three of them.
+  "exclude": ["dist", "src/__tests__/**"],
   "references": [{ "path": "../core" }]
 }
