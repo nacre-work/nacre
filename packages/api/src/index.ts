@@ -2,6 +2,9 @@ export { createApi } from './server.js'
 export type {
   ApiOptions,
   AuditEvent,
+  AuditQuery,
+  AuditReader,
+  AuditRecord,
   AuditSink,
   DocumentView,
   Documents,
@@ -30,6 +33,7 @@ export {
   NacreIngest,
   NacreSearchService,
   PostgresAudit,
+  PostgresAuditReader,
   PostgresDocuments,
   PostgresGrants,
   PostgresJobs,
@@ -52,6 +56,8 @@ export type { ServiceAccount, ServiceAccounts, ServiceKeyResolver } from './serv
 // one. Two limiters would be two buckets, and a caller out of budget on one
 // surface would simply use the other — which is what happened before this was
 // exported: NACRE_RATE_* applied to REST only.
+export { auditFormat, auditJson, readAuditQuery, toCsv, toNdjson } from './audit-export.js'
+export type { AuditFormat } from './audit-export.js'
 export { limitHeaders, RateLimiter } from './limits.js'
 export type { LimitDecision, LimitPolicy, Resource } from './limits.js'
 export { clientSource } from './source.js'

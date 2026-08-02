@@ -62,6 +62,34 @@ components:
             and applying nothing would let a search look narrower than it was,
             which for this product is the worst available failure. It stays in
             the contract because it will be built to it.
+    AuditEvent:
+      type: object
+      description: >
+        One recorded access, as docs/audit.md specifies it. Query text is never
+        stored — a hash is, under NACRE_AUDIT_QUERY_TEXT=false, which is the
+        default — so the journal cannot leak what the journal exists to police.
+      required: [id, occurred_at, actor, surface, action, target, result]
+      properties:
+        id:          { type: string, description: 'A sequence rather than a uuid, because a log is ordered.' }
+        occurred_at: { type: string, format: date-time }
+        actor:
+          type: object
+          required: [type, label]
+          properties:
+            type:  { type: string, example: service_account }
+            id:    { type: [string, 'null'], format: uuid }
+            label: { type: string }
+        surface: { type: string, enum: [api, mcp, admin, system] }
+        client:  { type: [string, 'null'], description: From the MCP client's _meta. }
+        action:  { type: string, example: search }
+        target:
+          type: object
+          additionalProperties: true
+          description: 'What the call was about; search records the layers and doc ids it returned.'
+        result:  { type: string, enum: [allow, deny, error] }
+        detail:  { type: object, additionalProperties: true }
+        request_id: { type: [string, 'null'] }
+
     SearchHit:
       type: object
       required: [chunk_id, doc_id, layer, score]
@@ -651,21 +679,90 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /audit:
     get:
-      summary: 'Access log. NOT IMPLEMENTED.'
+      summary: Read the access log
       description: >
-        Specified and not built; a request to this path is answered 404. Events
-        are written on every access — see docs/audit.md — and there is no way to
-        read them back over the API yet. Cursor pagination and JSONL/CSV export
-        are the contract this will be built to.
+        Every access is recorded — see docs/audit.md — and this is how it is read
+        back. Newest first, cursor-paged, and available as JSON, JSONL or CSV by
+        content negotiation rather than a `format` parameter: the difference
+        between them is representation, not resource.
+
+
+        **Two roles see two different logs.** `org_admin` administers the tenant
+        and sees its log in full, including which documents were read — the
+        question docs/audit.md opens with. `platform_admin` administers the
+        installation and is shown administrative actions only, never the record
+        of who read what. That is rule 2 in authz.md applied to the journal: a
+        platform administrator able to read every tenant's document-access log
+        has exactly the access the permission model exists to deny, obtained
+        through the record that exists to prove they did not have it. It is not a
+        request parameter, so a caller cannot widen their own view by omitting
+        one.
+
+
+        Reading the log is itself recorded, as `audit.read`.
       parameters:
         - { $ref: '#/components/parameters/Limit' }
         - { $ref: '#/components/parameters/Cursor' }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+          description: Inclusive lower bound on `occurred_at`.
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+          description: >
+            Exclusive upper bound. A range with `from` at or after `to` is
+            refused rather than returning nothing — on a compliance query "no
+            events happened" and "you asked for an impossible range" are
+            opposite answers.
+        - name: actor_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: action
+          in: query
+          schema: { type: string, maxLength: 64 }
+        - name: result
+          in: query
+          schema: { type: string, enum: [allow, deny, error] }
       responses:
-        '200': { description: Events }
+        '200':
+          description: >
+            Events, newest first. JSON carries `next_cursor` in the body; JSONL
+            and CSV carry it in a `Link: rel="next"` header, because an export
+            streaming to a file has nowhere to put a footer.
+          headers:
+            Link:
+              schema: { type: string }
+              description: 'Present on JSONL and CSV when more events follow.'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/AuditEvent' } }
+                  next_cursor: { type: [string, 'null'] }
+            application/x-ndjson:
+              schema: { type: string, description: 'One AuditEvent per line.' }
+            text/csv:
+              schema: { type: string, description: 'RFC 4180, CRLF, with a header row.' }
+        '400':
+          description: A malformed filter, refused rather than dropped.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '404':
           description: >
             Not 403, which an earlier draft of this document published and which
             would have been the only 403 in the contract. Invariant 4 reserves
             403 for an operation forbidden on an object the caller can already
             see; whether an organization has an audit log is not something a
-            caller who may not read it is told.
+            caller who may not read it is told. A method other than GET answers
+            the same way.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '406':
+          description: An Accept header naming none of the three types served.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }

@@ -90,5 +90,56 @@ Those properties hold whoever calls it, which matters: `nacre_app` inherits
 intent and keeps third parties out; it is not what makes this safe. The shape of
 the function is.
 
-`GET /v1/audit` is not implemented — events are written and there is no way to
-read them back over the API yet.
+## Reading it back
+
+`GET /v1/audit` is implemented. Newest first, cursor-paged, and available as
+JSON, JSONL or CSV by content negotiation rather than a `format` parameter —
+the difference between them is representation, not resource.
+
+Filters: `from`, `to`, `actor_id`, `action`, `result`. All five are applied. A
+malformed one is refused with `400` rather than dropped, and a range with `from`
+at or after `to` is refused rather than returning nothing: on a compliance query
+"no events happened" and "you asked for an impossible range" are opposite
+answers, and an audit filter that silently does nothing is worse than a search
+filter that does, because the person running it will believe the result.
+
+JSON carries `next_cursor` in the body. JSONL and CSV carry it in a
+`Link: rel="next"` header, because an export streaming to a file has nowhere to
+put a footer and no consumer should have to know to strip one.
+
+**The two roles see two different logs.** `org_admin` administers the tenant and
+sees its log in full, including which documents were read — the question this
+document opens with. `platform_admin` administers the *installation* and is
+shown administrative actions only, never the record of who read what. That is
+rule 2 in [authz.md](./authz.md) applied to the journal: a platform
+administrator able to read every tenant's document-access log has exactly the
+access the permission model spends its whole effort denying, obtained through
+the record that exists to prove they did not have it.
+
+It is not a request parameter. A caller cannot widen their own view by omitting
+one, which is the shape the bug would take if it were.
+
+On a single-organization community install the two roles sit in the same
+organization and the distinction reads as odd. It is there for the
+multi-tenancy module, which inherits this endpoint and where a platform
+administrator spans tenants.
+
+The set of actions treated as document access is a **deny-list**, in
+`PostgresAuditReader.DOCUMENT_ACCESS`. That is the uncomfortable direction — a
+new action defaults to visible to a platform administrator rather than hidden —
+and it is chosen because the alternative fails worse. An allow-list of
+administrative actions means a new administrative action is invisible to the
+operator who administers the installation until someone remembers to add it: a
+silent gap in an operational tool. This way a new *access* action is visible
+until someone adds it, which is a disclosure to an already highly-privileged
+role within one installation. Both are bugs; only one of them is quiet. Adding
+an action means updating that list, which the `audit-event` checklist says.
+
+Reading the log is itself recorded, as `audit.read`. It is the one action where
+leaving that out would be self-serving.
+
+A member gets `404`, not `403` — invariant 4 reserves `403` for an operation
+forbidden on an object the caller can already see, and whether an organization
+keeps an audit log is not something a member is told. A method other than `GET`
+answers the same way: the append-only guarantee is not something to advertise a
+method for and then refuse.

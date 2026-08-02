@@ -81,10 +81,14 @@ Signing in works: email and password, with rotating refresh tokens that end the
 session if one is replayed. `init` creates the first administrator and prints a
 generated password once. SSO is a commercial module.
 
+The access log is readable: `GET /v1/audit`, newest first, cursor-paged, as
+JSON, JSONL or CSV. `org_admin` sees which documents were read — the question
+an audit log exists to answer — and `platform_admin` sees administrative actions
+and never that, which is rule 2 applied to the journal.
+
 What is not built, all of it described in `docs/` because that is the contract
-it will be built to: `POST /v1/layers/{id}/reindex` and `GET /v1/audit`, OAuth
-discovery and dynamic client registration, and multipart upload on ingest. The
-audit log is written on every access and cannot yet be read back over the API. `docker compose up` has not been run from a clean
+it will be built to: `POST /v1/layers/{id}/reindex`, OAuth discovery and dynamic
+client registration, and multipart upload on ingest. `docker compose up` has not been run from a clean
 checkout, though its profiles are validated in CI.
 
 `docs/` is the specification, and it still runs ahead of the code in places —

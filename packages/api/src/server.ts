@@ -12,6 +12,13 @@ import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
 import type { Login, Tokens } from './login.js'
 import { clientSource } from './source.js'
+import {
+  auditFormat,
+  auditJson,
+  readAuditQuery,
+  toCsv,
+  toNdjson,
+} from './audit-export.js'
 import { readPage, type Page, type PageResult } from './pagination.js'
 export type { Page, PageResult }
 
@@ -325,6 +332,62 @@ export interface AuditSink {
   write(event: AuditEvent): Promise<void>
 }
 
+/**
+ * One event as it is read back, which is not the shape it was written in.
+ *
+ * `AuditEvent` is what a handler hands to the sink; this is what the table
+ * holds — an id, a timestamp, and the actor split into the three columns
+ * `docs/audit.md` specifies rather than the single label the writer supplies.
+ */
+export interface AuditRecord {
+  readonly id: string
+  readonly occurredAt: string
+  readonly actorType: string
+  readonly actorId: string | null
+  readonly actorLabel: string
+  readonly action: string
+  readonly surface: string
+  readonly client: string | null
+  readonly target: Record<string, unknown>
+  readonly result: string
+  readonly detail: Record<string, unknown>
+  readonly requestId: string | null
+}
+
+/**
+ * What a caller may narrow the log to.
+ *
+ * Every one of these is applied. That is worth stating because the last three
+ * search parameters in this contract were declared and ignored, and an audit
+ * filter that silently does nothing is worse than a search filter that does:
+ * the person running it is answering a compliance question and will believe the
+ * answer.
+ */
+export interface AuditQuery {
+  /** Inclusive lower bound on `occurred_at`, as an ISO timestamp. */
+  readonly from?: string
+  /** Exclusive upper bound on `occurred_at`. */
+  readonly to?: string
+  readonly actorId?: string
+  readonly action?: string
+  readonly result?: 'allow' | 'deny' | 'error'
+  /**
+   * Restrict to administrative actions — everything that is not a substantive
+   * access to a document's contents.
+   *
+   * Not a caller-supplied filter. It is set by the handler for a
+   * `platform_admin`, because `docs/audit.md` gives that role administrative
+   * visibility and explicitly withholds records of document access. Keeping it
+   * in this type rather than in the SQL means the rule is stated once, at the
+   * boundary, where it can be read next to the role check that sets it.
+   */
+  readonly administrativeOnly?: boolean
+}
+
+export interface AuditReader {
+  read(auth: AuthContext, query: AuditQuery, page: Page): Promise<PageResult<AuditRecord>>
+}
+
 export interface ApiOptions {
   readonly verify: VerifyOptions
   /** Rendered at /metrics. Absent means the endpoint answers 404. */
@@ -365,6 +428,8 @@ export interface ApiOptions {
    * which is the default and is right for an internal port — see the handler.
    */
   readonly metricsToken?: string
+  /** Reads the access log back. Absent means `/v1/audit` answers 404. */
+  readonly auditReader?: AuditReader
   /** `Idempotency-Key` on unsafe methods. Absent means the header is ignored. */
   readonly idempotency?: IdempotencyStore
   /** Email and password sign-in. Absent means `/v1/auth/*` is 404. */
@@ -1506,6 +1571,117 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       }
 
       send(res, 204, null, requestId)
+      return
+    }
+
+    if (instance === '/v1/audit') {
+      // 404 rather than 403 for a caller who may not read it, and rather than
+      // 405 for a method this path does not have. Invariant 4 reserves 403 for
+      // an operation forbidden on an object the caller can already see, and
+      // whether an organization keeps an audit log is not something a member is
+      // told. The contract published this answer before the endpoint existed.
+      if (options.auditReader === undefined || req.method !== 'GET') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      // Two roles, two different logs, and the difference is rule 2 rather than
+      // a convenience.
+      //
+      // `org_admin` administers the tenant and sees its log in full — including
+      // which documents were read, which is the question docs/audit.md opens
+      // with. `platform_admin` administers the *installation*: it sees grants
+      // issued, accounts created, configuration changed, and deliberately not
+      // the record of who read what. A platform administrator who can read
+      // every tenant's document-access log has the access the permission model
+      // spends its whole effort denying, obtained through the journal that
+      // exists to prove they did not.
+      //
+      // On a single-organization community install the two sit in the same
+      // organization and this reads as an odd distinction. It is not for this
+      // build; it is for the multi-tenancy module, which inherits this endpoint
+      // and where a platform administrator spans tenants. Writing the rule now
+      // costs three lines. Retrofitting it later means auditing every caller.
+      if (auth.role !== 'org_admin' && auth.role !== 'platform_admin') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const page = readPage(url.searchParams, instance, requestId)
+      if (page instanceof Problem) {
+        send(res, page.status, page.toJSON(), requestId)
+        return
+      }
+
+      const query = readAuditQuery(url.searchParams, instance, requestId)
+      if (query instanceof Problem) {
+        send(res, query.status, query.toJSON(), requestId)
+        return
+      }
+
+      const format = auditFormat(req.headers.accept)
+      if (format === undefined) {
+        const problem = new Problem({
+          type: 'https://nacre.work/errors/not-acceptable',
+          title: 'Not acceptable',
+          status: 406,
+          detail:
+            'This endpoint serves application/json, application/x-ndjson and text/csv. ' +
+            'Ask for one of those, or send no Accept header for JSON.',
+          instance,
+          requestId,
+        })
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const { items, nextCursor } = await options.auditReader.read(
+        auth,
+        // `administrativeOnly` is set here and never read from the request. A
+        // caller cannot widen their own view by omitting a parameter, which is
+        // the shape this would take if it were a query filter.
+        { ...query, administrativeOnly: auth.role === 'platform_admin' },
+        page,
+      )
+
+      // Reading the log is itself an access worth recording. It is the one
+      // action where leaving it out is self-serving: an administrator who can
+      // read who-read-what without that read appearing is a hole in exactly the
+      // guarantee this endpoint exists to provide.
+      await options.audit?.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'audit.read',
+        result: 'allow',
+        surface: 'api',
+        target: { format, returned: items.length, ...query },
+        detail: {},
+        requestId,
+      })
+
+      if (format === 'json') {
+        send(res, 200, { items: items.map(auditJson), next_cursor: nextCursor }, requestId)
+        return
+      }
+
+      // JSONL and CSV are exports, so they carry no cursor — a client streaming
+      // to a file has nowhere to put one. `Link` is where the contract puts it,
+      // which keeps the body a clean stream of records rather than a stream
+      // with a footer that every consumer has to know to strip.
+      const headers: Record<string, string> = {
+        'content-type': format === 'ndjson' ? 'application/x-ndjson' : 'text/csv; charset=utf-8',
+        'x-request-id': requestId,
+      }
+      if (nextCursor !== null) {
+        const next = new URL(url.href)
+        next.searchParams.set('cursor', nextCursor)
+        headers.link = `<${next.pathname}${next.search}>; rel="next"`
+      }
+
+      res.writeHead(200, headers)
+      res.end(format === 'ndjson' ? toNdjson(items) : toCsv(items))
       return
     }
 

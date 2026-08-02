@@ -20,6 +20,7 @@ import {
   NacreIngest,
   NacreSearchService,
   PostgresAudit,
+  PostgresAuditReader,
   PostgresDocuments,
   PostgresGrants,
   PostgresJobs,
@@ -200,6 +201,7 @@ async function main(): Promise<void> {
     ...(config.metricsToken === undefined ? {} : { metricsToken: config.metricsToken }),
     idempotency,
     login,
+    auditReader: new PostgresAuditReader(pool, APP_ROLE),
     documents: new PostgresDocuments(pool, APP_ROLE),
     search: new NacreSearchService({
       pool,

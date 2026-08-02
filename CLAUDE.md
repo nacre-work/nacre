@@ -144,8 +144,14 @@ rather than ignoring it. All three were in the contract from before there was a
 server and read by nothing: a client scoping a search to one layer searched all
 of them and believed otherwise.
 
+The access log is readable — `GET /v1/audit`, newest first, cursor-paged, as
+JSON, JSONL or CSV by content negotiation. `org_admin` sees which documents were
+read; `platform_admin` sees administrative actions and never that, which is rule
+2 applied to the journal and is set by the handler rather than being a parameter
+a caller could drop. Reading the log is recorded as `audit.read`.
+
 Not built: OAuth discovery and dynamic client registration, multipart upload on
-ingest, and filtering on document metadata — the worker writes no metadata to
+ingest, layer reindex, and filtering on document metadata — the worker writes no metadata to
 the vector payload, which is why `filters` answers `400` rather than being a
 silent no-op.
 
