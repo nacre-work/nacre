@@ -170,7 +170,7 @@ async function main(): Promise<void> {
     login,
     auditReader: new PostgresAuditReader(pool, APP_ROLE),
     reindex: new PostgresReindex(pool, vectors, APP_ROLE),
-    documents: new PostgresDocuments(pool, APP_ROLE),
+    documents: new PostgresDocuments(pool, vectors, APP_ROLE),
     search: new NacreSearchService({
       pool,
       vectors,

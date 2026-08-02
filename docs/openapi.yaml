@@ -187,6 +187,27 @@ components:
         status:      { type: string, enum: [pending, parsing, indexing, indexed, failed] }
         chunk_count: { type: integer }
         updated_at:  { type: string, format: date-time }
+        metadata:
+          allOf:
+            - $ref: '#/components/schemas/DocumentMetadata'
+          description: >
+            What the document was tagged with, and what `filters` reads back.
+            `{}` for a document that was never tagged.
+    DocumentMetadata:
+      type: object
+      description: >
+        Keys are lower case letters, digits and underscores — a key becomes a
+        payload field name, and the vector store reads `.` as nested access.
+        Values are scalars or lists of them; a nested object is refused rather
+        than flattened. At most 32 keys.
+      additionalProperties:
+        oneOf:
+          - type: string
+          - type: number
+          - type: boolean
+          - type: array
+            maxItems: 32
+            items: { type: [string, number, boolean] }
     IngestRequest:
       type: object
       required: [layer]
@@ -530,6 +551,33 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Document' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+    patch:
+      summary: >
+        Replace a document's metadata. The vectors are untouched — no re-parse,
+        no re-chunk, no re-embed.
+      description: >
+        `write`, and rule 6 means that is not the same set as `read`. The answer
+        carries no body for exactly that reason: a caller who may retag a
+        document and not read it must not learn its title or its layer from a
+        successful call. `GET` is where the document is, for whoever may see it.
+
+        A replacement and not a merge — send every tag the document should have.
+        Sending `{"source":"notion"}` after `{"source":"confluence","team":"legal"}`
+        leaves one tag, because otherwise a tag the caller removed would go on
+        matching filters.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [metadata]
+              properties:
+                metadata: { $ref: '#/components/schemas/DocumentMetadata' }
+      responses:
+        '204': { description: Replaced }
+        '400': { description: 'metadata is missing, or is not a usable shape' }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
     delete:
       summary: Delete a document — a tombstone; it leaves results immediately

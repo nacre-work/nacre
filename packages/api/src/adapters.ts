@@ -14,6 +14,7 @@ import {
   vectorName,
   withOrg,
   type Hit,
+  type Metadata,
   type Narrowing,
   type QueryablePlan,
   type ReindexState,
@@ -69,7 +70,18 @@ export interface Embedder {
 }
 
 export class PostgresDocuments implements Documents {
-  constructor(private readonly pool: Pool, private readonly role?: string) {}
+  constructor(
+    private readonly pool: Pool,
+    /**
+     * What writes metadata into the payload of a document's points.
+     *
+     * Narrow on purpose, like the delete path's tombstone port: this endpoint
+     * has no business searching, and a port that could would let a later change
+     * reach the index without a plan.
+     */
+    private readonly payload: DocumentMetadataWriter,
+    private readonly role?: string,
+  ) {}
 
   /**
    * Undefined for absent, for another organization's, and for one this caller
@@ -105,8 +117,10 @@ export class PostgresDocuments implements Documents {
           status: string
           chunk_count: number
           updated_at: Date
+          metadata: Record<string, unknown> | null
         }>(
-          `SELECT d.id, d.title, d.layer_id, l.slug AS layer, d.status, d.chunk_count, d.updated_at
+          `SELECT d.id, d.title, d.layer_id, l.slug AS layer, d.status, d.chunk_count,
+                  d.updated_at, d.metadata
              FROM documents d
              JOIN layers l ON l.id = d.layer_id AND l.org_id = d.org_id
             WHERE d.org_id = $1 AND d.id = $2 AND d.deleted_at IS NULL`,
@@ -132,11 +146,92 @@ export class PostgresDocuments implements Documents {
           status: row.status,
           chunk_count: Number(row.chunk_count),
           updated_at: row.updated_at.toISOString(),
+          // Read back, because a caller who tags a document and cannot see the
+          // tag has no way to tell a successful write from a dropped one — and
+          // this field was dropped by the handler for as long as it existed.
+          metadata: (row.metadata ?? {}) as Metadata,
         }
       },
       this.role === undefined ? {} : { role: this.role },
     )
   }
+
+  /**
+   * Replace a document's metadata without re-embedding it.
+   *
+   * This is the cheap path `docs/api.md` said was not built. Ingest treats a
+   * metadata change as a change: the row and the vector payload would otherwise
+   * disagree and the document would carry a tag it does not answer to, so a
+   * re-tag cost a full re-parse, re-chunk and re-embed. Here the vectors are
+   * untouched and only the payload is rewritten — the same `setPayload` the ACL
+   * retag sweep uses, for the same reason.
+   *
+   * `write`, not `read`, and rule 6 means those are not the same set. The
+   * answer carries no body at all: a caller who may write to a document and not
+   * read it must not learn its title or its layer from a successful PATCH.
+   *
+   * Row first, then payload, both inside one transaction. A payload write that
+   * throws rolls the row back, so the two cannot end up disagreeing in the
+   * direction that matters — the row is what the worker rebuilds the payload
+   * from on the next index, so a row that ran ahead would be reverted while a
+   * payload that ran ahead would not.
+   */
+  async updateMetadata(
+    auth: AuthContext,
+    documentId: string,
+    metadata: Metadata,
+  ): Promise<boolean> {
+    if (!/^[0-9a-f-]{36}$/i.test(documentId)) return false
+
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const { rows: orgs } = await client.query<{ vector_collection: string }>(
+          'SELECT vector_collection FROM organizations WHERE id = $1 AND deleted_at IS NULL',
+          [auth.orgId],
+        )
+        const collection = orgs[0]?.vector_collection
+        if (collection === undefined) return false
+
+        const plan = resolve(await contextFor(client, auth), 'write')
+        if (plan.kind === 'none') return false
+
+        const { rows } = await client.query<{ layer_id: string }>(
+          `SELECT layer_id FROM documents
+            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+          [auth.orgId, documentId],
+        )
+        const layerId = rows[0]?.layer_id
+        if (layerId === undefined) return false
+
+        if (plan.kind === 'scoped') {
+          // deniedDocs first, as on the delete path: a deny beats an allow at
+          // any depth, and checking only `layers` would let a document inside
+          // an allowed layer be retagged despite an explicit deny on it.
+          if (plan.deniedDocs.includes(documentId)) return false
+          if (!plan.layers.includes(layerId) && !plan.extraDocs.includes(documentId)) return false
+        }
+
+        await client.query(
+          `UPDATE documents SET metadata = $3, updated_at = now()
+            WHERE org_id = $1 AND id = $2`,
+          [auth.orgId, documentId, JSON.stringify(metadata)],
+        )
+
+        // `version` is deliberately not bumped. It counts revisions of the
+        // document's content, and a tag change is not one — bumping it would
+        // make every retag look like an edit to anything watching for one.
+        await this.payload.setMetadata(collection, documentId, metadata)
+        return true
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+}
+
+export interface DocumentMetadataWriter {
+  setMetadata(collection: string, documentId: string, metadata: Metadata): Promise<void>
 }
 
 export interface SearchDeps {

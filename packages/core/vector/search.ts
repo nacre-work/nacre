@@ -1,6 +1,6 @@
 import { QdrantClient } from '@qdrant/js-client-rest'
 
-import { buildFilter, type Narrowing, type QueryablePlan } from '../authz/filter.js'
+import { buildFilter, METADATA_PREFIX, type Narrowing, type QueryablePlan } from '../authz/filter.js'
 import { buildHybridQuery, collectionConfig, collectionName, PAYLOAD_INDEXES, vectorParams, type Branch } from './query.js'
 
 /**
@@ -128,6 +128,42 @@ export class VectorStore {
       payload: { deleted: true },
       filter: { must: [{ key: 'doc_id', match: { value: documentId } }] },
     } as never)
+  }
+
+  /**
+   * Replace the caller's metadata on every point of a document.
+   *
+   * `setPayload` under the reserved key, which merges at the top level and so
+   * leaves `org_id`, `deleted`, `acl_tags` and the rest exactly as they were —
+   * the namespace is what makes that safe rather than a list of fields to
+   * preserve.
+   *
+   * Whole-object replacement inside that key, not a merge: a caller sending
+   * `{source: "notion"}` after `{source: "confluence", team: "legal"}` means
+   * the document now has one tag, and merging would leave a tag they removed
+   * still matching filters. `PATCH` names the resource, not the field.
+   *
+   * The vectors are untouched. Re-embedding a document because a tag moved
+   * would make a bulk retag cost as much as a bulk ingest, which is the same
+   * argument the ACL retag path is built on.
+   */
+  async setMetadata(
+    collection: string,
+    documentId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.#client.setPayload(collection, {
+        wait: true,
+        payload: { [METADATA_PREFIX]: metadata },
+        filter: { must: [{ key: 'doc_id', match: { value: documentId } }] },
+      } as never)
+    } catch (cause) {
+      throw new Error(
+        `metadata write to ${collection} rejected: ${explainQdrant(cause)}`,
+        { cause },
+      )
+    }
   }
 
   /**

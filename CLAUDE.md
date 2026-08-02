@@ -190,15 +190,16 @@ the index. No negation, no ranges, no disjunction across keys: each is a way to
 widen if composed wrongly, and none is needed to answer "only documents from
 this source".
 
-Changing metadata alone re-indexes the document, because the row and the payload
-would otherwise disagree. The cheap path — a payload-only write, as the ACL
-retag sweep does — is not built, and `docs/api.md` says so rather than letting an
-operator find it on a bill.
+`PATCH /v1/documents/{id}` changes a document's tags without re-embedding it —
+one `setPayload` over its points, the same call the ACL retag sweep makes. Going
+through ingest instead re-parses and re-embeds, because that is what ingest
+does; the difference is what a bulk retagging pass costs. It answers `204` and
+never the document, because rule 6 means a caller may hold `write` without
+`read`.
 
-Not built: OAuth discovery and dynamic client registration, multipart upload on
-ingest, the recall check against a reference query set on a reindex, dropping
-the old vector after a rollback window, and a payload-only path for a metadata
-change.
+Not built: OAuth dynamic client registration and CIMD, multipart upload on
+ingest, the recall check against a reference query set on a reindex, and
+dropping the old vector after a rollback window.
 
 **`docker compose --profile minimal up` has now been run from a clean clone**,
 and the whole loop driven through it: init, layer, ingest, indexed, search,

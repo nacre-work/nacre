@@ -10,6 +10,7 @@ Implemented:
 ```
 POST   /v1/documents                 ingest (json; multipart not built)
 GET    /v1/documents/{id}
+PATCH  /v1/documents/{id}            metadata only; no re-embed
 DELETE /v1/documents/{id}            tombstone
 POST   /v1/search
 GET    /v1/layers        POST /v1/layers
@@ -25,7 +26,6 @@ Specified and **not** implemented. These answer `404` like any unknown path;
 they are listed because this is the contract they will be built to:
 
 ```
-PATCH  /v1/documents/{id}            metadata
 PATCH  /v1/layers/{id}
 GET    /v1/workspaces    POST /v1/workspaces
 ```
@@ -145,11 +145,22 @@ values are scalars or lists of them; a nested object is refused rather than
 flattened, because flattening would invent a path syntax and a path is a way to
 reach a field the caller did not name.
 
-**Changing metadata alone re-indexes the document.** It is written into the
-payload of every chunk, so the row and the index would otherwise disagree and
-the document would carry a tag it does not answer to. The cheap path is a
-payload-only write, as the ACL retag sweep does for permission tags, and it is
-not built — a bulk retagging pass costs a full re-embed today.
+**Which path you use to change a tag decides what it costs.**
+`POST /v1/documents` re-parses, re-chunks and re-embeds, because that is what
+ingest does — the row and the payload would otherwise disagree and the document
+would carry a tag it does not answer to. `PATCH /v1/documents/{id}` changes the
+tags and nothing else: one `setPayload` over the document's points, the same
+call the ACL retag sweep makes, and not a single embedding computed. A bulk
+retagging pass goes through `PATCH`.
+
+`PATCH` needs `write`, and rule 6 means that is not the same set as `read`. It
+answers `204` and never the document, for exactly that reason: a caller who may
+retag a document and not read it must not learn its title or its layer from a
+successful call.
+
+It is a replacement, not a merge. Sending `{"source":"notion"}` after
+`{"source":"confluence","team":"legal"}` leaves one tag — merging would leave a
+tag the caller removed still matching filters.
 
 Narrowing is still a pre-filter, so invariant 2 is untouched: `top_k` comes back
 full from the smaller permitted set rather than being cut down from the larger

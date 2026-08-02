@@ -57,6 +57,18 @@ export interface Documents {
    * grant had been revoked, and a service account with `write` and no `read`.
    */
   read(auth: AuthContext, documentId: string): Promise<DocumentView | undefined>
+  /**
+   * Replace a document's metadata, leaving its vectors alone.
+   *
+   * `false` for every reason the write cannot happen — absent, another
+   * organization's, denied, or a caller with no `write` reaching it. Same rule
+   * as `read`: one answer for all of them, or the 403/404 distinction leaks
+   * through whatever the caller does with it.
+   *
+   * Absent from an implementation means the path answers `404`, like any other
+   * capability a surface does not have.
+   */
+  updateMetadata?(auth: AuthContext, documentId: string, metadata: Metadata): Promise<boolean>
 }
 
 /**
@@ -79,6 +91,8 @@ export interface DocumentView {
   readonly status: string
   readonly chunk_count: number
   readonly updated_at: string
+  /** What the caller tagged it with, and what `filters` reads back. */
+  readonly metadata: Metadata
 }
 
 /**
@@ -1510,6 +1524,68 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
+      send(res, 204, null, requestId)
+      return
+    }
+
+    if (req.method === 'PATCH' && documentMatch) {
+      const id = decodeURIComponent(documentMatch[1] as string)
+
+      if (options.documents.updateMetadata === undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const body_ = (body ?? {}) as Record<string, unknown>
+      if (body_.metadata === undefined) {
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'metadata' is required. It is the only field this endpoint changes: " +
+            'content goes through POST /v1/documents, which re-indexes.',
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      let patch
+      try {
+        patch = parseMetadata(body_.metadata)
+      } catch (error) {
+        const problem = badRequest(
+          instance,
+          requestId,
+          error instanceof MetadataError ? error.message : "'metadata' is not usable.",
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const updated = await options.documents.updateMetadata(auth, id, patch)
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'update_metadata',
+        result: updated ? 'allow' : 'deny',
+        target: { document_id: id },
+        // The keys, never the values. A tag can carry anything a caller puts in
+        // it, and the journal is read by more people than the document is.
+        detail: { document_id: id, keys: Object.keys(patch).sort() },
+        requestId,
+      })
+
+      if (!updated) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      // 204, not the updated document. Rule 6: `write` does not imply `read`,
+      // so a caller who may retag a document and not read it must not learn its
+      // title or its layer from a successful PATCH. `GET` is where the document
+      // is, for whoever may see it.
       send(res, 204, null, requestId)
       return
     }

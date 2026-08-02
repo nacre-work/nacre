@@ -33,6 +33,8 @@ const ids = {
   shutA: '00000000-0000-0000-0000-0000000000a4',
   layerB: '00000000-0000-0000-0000-0000000000b3',
   docA: '00000000-0000-0000-0000-0000000000a5',
+  // `write` on the open layer and no `read`, which is rule 6's whole point.
+  carol: '00000000-0000-0000-0000-0000000000a6',
   provider: '00000000-0000-0000-0000-0000000000e2',
 }
 
@@ -61,6 +63,17 @@ const auth = (orgId: string, userId: string): AuthContext => ({
   principal: { type: 'user', id: userId },
   role: 'member',
 })
+
+/**
+ * The metadata payload port, which the read path never touches. Raising rather
+ * than pretending: if a read ever starts writing to the index, this is how it
+ * gets caught rather than passing silently.
+ */
+const noPayload = {
+  setMetadata: async () => {
+    throw new Error('the read path must not write to the index')
+  },
+}
 
 const embedder = { embed: async (texts: readonly string[]) => texts.map(() => [0.1, 0.2, 0.3, 0.4]) }
 
@@ -109,6 +122,19 @@ when('baseline · the search path', () => {
                 ($1,'user',$2,'layer',$4,'read','deny')
          ON CONFLICT DO NOTHING`,
         [A, ids.alice, ids.wsA, ids.shutA],
+      )
+      // Carol writes and cannot read. Rule 6 says those are different sets, and
+      // the metadata path is the first write endpoint where the difference is
+      // observable from outside.
+      await c.query(
+        `INSERT INTO users (id, org_id, email) VALUES ($1,$2,'c@sp.test') ON CONFLICT DO NOTHING`,
+        [ids.carol, A],
+      )
+      await c.query(
+        `INSERT INTO grants (org_id, principal_type, principal_id, scope_type, scope_id, permission, effect)
+         VALUES ($1,'user',$2,'layer',$3,'write','allow')
+         ON CONFLICT DO NOTHING`,
+        [A, ids.carol, ids.openA],
       )
       await c.query('COMMIT')
     } catch (e) {
@@ -176,7 +202,7 @@ when('baseline · the search path', () => {
   })
 
   it('T8 · a document read is scoped by the token, twice over', async () => {
-    const documents = new PostgresDocuments(pool, AS_APP)
+    const documents = new PostgresDocuments(pool, noPayload, AS_APP)
 
     expect(await documents.read(as(A), ids.docA)).toMatchObject({
       document_id: ids.docA,
@@ -187,8 +213,56 @@ when('baseline · the search path', () => {
     expect(await documents.read(as(B), ids.docA)).toBeUndefined()
   })
 
+  it('metadata is a write, and read alone does not reach it', async () => {
+    // Rule 6, on the first write endpoint where the difference shows from
+    // outside. Alice reads the document happily and cannot retag it, and the
+    // refusal is the same `false` that an absent document gets — there is no
+    // second answer for "you may look but not touch".
+    const wrote: { collection: string; documentId: string }[] = []
+    const recording = {
+      setMetadata: async (collection: string, documentId: string) => {
+        wrote.push({ collection, documentId })
+      },
+    }
+    const documents = new PostgresDocuments(pool, recording, AS_APP)
+
+    expect(await documents.read(as(A), ids.docA)).toBeDefined()
+    expect(await documents.updateMetadata(as(A), ids.docA, { source: 'forged' })).toBe(false)
+    // And nothing reached the index. A refusal that still wrote the payload
+    // would be the permission check running after the side effect.
+    expect(wrote).toEqual([])
+  })
+
+  it('write without read reaches it, which is the other half of rule 6', async () => {
+    const wrote: string[] = []
+    const documents = new PostgresDocuments(
+      pool,
+      { setMetadata: async (_c: string, id: string) => void wrote.push(id) },
+      AS_APP,
+    )
+
+    expect(await documents.updateMetadata(as(A, ids.carol), ids.docA, { source: 'notion' })).toBe(
+      true,
+    )
+    expect(wrote).toEqual([ids.docA])
+    // Carol still cannot read it. If this ever returns a document, `write`
+    // has started implying `read` and rule 6 is gone.
+    expect(await documents.read(as(A, ids.carol), ids.docA)).toBeUndefined()
+  })
+
+  it('another organization cannot retag this one, and touches no index', async () => {
+    const wrote: string[] = []
+    const documents = new PostgresDocuments(
+      pool,
+      { setMetadata: async (_c: string, id: string) => void wrote.push(id) },
+      AS_APP,
+    )
+    expect(await documents.updateMetadata(as(B), ids.docA, { source: 'x' })).toBe(false)
+    expect(wrote).toEqual([])
+  })
+
   it('a malformed document id is absent, not an error', async () => {
-    const documents = new PostgresDocuments(pool, AS_APP)
+    const documents = new PostgresDocuments(pool, noPayload, AS_APP)
     // A cast error distinguishable from "not found" is an oracle for the id
     // format, and the first step in probing what the ids look like.
     expect(await documents.read(as(A), 'not-a-uuid')).toBeUndefined()
