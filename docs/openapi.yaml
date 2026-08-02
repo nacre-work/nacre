@@ -271,9 +271,28 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '429':
           description: >
-            Counted per address rather than per organization — there is no
-            organization until the sign-in succeeds, and what this defends is
-            one account's password.
+            Two limits, on two different things, because either alone leaves a
+            hole. Per email address — there is no organization until the sign-in
+            succeeds, and that defends one account's password. And per client,
+            because the address limit does nothing about the attack that is
+            actually run: one password against ten thousand addresses never
+            repeats a key. Reported as one response with the address limit's
+            RateLimit-* headers, which is the tighter of the two; headers that
+            varied by which limit fired would be a signal about other people's
+            traffic.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >
+            Shed under load, and deliberately not a 401. The number of passwords
+            being verified at once is bounded inside the process, because scrypt
+            runs on libuv's thread pool and that pool is shared with DNS and file
+            I/O — unbounded, a login flood stops the rest of the API on a name
+            lookup. Past the bound nothing was decided about the credentials
+            presented, so saying "not valid" would be a lie the client acts on.
+            Carries Retry-After. Not an oracle: it depends on how loaded the
+            process is and not at all on whether the account exists.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }

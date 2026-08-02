@@ -29,13 +29,22 @@ import type { Redis } from '@nacre.work/core'
  * What a limit is counted against.
  *
  * `search` and `ingest` are counted per organization — a per-token limit is
- * bypassed by issuing another key, and this API hands out keys. `login` is the
- * exception and has to be: it runs before there is an organization, and the
- * thing it defends against is guessing one account's password, so it counts per
- * address. Failing open matters more there rather than less: a cache outage
- * that locked everyone out of signing in would be the outage.
+ * bypassed by issuing another key, and this API hands out keys. Login runs
+ * before there is an organization, so it is counted twice, on two different
+ * things, because either one alone leaves a hole:
+ *
+ * - `login` counts per email address, and defends one account against being
+ *   guessed at. On its own it is nearly useless against the attack people
+ *   actually run: one password sprayed across ten thousand addresses never
+ *   repeats a key and never meets the limit.
+ * - `login_source` counts per client, and is what bounds that. On its own it
+ *   over-trusts topology — everyone behind one NAT shares a bucket — which is
+ *   why it is the looser of the two and why the address limit stays.
+ *
+ * Failing open matters more on both rather than less: a cache outage that
+ * locked everybody out of signing in would be the outage.
  */
-export type Resource = 'search' | 'ingest' | 'login'
+export type Resource = 'search' | 'ingest' | 'login' | 'login_source'
 
 export interface LimitDecision {
   readonly allowed: boolean

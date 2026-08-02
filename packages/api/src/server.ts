@@ -4,11 +4,14 @@ import { createHash, randomUUID } from 'node:crypto'
 // DOM, so the global URL is not typed here.
 import { URL } from 'node:url'
 
+import { TooBusy } from '@nacre.work/core'
+
 import { authenticate, rejectTenantOverride, type AuthContext, type VerifyOptions } from './auth.js'
 import { badRequest, internal, notFound, Problem } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
-import { limitHeaders, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
+import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
 import type { Login, Tokens } from './login.js'
+import { clientSource } from './source.js'
 import { readPage, type Page, type PageResult } from './pagination.js'
 export type { Page, PageResult }
 
@@ -337,6 +340,12 @@ export interface ApiOptions {
    */
   readonly limits?: RateLimiter
   readonly limitPolicies?: Readonly<Record<Resource, LimitPolicy>>
+  /**
+   * How many proxies sit in front of this process, for the per-client login
+   * limit. Absent or 0 means `X-Forwarded-For` is ignored and the socket
+   * address is the client — see `source.ts` for why neither default is safe.
+   */
+  readonly trustProxy?: number
   /** `Idempotency-Key` on unsafe methods. Absent means the header is ignored. */
   readonly idempotency?: IdempotencyStore
   /** Email and password sign-in. Absent means `/v1/auth/*` is 404. */
@@ -658,14 +667,35 @@ async function handleAuth(
     }
 
     if (options.limits !== undefined && options.limitPolicies?.login !== undefined) {
+      // Two limits, on two different things, because either alone leaves a
+      // hole. The address limit stops one account being ground down; on its own
+      // it does nothing about the attack that is actually run, which is one
+      // password against a directory — that never repeats an address and never
+      // meets the limit. The source limit bounds that; on its own it would
+      // over-trust topology, because an office behind one NAT is one source.
+      //
+      // Checked in that order and reported as one 429 with the address limit's
+      // headers, which is the tighter of the two: the alternative is a response
+      // whose RateLimit-Remaining depends on which limit fired, and that is a
+      // signal about other people's traffic.
       const subject = createHash('sha256').update(email.trim().toLowerCase()).digest('hex').slice(0, 32)
-      const decision = await options.limits.check(subject, 'login')
-      if (!decision.allowed) {
+      const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 })
+
+      const decisions = [await options.limits.check(subject, 'login')]
+      // `undefined` means the transport gave no address to key on. Skipped
+      // rather than folded into a shared bucket — one bucket for every client
+      // that cannot be identified is a denial of service with extra steps.
+      if (source !== undefined && options.limitPolicies.login_source !== undefined) {
+        decisions.push(await options.limits.check(`src:${source}`, 'login_source'))
+      }
+
+      const refused = decisions.find((d) => !d.allowed)
+      if (refused !== undefined) {
         const problem = new Problem({
           type: 'https://nacre.work/errors/rate-limited',
           title: 'Too many requests',
           status: 429,
-          detail: `Too many sign-in attempts. Try again in ${decision.reset} seconds.`,
+          detail: `Too many sign-in attempts. Try again in ${refused.reset} seconds.`,
           instance,
           requestId,
         })
@@ -674,17 +704,45 @@ async function handleAuth(
           problem.status,
           problem.toJSON(),
           requestId,
-          limitHeaders(decision, options.limitPolicies.login, 'login'),
+          limitHeaders(decisions[0] as LimitDecision, options.limitPolicies.login, 'login'),
         )
         return
       }
     }
 
-    const tokens = await options.login.login({
-      email,
-      password,
-      ...(typeof organization === 'string' ? { organization } : {}),
-    })
+    let tokens: Tokens | undefined
+    try {
+      tokens = await options.login.login({
+        email,
+        password,
+        ...(typeof organization === 'string' ? { organization } : {}),
+      })
+    } catch (error) {
+      // The process is already verifying as many passwords as it will. scrypt
+      // runs on libuv's thread pool, which is shared with DNS and file I/O, so
+      // an unbounded login endpoint stops the *rest* of the API on a name
+      // lookup — see the gate in core/passwords.ts.
+      //
+      // 503 and not 401: nothing was decided about these credentials, and
+      // answering "not valid" to a request that was never checked is a lie the
+      // client will act on. 503 with Retry-After is the honest one.
+      //
+      // Not an oracle either. It depends on how loaded the process is and not
+      // at all on whether the account exists.
+      if (error instanceof TooBusy) {
+        const problem = new Problem({
+          type: 'https://nacre.work/errors/unavailable',
+          title: 'Service unavailable',
+          status: 503,
+          detail: 'Too many sign-in attempts are being processed. Try again shortly.',
+          instance,
+          requestId,
+        })
+        send(res, problem.status, problem.toJSON(), requestId, { 'retry-after': '2' })
+        return
+      }
+      throw error
+    }
 
     if (tokens === undefined) {
       // Logged rather than audited, and the difference is not laziness. The

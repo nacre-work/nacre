@@ -15,6 +15,13 @@ export type { Labels, Metrics } from './metrics.js'
 export { collectDatabaseGauges } from './observability.js'
 export { Redis, RedisError } from './redis.js'
 export type { RedisOptions } from './redis.js'
-export { hashPassword, needsRehash, spendVerificationTime, verifyPassword } from './passwords.js'
+export {
+  hashingLoad,
+  hashPassword,
+  needsRehash,
+  spendVerificationTime,
+  TooBusy,
+  verifyPassword,
+} from './passwords.js'
 export { installGuards, onListenError } from './lifecycle.js'
 export type { Guards } from './lifecycle.js'

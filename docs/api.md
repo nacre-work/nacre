@@ -60,7 +60,7 @@ GET    /v1/audit
 | 413 | document over the size limit |
 | 422 | document could not be parsed |
 | 429 | rate limited |
-| 503 | indexing unavailable |
+| 503 | indexing unavailable; or sign-in shed under load, see below |
 
 The 403/404 split is the whole point: 403 says "this exists and you may not
 touch it", so it may only be used where the caller can already see the object.
@@ -91,9 +91,23 @@ address, wrong password, wrong organization, disabled account, and an account
 with no password set. An early return on "no such user" would make the response
 time say which addresses have accounts.
 
-Sign-in is rate limited per address rather than per organization — there is no
-organization yet, and what it defends is one account's password.
-`NACRE_RATE_LOGIN_PER_15MIN`, default 10.
+Sign-in is rate limited **twice**, and it has to be. Per email address
+(`NACRE_RATE_LOGIN_PER_15MIN`, default 10) — there is no organization yet, and
+what that defends is one account's password. And per client
+(`NACRE_RATE_LOGIN_SOURCE_PER_15MIN`, default 60), because the address limit
+does nothing about the attack that is actually run: one password against ten
+thousand addresses never repeats a key and never meets it. See
+[config.md](./config.md) for `NACRE_TRUST_PROXY`, which is how the client is
+identified and why neither default is safe.
+
+Separately, this endpoint can answer **`503` with `Retry-After`** — not `401`.
+The number of passwords being verified at once is bounded inside the process,
+because scrypt runs on libuv's thread pool and that pool is shared with DNS and
+file I/O; unbounded, a login flood stops the rest of the API on a name lookup.
+Past the bound nothing was decided about the credentials presented, and
+answering "not valid" to a request that was never checked is a lie the client
+will act on. It is not an oracle: it depends on how loaded the process is and
+not at all on whether the account exists.
 
 ### Refresh tokens rotate, and reuse ends the session
 
@@ -233,7 +247,7 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 | `GET`/`POST /v1/service-accounts`, `DELETE /v1/service-accounts/{id}` | |
 | `GET /v1/health`, `GET /v1/ready`, `GET /metrics` | |
 | `Idempotency-Key` on unsafe methods | 24 hours, `409` on reuse, service accounts excluded |
-| `429` and the `RateLimit-*` headers | search and ingest, counted per organization |
+| `429` and the `RateLimit-*` headers | search and ingest, counted per organization; sign-in, counted per address **and** per client |
 | Cursor pagination | layers, grants, service accounts |
 | `POST /v1/auth/login`, `/refresh`, `/logout` | email and password, rotating refresh tokens |
 

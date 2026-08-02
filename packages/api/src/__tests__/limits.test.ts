@@ -54,6 +54,7 @@ when('rate limiting', () => {
         search: { limit, windowSeconds: 60 },
         ingest: { limit, windowSeconds: 3600 },
         login: { limit, windowSeconds: 900 },
+        login_source: { limit, windowSeconds: 900 },
       },
     })
 
@@ -123,6 +124,7 @@ when('rate limiting', () => {
         search: { limit: 1, windowSeconds: 60 },
         ingest: { limit: 1, windowSeconds: 3600 },
         login: { limit: 1, windowSeconds: 900 },
+        login_source: { limit: 1, windowSeconds: 900 },
       },
       onDegraded: (_r, e) => degraded.push(e),
     })

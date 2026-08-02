@@ -71,6 +71,8 @@ export interface Config {
   readonly rateSearchPerMin: number
   readonly rateIngestPerHour: number
   readonly rateLoginPer15Min: number
+  readonly rateLoginSourcePer15Min: number
+  readonly trustProxy: number
   readonly maxDocumentBytes: number
 
   readonly auditRetentionDays: number
@@ -210,6 +212,26 @@ export function loadConfig(env: Env = process.env): Config {
     // guessing is not a strategy, high enough that someone who genuinely cannot
     // remember which password they used is not locked out for the afternoon.
     rateLoginPer15Min: r.number('NACRE_RATE_LOGIN_PER_15MIN', 10, { min: 1, max: 1000 }),
+    // The same window, counted per client instead of per address, because the
+    // per-address limit does not bound the attack people actually run: one
+    // password against ten thousand addresses never repeats a key. Six times
+    // looser, because a whole office behind one NAT is one source here and the
+    // job of this limit is to stop a directory being ground down, not to make
+    // shared egress unusable.
+    rateLoginSourcePer15Min: r.number('NACRE_RATE_LOGIN_SOURCE_PER_15MIN', 60, {
+      min: 1,
+      max: 10_000,
+    }),
+    // How many proxies sit in front of this process. Zero — the default — means
+    // X-Forwarded-For is ignored entirely and the socket address is the client.
+    //
+    // Neither default is safe, which is why this is configuration rather than a
+    // guess. Trusting the header unconditionally keys the limit above on a
+    // string the attacker picks, which is worse than having no limit: a fresh
+    // value per request costs a Redis round trip and accomplishes nothing.
+    // Ignoring it unconditionally means that behind an ingress every request
+    // carries the proxy's address, so one bad client rate-limits everybody.
+    trustProxy: r.number('NACRE_TRUST_PROXY', 0, { min: 0, max: 8 }),
     maxDocumentBytes: r.number('NACRE_MAX_DOCUMENT_BYTES', 52_428_800, { min: 1024 }),
 
     // The floor is 30 and it is not a tunable. Retention is now enforced —

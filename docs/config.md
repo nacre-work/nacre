@@ -67,6 +67,8 @@ NACRE_INDEX_MAX_ATTEMPTS=5             # then the document is failed, not requeu
 NACRE_RATE_SEARCH_PER_MIN=60
 NACRE_RATE_INGEST_PER_HOUR=600
 NACRE_RATE_LOGIN_PER_15MIN=10          # per email address, not per organization
+NACRE_RATE_LOGIN_SOURCE_PER_15MIN=60   # per client; what bounds a spray across addresses
+NACRE_TRUST_PROXY=0                    # proxies in front of this process; 0 ignores X-Forwarded-For
 NACRE_MAX_DOCUMENT_BYTES=52428800
 
 # ─── audit ───
@@ -150,6 +152,43 @@ should know that setting one changes nothing today:
 | `NACRE_S3_*`, `NACRE_PRESIGN_TTL` | object storage is not wired; document bodies live in Postgres |
 | `NACRE_OAUTH_*`, `NACRE_EMA_*` | OAuth discovery, DCR and EMA are not built |
 | `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
+
+### The login endpoint is limited twice
+
+Once per email address and once per client, because either alone leaves a hole.
+The address limit bounds guessing at one account and does nothing about the
+attack that is actually run — one password against ten thousand addresses never
+repeats a key. The client limit bounds that, and is looser because a whole
+office behind one NAT is one client here.
+
+`NACRE_TRUST_PROXY` is how the client is identified, and **neither default is
+safe**, which is why it is configuration:
+
+- Trusting `X-Forwarded-For` unconditionally keys the limit on a string the
+  attacker picks. A fresh value per request is worse than having no limit — it
+  costs a Redis round trip to accomplish nothing.
+- Ignoring it unconditionally means that behind an ingress every request carries
+  the proxy's address, so one bad client rate-limits every user.
+
+So it is the **number of proxies** in front of this process: `0` (the default)
+takes the socket address, `1` takes the last entry of `X-Forwarded-For`, `2` the
+second from last. **Counted from the right**, because each proxy appends — the
+leftmost entries are whatever the client sent, and only the rightmost ones were
+added by infrastructure. Setting it too low over-restricts; setting it too high
+under-restricts; neither is worse than the default.
+
+IPv6 clients are counted per `/64` rather than per address: a single subscriber
+is handed a /64, so counting whole addresses means one allocation is more
+buckets than there are requests.
+
+Separately, and independently of any of this, **the number of passwords being
+verified at once is bounded inside the process**. scrypt runs on libuv's thread
+pool, which is shared with DNS and file I/O, so an unbounded login endpoint
+stops the rest of the API on a name lookup — which reads as a database problem
+on a dashboard at exactly the wrong moment. Past the bound the endpoint answers
+`503` with `Retry-After`, not `401`: nothing was decided about those
+credentials, and saying "not valid" to a request that was never checked is a lie
+the client will act on.
 
 ### Retention
 
