@@ -319,6 +319,39 @@ export class VectorStore {
   }
 
   /**
+   * Drop one named vector's data from a layer's points.
+   *
+   * Qdrant cannot remove a named vector from a collection's schema — that is
+   * the constraint the whole reindex design turns on — but it can remove the
+   * *data* for one from a chosen set of points, and the data is what costs
+   * anything: a float per dimension per point, in memory by default.
+   *
+   * Scoped to one layer, because a collection holds several and only the ones
+   * that finished migrating have a slot to give back.
+   *
+   * The consequence to be careful about, checked by asking a running Qdrant: a
+   * point with no vector under the queried name does not error, it simply does
+   * not match. So calling this for a slot something still searches would empty
+   * that layer's results silently — which is why the caller selects only
+   * layers whose `vector_name` has already moved, and never the slot it moved
+   * to.
+   */
+  async dropLayerVector(collection: string, layerId: string, vectorName: string): Promise<void> {
+    try {
+      await this.#client.deleteVectors(collection, {
+        wait: true,
+        vector: [vectorName],
+        filter: { must: [{ key: 'layer_id', match: { value: layerId } }] },
+      } as never)
+    } catch (cause) {
+      throw new Error(
+        `dropping ${vectorName} from ${collection} rejected: ${explainQdrant(cause)}`,
+        { cause },
+      )
+    }
+  }
+
+  /**
    * The named vectors a collection has, and their widths.
    *
    * The set is fixed when the collection is created. That is the fact the whole

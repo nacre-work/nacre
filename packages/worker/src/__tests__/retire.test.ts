@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { retireOnce, type RetiredCollection, type RetirePorts } from '../retire.js'
+import {
+  retireOnce,
+  retireVectorsOnce,
+  type RetiredCollection,
+  type RetiredVector,
+  type RetirePorts,
+  type VectorRetirePorts,
+} from '../retire.js'
 
 /**
  * Reclaiming superseded collections.
@@ -133,5 +140,94 @@ describe('retireOnce', () => {
   it('refuses a batch of zero rather than silently sweeping nothing', async () => {
     const p = ports([one('org_acme')])
     await expect(retireOnce(p.impl, 7, 0)).rejects.toThrow('batch')
+  })
+})
+
+/**
+ * The other half: the slot inside the collection that survived the copy.
+ *
+ * A completed reindex leaves every point in the layer carrying the vector it
+ * used to be searched by, which is a float per dimension per point and in
+ * memory by default. Nothing removed it.
+ */
+function vectorPorts(due: RetiredVector[], options: { dropFails?: string[]; forgetFails?: string[] } = {}) {
+  const order: string[] = []
+  const dropped: string[] = []
+  const forgotten: string[] = []
+  const errored: string[] = []
+
+  const impl: VectorRetirePorts = {
+    due: async () => due,
+    drop: async (collection, layerId, vectorName) => {
+      order.push(`drop:${layerId}:${vectorName}`)
+      if ((options.dropFails ?? []).includes(layerId)) throw new Error('qdrant said no')
+      dropped.push(`${collection}:${layerId}:${vectorName}`)
+    },
+    forget: async (t) => {
+      order.push(`forget:${t.layerId}`)
+      if ((options.forgetFails ?? []).includes(t.layerId)) throw new Error('postgres said no')
+      forgotten.push(t.layerId)
+    },
+    onDropped: () => {},
+    onError: (t) => errored.push(t.layerId),
+  }
+  return { impl, order, dropped, forgotten, errored }
+}
+
+const slot = (layerId: string): RetiredVector => ({
+  orgId: 'org-1',
+  layerId,
+  collection: 'org_acme',
+  vectorName: 'v_old_4',
+})
+
+describe('retireVectorsOnce', () => {
+  it('drops the slot, then forgets the key', async () => {
+    const p = vectorPorts([slot('layer-1')])
+    expect(await retireVectorsOnce(p.impl, 7, 8)).toEqual({ dropped: 1, failed: 0 })
+    // The key is the only record that there is anything to reclaim. Forgetting
+    // first and then failing to drop leaks the vectors with nothing naming
+    // them; this order costs at worst a second delete of something gone.
+    expect(p.order).toEqual(['drop:layer-1:v_old_4', 'forget:layer-1'])
+  })
+
+  it('keeps the key when the drop fails, so the next pass retries', async () => {
+    const p = vectorPorts([slot('layer-1')], { dropFails: ['layer-1'] })
+    expect(await retireVectorsOnce(p.impl, 7, 8)).toEqual({ dropped: 0, failed: 1 })
+    expect(p.forgotten).toEqual([])
+    expect(p.errored).toEqual(['layer-1'])
+  })
+
+  it('carries on to the next layer when one fails', async () => {
+    const p = vectorPorts([slot('a'), slot('b'), slot('c')], { dropFails: ['b'] })
+    expect(await retireVectorsOnce(p.impl, 7, 8)).toEqual({ dropped: 2, failed: 1 })
+    expect(p.forgotten).toEqual(['a', 'c'])
+  })
+
+  it('counts a forget that failed after a successful drop as a failure', async () => {
+    // The irreversible half already happened. The key surviving is the
+    // recoverable direction: the next pass drops something already gone.
+    const p = vectorPorts([slot('layer-1')], { forgetFails: ['layer-1'] })
+    expect(await retireVectorsOnce(p.impl, 7, 8)).toEqual({ dropped: 0, failed: 1 })
+    expect(p.dropped).toHaveLength(1)
+  })
+
+  it('does nothing when nothing is due', async () => {
+    const p = vectorPorts([])
+    expect(await retireVectorsOnce(p.impl, 7, 8)).toEqual({ dropped: 0, failed: 0 })
+    expect(p.order).toEqual([])
+  })
+
+  it('refuses a retention of zero days', async () => {
+    // Dropping the old slot the instant a migration completes removes the only
+    // cheap rollback there is, at the moment it is most likely to be wanted.
+    const p = vectorPorts([slot('layer-1')])
+    await expect(retireVectorsOnce(p.impl, 0, 8)).rejects.toThrow('retentionDays')
+    expect(p.dropped).toEqual([])
+  })
+
+  it('refuses a batch of zero', async () => {
+    const p = vectorPorts([slot('layer-1')])
+    await expect(retireVectorsOnce(p.impl, 7, 0)).rejects.toThrow('batch')
   })
 })

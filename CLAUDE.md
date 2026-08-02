@@ -233,11 +233,19 @@ from the list rather than from disk. `NACRE_COLLECTION_RETENTION_DAYS` is the
 rollback window, not a tidiness delay: moving the pointer back is the cheap
 rollback and it works only while the old collection exists.
 
+The superseded *vector slot* is reclaimed too, on the same window as the
+collection. A completed reindex leaves every point in the layer carrying the
+vector it used to be searched by — a float per dimension per point, in memory by
+default — and nothing removed it. Qdrant cannot drop a named vector from a
+collection's schema, which is the constraint the whole migration turns on, but
+it can drop the *data* for one from a chosen set of points, which is all that
+costs anything. Verified by asking it: the slot stays declared, a query on the
+live slot is unaffected, and a point missing the queried vector does not error —
+it simply does not match, which is why the selection refuses the slot the layer
+is searching now.
+
 Not built: OAuth dynamic client registration and CIMD, multipart upload on
-ingest, the recall check against a reference query set on a reindex, and
-dropping the old *named vector* from a collection after a rollback window —
-which is a different job from dropping the collection, and the cheaper half is
-the one still missing.
+ingest, and the recall check against a reference query set on a reindex.
 
 **Object storage is wired.** `NACRE_S3_*` spent its whole life in
 `docs/config.md` and in the `full` Compose profile while `loadConfig` did not

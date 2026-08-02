@@ -95,3 +95,70 @@ export async function retireOnce(
 
   return { dropped, revived, failed }
 }
+
+/**
+ * The other half of what a finished migration leaves behind.
+ *
+ * `retireOnce` reclaims the collection a copy replaced. This reclaims the
+ * *slot* inside the collection that survived: after `vector_name` moves, every
+ * point in that layer still carries the vector it used to be searched by, and
+ * nothing removed it.
+ *
+ * Same shape and same reasoning as the collection sweep, including the order —
+ * drop first, forget second. The key in `reindex_state` is the only record that
+ * there is anything to reclaim, so losing it first leaks the vectors with
+ * nothing naming them; the other way costs at worst a second delete of
+ * something already gone.
+ *
+ * There is no liveness re-check to make here, and that is a difference worth
+ * naming rather than an omission. A collection can be rolled back onto by
+ * moving a pointer, so the pointer is asked again. A vector slot cannot be
+ * rolled back onto once its data is gone — which is exactly why the window
+ * exists and why the selection refuses the slot the layer is searching now.
+ */
+export interface RetiredVector {
+  readonly orgId: string
+  readonly layerId: string
+  readonly collection: string
+  readonly vectorName: string
+}
+
+export interface VectorRetirePorts {
+  due(retentionDays: number, limit: number): Promise<readonly RetiredVector[]>
+  drop(collection: string, layerId: string, vectorName: string): Promise<void>
+  forget(target: RetiredVector): Promise<void>
+  onDropped(target: RetiredVector): void
+  onError(target: RetiredVector, error: unknown): void
+}
+
+export interface VectorRetireResult {
+  readonly dropped: number
+  readonly failed: number
+}
+
+export async function retireVectorsOnce(
+  ports: VectorRetirePorts,
+  retentionDays: number,
+  batch: number,
+): Promise<VectorRetireResult> {
+  if (batch < 1) throw new Error('batch must be at least 1')
+  if (retentionDays < 1) throw new Error('retentionDays must be at least 1')
+
+  let dropped = 0
+  let failed = 0
+
+  for (const target of await ports.due(retentionDays, batch)) {
+    try {
+      await ports.drop(target.collection, target.layerId, target.vectorName)
+      await ports.forget(target)
+      dropped++
+      ports.onDropped(target)
+    } catch (error) {
+      // Per layer. The key stays, so the next pass tries again.
+      failed++
+      ports.onError(target, error)
+    }
+  }
+
+  return { dropped, failed }
+}
