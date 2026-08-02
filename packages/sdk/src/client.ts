@@ -1,5 +1,8 @@
 import { NacreError, NacreTransportError, type Problem } from './errors.js'
 import type {
+  AuditPage,
+  AuditQuery,
+  AuditRecord,
   CreatedServiceAccount,
   Document,
   Grant,
@@ -9,6 +12,11 @@ import type {
   Job,
   Layer,
   LayerInput,
+  RecallCheck,
+  ReferenceQuery,
+  ReferenceQueryInput,
+  ReindexStatus,
+  Tokens,
   Workspace,
   SearchHit,
   SearchOptions,
@@ -174,6 +182,24 @@ export class NacreClient {
 
         await new Promise((r) => setTimeout(r, 250 * 2 ** (attempt - 1)))
       }
+    }
+  }
+
+  /**
+   * `undefined` for a 401 — the sign-in paths, where a refusal is an answer.
+   *
+   * Separate from `#maybe` because the two mean different things and must not
+   * be merged: a 404 elsewhere is "absent or invisible", and a 401 here is
+   * "these credentials are not valid", which the server deliberately does not
+   * elaborate on. Both are answers rather than faults, and neither is the
+   * other.
+   */
+  async #unauthorized<T>(options: RequestOptions): Promise<T | undefined> {
+    try {
+      return (await this.#request(options)) as T
+    } catch (error) {
+      if (error instanceof NacreError && error.status === 401) return undefined
+      throw error
     }
   }
 
@@ -466,6 +492,113 @@ export class NacreClient {
         documentCount: Number(body.document_count ?? 0),
       }
     },
+
+    /**
+     * Rename a layer, or change its description.
+     *
+     * Name and description only. What model built the vectors is not editable
+     * here and is not an oversight: changing it is a reindex, because the
+     * vectors have to be rebuilt, and a `PATCH` that quietly started one would
+     * be an expensive background job triggered by an edit form.
+     *
+     * `false` for a layer this token may not administer and for one that is not
+     * there — the usual rule, and the same answer.
+     */
+    update: async (
+      layerId: string,
+      changes: { name?: string; description?: string },
+    ): Promise<boolean> => {
+      try {
+        await this.#request({
+          method: 'PATCH',
+          path: `/v1/layers/${encodeURIComponent(layerId)}`,
+          body: {
+            ...(changes.name === undefined ? {} : { name: changes.name }),
+            ...(changes.description === undefined ? {} : { description: changes.description }),
+          },
+        })
+        return true
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return false
+        throw error
+      }
+    },
+
+    /**
+     * Move the layer onto a different embedding model.
+     *
+     * Returns immediately with the state to poll; the work happens in the
+     * worker and search keeps answering from the old vectors throughout. There
+     * is no cancel — starting a reindex back onto the previous provider is how
+     * one is undone.
+     *
+     * Throws `NacreError` with status 409 when one is already running on this
+     * layer, and 400 for a provider that does not exist or that names the model
+     * the layer already uses.
+     */
+    reindex: async (layerId: string, providerId: string): Promise<ReindexStatus | undefined> => {
+      const body = await this.#maybe<Record<string, unknown>>({
+        method: 'POST',
+        path: `/v1/layers/${encodeURIComponent(layerId)}/reindex`,
+        body: { provider_id: providerId },
+      })
+      return body === undefined ? undefined : reindexFrom(body)
+    },
+
+    /** How far a reindex has got. `undefined` when none has ever run. */
+    reindexStatus: async (layerId: string): Promise<ReindexStatus | undefined> => {
+      const body = await this.#maybe<Record<string, unknown>>({
+        method: 'GET',
+        path: `/v1/layers/${encodeURIComponent(layerId)}/reindex`,
+        retryable: true,
+      })
+      return body === undefined ? undefined : reindexFrom(body)
+    },
+
+    /**
+     * The query set a reindex of this layer is checked against.
+     *
+     * A migration onto a new model succeeds mechanically whether or not the new
+     * model works, so this is what stands between "every document got a vector"
+     * and "search still answers". Empty — the default — means the layer has no
+     * gate, because the check needs documents somebody chose.
+     *
+     * `admin` on the layer, not `read`: the entries name the documents you
+     * consider the canonical answers to a query.
+     */
+    referenceQueries: async (layerId: string): Promise<readonly ReferenceQuery[] | undefined> => {
+      const body = await this.#maybe<{ items?: unknown[] }>({
+        method: 'GET',
+        path: `/v1/layers/${encodeURIComponent(layerId)}/reference-queries`,
+        retryable: true,
+      })
+      return body === undefined ? undefined : (body.items ?? []).map(referenceQueryFrom)
+    },
+
+    /**
+     * Replace that set whole. `[]` removes the gate.
+     *
+     * Replaced rather than edited entry by entry, which is the server's shape
+     * too: a reference set is one statement about what search must keep doing,
+     * and a partial edit is how half of one ends up describing a layer nobody
+     * has looked at since.
+     *
+     * At most 50 queries, each naming at most 10 documents — that second bound
+     * is how many the check retrieves, so a longer list could never score 1.0.
+     * The external ids need not exist yet; a set is often written before the
+     * documents it names are ingested.
+     */
+    setReferenceQueries: async (
+      layerId: string,
+      queries: readonly ReferenceQueryInput[],
+    ): Promise<readonly ReferenceQuery[] | undefined> => {
+      const body = await this.#maybe<{ items?: unknown[] }>({
+        method: 'PUT',
+        path: `/v1/layers/${encodeURIComponent(layerId)}/reference-queries`,
+        body: { queries: queries.map((q) => ({ query: q.query, expected: [...q.expected] })) },
+      })
+      return body === undefined ? undefined : (body.items ?? []).map(referenceQueryFrom)
+    },
   }
 
   // ─── grants ──────────────────────────────────────────────────────────────
@@ -559,6 +692,123 @@ export class NacreClient {
     },
   }
 
+  // ─── sign-in ─────────────────────────────────────────────────────────────
+
+  /**
+   * Email and password, and the refresh that keeps a session alive.
+   *
+   * **These are the one part of this client that does not use the constructor's
+   * token**, because they are what a caller has instead of one. The client is
+   * still constructed with a token — pass anything for a login-only client, or
+   * construct a second one from the access token these return.
+   *
+   * That is deliberate rather than convenient. A client that swapped its own
+   * credential when a login succeeded would make "which identity is this
+   * object" depend on call history, and an application holding one for a
+   * background job and one for a request would eventually get the wrong one.
+   *
+   * `undefined` for a refusal, and there is exactly one refusal: unknown
+   * address, wrong password, wrong organization, disabled account, and an
+   * account with no password set are one `401` with one message, in the same
+   * time. Distinguishing them here would invent information the server refused
+   * to give.
+   */
+  readonly auth = {
+    login: async (input: {
+      email: string
+      password: string
+      /**
+       * A lookup key, never a claim. What goes into the issued token is the
+       * organization on the row that authenticated — naming one you have no
+       * account in is a refusal, not a token for either. Omit on a
+       * single-organization installation.
+       */
+      organization?: string
+    }): Promise<Tokens | undefined> => {
+      const body = await this.#unauthorized<Record<string, unknown>>({
+        method: 'POST',
+        path: '/v1/auth/login',
+        body: {
+          email: input.email,
+          password: input.password,
+          ...(input.organization === undefined ? {} : { organization: input.organization }),
+        },
+      })
+      return body === undefined ? undefined : tokensFrom(body)
+    },
+
+    /**
+     * Exchange a refresh token for a new pair. The old one stops working.
+     *
+     * **Replaying a spent refresh token revokes the whole family**, so a client
+     * that retries this after a success signs its user out. Store the new
+     * refresh token before doing anything else with the access token: by the
+     * time the legitimate holder has exchanged one, a second presentation of it
+     * is either a bug or a theft and there is no way to tell which.
+     */
+    refresh: async (refreshToken: string): Promise<Tokens | undefined> => {
+      const body = await this.#unauthorized<Record<string, unknown>>({
+        method: 'POST',
+        path: '/v1/auth/refresh',
+        body: { refresh_token: refreshToken },
+      })
+      return body === undefined ? undefined : tokensFrom(body)
+    },
+
+    /** End the session. Idempotent: an already-revoked token is not an error. */
+    logout: async (refreshToken: string): Promise<void> => {
+      await this.#request({
+        method: 'POST',
+        path: '/v1/auth/logout',
+        body: { refresh_token: refreshToken },
+      })
+    },
+  }
+
+  // ─── the access log ──────────────────────────────────────────────────────
+
+  /**
+   * Read the journal back. Newest first, cursor-paged.
+   *
+   * **Two roles see two different logs, and it is not a parameter.**
+   * `org_admin` sees its organization's log in full, including which documents
+   * were read. `platform_admin` sees administrative actions and never that —
+   * rule 2 applied to the journal, set by the server, so there is nothing to
+   * pass here that would widen it. A `member` gets nothing.
+   *
+   * Reading it is itself recorded, as `audit.read`.
+   *
+   * JSONL and CSV exports exist on this endpoint through content negotiation
+   * and are deliberately not wrapped: they are a stream to write to a file, not
+   * a value to hold in memory, and a method returning one as a string would
+   * invite exactly the use they exist to avoid.
+   */
+  readonly audit = {
+    read: async (query: AuditQuery = {}): Promise<AuditPage> => {
+      const search = new URLSearchParams()
+      if (query.from !== undefined) search.set('from', query.from)
+      if (query.to !== undefined) search.set('to', query.to)
+      if (query.actorId !== undefined) search.set('actor_id', query.actorId)
+      if (query.action !== undefined) search.set('action', query.action)
+      if (query.result !== undefined) search.set('result', query.result)
+      if (query.limit !== undefined) search.set('limit', String(query.limit))
+      if (query.cursor !== undefined) search.set('cursor', query.cursor)
+
+      const suffix = search.size === 0 ? '' : `?${search.toString()}`
+      const body = (await this.#request({
+        method: 'GET',
+        path: `/v1/audit${suffix}`,
+        retryable: true,
+      })) as { items?: unknown[]; next_cursor?: unknown }
+
+      const nextCursor = typeof body.next_cursor === 'string' ? body.next_cursor : undefined
+      return {
+        items: (body.items ?? []).map(auditRecordFrom),
+        ...(nextCursor === undefined ? {} : { nextCursor }),
+      }
+    },
+  }
+
   // ─── health ──────────────────────────────────────────────────────────────
 
   /** Liveness. Touches no dependency, and needs no token to be useful. */
@@ -569,6 +819,85 @@ export class NacreClient {
     } catch {
       return false
     }
+  }
+}
+
+function tokensFrom(t: Record<string, unknown>): Tokens {
+  return {
+    accessToken: String(t.access_token),
+    tokenType: String(t.token_type ?? 'Bearer'),
+    expiresIn: Number(t.expires_in ?? 0),
+    refreshToken: String(t.refresh_token),
+  }
+}
+
+function reindexFrom(r: Record<string, unknown>): ReindexStatus {
+  const check = r.check as Record<string, unknown> | null | undefined
+  return {
+    layerId: String(r.layer_id),
+    status: r.status as ReindexStatus['status'],
+    phase: r.phase === 'copying' ? 'copying' : 'embedding',
+    currentVector: String(r.current_vector ?? ''),
+    shadowVector: String(r.shadow_vector ?? ''),
+    providerId: String(r.provider_id ?? ''),
+    startedAt: String(r.started_at ?? ''),
+    finishedAt: typeof r.finished_at === 'string' ? r.finished_at : null,
+    total: Number(r.total ?? 0),
+    done: Number(r.done ?? 0),
+    failed: Number(r.failed ?? 0),
+    progress: Number(r.progress ?? 0),
+    error: typeof r.error === 'string' ? r.error : null,
+    // `null` and not `undefined`. Absent would read as "this deployment does
+    // not check recall"; null says "this migration has not been scored", which
+    // for a layer with no reference set is the permanent and correct answer.
+    check: check === null || check === undefined ? null : recallCheckFrom(check),
+  }
+}
+
+function recallCheckFrom(c: Record<string, unknown>): RecallCheck {
+  const unresolved = Array.isArray(c.unresolved)
+    ? c.unresolved.filter((u): u is string => typeof u === 'string')
+    : []
+  return {
+    recall: Number(c.recall ?? 0),
+    floor: Number(c.floor ?? 0),
+    passed: c.passed === true,
+    queries: Number(c.queries ?? 0),
+    scores: (Array.isArray(c.scores) ? c.scores : []).map((s) => {
+      const score = s as Record<string, unknown>
+      return { queryId: String(score.query_id), recall: Number(score.recall ?? 0) }
+    }),
+    ...(unresolved.length === 0 ? {} : { unresolved }),
+  }
+}
+
+function referenceQueryFrom(q: unknown): ReferenceQuery {
+  const entry = q as Record<string, unknown>
+  return {
+    id: String(entry.id),
+    query: String(entry.query ?? ''),
+    expected: (Array.isArray(entry.expected) ? entry.expected : []).map(String),
+  }
+}
+
+function auditRecordFrom(r: unknown): AuditRecord {
+  const record = r as Record<string, unknown>
+  const actor = (record.actor ?? {}) as Record<string, unknown>
+  return {
+    id: String(record.id),
+    occurredAt: String(record.occurred_at ?? ''),
+    actor: {
+      type: String(actor.type ?? ''),
+      id: typeof actor.id === 'string' ? actor.id : null,
+      label: typeof actor.label === 'string' ? actor.label : null,
+    },
+    surface: typeof record.surface === 'string' ? record.surface : null,
+    client: typeof record.client === 'string' ? record.client : null,
+    action: String(record.action ?? ''),
+    target: (record.target ?? {}) as Record<string, unknown>,
+    result: record.result as AuditRecord['result'],
+    detail: (record.detail ?? {}) as Record<string, unknown>,
+    requestId: typeof record.request_id === 'string' ? record.request_id : null,
   }
 }
 

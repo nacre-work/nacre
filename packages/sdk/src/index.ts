@@ -19,12 +19,32 @@
  * ```
  *
  * The token carries the organization, so no method takes one — see the note on
- * `NacreClient`. Contract: docs/api.md, machine-readable in docs/openapi.yaml.
+ * `NacreClient`.
+ *
+ * `auth.login` is the exception, because it is what a caller has *instead* of a
+ * token:
+ *
+ * ```ts
+ * const tokens = await new NacreClient({ baseUrl, token: 'unused' })
+ *   .auth.login({ email, password })
+ * const nacre = new NacreClient({ baseUrl, token: tokens.accessToken })
+ * ```
+ *
+ * **Every operation in `docs/openapi.yaml` is reachable from here**, and
+ * `__tests__/coverage.test.ts` is what keeps that true: adding a path to the
+ * contract without adding it here fails, and the fix is a method or a written
+ * reason. Two are deliberately absent — the `/.well-known` documents, which are
+ * unauthenticated and read by an OAuth client rather than by an application.
+ *
+ * Contract: docs/api.md, machine-readable in docs/openapi.yaml.
  */
 
 export { NacreClient, type ClientOptions } from './client.js'
 export { NacreError, NacreTransportError, type Problem } from './errors.js'
 export type {
+  AuditPage,
+  AuditQuery,
+  AuditRecord,
   CreatedServiceAccount,
   Document,
   Effect,
@@ -38,9 +58,15 @@ export type {
   LayerInput,
   Permission,
   PrincipalType,
+  RecallCheck,
+  ReferenceQuery,
+  ReferenceQueryInput,
+  ReindexStatus,
+  ReindexStatusName,
   ScopeType,
   SearchHit,
   SearchOptions,
   ServiceAccount,
+  Tokens,
   Workspace,
 } from './types.js'

@@ -258,3 +258,304 @@ describe('NacreClient', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('sign-in', () => {
+  it('exchanges a password for a pair of tokens', async () => {
+    const { fetchImpl, calls } = stub(
+      json(200, {
+        access_token: 'eyJ…',
+        token_type: 'Bearer',
+        expires_in: 900,
+        refresh_token: 'r1',
+      }),
+    )
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    const tokens = await nacre.auth.login({ email: 'a@b.test', password: 'p' })
+
+    expect(tokens).toEqual({
+      accessToken: 'eyJ…',
+      tokenType: 'Bearer',
+      expiresIn: 900,
+      refreshToken: 'r1',
+    })
+    expect(calls[0]?.url).toBe(`${BASE}/v1/auth/login`)
+  })
+
+  it('sends organization as a lookup key when one is given, and never otherwise', async () => {
+    // It is a disambiguator for the address, not a claim: what goes into the
+    // issued token is the organization on the row that authenticated. Sending
+    // an empty or defaulted one would be inventing a claim the caller did not
+    // make.
+    const { fetchImpl, calls } = stub(json(200, { access_token: 'a', refresh_token: 'r' }))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    await nacre.auth.login({ email: 'a@b.test', password: 'p' })
+    expect(calls[0]?.body).not.toHaveProperty('organization')
+
+    await nacre.auth.login({ email: 'a@b.test', password: 'p', organization: 'acme' })
+    expect(calls[1]?.body).toMatchObject({ organization: 'acme' })
+  })
+
+  it('answers undefined for a refusal rather than throwing', async () => {
+    // The server gives one 401 with one message for an unknown address, a wrong
+    // password, a wrong organization, a disabled account and an account with no
+    // password — in the same time. Turning that into distinguishable outcomes
+    // here would invent information it deliberately withheld.
+    const { fetchImpl } = stub(problem(401, 'Unauthorized', 'The credentials are not valid.'))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    expect(await nacre.auth.login({ email: 'a@b.test', password: 'no' })).toBeUndefined()
+    expect(await nacre.auth.refresh('spent')).toBeUndefined()
+  })
+
+  it('still throws for a refusal that is not about the credentials', async () => {
+    // 503 with Retry-After is sign-in shed under load: nothing was decided
+    // about the credentials presented, so answering `undefined` would tell the
+    // caller they were wrong about something that was never checked.
+    const { fetchImpl } = stub(problem(503, 'Service Unavailable', 'Try again shortly.'))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, retries: 1, fetch: fetchImpl })
+
+    await expect(nacre.auth.login({ email: 'a@b.test', password: 'p' })).rejects.toBeInstanceOf(
+      NacreError,
+    )
+  })
+
+  it('does not swap the client credential on a successful login', async () => {
+    // "Which identity is this object" must not depend on call history. An
+    // application holding one client for a background job and one for a request
+    // would otherwise eventually get the wrong one.
+    const { fetchImpl, calls } = stub(json(200, { access_token: 'new-token', refresh_token: 'r' }))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    await nacre.auth.login({ email: 'a@b.test', password: 'p' })
+    await nacre.search('anything')
+
+    expect(calls[1]?.headers.authorization).toBe(`Bearer ${TOKEN}`)
+  })
+})
+
+describe('reindex', () => {
+  const RUNNING = {
+    layer_id: 'l1',
+    status: 'running',
+    phase: 'embedding',
+    current_vector: 'v_old_768',
+    shadow_vector: 'v_new_1024',
+    provider_id: 'p2',
+    started_at: '2026-08-02T10:00:00Z',
+    finished_at: null,
+    total: 40,
+    done: 12,
+    failed: 0,
+    progress: 0.3,
+    error: null,
+    check: null,
+  }
+
+  it('starts one and reads the state back', async () => {
+    const { fetchImpl, calls } = stub(json(202, RUNNING))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    const status = await nacre.layers.reindex('l1', 'p2')
+
+    expect(calls[0]?.method).toBe('POST')
+    expect(calls[0]?.url).toBe(`${BASE}/v1/layers/l1/reindex`)
+    expect(calls[0]?.body).toEqual({ provider_id: 'p2' })
+    expect(status).toMatchObject({ shadowVector: 'v_new_1024', progress: 0.3, check: null })
+  })
+
+  it('reads a null check as null, not as absent', async () => {
+    // A layer with no reference query set has no gate, permanently. `undefined`
+    // would read as "not scored yet", which is a different claim and the one a
+    // caller would poll on forever.
+    const { fetchImpl } = stub(json(200, RUNNING))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    expect((await nacre.layers.reindexStatus('l1'))?.check).toBeNull()
+  })
+
+  it('decodes a failed recall check, scores and all', async () => {
+    const { fetchImpl } = stub(
+      json(200, {
+        ...RUNNING,
+        status: 'failed',
+        error: 'recall 0.500 is below the floor of 0.8',
+        check: {
+          recall: 0.5,
+          floor: 0.8,
+          passed: false,
+          queries: 2,
+          scores: [
+            { query_id: 'q1', recall: 1 },
+            { query_id: 'q2', recall: 0 },
+          ],
+        },
+      }),
+    )
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    const check = (await nacre.layers.reindexStatus('l1'))?.check
+    expect(check).toMatchObject({ recall: 0.5, floor: 0.8, passed: false, queries: 2 })
+    expect(check?.scores).toEqual([
+      { queryId: 'q1', recall: 1 },
+      { queryId: 'q2', recall: 0 },
+    ])
+    expect(check?.unresolved).toBeUndefined()
+  })
+
+  it('carries the unresolved list, which is a different failure from a low score', async () => {
+    const { fetchImpl } = stub(
+      json(200, {
+        ...RUNNING,
+        check: { recall: 1, floor: 0.8, passed: false, queries: 1, scores: [], unresolved: ['gone.md'] },
+      }),
+    )
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    const check = (await nacre.layers.reindexStatus('l1'))?.check
+    // Recall is 1 and it still did not pass. A caller branching on the number
+    // alone would report a stale reference set as a healthy migration.
+    expect(check?.recall).toBe(1)
+    expect(check?.passed).toBe(false)
+    expect(check?.unresolved).toEqual(['gone.md'])
+  })
+
+  it('answers undefined for a layer with no reindex, like every other get', async () => {
+    const { fetchImpl } = stub(problem(404, 'Not found'))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    expect(await nacre.layers.reindexStatus('nope')).toBeUndefined()
+  })
+
+  it('throws a 409 rather than hiding it, because it is not a permission answer', async () => {
+    // The caller has already proved they may administer the layer by the time
+    // this can happen, so folding it into `undefined` would lose the one thing
+    // they need to know: a migration is already running.
+    const { fetchImpl } = stub(problem(409, 'Conflict', 'A reindex is already running.'))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    await expect(nacre.layers.reindex('l1', 'p2')).rejects.toMatchObject({ status: 409 })
+  })
+})
+
+describe('reference queries', () => {
+  it('replaces the set whole', async () => {
+    const { fetchImpl, calls } = stub(
+      json(200, { items: [{ id: 'q1', query: 'notice period', expected: ['a.md'] }] }),
+    )
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    const set = await nacre.layers.setReferenceQueries('l1', [
+      { query: 'notice period', expected: ['a.md'] },
+    ])
+
+    expect(calls[0]?.method).toBe('PUT')
+    expect(calls[0]?.body).toEqual({ queries: [{ query: 'notice period', expected: ['a.md'] }] })
+    expect(set).toEqual([{ id: 'q1', query: 'notice period', expected: ['a.md'] }])
+  })
+
+  it('sends an empty set as an empty array, which is how a gate is removed', async () => {
+    // Not omitted, and not skipped as a no-op: `{queries: []}` is the request
+    // that clears one, and anything else leaves the gate in place.
+    const { fetchImpl, calls } = stub(json(200, { items: [] }))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    expect(await nacre.layers.setReferenceQueries('l1', [])).toEqual([])
+    expect(calls[0]?.body).toEqual({ queries: [] })
+  })
+
+  it('answers undefined for a layer the token may not administer', async () => {
+    const { fetchImpl } = stub(problem(404, 'Not found'))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    expect(await nacre.layers.referenceQueries('l1')).toBeUndefined()
+    expect(await nacre.layers.setReferenceQueries('l1', [])).toBeUndefined()
+  })
+})
+
+describe('the access log', () => {
+  const RECORD = {
+    id: '42',
+    occurred_at: '2026-08-02T10:00:00Z',
+    actor: { type: 'user', id: 'u1', label: 'alice@example.test' },
+    surface: 'rest',
+    client: '10.0.0.1',
+    action: 'search',
+    target: { layer_id: 'l1' },
+    result: 'allow',
+    detail: { query_hash: 'sha256:abc' },
+    request_id: 'req-9',
+  }
+
+  it('reads a page and decodes the nested actor', async () => {
+    const { fetchImpl } = stub(json(200, { items: [RECORD], next_cursor: 'c2' }))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    const page = await nacre.audit.read()
+
+    expect(page.nextCursor).toBe('c2')
+    expect(page.items[0]).toMatchObject({
+      id: '42',
+      actor: { type: 'user', id: 'u1', label: 'alice@example.test' },
+      action: 'search',
+      result: 'allow',
+      requestId: 'req-9',
+    })
+  })
+
+  it('omits nextCursor on the last page rather than carrying null', async () => {
+    // A caller loops `while (page.nextCursor)`. A null that survives decoding
+    // as a string would make that loop request the same page forever.
+    const { fetchImpl } = stub(json(200, { items: [RECORD], next_cursor: null }))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    expect(await nacre.audit.read()).not.toHaveProperty('nextCursor')
+  })
+
+  it('passes filters as query parameters, in snake case', async () => {
+    const { fetchImpl, calls } = stub(json(200, { items: [] }))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    await nacre.audit.read({
+      from: '2026-08-01T00:00:00Z',
+      actorId: 'u1',
+      action: 'search',
+      result: 'deny',
+      limit: 50,
+      cursor: 'c1',
+    })
+
+    const url = new URL(calls[0]?.url as string)
+    expect(url.pathname).toBe('/v1/audit')
+    expect(url.searchParams.get('actor_id')).toBe('u1')
+    expect(url.searchParams.get('result')).toBe('deny')
+    expect(url.searchParams.get('limit')).toBe('50')
+  })
+
+  it('sends no query string at all when nothing is filtered', async () => {
+    const { fetchImpl, calls } = stub(json(200, { items: [] }))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    await nacre.audit.read()
+    expect(calls[0]?.url).toBe(`${BASE}/v1/audit`)
+  })
+})
+
+describe('layers.update', () => {
+  it('sends only what changed', async () => {
+    const { fetchImpl, calls } = stub(new Response(null, { status: 204 }))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    expect(await nacre.layers.update('l1', { name: 'Contracts' })).toBe(true)
+    expect(calls[0]?.method).toBe('PATCH')
+    expect(calls[0]?.body).toEqual({ name: 'Contracts' })
+  })
+
+  it('answers false for a layer the token may not administer', async () => {
+    const { fetchImpl } = stub(problem(404, 'Not found'))
+    const nacre = new NacreClient({ baseUrl: BASE, token: TOKEN, fetch: fetchImpl })
+
+    expect(await nacre.layers.update('l1', { name: 'x' })).toBe(false)
+  })
+})
