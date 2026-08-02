@@ -88,7 +88,10 @@ and never that, which is rule 2 applied to the journal.
 
 What is not built, all of it described in `docs/` because that is the contract
 it will be built to: `POST /v1/layers/{id}/reindex`, OAuth discovery and dynamic
-client registration, and multipart upload on ingest. `docker compose up` has not been run from a clean
+client registration, and multipart upload on ingest. The reindex sequence in
+`docs/architecture.md` cannot be built as written — Qdrant will not add a named
+vector to an existing collection — and that document now says so, along with
+what the corrected design costs. `docker compose up` has not been run from a clean
 checkout, though its profiles are validated in CI.
 
 `docs/` is the specification, and it still runs ahead of the code in places —

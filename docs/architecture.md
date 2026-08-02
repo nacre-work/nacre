@@ -147,6 +147,43 @@ rather than a matter of taste.
 
 Search stays available throughout. Progress lives in `layers.reindex_state`.
 
+> **Step 1 is not an operation Qdrant supports, so this sequence cannot be
+> built as written.** A named vector can only be declared when a collection is
+> created. `update_collection` adjusts the parameters of vectors that already
+> exist — HNSW settings, quantization, on-disk placement — and refuses an
+> unknown name outright:
+>
+> ```
+> PATCH /collections/org_acme  {"vectors":{"v_small_v2_768":{"size":768,...}}}
+> 400 {"error":"Not existing vector name error: v_small_v2_768"}
+> ```
+>
+> Checked against Qdrant 1.18.3, the version this repository pins, by asking it
+> directly rather than by reading. Writing a point with an undeclared vector
+> fails the same way, so there is no route in through `upsert` either.
+>
+> This was found by building steps 1, 3 and 5 and running them: the endpoint,
+> the state machine, the worker pass and the progress gauge all worked, and the
+> first batch failed on `Not existing vector name`. The code is not in the tree,
+> because a reindex that cannot complete is worse than none.
+>
+> **The fix is a design decision rather than a patch**, and it changes this
+> document and the API surface together. `organizations.vector_collection`
+> already indirects the collection name, which is the hook: a reindex builds a
+> *new collection* carrying the new vector, fills it, and switches that column
+> in one statement. But a collection holds every layer in the organization, so
+> the unit of reindexing becomes the **organization**, not the layer — and
+> `POST /v1/layers/{id}/reindex` is then the wrong shape for it.
+>
+> The alternatives are worse. Per-layer collections would multiply collections
+> by layers and change tenant isolation. Declaring spare vector slots at
+> creation time means guessing future models and their dimensions.
+>
+> Until that is settled, changing a layer's embedding model means creating a new
+> layer on the new model and re-ingesting into it. That works today, it costs
+> the layer's identity and its grants, and saying so is better than pointing at
+> a sequence that cannot run.
+
 ## Deletion and garbage collection
 
 `documents.deleted_at` is set immediately and the points get `deleted: true` in
