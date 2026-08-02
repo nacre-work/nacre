@@ -396,18 +396,16 @@ guarantee than a gauge reading zero.
 
 The docs are still normative rather than descriptive, and in places still ahead
 of the code. Where one disagrees with the tree, that is a bug in one of them —
-say which. Two are said and not yet resolved, each written into the document
-that claims otherwise:
+say which, and nothing is currently outstanding.
 
-- **`workspace_admin` is in `users.role`'s CHECK and in nothing else.** A row
-  carrying it behaves as `member` — safe, and still a role the schema offers
-  that nothing implements and nothing refuses.
-- **An `org_admin` can issue a grant naming any uuid.** `referenceAllows`
-  returns true for the role before the scope is placed, so `POST /v1/grants`
-  writes a row pointing at a scope that need not exist in the tenant. Not a
-  leak — the pre-filter's unconditional `must: org_id` holds — but a row an
-  administrator cannot look up, and `404` stops meaning what invariant 4 says.
-  `@nacre.work/enterprise-acl-advanced` checks existence; the core should too.
+The two that were: **`workspace_admin`** was in `users.role`'s CHECK and in
+nothing else — migration 0017 removed it, because "administers a workspace" is a
+grant on a workspace scope and not an organization-wide role, and the model
+already said so better. And **an `org_admin` could issue a grant naming any
+uuid**, because `referenceAllows` returns true for the role before the scope is
+placed; `PostgresGrants.issue` checks existence now. Neither was a leak — the
+pre-filter's unconditional `must: org_id` held in both cases — and both made
+`404` stop meaning what invariant 4 says it means.
 
 **All 15 cases from docs/authz.md run** against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a

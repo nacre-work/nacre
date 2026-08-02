@@ -268,19 +268,20 @@ against a real database and through the adapter rather than the module. That is
 a stronger claim than a gauge reading zero, and it is checked on every run
 rather than watched.
 
-### `workspace_admin` is in the schema and in nothing else
+### There is no `workspace_admin`, and that is deliberate
 
-`users.role` is `CHECK (role IN ('platform_admin','org_admin','workspace_admin','member'))`
-and `OrgRole` is three values. A row carrying `workspace_admin` reads into a type
-that does not admit it and then behaves as `member`, because it matches neither
-of the two role branches in `resolve` and falls through to grant-based
-evaluation.
+`users.role` is `platform_admin`, `org_admin` or `member`. It carried a fourth
+value, `workspace_admin`, in the schema's CHECK and nowhere else — `OrgRole` has
+always been three — so a row holding it read into a type that does not admit it
+and behaved as `member`. Safe, and still a role the schema offered that nothing
+implemented and nothing refused: setting it silently demoted the user.
 
-That direction is the safe one — it denies rather than widens — and it is still
-a fourth role the schema offers, nothing implements, and nothing refuses. An
-operator who sets it gets a silently demoted user and no error. Either the rules
-here gain a fourth role or the constraint loses one; both are changes to this
-document first.
+Migration 0017 removed it, rather than implementing it, because it is a category
+error. `users.role` is organization-wide; administering a workspace is scoped to
+one. The model already expresses that, and expresses it better — `admin` on a
+`workspace` scope, which one person can hold on several workspaces at once and
+which a single column cannot say. A role would have been a second spelling of
+one thing, with the resolver deciding which wins.
 
 ## Current state
 
