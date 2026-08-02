@@ -17,7 +17,21 @@ export interface Layers {
 }
 
 export interface ToolRunner {
-  call(name: string, args: Record<string, unknown>, auth: AuthContext): Promise<unknown>
+  /**
+   * `requestId` is threaded through so audit rows can be joined to a request.
+   *
+   * Every MCP audit row carried the literal string `mcp` — this transport
+   * generates a real id per request and never passed it down, so
+   * `docs/config.md`'s claim that "an auditor's question and a latency
+   * investigation resolve against the same identifier" was true of REST and
+   * false here.
+   */
+  call(
+    name: string,
+    args: Record<string, unknown>,
+    auth: AuthContext,
+    requestId: string,
+  ): Promise<unknown>
 }
 
 export interface McpOptions {
@@ -175,6 +189,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
           definition.name,
           (params.arguments ?? {}) as Record<string, unknown>,
           auth,
+          requestId,
         )
 
         // A CallToolResult, not the bare value. The protocol requires

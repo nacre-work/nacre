@@ -267,6 +267,26 @@ export interface AuditEvent {
   readonly result: 'allow' | 'deny' | 'error'
   readonly detail: Record<string, unknown>
   readonly requestId: string
+  /**
+   * Which surface the call came in on.
+   *
+   * Was hardcoded `'api'` in the adapter, and the MCP server shares that sink —
+   * so every agent's read was logged as though a human had made it over REST.
+   * The column existed, the schema declared the enum, and nothing could tell
+   * the two apart. Defaults to `api` so an omission is the common case rather
+   * than a lie.
+   */
+  readonly surface?: 'api' | 'mcp' | 'admin' | 'system'
+  /**
+   * What the call was about, as `docs/audit.md` specifies it.
+   *
+   * Was hardcoded `'{}'::jsonb`, so the `gin (target)` index built for it
+   * indexed nothing and the document's opening promise — "show me which
+   * documents your agent read last quarter" — could not be answered at all.
+   * Search fills in the layers and the ids it returned; the rest name what they
+   * touched.
+   */
+  readonly target?: Record<string, unknown>
 }
 
 /**
@@ -996,6 +1016,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'search',
         result: 'allow',
+        // `docs/audit.md` opens by promising that "show me which documents your
+        // agent read last quarter has to get a precise answer". That needs the
+        // ids, and this wrote a count. The query text is deliberately still not
+        // here — CLAUDE.md forbids logging it, and `NACRE_AUDIT_QUERY_TEXT`
+        // exists for deployments that decide otherwise.
+        target: {
+          returned_docs: [...new Set(results.map((r) => r.doc_id))],
+          layers: [...new Set(results.map((r) => r.layer))],
+          top_k: boundedTopK(topK),
+        },
         detail: { returned: results.length },
         requestId,
       })
@@ -1048,6 +1078,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'ingest',
           result: 'deny',
+          target: { layer },
           detail: { layer },
           requestId,
         })
@@ -1061,6 +1092,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'ingest',
         result: 'allow',
+        target: { layer, document_id: outcome.documentId },
         detail: { document_id: outcome.documentId, unchanged: outcome.unchanged },
         requestId,
       })
@@ -1087,6 +1119,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'delete_document',
         result: removed ? 'allow' : 'deny',
+        target: { document_id: id },
         detail: { document_id: id },
         requestId,
       })
@@ -1114,6 +1147,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'get_document',
           result: 'deny',
+          target: { document_id: id },
           detail: { document_id: id },
           requestId,
         })
@@ -1127,6 +1161,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'get_document',
         result: 'allow',
+        target: { document_id: id },
         detail: { document_id: id },
         requestId,
       })

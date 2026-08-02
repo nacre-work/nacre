@@ -351,15 +351,22 @@ export class PostgresAudit implements AuditSink {
       event.orgId,
       async (client) => {
         await client.query(
+          // `surface` and `target` were literals in this statement — 'api' and
+          // an empty object — so every MCP call was logged as REST and the
+          // `gin (target)` index built for this indexed nothing. The columns
+          // and the schema were right from the first migration; only the write
+          // was not.
           `INSERT INTO audit_events
              (org_id, actor_type, actor_id, actor_label, action, surface, target, result, detail, request_id)
-           VALUES ($1,$2,$3,$4,$5,'api','{}'::jsonb,$6,$7,$8)`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)`,
           [
             event.orgId,
             actorType ?? 'unknown',
             /^[0-9a-f-]{36}$/i.test(actorId ?? '') ? actorId : null,
             event.actor,
             event.action,
+            event.surface ?? 'api',
+            JSON.stringify(event.target ?? {}),
             event.result,
             JSON.stringify(event.detail),
             event.requestId,

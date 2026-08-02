@@ -212,7 +212,7 @@ export function buildServices(config: Config): Services {
   }
 
   const tools: ToolRunner = {
-    call: async (name, args, auth) => {
+    call: async (name, args, auth, requestId) => {
       switch (name) {
         case 'search': {
           const query = args.query
@@ -233,8 +233,14 @@ export function buildServices(config: Config): Services {
             actor: `${auth.principal.type}:${auth.principal.id}`,
             action: 'search',
             result: 'allow',
-            detail: { surface: 'mcp', returned: hits.length },
-            requestId: 'mcp',
+            surface: 'mcp',
+            target: {
+              returned_docs: [...new Set(hits.map((h) => h.doc_id))],
+              layers: [...new Set(hits.map((h) => h.layer))],
+              top_k: topK,
+            },
+            detail: { returned: hits.length },
+            requestId,
           })
           return hits
         }
@@ -249,8 +255,10 @@ export function buildServices(config: Config): Services {
             actor: `${auth.principal.type}:${auth.principal.id}`,
             action: 'get_document',
             result: document === undefined ? 'deny' : 'allow',
-            detail: { surface: 'mcp', document_id: id },
-            requestId: 'mcp',
+            surface: 'mcp',
+            target: { document_id: id },
+            detail: { document_id: id },
+            requestId,
           })
           // Undefined, not an error mentioning the id. A tool must not reveal
           // that an inaccessible object exists, and the transport turns this
@@ -283,8 +291,10 @@ export function buildServices(config: Config): Services {
             actor: `${auth.principal.type}:${auth.principal.id}`,
             action: 'ingest',
             result: outcome === undefined ? 'deny' : 'allow',
-            detail: { surface: 'mcp', layer },
-            requestId: 'mcp',
+            surface: 'mcp',
+            target: { layer, document_id: outcome?.documentId ?? null },
+            detail: { layer },
+            requestId,
           })
 
           // Undefined means the caller may not write to that layer — and it has
@@ -306,8 +316,10 @@ export function buildServices(config: Config): Services {
             actor: `${auth.principal.type}:${auth.principal.id}`,
             action: 'delete_document',
             result: removed ? 'allow' : 'deny',
-            detail: { surface: 'mcp', document_id: id ?? null },
-            requestId: 'mcp',
+            surface: 'mcp',
+            target: { document_id: id ?? null },
+            detail: { document_id: id ?? null },
+            requestId,
           })
 
           // False for absent and for not-permitted alike, and the transport
