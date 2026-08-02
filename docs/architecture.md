@@ -202,24 +202,46 @@ abandoned. And a layer whose provider has no slot in the collection — created
 against a second provider, not reindexed at all — starts the same copy rather
 than accepting documents it can never index.
 
-The old collection is left in place. Rolling the whole organization back is
-pointing `vector_collection` at it again; rolling one layer back is a reindex
-onto the provider it came from.
+The old collection is left in place **for a window**. Rolling the whole
+organization back is pointing `vector_collection` at it again; rolling one layer
+back is a reindex onto the provider it came from.
 
-Two consequences an operator meets and neither is a bug. **A reindex that fails
-still moves the pointer**, because steps 1–3 are what moved it and only step 4
-failed — the new collection holds exactly the old one's data plus an empty slot,
-so it is live and correct, and the layer stays on the model it was already on.
-And **nothing reclaims an abandoned collection.** Each reindex leaves one
-behind, holding a full copy of the organization's vectors; that is what makes
-the rollback above a pointer change rather than a rebuild, and it is disk that
-grows per migration until an operator drops it by hand. There is no retention
-job for them yet.
+**A reindex that fails still moves the pointer**, and that is a consequence
+rather than a bug: steps 1–3 are what moved it and only step 4 failed, so the
+new collection holds exactly the old one's data plus an empty slot — live and
+correct — and the layer stays on the model it was already on.
+
+### What reclaims what
+
+Two copies survive a completed migration, and each has its own sweep on the same
+window, `NACRE_COLLECTION_RETENTION_DAYS`. That window is the rollback window,
+not a tidiness delay: both rollbacks above are cheap **only while the thing they
+roll back onto still exists**.
+
+**The superseded collection.** Candidates come from `retired_collections`,
+written by the same transaction that moves the pointer — so the list is "what a
+migration replaced" and never "what nothing points at". The difference is not
+cosmetic: the second phrasing describes the *target* of a copy still running,
+which is what made the runbook's manual cleanup a way to delete a live
+migration. The pointer is checked again immediately before each delete, so a
+collection an operator has rolled back onto leaves the list rather than the
+disk.
+
+**The superseded vector slot.** A completed reindex leaves every point in the
+layer still carrying the vector it used to be searched by — a float per
+dimension per point, in memory by default. Qdrant cannot drop a named vector
+from a collection's schema, which is the constraint this whole section turns on,
+but it can drop the *data* for one over a chosen set of points, which is all
+that costs anything. `finishReindexIfDone` records the name it moved away from
+in `reindex_state.previous_vector`, and the sweep refuses any slot a layer is
+searching now. Verified by asking Qdrant: the slot stays declared, a query on
+the live slot is unaffected, and a point missing the queried vector does not
+error — it simply does not match, which is exactly why that refusal is not
+optional.
 
 **What is not built:** the recall check against a reference query set (step 4 of
-the original sequence), and dropping the old vector after a rollback window.
-Both are additions to a migration that completes without them — the first is a
-gate nobody can run without a query set, and the second is disk.
+the original sequence). It is an addition to a migration that completes without
+it, and it is a gate nobody can run without a query set.
 
 The alternative was a collection per layer, which keeps a reindex local but
 turns an unscoped search into one Qdrant query per layer — ten to twenty in the
