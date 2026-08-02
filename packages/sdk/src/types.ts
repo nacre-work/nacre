@@ -163,3 +163,112 @@ export interface CreatedServiceAccount extends ServiceAccount {
    */
   readonly key: string
 }
+
+// ─── the reindex, and the gate in front of it ──────────────────────────────
+
+export type ReindexStatusName = 'running' | 'complete' | 'failed'
+
+export interface ReindexStatus {
+  readonly layerId: string
+  readonly status: ReindexStatusName
+  /**
+   * `copying` is the organization's collection being rebuilt with room for the
+   * new model — org-wide, no embeddings computed, and `progress` reads 0
+   * throughout. `embedding` is the per-layer work `progress` measures.
+   */
+  readonly phase: 'copying' | 'embedding'
+  /** What search is using right now. */
+  readonly currentVector: string
+  /** What is being built. They differ until the switch. */
+  readonly shadowVector: string
+  readonly providerId: string
+  readonly startedAt: string
+  readonly finishedAt: string | null
+  readonly total: number
+  readonly done: number
+  readonly failed: number
+  /** 0 to 1, clamped. An empty layer reads 1, because it is finished. */
+  readonly progress: number
+  readonly error: string | null
+  /**
+   * What the recall gate scored, once it has run. `null` until then, and `null`
+   * forever for a layer with no reference query set — that layer has no gate.
+   */
+  readonly check: RecallCheck | null
+}
+
+export interface RecallCheck {
+  /** The mean of `scores`, 0 to 1. */
+  readonly recall: number
+  readonly floor: number
+  readonly passed: boolean
+  readonly queries: number
+  readonly scores: readonly { readonly queryId: string; readonly recall: number }[]
+  /**
+   * External ids naming no live document. Any of these means `passed` is false
+   * whatever `recall` says — a stale reference set and a model that lost recall
+   * are different problems.
+   */
+  readonly unresolved?: readonly string[]
+}
+
+export interface ReferenceQuery {
+  readonly id: string
+  readonly query: string
+  /** External ids the query must still find. At most ten; see `referenceQueries`. */
+  readonly expected: readonly string[]
+}
+
+export interface ReferenceQueryInput {
+  readonly query: string
+  readonly expected: readonly string[]
+}
+
+// ─── sign-in ───────────────────────────────────────────────────────────────
+
+export interface Tokens {
+  readonly accessToken: string
+  readonly tokenType: string
+  /** Seconds. The access token's lifetime, not the refresh token's. */
+  readonly expiresIn: number
+  readonly refreshToken: string
+}
+
+// ─── the access log ────────────────────────────────────────────────────────
+
+export interface AuditRecord {
+  /** A sequence rather than a uuid, because a log is ordered. */
+  readonly id: string
+  readonly occurredAt: string
+  /** Who. `label` is a display name and may be absent for a deleted principal. */
+  readonly actor: {
+    readonly type: string
+    readonly id: string | null
+    readonly label: string | null
+  }
+  /** `rest` or `mcp`. Which door the request came through. */
+  readonly surface: string | null
+  readonly client: string | null
+  readonly action: string
+  readonly target: Record<string, unknown>
+  readonly result: 'allow' | 'deny' | 'error'
+  readonly detail: Record<string, unknown>
+  /** Matches the `request_id` in the problem document the caller saw. */
+  readonly requestId: string | null
+}
+
+export interface AuditQuery {
+  readonly from?: string
+  readonly to?: string
+  readonly actorId?: string
+  readonly action?: string
+  readonly result?: 'allow' | 'deny' | 'error'
+  readonly limit?: number
+  readonly cursor?: string
+}
+
+export interface AuditPage {
+  readonly items: readonly AuditRecord[]
+  /** Absent on the last page. Pass it back as `cursor`. */
+  readonly nextCursor?: string
+}
