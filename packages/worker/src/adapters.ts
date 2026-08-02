@@ -435,13 +435,26 @@ export class HttpParser implements Parser {
  * oldest first: the lag gauge reports the worst laggard, so clearing the oldest
  * is what actually moves the number an alert fires on.
  *
- * No `FOR UPDATE SKIP LOCKED` and no claim column. Retagging is idempotent —
- * two replicas writing the same tags to the same points produce the same
- * payload — so the cost of a double retag is a wasted call, while the cost of a
- * claim that leaks on a crash is a document nothing retries. The version guard
- * in `markTagged` is what keeps concurrent passes from disagreeing.
+ * Claimed under a lease, in the same statement that selects. Retagging is
+ * idempotent — two replicas writing the same tags to the same points produce
+ * the same payload — so the claim is an optimisation and not a correctness
+ * mechanism; `markTagged`'s version guard remains what keeps concurrent passes
+ * from disagreeing.
+ *
+ * It is still necessary. Without it every replica selected the same oldest
+ * batch and did the same work, so throughput stayed at one worker's rate
+ * however many ran while the load on Qdrant multiplied by the replica count —
+ * and scaling the worker out, the documented response to a climbing
+ * propagation alert, did nothing at all.
+ *
+ * Leased rather than owned, so a worker that dies mid-sweep does not park rows
+ * forever: the claim expires and the next pass picks them up.
  */
-export async function claimStale(pool: Pool, limit: number): Promise<readonly StaleDocument[]> {
+export async function claimStale(
+  pool: Pool,
+  limit: number,
+  leaseSeconds = 900,
+): Promise<readonly StaleDocument[]> {
   return acrossOrganizations(pool, async (client) => {
       const { rows } = await client.query<{
         id: string
@@ -449,12 +462,13 @@ export async function claimStale(pool: Pool, limit: number): Promise<readonly St
         slug: string
         layer_id: string
       }>(
-        `SELECT d.id, d.org_id, o.slug, d.layer_id
-           FROM documents d
-           JOIN organizations o ON o.id = d.org_id
-          WHERE d.deleted_at IS NULL
-            AND o.deleted_at IS NULL
-            AND d.acl_version < o.groups_version
+        `WITH claimed AS (
+           SELECT d.id
+             FROM documents d
+             JOIN organizations o ON o.id = d.org_id
+            WHERE d.deleted_at IS NULL
+              AND o.deleted_at IS NULL
+              AND d.acl_version < o.groups_version
             -- "Has points", not "is currently indexed". A document that
             -- indexed once and failed on a later pass still has the earlier
             -- pass's points in the index, still carries their tags, and is the
@@ -466,9 +480,29 @@ export async function claimStale(pool: Pool, limit: number): Promise<readonly St
             -- observability.ts uses the same predicate. The two must agree: a
             -- gauge that counts what the loop cannot claim is a stuck alert.
             AND d.chunk_count > 0
-          ORDER BY COALESCE(d.acl_tagged_at, d.created_at)
-          LIMIT $1`,
-        [limit],
+              -- Unclaimed, or claimed long enough ago that the worker holding
+              -- it is gone. The lease is what keeps a crashed sweep from
+              -- parking rows forever.
+              AND (d.sweep_claimed_at IS NULL
+                   OR d.sweep_claimed_at < now() - make_interval(secs => $2))
+            ORDER BY COALESCE(d.acl_tagged_at, d.created_at)
+            LIMIT $1
+            FOR UPDATE OF d SKIP LOCKED
+         )
+         -- The claim is written in the same statement as the selection, which
+         -- is what makes it a claim. SKIP LOCKED on its own does not: the lock
+         -- ends when this transaction commits, and the actual work — a Qdrant
+         -- round trip — happens afterwards, so two replicas polling a second
+         -- apart still collided. Throughput stayed at one worker's rate however
+         -- many ran, and scaling out, the documented response to a climbing
+         -- propagation alert, did nothing.
+         UPDATE documents d
+            SET sweep_claimed_at = now()
+           FROM claimed c
+           JOIN organizations o ON TRUE
+          WHERE d.id = c.id AND o.id = d.org_id
+          RETURNING d.id, d.org_id, o.slug, d.layer_id`,
+        [limit, leaseSeconds],
       )
 
       return rows.map((r) => ({
@@ -491,6 +525,7 @@ export async function claimPurgeable(
   pool: Pool,
   limit: number,
   graceSeconds: number,
+  leaseSeconds = 900,
 ): Promise<readonly PurgeTarget[]> {
   return acrossOrganizations(pool, async (client) => {
       const { rows } = await client.query<{
@@ -499,16 +534,29 @@ export async function claimPurgeable(
         slug: string
         age: string
       }>(
-        `SELECT d.id, d.org_id, o.slug,
-                EXTRACT(EPOCH FROM (now() - d.deleted_at))::text AS age
-           FROM documents d
-           JOIN organizations o ON o.id = d.org_id
-          WHERE d.deleted_at IS NOT NULL
-            AND d.vectors_purged_at IS NULL
-            AND d.deleted_at < now() - make_interval(secs => $2)
-          ORDER BY d.deleted_at
-          LIMIT $1`,
-        [limit, graceSeconds],
+        `WITH claimed AS (
+           SELECT d.id
+             FROM documents d
+            WHERE d.deleted_at IS NOT NULL
+              AND d.vectors_purged_at IS NULL
+              AND d.deleted_at < now() - make_interval(secs => $2)
+              AND (d.sweep_claimed_at IS NULL
+                   OR d.sweep_claimed_at < now() - make_interval(secs => $3))
+            ORDER BY d.deleted_at
+            LIMIT $1
+            FOR UPDATE OF d SKIP LOCKED
+         )
+         -- Claimed in the same statement, for the same reason as claimStale:
+         -- without it every replica purged the same tombstones and the backlog
+         -- drained at one worker's rate however many were running.
+         UPDATE documents d
+            SET sweep_claimed_at = now()
+           FROM claimed c
+           JOIN organizations o ON TRUE
+          WHERE d.id = c.id AND o.id = d.org_id
+          RETURNING d.id, d.org_id, o.slug,
+                    EXTRACT(EPOCH FROM (now() - d.deleted_at))::text AS age`,
+        [limit, graceSeconds, leaseSeconds],
       )
 
       return rows.map((r) => ({

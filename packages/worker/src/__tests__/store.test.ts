@@ -117,8 +117,13 @@ when('PostgresDocumentStore · markTagged', () => {
       pool,
       ORG,
       async (c) => {
+        // sweep_claimed_at too: the retag claim is leased, so a row claimed by
+        // the previous run is invisible to this one for the length of the
+        // lease. That is the point of the lease and it is real state, so a
+        // fixture has to reset it like any other.
         await c.query(
-          'UPDATE documents SET acl_version = 0, acl_tagged_at = NULL WHERE org_id = $1 AND id = $2',
+          `UPDATE documents SET acl_version = 0, acl_tagged_at = NULL, sweep_claimed_at = NULL
+            WHERE org_id = $1 AND id = $2`,
           [ORG, ids.doc],
         )
       },
@@ -217,7 +222,10 @@ when('PostgresDocumentStore · markTagged', () => {
       AS_APP,
     )
 
-    const mine = async () => (await claimStale(pool, 500)).filter((d) => d.documentId === ids.doc)
+    // Lease 0: every claim is immediately reclaimable, so what this test
+    // observes is the *marking*, not the claim. Otherwise the second call
+    // would return nothing because of the lease and pass for the wrong reason.
+    const mine = async () => (await claimStale(pool, 500, 0)).filter((d) => d.documentId === ids.doc)
 
     // Left at 0 by beforeEach, so it is behind whatever the version is now.
     expect(await mine()).toHaveLength(1)
@@ -247,7 +255,7 @@ when('PostgresDocumentStore · markTagged', () => {
 
     // I5 keeps them out of every answer already, so retagging one spends a
     // vector-store call on a document nothing can return.
-    expect((await claimStale(pool, 500)).filter((d) => d.documentId === ids.doc)).toHaveLength(0)
+    expect((await claimStale(pool, 500, 0)).filter((d) => d.documentId === ids.doc)).toHaveLength(0)
 
     await withOrg(
       pool,
@@ -262,8 +270,29 @@ when('PostgresDocumentStore · markTagged', () => {
     )
   })
 
+  it('a claimed document is invisible to another worker until its lease expires', async () => {
+    // The reason the claim exists. Every replica used to select the same oldest
+    // batch and do the same work, so throughput stayed at one worker's rate
+    // however many ran — and scaling the worker out, the documented response to
+    // a climbing propagation alert, did nothing at all.
+    const first = (await claimStale(pool, 500, 900)).filter((d) => d.documentId === ids.doc)
+    expect(first).toHaveLength(1)
+
+    // A second worker polling a moment later gets nothing, because the first
+    // one holds it. `FOR UPDATE SKIP LOCKED` alone would not do this: the lock
+    // ends when the selecting transaction commits, and the actual work happens
+    // afterwards.
+    const second = (await claimStale(pool, 500, 900)).filter((d) => d.documentId === ids.doc)
+    expect(second).toHaveLength(0)
+
+    // And it comes back once the lease is up, so a worker that dies mid-sweep
+    // does not park the row forever.
+    const afterExpiry = (await claimStale(pool, 500, 0)).filter((d) => d.documentId === ids.doc)
+    expect(afterExpiry).toHaveLength(1)
+  })
+
   it('claimStale honours its limit', async () => {
-    expect((await claimStale(pool, 1)).length).toBeLessThanOrEqual(1)
+    expect((await claimStale(pool, 1, 0)).length).toBeLessThanOrEqual(1)
   })
 
   it('a retag pass drains the propagation lag it was built to measure', async () => {
@@ -285,7 +314,7 @@ when('PostgresDocumentStore · markTagged', () => {
       // not hypothetical: it is what made this suite pass alone and fail beside
       // the observability tests, which stage a stale document and then check
       // the gauge reports it.
-      claim: async (limit: number) => (await claimStale(pool, limit)).filter((d) => d.orgId === ORG),
+      claim: async (limit: number) => (await claimStale(pool, limit, 0)).filter((d) => d.orgId === ORG),
       tagsFor: (orgId: string, layerId: string) => tagsForLayer(pool, orgId, layerId, 'nacre_app'),
       retag: async (input: { documentId: string }) => {
         written.push(input.documentId)
@@ -413,7 +442,7 @@ when('garbage collection, against real storage', () => {
     )
 
   const mine = async (grace: number) =>
-    (await claimPurgeable(gcPool, 500, grace)).filter((t) => t.documentId === gcIds.doc)
+    (await claimPurgeable(gcPool, 500, grace, 0)).filter((t) => t.documentId === gcIds.doc)
 
   it('a live document is never a purge target', async () => {
     expect(await mine(0)).toHaveLength(0)
