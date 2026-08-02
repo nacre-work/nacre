@@ -31,9 +31,19 @@ The MCP server is a **resource server**, not an authorization server.
   not pointed at Nacre: this is a resource server, and sending a client here
   for a token endpoint would be the same dead end as not serving the document
   at all.
-- Client registration is **CIMD**. DCR is kept as a legacy branch behind a flag.
+- **Client registration is not ours.** CIMD and DCR are both transactions
+  between a client and an *authorization server*, and the line above says which
+  one of those Nacre is. There is no registration endpoint here, no client
+  record to create, and nothing to enable — a deployment that wants either gets
+  it from the identity provider it names in
+  `NACRE_OAUTH_AUTHORIZATION_SERVER`. This document said the opposite until it
+  was read next to the sentence three lines above it.
 - `iss` validation (RFC 9207) on the client side; `resource=` on every token
   request, including refresh.
+
+**The whole of the OAuth surface a resource server has is built**: the RFC 9728
+document, and local validation of an audience-bound token. There is no third
+thing waiting to be written, which is why nothing below lists one.
 - **EMA** (`io.modelcontextprotocol/enterprise-managed-authorization`): the
   server advertises the `id-jag` grant profile, accepts an ID-JAG from a
   corporate IdP, and exchanges it for an access token (RFC 7523).
