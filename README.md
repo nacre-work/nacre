@@ -32,10 +32,12 @@ cleared for — and being able to prove it to an auditor.
   rather than k minus whatever got stripped out.
 - **MCP as a first-class surface.** Streamable HTTP per the 2026-07-28 spec,
   and local STDIO for developer agents. Agents authenticate with a service
-  account key today; OAuth discovery is specified and not built.
+  account key; OAuth discovery is served (RFC 9728), and client registration is
+  the authorization server's business rather than ours.
 - **Bring your own models.** Embeddings through any OpenAI-compatible
-  endpoint, bound per layer. Changing the model on an existing layer needs a
-  reindex, which is specified and not built.
+  endpoint, bound per layer. Changing the model on an existing layer is a
+  reindex that keeps search answering throughout, and it is gated on recall
+  against a query set you supply before it switches over.
 - **Stays inside your network.** Docker Compose, no phone-home.
 
 ## Quickstart
@@ -86,13 +88,29 @@ JSON, JSONL or CSV. `org_admin` sees which documents were read — the question
 an audit log exists to answer — and `platform_admin` sees administrative actions
 and never that, which is rule 2 applied to the journal.
 
-What is not built, all of it described in `docs/` because that is the contract
-it will be built to: `POST /v1/layers/{id}/reindex`, OAuth discovery and dynamic
-client registration, and multipart upload on ingest. The reindex sequence in
-`docs/architecture.md` cannot be built as written — Qdrant will not add a named
-vector to an existing collection — and that document now says so, along with
-what the corrected design costs. `docker compose up` has not been run from a clean
-checkout, though its profiles are validated in CI.
+A layer can be moved onto a different embedding model. Qdrant will not add a
+named vector to a collection that exists, so the collection is replaced rather
+than altered: every point copied across with no embeddings computed, one
+statement to switch the pointer, then re-embedding one layer at a time. Search
+stays available and stays one query throughout. Before a layer switches, its
+reference query set is scored against the new model and a migration that lost
+recall stops instead of going live — that gate is off until you write a set,
+because it needs documents only you can pick.
+
+A document can be uploaded as a form as well as sent as JSON, and it must be
+UTF-8 text: this build extracts no binary formats, and it refuses a PDF on the
+request rather than storing replacement characters and calling it indexed.
+
+Tokens can be signed with an Ed25519 key instead of a shared secret, in which
+case the public half is published at `/.well-known/jwks.json` and only the
+process issuing tokens holds the private one.
+
+**`docker compose --profile minimal up` has been run from a clean clone**, and
+the whole loop driven through it.
+
+What is not built is what a commercial licence covers, and `docs/licensing.md`
+lists it: multi-tenancy, SSO, document-level permissions and deny rules,
+ID-JAG, SIEM export, a global admin, quotas, and HA Helm charts.
 
 `docs/` is the specification, and it still runs ahead of the code in places —
 start with [docs/authz.md](./docs/authz.md), which everything else depends on.
