@@ -80,6 +80,66 @@ export interface Config {
   readonly auditQueryText: boolean
 }
 
+/**
+ * The keys a token may be verified against, and the one it is signed with.
+ *
+ * Here rather than in each process because `api` and `mcp` verify with the same
+ * secret and must never disagree about which keys are current. Two copies of
+ * this function are two chances for a rotation to reach one and not the other,
+ * which produces 401s on part of the traffic and not the rest — the hardest
+ * failure of the set to read from outside.
+ */
+export interface JwtKeys {
+  /** Everything issued from now on is signed with this. */
+  readonly key: Uint8Array
+  /** Accepted on verification, never used to sign. Empty outside a rotation. */
+  readonly alsoAccept: readonly Uint8Array[]
+}
+
+export function loadJwtKeys(env: NodeJS.ProcessEnv = process.env): JwtKeys {
+  // Development uses a symmetric secret. Production is meant to load an Ed25519
+  // key through NACRE_JWT_PRIVATE_KEY_REF; until that lands, refusing is the
+  // honest behaviour — a hardcoded fallback here would be a signing key anyone
+  // reading the source can forge tokens with.
+  const secret = env.NACRE_JWT_SECRET
+  if (secret === undefined || secret.length < 32) {
+    throw new ConfigError([
+      'NACRE_JWT_SECRET is not set, or is shorter than 32 bytes. ' +
+        'Asymmetric keys through NACRE_JWT_PRIVATE_KEY_REF are not implemented yet; ' +
+        'until they are, this is required and there is no default.',
+    ])
+  }
+
+  const previous = env.NACRE_JWT_SECRET_PREVIOUS
+  if (previous === undefined || previous === '') {
+    return { key: new TextEncoder().encode(secret), alsoAccept: [] }
+  }
+
+  if (previous.length < 32) {
+    throw new ConfigError([
+      'NACRE_JWT_SECRET_PREVIOUS is set but shorter than 32 bytes. It holds the ' +
+        'key being rotated out, so it is held to the same floor as the one ' +
+        'replacing it. Unset it to finish the rotation.',
+    ])
+  }
+
+  if (previous === secret) {
+    // Refused rather than deduplicated. Setting both to the same value is what
+    // an operator does when they mean to rotate and copy the wrong line, and
+    // it leaves an installation that believes it has rotated and has not.
+    throw new ConfigError([
+      'NACRE_JWT_SECRET_PREVIOUS is the same value as NACRE_JWT_SECRET. That is ' +
+        'not a rotation: it accepts one key twice. Set NACRE_JWT_SECRET to the ' +
+        'new key and NACRE_JWT_SECRET_PREVIOUS to the one it replaces.',
+    ])
+  }
+
+  return {
+    key: new TextEncoder().encode(secret),
+    alsoAccept: [new TextEncoder().encode(previous)],
+  }
+}
+
 export class ConfigError extends Error {
   readonly problems: readonly string[]
 

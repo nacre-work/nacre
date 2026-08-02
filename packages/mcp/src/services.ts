@@ -10,7 +10,6 @@ import {
   type AuthContext,
 } from '@nacre.work/api'
 import {
-  ConfigError,
   createPool,
   effectivePrincipals,
   loadGrants,
@@ -38,16 +37,6 @@ import type { Layer } from './tools.js'
  */
 
 export const APP_ROLE = 'nacre_app'
-
-export function jwtKey(): Uint8Array {
-  const secret = process.env.NACRE_JWT_SECRET
-  if (secret === undefined || secret.length < 32) {
-    throw new ConfigError([
-      'NACRE_JWT_SECRET is not set, or is shorter than 32 bytes. There is no default.',
-    ])
-  }
-  return new TextEncoder().encode(secret)
-}
 
 export interface Services {
   readonly pool: Pool

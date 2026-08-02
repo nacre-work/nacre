@@ -5,6 +5,7 @@ import {
   createMetrics,
   createPool,
   loadConfig,
+  loadJwtKeys,
   Redis,
   Registry,
   VectorStore,
@@ -43,26 +44,9 @@ import { createApi } from './server.js'
 
 const APP_ROLE = 'nacre_app'
 
-function jwtKey(config: { jwtSecret?: string }): Uint8Array {
-  // Development uses a symmetric secret. Production is meant to load an Ed25519
-  // key through NACRE_JWT_PRIVATE_KEY_REF; until that lands, refusing is the
-  // honest behaviour — a hardcoded fallback here would be a signing key anyone
-  // reading the source can forge tokens with.
-  const secret = process.env.NACRE_JWT_SECRET
-  if (secret === undefined || secret.length < 32) {
-    throw new ConfigError([
-      'NACRE_JWT_SECRET is not set, or is shorter than 32 bytes. ' +
-        'Asymmetric keys through NACRE_JWT_PRIVATE_KEY_REF are not implemented yet; ' +
-        'until they are, this is required and there is no default.',
-    ])
-  }
-  void config
-  return new TextEncoder().encode(secret)
-}
-
 async function main(): Promise<void> {
   const config = loadConfig()
-  const key = jwtKey({})
+  const { key, alsoAccept } = loadJwtKeys()
 
   const pool = createPool({ connectionString: config.pgUrl, max: config.pgPoolMax })
   const vectors = new VectorStore(
@@ -157,6 +141,9 @@ async function main(): Promise<void> {
   const server = createApi({
     verify: {
       key,
+      // Empty outside a rotation. During one it carries the key being retired,
+      // so tokens already in the wild keep verifying until they expire.
+      ...(alsoAccept.length === 0 ? {} : { alsoAccept }),
       issuer: config.jwtIssuer,
       audience: config.jwtAudience,
       serviceKeys: new PostgresServiceKeys(pool, APP_ROLE),
@@ -209,14 +196,18 @@ async function main(): Promise<void> {
   server.listen(port, () => {
     // The fingerprint, never the secret. An operator needs to know which key is
     // in use when two environments disagree; nobody needs the key in a log.
-    const fingerprint = createHash('sha256').update(key).digest('hex').slice(0, 12)
+    const print = (k: Uint8Array) => `sha256:${createHash('sha256').update(k).digest('hex').slice(0, 12)}`
     console.log(
       JSON.stringify({
         msg: 'api listening',
         port,
         env: config.env,
         issuer: config.jwtIssuer,
-        jwt_key: `sha256:${fingerprint}`,
+        jwt_key: print(key),
+        // Present only during a rotation, which is exactly when an operator is
+        // reading this line. Its absence is how they know the rotation is
+        // finished and the old key is out.
+        ...(alsoAccept.length === 0 ? {} : { jwt_key_previous: alsoAccept.map(print) }),
       }),
     )
   })
