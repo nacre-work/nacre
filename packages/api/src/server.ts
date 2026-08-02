@@ -4,7 +4,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 // DOM, so the global URL is not typed here.
 import { URL } from 'node:url'
 
-import { TooBusy } from '@nacre.work/core'
+import { MetadataError, parseFilters, parseMetadata, TooBusy, type Metadata } from '@nacre.work/core'
 
 import { authenticate, rejectTenantOverride, type AuthContext, type VerifyOptions } from './auth.js'
 import { badRequest, internal, notFound, Problem } from './errors.js'
@@ -114,6 +114,15 @@ export interface SearchOptions {
    */
   readonly layers?: readonly string[]
   /**
+   * Document metadata to restrict to, key to value. Narrowing only.
+   *
+   * Equality, and a list means "any of these". Never a negation, a range or a
+   * disjunction across keys — each of those is a way to widen if it is ever
+   * composed wrongly, and none is needed to answer "only documents from this
+   * source". Validated before it gets here.
+   */
+  readonly filters?: Metadata
+  /**
    * `false` omits the chunk text from every hit.
    *
    * For a client that wants ids and scores — a reranking front end, a citation
@@ -138,6 +147,8 @@ export interface IngestRequest {
   readonly title?: string
   readonly content?: string
   readonly url?: string
+  /** Validated before it gets here. `{}` when the caller sent none. */
+  readonly metadata: Metadata
 }
 
 export interface IngestOutcome {
@@ -1281,22 +1292,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
-      // Refused, not ignored, and that is the point.
+      // Narrowing, and only ever narrowing.
       //
-      // `filters` has been in the contract since before there was a server and
-      // read by nothing. Silently accepting it is the worst available
-      // behaviour for this product in particular: a caller who filters a search
-      // and gets everything back believes they scoped it. Filtering on document
-      // metadata needs the metadata in the vector payload, which the worker
-      // does not write yet — so until it does, this says so.
-      if (request.filters !== undefined) {
+      // `filters` was in the contract from before there was a server and read
+      // by nothing, then refused with 400 rather than ignored — because a
+      // caller who filters a search and gets everything back believes they
+      // scoped it. It is applied now, and the shape it is applied in is the
+      // point: it never becomes a filter the caller assembled. `buildFilter`
+      // turns each entry into a `must` on a namespaced payload key alongside
+      // the permission constraint, so the only thing a filter can do is remove
+      // results the caller was already permitted to see.
+      let filters
+      try {
+        filters = parseFilters(request.filters)
+      } catch (error) {
         const problem = badRequest(
           instance,
           requestId,
-          "'filters' is not implemented. Document metadata is not written to the " +
-            'vector payload yet, so a filter on it cannot be applied — and applying ' +
-            'nothing while accepting the parameter would let a search look narrower ' +
-            'than it was. Use \'layers\' to restrict a search today.',
+          error instanceof MetadataError ? error.message : "'filters' is not usable.",
         )
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -1304,6 +1317,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
       const started = process.hrtime.bigint()
       const results = await options.search.search(auth, query, boundedTopK(request.top_k), {
+        ...(Object.keys(filters).length === 0 ? {} : { filters }),
         // Only ever a way to turn it off; a deployment with no reranker
         // configured does not acquire one because a client asked.
         ...(request.rerank === false ? { rerank: false } : {}),
@@ -1366,6 +1380,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
+      // Declared in openapi.yaml with no caveat and read by nothing until now,
+      // which made it the quietest of the parameters that were: a caller tagged
+      // a document, got 202, and the tag existed nowhere. Refused rather than
+      // trimmed when it is malformed — a dropped key is a document the caller
+      // believes is tagged and a filter that will never match it.
+      let metadata
+      try {
+        metadata = parseMetadata(body_.metadata)
+      } catch (error) {
+        const problem = badRequest(
+          instance,
+          requestId,
+          error instanceof MetadataError ? error.message : "'metadata' is not usable.",
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
       const queuedAt = process.hrtime.bigint()
       const outcome = await options.ingest.queue(auth, {
         layer,
@@ -1373,6 +1405,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         ...(typeof body_.title === 'string' ? { title: body_.title } : {}),
         ...(typeof content === 'string' ? { content } : {}),
         ...(typeof url_ === 'string' ? { url: url_ } : {}),
+        metadata,
       })
       // The accept stage only — parse, chunk and embed happen in the worker,
       // which has no registry of its own. Labelled so the rest can join it

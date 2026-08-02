@@ -1,5 +1,12 @@
 import { QdrantClient } from '@qdrant/js-client-rest'
-import { acrossOrganizations, aclTags, explainQdrant as explain, loadGroupsVersion, withOrg } from '@nacre.work/core'
+import {
+  acrossOrganizations,
+  aclTags,
+  explainQdrant as explain,
+  loadGroupsVersion,
+  METADATA_PREFIX,
+  withOrg,
+} from '@nacre.work/core'
 import type { PrincipalRef } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
@@ -168,7 +175,17 @@ export class PostgresDocumentStore implements DocumentStore {
              -- visible in every listing, and looking like the API had dropped
              -- the field.
              title        = COALESCE(EXCLUDED.title, documents.title),
-             metadata     = EXCLUDED.metadata,
+             -- Not written here at all, and for the same reason the title is
+             -- COALESCEd: the API owns this column. It holds what the caller
+             -- tagged the document with, and a filter reads it back — so a
+             -- worker pass overwriting it with the parser's derived facts is
+             -- the title bug again, with the tag disappearing instead of the
+             -- name.
+             --
+             -- The parser's own output is dropped rather than merged. It is
+             -- a byte count today, nothing filters on it, and letting a sidecar
+             -- inject keys into a namespace callers filter by is a surface
+             -- nobody asked for.
              status       = 'indexed',
              chunk_count  = EXCLUDED.chunk_count,
              version      = documents.version + 1,
@@ -240,6 +257,7 @@ export class QdrantVectorWriter implements VectorWriter {
     layerId: string
     documentId: string
     vectorName: string
+    metadata: Record<string, unknown>
     points: readonly { pointId: string; ordinal: number; vector: readonly number[]; docId: string }[]
     aclTags: readonly string[]
     aclVersion: number
@@ -327,6 +345,7 @@ export class QdrantVectorWriter implements VectorWriter {
     collection: string
     layerId: string
     vectorName: string
+    metadata: Record<string, unknown>
     points: readonly { pointId: string; ordinal: number; vector: readonly number[]; docId: string }[]
     aclTags: readonly string[]
     aclVersion: number
@@ -348,6 +367,13 @@ export class QdrantVectorWriter implements VectorWriter {
           deleted: false,
           acl_tags: [...input.aclTags],
           acl_version: input.aclVersion,
+          // Every caller key under one reserved object, so `meta.org_id` is a
+          // different field from `org_id` and there is no key a caller can
+          // choose that reaches a permission field. Structural rather than a
+          // denylist: a list of forbidden names has to stay in step with every
+          // payload field ever added, and a namespace cannot fall out of step
+          // with anything.
+          [METADATA_PREFIX]: input.metadata,
         },
       })) as never,
     })

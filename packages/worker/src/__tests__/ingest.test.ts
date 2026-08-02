@@ -102,6 +102,7 @@ function ports(
 const request = {
   orgId: 'org-1',
   collection: 'org_acme',
+  metadata: {},
   layerId: 'layer-1',
   vectorName: 'v_bge_m3_1024',
   externalId: 'handbook-2026',

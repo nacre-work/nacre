@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildFilter } from '../filter.js'
+import { buildFilter, METADATA_PREFIX } from '../filter.js'
 import { buildHybridQuery, type Branch } from '../../vector/query.js'
 import { resolve } from '../resolve.js'
 import { grant, ORG, tree, user } from './helpers.js'
@@ -97,6 +97,61 @@ describe('baseline · the pre-filter reaches every branch', () => {
         limit: 10,
       }),
     ).toThrow(/narrowed to no layers/)
+  })
+
+  it('a metadata restriction is a must, so it can only remove results', () => {
+    const filter = buildFilter(ORG, scopedPlan(), {
+      metadata: { department: 'legal', year: 2026, archived: false, team: ['risk', 'audit'] },
+    })
+
+    // Everything the permission filter had, untouched.
+    expect(filter.must).toContainEqual({ key: 'org_id', match: { value: ORG } })
+    expect(filter.must).toContainEqual({ key: 'deleted', match: { value: false } })
+    expect(filter.should).toEqual(buildFilter(ORG, scopedPlan()).should)
+
+    // And the restriction, namespaced, as `must`. Never `should`, which would
+    // make it satisfiable by any other clause matching.
+    expect(filter.must).toContainEqual({ key: 'meta.department', match: { value: 'legal' } })
+    expect(filter.must).toContainEqual({ key: 'meta.year', match: { value: 2026 } })
+    expect(filter.must).toContainEqual({ key: 'meta.archived', match: { value: false } })
+    expect(filter.must).toContainEqual({ key: 'meta.team', match: { any: ['risk', 'audit'] } })
+  })
+
+  it('a caller cannot name a permission field, because the namespace is structural', () => {
+    // The keys below are exactly the ones an attacker would reach for. Each
+    // lands under `meta.`, which is a different field from the one it names —
+    // so `deleted: false` narrows on a metadata value a document may or may not
+    // carry, and cannot touch invariant I5's clause.
+    const filter = buildFilter(ORG, scopedPlan(), {
+      metadata: { org_id: 'someone-else', deleted: true, acl_tags: 'grant:forged' },
+    })
+
+    for (const key of ['org_id', 'deleted', 'acl_tags']) {
+      expect(filter.must.filter((c) => c.key === key).length, key).toBeLessThanOrEqual(1)
+      expect(filter.must).toContainEqual(
+        expect.objectContaining({ key: `${METADATA_PREFIX}.${key}` }),
+      )
+    }
+    // The real clauses are still the real ones.
+    expect(filter.must).toContainEqual({ key: 'org_id', match: { value: ORG } })
+    expect(filter.must).toContainEqual({ key: 'deleted', match: { value: false } })
+  })
+
+  it('refuses a metadata restriction with no values, as it refuses no layers', () => {
+    // An empty `any` is not "match nothing" in Qdrant. What an impossible
+    // restriction means is the caller's decision, not the query builder's.
+    expect(() => buildFilter(ORG, scopedPlan(), { metadata: { team: [] } })).toThrow(
+      /narrowed to no values/,
+    )
+  })
+
+  it('layers and metadata compose, both as must', () => {
+    const filter = buildFilter(ORG, scopedPlan(), {
+      layers: ['layer-a'],
+      metadata: { source: 'confluence' },
+    })
+    expect(filter.must).toContainEqual({ key: 'layer_id', match: { any: ['layer-a'] } })
+    expect(filter.must).toContainEqual({ key: 'meta.source', match: { value: 'confluence' } })
   })
 
   it('a query with no branches is refused rather than emitted', () => {

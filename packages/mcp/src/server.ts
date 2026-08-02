@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 
+import { MetadataError } from '@nacre.work/core'
 import {
   authenticate,
   findTenantOverride,
@@ -363,6 +364,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
             error: String(error),
           }),
         )
+
+        // One carve-out, and it is about the caller's own arguments rather than
+        // about anything stored. A `MetadataError` says a key is not a legal
+        // name, or a value is not a scalar, or a list is empty — facts the
+        // caller already had, naming nothing they did not send. Answering "not
+        // found" to a typo in a filter key leaves an agent retrying the same
+        // malformed call forever, because the one thing it cannot learn from
+        // that answer is that its arguments were wrong.
+        //
+        // Nothing else is separated out. The moment an error is about what
+        // exists, it goes back into the single answer above.
+        if (error instanceof MetadataError) {
+          send(res, 400, rpcError(id, -32602, error.message))
+          return
+        }
+
         send(res, 404, rpcError(id, -32601, 'Not found'))
       }
       return

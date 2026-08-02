@@ -199,7 +199,14 @@ export class NacreClient {
     const body = await this.#request({
       method: 'POST',
       path: '/v1/search',
-      body: { query, top_k: options.topK ?? 10 },
+      body: {
+        query,
+        top_k: options.topK ?? 10,
+        ...(options.layers === undefined ? {} : { layers: options.layers }),
+        ...(options.filters === undefined ? {} : { filters: options.filters }),
+        ...(options.includeContent === undefined ? {} : { include_content: options.includeContent }),
+        ...(options.rerank === undefined ? {} : { rerank: options.rerank }),
+      },
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       retryable: true,
     })
@@ -235,6 +242,7 @@ export class NacreClient {
           ...(request.title === undefined ? {} : { title: request.title }),
           ...(request.content === undefined ? {} : { content: request.content }),
           ...(request.url === undefined ? {} : { url: request.url }),
+          ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
         },
         // Idempotent on (layer, external_id) and the content hash, so a retry
         // after a timeout cannot produce a second document or a second version.

@@ -14,6 +14,8 @@ import {
   effectivePrincipals,
   loadGrants,
   loadScopeTree,
+  parseFilters,
+  parseMetadata,
   PostgresGroupGraph,
   resolve,
   VectorStore,
@@ -201,21 +203,15 @@ export function buildServices(config: Config): Services {
             ? args.layers.filter((l): l is string => typeof l === 'string')
             : undefined
 
-          // Refused rather than ignored, exactly as on REST. Filtering on
-          // document metadata needs the metadata in the vector payload, which
-          // the worker does not write yet. The tool schema is corrected to
-          // match, so a well-behaved client never sends this; the check is for
-          // the ones that do.
-          if (args.filters !== undefined) {
-            throw new Error(
-              'filters is not implemented: document metadata is not written to the ' +
-                'vector payload yet, so a filter on it cannot be applied. Use layers.',
-            )
-          }
+          // Applied, and narrowing only. `parseMetadata` is the same validator
+          // the REST surface and the ingest path use, so an agent cannot filter
+          // on a key that could never have been stored.
+          const filters = parseFilters(args.filters)
 
           const hits = await search.search(auth, query, topK, {
             ...(args.rerank === false ? { rerank: false } : {}),
             ...(layerSlugs !== undefined && layerSlugs.length > 0 ? { layers: layerSlugs } : {}),
+            ...(Object.keys(filters).length === 0 ? {} : { filters }),
             ...(args.include_content === false ? { includeContent: false } : {}),
           })
           await audit.write({
@@ -274,6 +270,10 @@ export function buildServices(config: Config): Services {
             ...(typeof args.title === 'string' ? { title: args.title } : {}),
             ...(content === undefined ? {} : { content }),
             ...(url === undefined ? {} : { url }),
+            // Advertised in the tool schema and dropped, exactly as it was on
+            // the REST side. `parseMetadata` raises, and the transport turns
+            // that into a tool error the agent can read and correct.
+            metadata: parseMetadata(args.metadata),
           })
 
           await audit.write({

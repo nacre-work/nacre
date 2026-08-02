@@ -29,6 +29,25 @@ export interface SearchOptions {
    * post-filter invariant I2 is written against.
    */
   readonly topK?: number
+  /**
+   * Layer slugs to restrict the search to.
+   *
+   * Narrowing only. A layer you cannot read contributes nothing whether or not
+   * you name it, and naming one that does not exist is the same answer as
+   * naming one you cannot see — which is invariant I4 applied to a parameter.
+   */
+  readonly layers?: readonly string[]
+  /**
+   * Document metadata to restrict to, key to value.
+   *
+   * Equality; a list means any of those values. Narrowing only, like `layers` —
+   * a filter can never reach a document you could not already read.
+   */
+  readonly filters?: Readonly<Record<string, string | number | boolean | readonly (string | number | boolean)[]>>
+  /** `false` omits the chunk text, leaving ids and scores. */
+  readonly includeContent?: boolean
+  /** `false` answers in fusion order. A deployment with no reranker is already there. */
+  readonly rerank?: boolean
   readonly signal?: AbortSignal
 }
 
@@ -43,6 +62,15 @@ export interface IngestRequest {
   readonly title?: string
   readonly content?: string
   readonly url?: string
+  /**
+   * Tags the document is filterable by, key to value.
+   *
+   * Keys are lower case letters, digits and underscores. Values are strings,
+   * numbers, booleans, or lists of those — nested objects are refused rather
+   * than flattened. Changing metadata alone re-indexes the document, because it
+   * is written into the vector payload of every chunk.
+   */
+  readonly metadata?: Readonly<Record<string, string | number | boolean | readonly (string | number | boolean)[]>>
 }
 
 export interface IngestOutcome {

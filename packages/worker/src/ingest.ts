@@ -81,6 +81,8 @@ export interface VectorWriter {
     layerId: string
     documentId: string
     vectorName: string
+    /** Written under a reserved key, so no caller key can reach a permission field. */
+    metadata: Record<string, unknown>
     points: readonly {
       pointId: string
       ordinal: number
@@ -99,6 +101,8 @@ export interface IngestRequest {
   readonly layerId: string
   readonly vectorName: string
   readonly externalId: string
+  /** From the document row, which the API owns. Not the parser's. */
+  readonly metadata: Record<string, unknown>
   readonly title?: string
   readonly content?: string
   readonly url?: string
@@ -186,6 +190,7 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
     await ports.vectors.write({
       orgId: request.orgId,
       collection: request.collection,
+      metadata: request.metadata,
       layerId: request.layerId,
       documentId: stored.id,
       vectorName: request.vectorName,
@@ -230,6 +235,7 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
   await ports.vectors.write({
     orgId: request.orgId,
     collection: request.collection,
+      metadata: request.metadata,
     layerId: request.layerId,
     documentId: stored.id,
     vectorName: request.vectorName,

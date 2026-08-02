@@ -14,6 +14,7 @@ import {
   vectorName,
   withOrg,
   type Hit,
+  type Narrowing,
   type QueryablePlan,
   type ReindexState,
 } from '@nacre.work/core'
@@ -264,7 +265,15 @@ export class NacreSearchService implements SearchService {
     // silently searched all of them. For a product whose selling point is that
     // a search returns only what you may see, a scoping parameter that does
     // nothing is the worst kind of no-op: the caller believes they narrowed it.
-    let narrow: { layers: readonly string[] } | undefined
+    let narrow: Narrowing | undefined
+    if (options.filters !== undefined && Object.keys(options.filters).length > 0) {
+      // Metadata alone is a valid narrowing — a caller may filter by source
+      // without naming a layer. `buildFilter` turns each entry into a `must`
+      // beside the permission constraint; there is no path from here to a
+      // filter the caller assembled.
+      narrow = { metadata: options.filters }
+    }
+
     if (options.layers !== undefined && options.layers.length > 0) {
       const resolved = await this.layerIds(auth.orgId, options.layers)
 
@@ -295,7 +304,7 @@ export class NacreSearchService implements SearchService {
       // error naming the layer, and no query.
       if (permitted.length === 0) return []
 
-      narrow = { layers: permitted }
+      narrow = { ...narrow, layers: permitted }
     }
 
     // One branch per model actually in scope.
@@ -391,10 +400,13 @@ export class NacreSearchService implements SearchService {
       dimensions: number
     }[],
     plan: QueryablePlan,
-    narrow: { layers: readonly string[] } | undefined,
+    narrow: Narrowing | undefined,
   ): readonly ModelGroup[] {
     const reachable = layers.filter((l) => {
-      if (narrow !== undefined && !narrow.layers.includes(l.id)) return false
+      // Only the layer half narrows the branch set. A metadata restriction says
+      // nothing about which models are in scope: it removes points inside the
+      // query rather than removing layers from it.
+      if (narrow?.layers !== undefined && !narrow.layers.includes(l.id)) return false
       if (plan.kind === 'all') return true
       if (plan.extraDocs.length > 0) return true
       return plan.layers.includes(l.id)
@@ -798,8 +810,8 @@ export class NacreIngest implements Ingest {
 
         const { rows } = await client.query<{ id: string; content_hash: string; status: string }>(
           `INSERT INTO documents
-             (org_id, layer_id, external_id, source_type, source_ref, title, content_hash, status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')
+             (org_id, layer_id, external_id, source_type, source_ref, title, content_hash, metadata, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending')
            ON CONFLICT (layer_id, external_id) DO UPDATE SET
              -- Only touch the row when the content actually changed. A repeat
              -- with the same bytes must not re-queue work: every client that
@@ -808,7 +820,19 @@ export class NacreIngest implements Ingest {
                                  THEN EXCLUDED.source_ref ELSE documents.source_ref END,
              title        = COALESCE(EXCLUDED.title, documents.title),
              content_hash = EXCLUDED.content_hash,
+             metadata     = EXCLUDED.metadata,
+             -- Metadata counts as a change, because it is written into the
+             -- vector payload of every point and a filter reads it from there.
+             -- Updating the row alone would leave the two disagreeing: the
+             -- document would carry a tag it does not answer to, which is the
+             -- silent shape of failure this repository keeps removing.
+             --
+             -- The cost is real — this re-embeds a document whose bytes did not
+             -- change — and the cheaper path is a payload-only write like the
+             -- ACL retag sweep does. Not built; docs/api.md says so rather than
+             -- letting an operator discover it from a bill.
              status       = CASE WHEN documents.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                                   OR documents.metadata IS DISTINCT FROM EXCLUDED.metadata
                                  THEN 'pending' ELSE documents.status END,
              deleted_at   = NULL,
              updated_at   = now()
@@ -821,6 +845,7 @@ export class NacreIngest implements Ingest {
             source,
             request.title ?? null,
             `sha256:${hash}`,
+            JSON.stringify(request.metadata),
           ],
         )
 

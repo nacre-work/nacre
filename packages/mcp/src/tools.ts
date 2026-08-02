@@ -78,12 +78,26 @@ export function catalog(layers: readonly Layer[]): readonly ToolDefinition[] {
             default: true,
             description: 'false omits the chunk text, leaving ids and scores.',
           },
-          // `filters` was here and read by nothing, so a client that filtered a
-          // search got everything back and believed it had narrowed the query.
-          // Removed rather than left in place: an advertised parameter that
-          // does nothing is a lie told to an agent, which will act on it.
-          // Filtering on document metadata needs that metadata in the vector
-          // payload, which the worker does not write yet.
+          // Back, and applied this time. It was advertised and read by nothing
+          // once, so a client that filtered a search got everything back and
+          // believed it had narrowed the query — which for an agent is worse
+          // than for a person, because an agent acts on the answer without
+          // looking at it.
+          filters: {
+            type: 'object',
+            description:
+              'Restrict to documents whose metadata matches. Equality; a list means any of ' +
+              'those values. Narrowing only — it can never reach a document you could not ' +
+              'already read. Keys are lower case letters, digits and underscores.',
+            additionalProperties: {
+              oneOf: [
+                { type: 'string' },
+                { type: 'number' },
+                { type: 'boolean' },
+                { type: 'array', items: { type: ['string', 'number', 'boolean'] }, maxItems: 32 },
+              ],
+            },
+          },
         },
         required: ['query'],
         // No org_id, at any depth. The organization comes from the token, and a

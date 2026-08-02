@@ -91,6 +91,7 @@ async function index(layerId: string, externalId: string, content: string): Prom
     {
       orgId: ORG,
       collection: collectionName(SLUG),
+      metadata: {},
       layerId,
       vectorName: VECTOR,
       externalId,

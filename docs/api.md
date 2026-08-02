@@ -127,7 +127,28 @@ beginning and read by nothing. Now:
 |---|---|
 | `layers` | Layer slugs. **Narrowing only** — a `must` on `layer_id` inside the index traversal, on top of the permission constraint, so it can never reach a layer a grant does not. Naming a layer you cannot read returns nothing from it and is indistinguishable from naming one that does not exist. Empty or absent means every readable layer. At most 64. |
 | `include_content` | `false` omits `text` from every hit, leaving ids and scores. Applied after reranking, because a reranker scores the query against the text. |
-| `filters` | **Refused with `400`, not ignored.** Filtering on document metadata needs that metadata in the vector payload, which the worker does not write yet. Accepting the parameter and applying nothing would let a search look narrower than it was — for this product, the worst available failure. It stays in the contract because it will be built to it. |
+| `filters` | Document metadata, key to value. Equality; a list means any of those. **Narrowing only** — each entry is a `must` beside the permission constraint inside the traversal, so it can only remove results the caller could already see. Keys live under a reserved payload namespace, so `filters: {"deleted": false}` narrows on a metadata value named `deleted` and cannot reach the tombstone flag. No negation, no ranges, no disjunction across keys. |
+
+A metadata key named `org_id` is refused with `403` on both ends, by the guard
+that scans a request for a tenant override at any depth. That guard predates
+metadata and fires on `filters.org_id` and `metadata.org_id` alike, which is the
+right answer: invariant 1 says the organization comes from the token and never
+from a body, and a caller who sends one anywhere should be told so rather than
+having it quietly reinterpreted as a tag.
+
+Document metadata is supplied on `POST /v1/documents` under `metadata`, which
+was in the contract with no caveat and dropped by the handler until `filters`
+needed it. Keys are lower case letters, digits and underscores — a key becomes a
+payload field name, and Qdrant reads `.` as nested access. At most 32 keys, and
+values are scalars or lists of them; a nested object is refused rather than
+flattened, because flattening would invent a path syntax and a path is a way to
+reach a field the caller did not name.
+
+**Changing metadata alone re-indexes the document.** It is written into the
+payload of every chunk, so the row and the index would otherwise disagree and
+the document would carry a tag it does not answer to. The cheap path is a
+payload-only write, as the ACL retag sweep does for permission tags, and it is
+not built — a bulk retagging pass costs a full re-embed today.
 
 Narrowing is still a pre-filter, so invariant 2 is untouched: `top_k` comes back
 full from the smaller permitted set rather than being cut down from the larger
