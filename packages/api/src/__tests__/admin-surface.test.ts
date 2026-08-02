@@ -698,6 +698,61 @@ describe('the administrative surface', () => {
     expect(seen).toContain('aclDenials:{"reason":"ingest_layer"}:undefined')
   })
 
+  it('PATCH on a document changes tags and answers no body', async () => {
+    const seen: { id: string; metadata: unknown }[] = []
+    const probe = createApi({
+      verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE },
+      documents: {
+        read: async () => undefined,
+        updateMetadata: async (_auth, id, metadata) => {
+          seen.push({ id, metadata })
+          return true
+        },
+      },
+      search: { search: async () => [] },
+      ingest: { queue: async () => undefined, remove: async () => false },
+      audit: { write: async () => {} },
+    })
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve))
+    const at = `http://127.0.0.1:${(probe.address() as AddressInfo).port}`
+
+    const ok = await fetch(`${at}/v1/documents/${DOC}`, {
+      method: 'PATCH',
+      headers: await auth(),
+      body: JSON.stringify({ metadata: { source: 'notion', year: 2026 } }),
+    })
+    // 204 and never the document. Rule 6: a caller may hold `write` without
+    // `read`, so a successful retag must not hand back a title or a layer.
+    expect(ok.status).toBe(204)
+    expect(await ok.text()).toBe('')
+    expect(seen).toEqual([{ id: DOC, metadata: { source: 'notion', year: 2026 } }])
+
+    // The same validator as ingest and as filters, so a tag that could never be
+    // stored cannot be written here either.
+    for (const body of [{}, { metadata: 'x' }, { metadata: { 'Bad.Key': 1 } }, { metadata: { a: { b: 1 } } }]) {
+      const bad = await fetch(`${at}/v1/documents/${DOC}`, {
+        method: 'PATCH',
+        headers: await auth(),
+        body: JSON.stringify(body),
+      })
+      expect(bad.status, JSON.stringify(body)).toBe(400)
+    }
+    expect(seen).toHaveLength(1)
+
+    await new Promise<void>((resolve) => probe.close(() => resolve()))
+  })
+
+  it('a surface without the capability answers 404, not 405', async () => {
+    // Same rule as every other absent capability: an unimplemented method on a
+    // path must not be distinguishable from a path that is not there.
+    const res = await fetch(`${base}/v1/documents/${DOC}`, {
+      method: 'PATCH',
+      headers: await auth(),
+      body: JSON.stringify({ metadata: { a: 1 } }),
+    })
+    expect(res.status).toBe(404)
+  })
+
   it('the admin routes need a token', async () => {
     for (const path of ['/v1/layers', '/v1/grants', `/v1/jobs/${DOC}`]) {
       expect((await fetch(`${base}${path}`)).status, path).toBe(401)

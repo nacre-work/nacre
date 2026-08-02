@@ -82,7 +82,7 @@ export function buildServices(config: Config): Services {
   // an agent listed the tools, called one, and was told it did not exist.
   const ingest = new NacreIngest({ pool, tombstone: vectors, role: APP_ROLE })
 
-  const documents = new PostgresDocuments(pool, APP_ROLE)
+  const documents = new PostgresDocuments(pool, vectors, APP_ROLE)
   const audit = new PostgresAudit(pool, APP_ROLE)
 
   /**

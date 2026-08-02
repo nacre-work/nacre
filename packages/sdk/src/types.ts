@@ -67,8 +67,9 @@ export interface IngestRequest {
    *
    * Keys are lower case letters, digits and underscores. Values are strings,
    * numbers, booleans, or lists of those — nested objects are refused rather
-   * than flattened. Changing metadata alone re-indexes the document, because it
-   * is written into the vector payload of every chunk.
+   * than flattened. Sending it through ingest re-indexes the document, because
+   * ingest re-parses and re-embeds; `documents.setMetadata` changes the tags
+   * alone and touches no vector.
    */
   readonly metadata?: Readonly<Record<string, string | number | boolean | readonly (string | number | boolean)[]>>
 }

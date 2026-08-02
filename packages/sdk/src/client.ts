@@ -282,6 +282,35 @@ export class NacreClient {
      * written, and collection of the points is a background job that nothing
      * depends on.
      */
+    /**
+     * Replace a document's metadata without re-indexing it.
+     *
+     * `false` for a document that is absent, another organization's, or one
+     * this credential may not write to — one answer for all three, which is
+     * what keeps "no such document" and "not yours" indistinguishable.
+     *
+     * A replacement, not a merge: send every tag the document should have.
+     */
+    setMetadata: async (
+      documentId: string,
+      metadata: Readonly<Record<string, string | number | boolean | readonly (string | number | boolean)[]>>,
+    ): Promise<boolean> => {
+      try {
+        await this.#request({
+          method: 'PATCH',
+          path: `/v1/documents/${encodeURIComponent(documentId)}`,
+          body: { metadata },
+          // Replacing a value with the same value is the same value. A retry
+          // after a timeout cannot produce a second anything.
+          retryable: true,
+        })
+        return true
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return false
+        throw error
+      }
+    },
+
     remove: async (documentId: string): Promise<boolean> => {
       try {
         await this.#request({
