@@ -56,6 +56,137 @@ export interface Hit {
 }
 
 /**
+ * How many metadata keys one collection will have indexes built for.
+ *
+ * The keys are the caller's, so unlike `PAYLOAD_INDEXES` the set is not known
+ * in advance and has no natural end: `parseMetadata` bounds a *document* to 32
+ * keys and says nothing about how many distinct ones an organization uses, so
+ * a caller putting an identifier in a key name would otherwise ask for an index
+ * per document.
+ *
+ * A constant rather than a `NACRE_` variable. Every configuration variable is a
+ * thing an operator has to understand and a thing `docs/config.md` has to
+ * explain, and the failure this bounds — a slower filter past the sixty-fourth
+ * distinct key — needs no per-deployment answer.
+ */
+export const METADATA_INDEX_LIMIT = 64
+
+/**
+ * Payload indexes for the keys a caller filters on.
+ *
+ * `PAYLOAD_INDEXES` covers the fields the permission filter uses, which are
+ * fixed. A metadata filter reaches `meta.<key>`, and those fields had no index
+ * at all — so the narrowing that `filters` performs was evaluated by scanning,
+ * which is the failure the comment on `PAYLOAD_INDEXES` describes: it does not
+ * fail a test, it gets slow at a customer's volume.
+ *
+ * Built when metadata is written, because that is the only moment the keys are
+ * known. Three properties make that safe, and each was checked against a real
+ * Qdrant rather than read:
+ *
+ * - **A missing index is slow, never wrong.** A filter on an unindexed field —
+ *   and on one indexed under the wrong type — still returns exactly the right
+ *   points. Qdrant falls back to a scan. So this is an optimization end to end,
+ *   and everything below may fail without changing an answer.
+ * - **Creating one is idempotent**, and it back-fills: an index added after the
+ *   points covers them, so nothing has to be rebuilt or ordered.
+ * - **`keyword` is safe for every value type.** A number or a boolean under a
+ *   keyword index simply indexes nothing and still matches, and strings and
+ *   lists of strings — the case `filters` exists for, "only documents from this
+ *   source" — index properly.
+ *
+ * Which is why a failure here warns and returns. This is the opposite of
+ * invariant I3 and deliberately so: nothing about an index decides who sees
+ * what, and failing an ingest because an index could not be built would trade a
+ * slow query for a document that never arrives.
+ */
+export class MetadataIndexer {
+  readonly #client: QdrantClient
+  readonly #limit: number
+  /** Per collection, the `meta.` fields known to be indexed. */
+  readonly #known = new Map<string, Set<string>>()
+  readonly #atLimit = new Set<string>()
+
+  constructor(client: QdrantClient, limit: number = METADATA_INDEX_LIMIT) {
+    this.#client = client
+    this.#limit = limit
+  }
+
+  /**
+   * Held on the instance rather than in a module-level map: two stores against
+   * different collections must not share it, and a cache that outlives the
+   * process that built it is a cache nothing invalidates. Staleness is harmless
+   * anyway — the operation it saves is idempotent.
+   */
+  async #indexed(collection: string): Promise<Set<string>> {
+    const cached = this.#known.get(collection)
+    if (cached !== undefined) return cached
+
+    const info = await this.#client.getCollection(collection)
+    const schema = (info.payload_schema ?? {}) as Record<string, unknown>
+    const fields = new Set(
+      Object.keys(schema).filter((field) => field.startsWith(`${METADATA_PREFIX}.`)),
+    )
+    this.#known.set(collection, fields)
+    return fields
+  }
+
+  async ensure(collection: string, keys: Iterable<string>): Promise<void> {
+    const wanted = [...keys]
+    if (wanted.length === 0) return
+
+    try {
+      const indexed = await this.#indexed(collection)
+
+      for (const key of wanted) {
+        const field = `${METADATA_PREFIX}.${key}`
+        if (indexed.has(field)) continue
+
+        if (indexed.size >= this.#limit) {
+          // Once per collection per process. The filter still answers
+          // correctly; it stops being answered from an index.
+          if (!this.#atLimit.has(collection)) {
+            this.#atLimit.add(collection)
+            console.warn(
+              JSON.stringify({
+                msg: 'metadata index limit reached',
+                collection,
+                limit: this.#limit,
+                unindexed: field,
+              }),
+            )
+          }
+          continue
+        }
+
+        await this.#client.createPayloadIndex(collection, {
+          field_name: field,
+          field_schema: 'keyword' as never,
+          wait: true,
+        })
+        indexed.add(field)
+      }
+    } catch (cause) {
+      // Never fatal. See the note on this class.
+      console.warn(
+        JSON.stringify({
+          msg: 'metadata index build failed',
+          collection,
+          error: explainQdrant(cause),
+        }),
+      )
+    }
+  }
+
+  /** The `meta.` indexes a collection already has, for carrying across a copy. */
+  static async fieldsOf(client: QdrantClient, collection: string): Promise<readonly string[]> {
+    const info = await client.getCollection(collection)
+    const schema = (info.payload_schema ?? {}) as Record<string, unknown>
+    return Object.keys(schema).filter((field) => field.startsWith(`${METADATA_PREFIX}.`))
+  }
+}
+
+/**
  * The vector store.
  *
  * One method matters: `search` takes an `AccessPlan` and never a filter. The
@@ -69,6 +200,7 @@ export interface Hit {
  */
 export class VectorStore {
   readonly #client: QdrantClient
+  readonly #metadataIndexes: MetadataIndexer
 
   constructor(options: VectorStoreOptions) {
     // exactOptionalPropertyTypes distinguishes "absent" from "present and
@@ -79,6 +211,7 @@ export class VectorStore {
         ? { url: options.url }
         : { url: options.url, apiKey: options.apiKey },
     )
+    this.#metadataIndexes = new MetadataIndexer(this.#client)
   }
 
   /**
@@ -164,6 +297,10 @@ export class VectorStore {
         { cause },
       )
     }
+
+    // After the write, not before: an index built for a write that then failed
+    // is an index for a key no point carries.
+    await this.#metadataIndexes.ensure(collection, Object.keys(metadata))
   }
 
   /**
@@ -239,6 +376,19 @@ export class VectorStore {
       await this.#client.createPayloadIndex(input.to, {
         field_name: index.field_name,
         field_schema: index.field_schema as never,
+        wait: true,
+      })
+    }
+
+    // The metadata indexes too, or a reindex quietly undoes them: the new
+    // collection is built from `PAYLOAD_INDEXES`, which by construction knows
+    // nothing about keys a caller chose, so every metadata filter in that
+    // organization would go back to scanning the moment the pointer moved. The
+    // source is the only record of which keys are in use.
+    for (const field of await MetadataIndexer.fieldsOf(this.#client, input.from)) {
+      await this.#client.createPayloadIndex(input.to, {
+        field_name: field,
+        field_schema: 'keyword' as never,
         wait: true,
       })
     }

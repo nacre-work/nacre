@@ -181,6 +181,14 @@ the parser's derived facts — the title bug again, with a tag disappearing rath
 than a name. It is stored now, written into the payload of every point under a
 reserved `meta` namespace, and read back by `filters`.
 
+Those fields are indexed now, which `PAYLOAD_INDEXES` structurally could not do
+— it lists the permission filter's fields, and a caller's keys are not knowable
+in advance. They are built where the keys first appear, on ingest and on the
+`PATCH`, and carried across when a reindex replaces the collection, which is
+where they would otherwise have been silently dropped. Bounded at 64 per
+collection and allowed to fail: a filter on an unindexed field returns exactly
+the points an indexed one would, so this is latency and never an answer.
+
 The namespace is the security property and it is structural, not a check: a
 caller key can never collide with `org_id`, `deleted` or `acl_tags`, because
 `meta.deleted` is a different field. And a filter is a **narrowing**, the same

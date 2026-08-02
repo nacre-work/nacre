@@ -19,7 +19,7 @@ export { acrossOrganizations, createPool, whileAuthenticating, withOrg } from '.
 export type { DbOptions, WithOrgOptions } from './db/client.js'
 export { migrate, loadMigrations } from './db/migrate.js'
 export { loadGrants, loadGroupsVersion, loadScopeTree, PostgresGroupGraph } from './authz/store.js'
-export { explainQdrant, VectorStore } from './vector/search.js'
+export { explainQdrant, MetadataIndexer, METADATA_INDEX_LIMIT, VectorStore } from './vector/search.js'
 export type { Hit, SearchRequest, VectorStoreOptions } from './vector/search.js'
 export { buildHybridQuery, collectionConfig, collectionName, PAYLOAD_INDEXES, vectorName } from './vector/query.js'
 export type { Branch, HybridQuery } from './vector/query.js'
