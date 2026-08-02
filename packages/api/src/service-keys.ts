@@ -4,6 +4,7 @@ import { withOrg } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
 import type { AuthContext } from './auth.js'
+import { pageOf, type Page, type PageResult } from './pagination.js'
 
 /**
  * Service account keys.
@@ -128,7 +129,7 @@ export interface ServiceAccount {
 }
 
 export interface ServiceAccounts {
-  list(auth: AuthContext): Promise<readonly ServiceAccount[]>
+  list(auth: AuthContext, page?: Page): Promise<PageResult<ServiceAccount>>
   /**
    * The key is in the result and nowhere else, ever again.
    *
@@ -152,11 +153,16 @@ export class PostgresServiceAccounts implements ServiceAccounts {
     return this.role === undefined ? {} : { role: this.role }
   }
 
-  async list(auth: AuthContext): Promise<readonly ServiceAccount[]> {
+  async list(auth: AuthContext, page?: Page): Promise<PageResult<ServiceAccount>> {
     return withOrg(
       this.pool,
       auth.orgId,
       async (client) => {
+        const after = page?.after
+        const seek =
+          after === undefined ? '' : ' AND (created_at, id) > ($2::timestamptz, $3::uuid)'
+        const cap = page === undefined ? '' : ` LIMIT ${page.limit}`
+
         const { rows } = await client.query<{
           id: string
           name: string
@@ -166,14 +172,14 @@ export class PostgresServiceAccounts implements ServiceAccounts {
           revoked_at: Date | null
         }>(
           `SELECT id, name, key_prefix, created_at, last_used_at, revoked_at
-             FROM service_accounts WHERE org_id = $1 ORDER BY created_at`,
-          [auth.orgId],
+             FROM service_accounts WHERE org_id = $1${seek} ORDER BY created_at, id${cap}`,
+          after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
         )
 
         // Revoked ones are listed rather than hidden: "this key was revoked on
         // Tuesday" is the answer to the question an operator is actually
         // asking, and a key that vanishes looks like one that never existed.
-        return rows.map((r) => ({
+        const accounts = rows.map((r) => ({
           id: r.id,
           name: r.name,
           keyPrefix: r.key_prefix,
@@ -181,6 +187,8 @@ export class PostgresServiceAccounts implements ServiceAccounts {
           lastUsedAt: r.last_used_at?.toISOString() ?? null,
           revokedAt: r.revoked_at?.toISOString() ?? null,
         }))
+
+        return pageOf(accounts, page, (a) => ({ createdAt: a.createdAt, id: a.id }))
       },
       this.scope,
     )

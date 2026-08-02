@@ -128,12 +128,84 @@ components:
         permission:     { type: string, enum: [read, write, admin] }
         effect:         { type: string, enum: [allow, deny], default: allow }
         source:         { type: string, enum: [manual, scim, api] }
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: >
+        Opaque. Pass back the next_cursor from the previous page rather than
+        constructing one — the format is allowed to change, and a cursor this
+        API did not issue is answered 400. There is no offset parameter: offset
+        paging skips and repeats rows when the collection changes underneath it,
+        and ?offset= is refused rather than ignored.
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        Caches the response for 24 hours, scoped to the organization, the
+        method, the path and a hash of the body. Reusing a key with a different
+        body is 409, as is a second attempt while the first is still in flight.
+        Ignored on POST /documents, which is already idempotent on content, and
+        on POST /service-accounts, whose response carries a credential that must
+        not be cached.
+      schema: { type: string, maxLength: 255 }
+  headers:
+    RateLimitLimit:
+      description: Requests permitted in the current window (RFC 9331).
+      schema: { type: integer }
+    RateLimitRemaining:
+      description: Requests left in the current window.
+      schema: { type: integer }
+    RateLimitReset:
+      description: Seconds until the window resets.
+      schema: { type: integer }
+    RateLimitPolicy:
+      description: 'The policy in force, as resource;q=quota;w=window.'
+      schema: { type: string }
+    RetryAfter:
+      description: Seconds to wait. Present only on a 429.
+      schema: { type: integer }
+    IdempotencyReplayed:
+      description: Present when the body is a replay of an earlier identical request.
+      schema: { type: boolean }
   responses:
     NotFoundOrForbidden:
       description: >
         The object is absent or invisible. The two are deliberately
         indistinguishable: otherwise enumerating identifiers reveals which
         documents exist.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RateLimited:
+      description: >
+        The organization's budget for this resource is spent. Counted per
+        organization rather than per token, because a per-token limit is
+        bypassed by issuing another key — and this API hands out keys. The
+        RateLimit-* headers are on every counted response, not only this one, so
+        a client can slow down before it is refused.
+      headers:
+        RateLimit-Limit:     { $ref: '#/components/headers/RateLimitLimit' }
+        RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+        RateLimit-Reset:     { $ref: '#/components/headers/RateLimitReset' }
+        RateLimit-Policy:    { $ref: '#/components/headers/RateLimitPolicy' }
+        Retry-After:         { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    IdempotencyConflict:
+      description: >
+        The Idempotency-Key is in use for a different request, or the first
+        attempt has not finished. Replaying a response that does not match what
+        was asked for — or does not exist yet — is worse than saying so.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -161,7 +233,12 @@ paths:
                   # disagrees with the code is worse than no contract, because
                   # a client written against it compiles and returns nothing.
                   items: { type: array, items: { $ref: '#/components/schemas/SearchHit' } }
-        '429': { description: Rate limit exceeded }
+          headers:
+            RateLimit-Limit:     { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset:     { $ref: '#/components/headers/RateLimitReset' }
+            RateLimit-Policy:    { $ref: '#/components/headers/RateLimitPolicy' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /documents:
     post:
       summary: Add or update a document
@@ -184,6 +261,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Job' }
         '413': { description: Document exceeds NACRE_MAX_DOCUMENT_BYTES }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /documents/{id}:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -198,25 +276,38 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
     delete:
       summary: Delete a document — a tombstone; it leaves results immediately
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
       responses:
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '204': { description: Deleted }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /layers:
     get:
       summary: Accessible layers. Narrowed by the caller's read plan, not filtered afterwards.
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
       responses:
         '200':
-          description: The list
+          description: >
+            The page. next_cursor is null on the last one, and is the only
+            signal that more exist — a page holding fewer than limit items does
+            not mean the end where the collection is narrowed per caller.
           content:
             application/json:
               schema:
                 type: object
+                required: [items, next_cursor]
                 properties:
                   items: { type: array, items: { $ref: '#/components/schemas/Layer' } }
+                  next_cursor: { type: [string, 'null'] }
     post:
       summary: >
         Create a layer. Requires admin on the workspace. A caller without it
         gets 404, identical to a workspace that does not exist.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
       responses:
         '201':
           description: Created
@@ -239,7 +330,26 @@ paths:
       responses:
         '202': { description: Started }
   /grants:
-    get:  { summary: Grants in the organization, responses: { '200': { description: The list } } }
+    get:
+      summary: Grants in the organization
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '200':
+          description: >
+            The page. Grants are narrowed to the scopes the caller may
+            administer after the cursor has been applied, so a short page is
+            ordinary here and next_cursor is taken from the last row fetched
+            rather than the last one returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Grant' } }
+                  next_cursor: { type: [string, 'null'] }
     post:
       summary: >
         Issue a grant. Requires admin on the scope being granted, not admin in
@@ -250,8 +360,14 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/Grant' }
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
       responses:
-        '201': { description: 'Issued. Reflected in results within ACL_PROPAGATION_SLA.' }
+        '201':
+          description: 'Issued. Reflected in results within ACL_PROPAGATION_SLA.'
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '400':
           description: >
             Includes the two capabilities this build does not have.
@@ -277,22 +393,40 @@ paths:
         scope, and deny is a commercial capability this build does not issue.
         The change is reflected in results within ACL_PROPAGATION_SLA, which is
         what nacre_acl_propagation_lag_seconds measures.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
       responses:
         '204': { description: Withdrawn }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /service-accounts:
     get:
       summary: >
         Service accounts in the organization, with key prefixes and never keys.
         Requires org_admin; anyone else gets 404.
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
       responses:
-        '200': { description: The list }
+        '200':
+          description: The page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/ServiceAccount' } }
+                  next_cursor: { type: [string, 'null'] }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
     post:
       summary: >
         Create a service account. The key is in this response and nowhere else,
         ever again — it is stored hashed, so it cannot be recovered from the
-        database or from a backup.
+        database or from a backup. Idempotency-Key is ignored here for that
+        reason: caching the response would put the key in a store with a
+        24-hour TTL and undo it. Retrying is safe without one, since a duplicate
+        name is answered 409 rather than minting a second key.
       requestBody:
         required: true
         content:
@@ -337,6 +471,9 @@ paths:
   /audit:
     get:
       summary: Access log. Cursor pagination; JSONL and CSV export.
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
       responses:
         '200': { description: Events }
         '403': { description: The caller may not read this organization's audit log }

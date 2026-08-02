@@ -113,7 +113,7 @@ when('service accounts, against the database', () => {
   it('the key is never readable again', async () => {
     const { key, account } = (await accounts.create(admin, 'agent-2'))!
 
-    const listed = (await accounts.list(admin)).find((a) => a.id === account.id)
+    const listed = ((await accounts.list(admin)).items).find((a) => a.id === account.id)
     expect(listed).toBeDefined()
     expect(JSON.stringify(listed)).not.toContain(key.slice(KEY_PREFIX.length))
     // The prefix is shown so two keys can be told apart when revoking one.
@@ -142,7 +142,7 @@ when('service accounts, against the database', () => {
     const { account } = (await accounts.create(admin, 'agent-5'))!
     await accounts.revoke(admin, account.id)
 
-    const listed = (await accounts.list(admin)).find((a) => a.id === account.id)
+    const listed = ((await accounts.list(admin)).items).find((a) => a.id === account.id)
     // A key that vanishes on revocation looks like one that never existed, and
     // the audit log refers to this id — a row that disappears turns every past
     // event into an unresolvable reference.
@@ -177,9 +177,9 @@ when('service accounts, against the database', () => {
 
   it('a refused name creates nothing', async () => {
     await accounts.create(admin, 'once-only')
-    const before = (await accounts.list(admin)).filter((a) => a.name === 'once-only').length
+    const before = ((await accounts.list(admin)).items).filter((a) => a.name === 'once-only').length
     await accounts.create(admin, 'once-only')
-    const after = (await accounts.list(admin)).filter((a) => a.name === 'once-only').length
+    const after = ((await accounts.list(admin)).items).filter((a) => a.name === 'once-only').length
 
     // ON CONFLICT DO NOTHING rather than a caught exception: the insert is
     // inside the transaction withOrg opens, and a raised constraint error
@@ -189,7 +189,7 @@ when('service accounts, against the database', () => {
 
   it('another organization does not see this one’s keys', async () => {
     (await accounts.create(admin, 'agent-7'))!
-    const theirs = await accounts.list({ ...admin, orgId: OTHER })
+    const theirs = (await accounts.list({ ...admin, orgId: OTHER })).items
     expect(theirs.every((a) => a.name !== 'agent-7')).toBe(true)
   })
 
@@ -283,11 +283,11 @@ when('service accounts, against the database', () => {
 
   it('using a key records when, without touching the decision', async () => {
     const { key, account } = (await accounts.create(admin, 'agent-12'))!
-    expect((await accounts.list(admin)).find((a) => a.id === account.id)?.lastUsedAt).toBeNull()
+    expect(((await accounts.list(admin)).items).find((a) => a.id === account.id)?.lastUsedAt).toBeNull()
 
     expect(await keys.resolve(key)).toBeDefined()
     await new Promise((r) => setTimeout(r, 50))
 
-    expect((await accounts.list(admin)).find((a) => a.id === account.id)?.lastUsedAt).not.toBeNull()
+    expect(((await accounts.list(admin)).items).find((a) => a.id === account.id)?.lastUsedAt).not.toBeNull()
   })
 })

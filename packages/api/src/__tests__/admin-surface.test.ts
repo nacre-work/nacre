@@ -46,6 +46,26 @@ const audited: AuditEvent[] = []
 const issued: GrantInput[] = []
 const revoked: string[] = []
 
+/**
+ * Everything that reached the idempotency cache.
+ *
+ * A fake rather than a Redis, because what is under test is *which* responses
+ * get stored at all — the store's own behaviour has its own tests, against a
+ * real one. Recording the body is the point: one of these responses carries a
+ * credential that exists exactly once, and a cache with a 24-hour TTL is not
+ * where it exists.
+ */
+const cached: { path: string; status: number; body: unknown }[] = []
+
+const idempotency = {
+  begin: async (_key: string, _orgId: string, _method: string, path: string) => ({
+    proceed: true as const,
+    store: async (status: number, body: unknown) => {
+      cached.push({ path, status, body })
+    },
+  }),
+}
+
 let server: Server
 let base: string
 
@@ -83,6 +103,7 @@ describe('the administrative surface', () => {
   beforeAll(async () => {
     server = createApi({
       verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE },
+      idempotency,
       documents: { read: async () => undefined },
       search: { search: async () => [] },
       ingest: { queue: async () => undefined, remove: async () => false },
@@ -98,16 +119,20 @@ describe('the administrative surface', () => {
             : undefined,
       },
       layers: {
-        list: async () => [
-          {
-            id: LAYER,
-            slug: 'handbook',
-            name: 'Handbook',
-            workspaceId: WS_MINE,
-            description: 'How things are done here',
-            documentCount: 12,
-          },
-        ],
+        list: async () => ({
+          nextCursor: null,
+          items: [
+            {
+              id: LAYER,
+              slug: 'handbook',
+              name: 'Handbook',
+              workspaceId: WS_MINE,
+              description: 'How things are done here',
+              documentCount: 12,
+              createdAt: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+        }),
         // `denied` for "may not administer" and "no such workspace" alike;
         // `conflict` only once the caller has proved admin on the workspace.
         create: async (_a: AuthContext, input) =>
@@ -124,11 +149,14 @@ describe('the administrative surface', () => {
                     workspaceId: WS_MINE,
                     description: '',
                     documentCount: 0,
+                    createdAt: '2026-01-01T00:00:00.000Z',
                   },
                 },
       },
       serviceAccounts: {
-        list: async () => [
+        list: async () => ({
+          nextCursor: null,
+          items: [
           {
             id: 'sa-1',
             name: 'agent',
@@ -137,7 +165,8 @@ describe('the administrative surface', () => {
             lastUsedAt: null,
             revokedAt: null,
           },
-        ],
+          ],
+        }),
         create: async (_a, name) => ({
           key: 'nacre_sk_abcd1234SECRETSECRETSECRET',
           account: {
@@ -152,7 +181,7 @@ describe('the administrative surface', () => {
         revoke: async (_a, id) => id === 'sa-1',
       },
       grants: {
-        list: async () => [],
+        list: async () => ({ items: [], nextCursor: null }),
         issue: async (_a, input): Promise<GrantRecord | undefined> => {
           if (input.scopeId !== LAYER) return undefined
           issued.push(input)
@@ -436,6 +465,45 @@ describe('the administrative surface', () => {
     expect(event?.result).toBe('allow')
     expect(JSON.stringify(event)).not.toContain('SECRETSECRETSECRET')
     expect(event?.detail.key_prefix).toBe('nacre_sk_abcd1234')
+  })
+
+  it('a key never reaches the idempotency cache', async () => {
+    cached.length = 0
+
+    const res = await fetch(`${base}/v1/service-accounts`, {
+      method: 'POST',
+      headers: { ...(await adminAuth()), 'idempotency-key': 'retry-me' },
+      body: JSON.stringify({ name: 'agent' }),
+    })
+
+    // The caller still gets the key — the endpoint works, it is only uncached.
+    expect(res.status).toBe(201)
+    expect(((await res.json()) as { key?: string }).key).toBe('nacre_sk_abcd1234SECRETSECRETSECRET')
+
+    // And nothing was stored. The key is held hashed so that it cannot be
+    // recovered from the database or from a backup; a copy sitting in Redis for
+    // 24 hours undoes that, and a cache dump is a much easier thing to obtain
+    // than a database one. The endpoint is safe to retry without a cache
+    // anyway: a duplicate name is answered 409 by the unique constraint rather
+    // than minting a second key.
+    expect(cached).toHaveLength(0)
+  })
+
+  it('other unsafe requests are cached, so the exclusion is an exclusion', async () => {
+    cached.length = 0
+
+    await fetch(`${base}/v1/grants`, {
+      method: 'POST',
+      headers: { ...(await adminAuth()), 'idempotency-key': 'retry-me-too' },
+      body: JSON.stringify({ scope: 'layer', scope_id: LAYER, principal_id: PRINCIPAL, level: 'read' }),
+    })
+
+    // Without this the first test would pass just as well if the feature were
+    // switched off entirely, which is the way a deny-list quietly becomes a
+    // deny-everything.
+    expect(cached).toHaveLength(1)
+    expect(cached[0]?.path).toBe('/v1/grants')
+    expect(JSON.stringify(cached)).not.toContain('nacre_sk_')
   })
 
   it('listing never carries a key', async () => {

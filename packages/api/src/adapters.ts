@@ -16,6 +16,8 @@ import { createHash } from 'node:crypto'
 
 import type { Pool } from 'pg'
 
+import { encodeCursor, pageOf } from './pagination.js'
+
 import type {
   AuditEvent,
   AuditSink,
@@ -32,6 +34,8 @@ import type {
   LayerOutcome,
   DocumentView,
   Layers,
+  Page,
+  PageResult,
   SearchHit,
   SearchService,
 } from './server.js'
@@ -648,6 +652,7 @@ interface LayerRow {
   workspace_id: string
   description: string | null
   document_count: string
+  created_at: Date
 }
 
 export class PostgresLayers implements Layers {
@@ -668,13 +673,13 @@ export class PostgresLayers implements Layers {
    * break invariant I2 — but writing it the other way keeps one habit for both
    * and removes the question of which endpoints are allowed to be sloppy.
    */
-  async list(auth: AuthContext): Promise<readonly Layer[]> {
+  async list(auth: AuthContext, page?: Page): Promise<PageResult<Layer>> {
     return withOrg(
       this.pool,
       auth.orgId,
       async (client) => {
         const plan = resolve(await contextFor(client, auth), 'read')
-        if (plan.kind === 'none') return []
+        if (plan.kind === 'none') return { items: [], nextCursor: null }
 
         // The count comes from the same statement. It is what a catalog is
         // for — an agent choosing where to search, or a person deciding
@@ -687,32 +692,46 @@ export class PostgresLayers implements Layers {
         // grants exist — a commercial module — this becomes a number that
         // discloses more than the caller can reach, and it has to be recomputed
         // per caller or dropped.
-        const projection = `l.id, l.slug, l.name, l.workspace_id, l.description,
+        const projection = `l.id, l.slug, l.name, l.workspace_id, l.description, l.created_at,
               (SELECT count(*) FROM documents d
                 WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS document_count`
+
+        // Ordered by (created_at, id) rather than by slug, because that is the
+        // cursor's sort key and a page has to be stable under inserts. Sorting
+        // by a mutable column would move rows between pages when one is renamed.
+        const order = 'ORDER BY l.created_at, l.id'
+        const after = page?.after
+        const seek = after === undefined ? '' : ' AND (l.created_at, l.id) > ($3::timestamptz, $4::uuid)'
+        const cap = page === undefined ? '' : ` LIMIT ${page.limit}`
 
         const { rows } =
           plan.kind === 'all'
             ? await client.query<LayerRow>(
                 `SELECT ${projection} FROM layers l
-                  WHERE l.org_id = $1 AND l.deleted_at IS NULL ORDER BY l.slug`,
-                [auth.orgId],
+                  WHERE l.org_id = $1 AND l.deleted_at IS NULL${seek.replace('$3', '$2').replace('$4', '$3')}
+                  ${order}${cap}`,
+                after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
               )
             : await client.query<LayerRow>(
                 `SELECT ${projection} FROM layers l
-                  WHERE l.org_id = $1 AND l.deleted_at IS NULL AND l.id = ANY($2::uuid[])
-                  ORDER BY l.slug`,
-                [auth.orgId, [...plan.layers]],
+                  WHERE l.org_id = $1 AND l.deleted_at IS NULL AND l.id = ANY($2::uuid[])${seek}
+                  ${order}${cap}`,
+                after === undefined
+                  ? [auth.orgId, [...plan.layers]]
+                  : [auth.orgId, [...plan.layers], after.createdAt, after.id],
               )
 
-        return rows.map((r) => ({
+        const layers = rows.map((r) => ({
           id: r.id,
           slug: r.slug,
           name: r.name,
           workspaceId: r.workspace_id,
           description: r.description ?? '',
           documentCount: Number(r.document_count),
+          createdAt: r.created_at.toISOString(),
         }))
+
+        return pageOf(layers, page, (l) => ({ createdAt: l.createdAt, id: l.id }))
       },
       this.scope,
     )
@@ -774,11 +793,12 @@ export class PostgresLayers implements Layers {
           name: string
           workspace_id: string
           description: string | null
+          created_at: Date
         }>(
           `INSERT INTO layers (org_id, workspace_id, slug, name, provider_id, vector_name)
            VALUES ($1,$2,$3,$4,$5,$6)
            ON CONFLICT DO NOTHING
-           RETURNING id, slug, name, workspace_id, description`,
+           RETURNING id, slug, name, workspace_id, description, created_at`,
           [auth.orgId, input.workspaceId, input.slug, input.name, provider.id, vector],
         )
 
@@ -798,6 +818,7 @@ export class PostgresLayers implements Layers {
             description: row.description ?? '',
             // Just created, so this is a fact rather than a query.
             documentCount: 0,
+            createdAt: row.created_at.toISOString(),
           },
         }
       },
@@ -824,14 +845,32 @@ export class PostgresGrants implements Grants {
    * than none — an administrator who cannot see an existing grant revokes the
    * wrong thing.
    */
-  async list(auth: AuthContext): Promise<readonly GrantRecord[]> {
+  /**
+   * Paginated, and the page may be short.
+   *
+   * Which grants a caller may see is decided by `referenceAllows` against the
+   * scope tree, which SQL cannot express — so rows are fetched by cursor and
+   * filtered afterwards. That makes `items.length < limit` normal rather than a
+   * signal, and `next_cursor` the only thing that says whether more exist.
+   *
+   * The cursor comes from the last row **fetched**, not the last returned.
+   * Deriving it from the last returned row would skip everything the filter
+   * removed after it, which is a page of grants silently missing from an
+   * administrator's view of who can reach what.
+   */
+  async list(auth: AuthContext, page?: Page): Promise<PageResult<GrantRecord>> {
     return withOrg(
       this.pool,
       auth.orgId,
       async (client) => {
         const context = await contextFor(client, auth)
         const plan = resolve(context, 'admin')
-        if (plan.kind === 'none') return []
+        if (plan.kind === 'none') return { items: [], nextCursor: null }
+
+        const after = page?.after
+        const seek =
+          after === undefined ? '' : ' AND (created_at, id) > ($2::timestamptz, $3::uuid)'
+        const cap = page === undefined ? '' : ` LIMIT ${page.limit}`
 
         const { rows } = await client.query<{
           id: string
@@ -842,13 +881,15 @@ export class PostgresGrants implements Grants {
           permission: string
           effect: string
           source: string
+          created_at: Date
         }>(
-          `SELECT id, principal_type, principal_id, scope_type, scope_id, permission, effect, source
-             FROM grants WHERE org_id = $1 ORDER BY created_at`,
-          [auth.orgId],
+          `SELECT id, principal_type, principal_id, scope_type, scope_id, permission, effect, source,
+                  created_at
+             FROM grants WHERE org_id = $1${seek} ORDER BY created_at, id${cap}`,
+          after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
         )
 
-        return rows
+        const visible = rows
           .filter((r) =>
             referenceAllows(
               context,
@@ -866,6 +907,18 @@ export class PostgresGrants implements Grants {
             effect: r.effect as GrantRecord['effect'],
             source: r.source,
           }))
+
+        // From the last row fetched rather than the last returned. The filter
+        // above removes rows the caller may not administer, and taking the
+        // cursor from a survivor would skip every row the filter dropped after
+        // it — a page of grants silently missing from an administrator's view.
+        const lastFetched = rows[rows.length - 1]
+        const nextCursor =
+          page !== undefined && rows.length >= page.limit && lastFetched !== undefined
+            ? encodeCursor({ createdAt: lastFetched.created_at.toISOString(), id: lastFetched.id })
+            : null
+
+        return { items: visible, nextCursor }
       },
       this.scope,
     )

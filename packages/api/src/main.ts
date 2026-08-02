@@ -5,6 +5,7 @@ import {
   createMetrics,
   createPool,
   loadConfig,
+  Redis,
   Registry,
   VectorStore,
   vectorName,
@@ -22,6 +23,8 @@ import {
   PostgresJobs,
   PostgresLayers,
 } from './adapters.js'
+import { Idempotency } from './idempotency.js'
+import { RateLimiter, type LimitPolicy, type Resource } from './limits.js'
 import { PostgresServiceAccounts, PostgresServiceKeys } from './service-keys.js'
 import { createApi } from './server.js'
 
@@ -93,6 +96,46 @@ async function main(): Promise<void> {
   const metrics = createMetrics(registry)
   registry.collect(collectDatabaseGauges(pool, metrics, APP_ROLE))
 
+  // Redis has been required configuration, and in every Compose profile with
+  // the API waiting on its healthcheck, since before anything connected to it.
+  // Rate limiting and Idempotency-Key are what it was declared for.
+  const redis = new Redis({ url: config.redisUrl })
+
+  const limitPolicies: Record<Resource, LimitPolicy> = {
+    search: { limit: config.rateSearchPerMin, windowSeconds: 60 },
+    ingest: { limit: config.rateIngestPerHour, windowSeconds: 3600 },
+  }
+
+  const limits = new RateLimiter({
+    redis,
+    policies: limitPolicies,
+    onDegraded: (resource, error) => {
+      // Allowed through, and said so. A rate limit is availability protection
+      // rather than an authorization control, so failing closed here would
+      // trade a rare over-serve for a certain outage — the opposite of the
+      // rule for permissions, and deliberately so.
+      console.warn(
+        JSON.stringify({
+          msg: 'rate limit check unavailable; request allowed',
+          resource,
+          error: String(error).slice(0, 200),
+        }),
+      )
+    },
+  })
+
+  const idempotency = new Idempotency({
+    redis,
+    onDegraded: (error) => {
+      console.warn(
+        JSON.stringify({
+          msg: 'idempotency cache unavailable; request processed uncached',
+          error: String(error).slice(0, 200),
+        }),
+      )
+    },
+  })
+
   const server = createApi({
     verify: {
       key,
@@ -101,6 +144,9 @@ async function main(): Promise<void> {
       serviceKeys: new PostgresServiceKeys(pool, APP_ROLE),
     },
     metrics: registry,
+    limits,
+    limitPolicies,
+    idempotency,
     documents: new PostgresDocuments(pool, APP_ROLE),
     search: new NacreSearchService({
       pool,
@@ -139,6 +185,7 @@ async function main(): Promise<void> {
     // Stop accepting, let in-flight requests finish, then release the pool.
     // Dropping a request mid-flight would leave its audit event unwritten.
     server.close(() => {
+      redis.close()
       void pool.end().then(() => process.exit(0))
     })
   }
