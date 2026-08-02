@@ -217,7 +217,13 @@ export function buildServices(config: Config): Services {
         case 'search': {
           const query = args.query
           if (typeof query !== 'string' || query.length === 0) throw new Error('query is required')
-          const topK = typeof args.top_k === 'number' ? args.top_k : 10
+          // Clamped, like the REST surface: unbounded here reached Qdrant's
+          // limit verbatim and decided how many rows to hydrate.
+          const raw = args.top_k
+          const topK =
+            typeof raw !== 'number' || !Number.isFinite(raw)
+              ? 10
+              : Math.min(50, Math.max(1, Math.floor(raw)))
           // The tool schema declares `rerank`, so it has to reach the search
           // path; a declared parameter the server drops is worse than one that
           // was never offered.

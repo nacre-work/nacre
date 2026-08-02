@@ -183,6 +183,7 @@ async function main(): Promise<void> {
     },
     metrics: registry,
     ready,
+    maxBodyBytes: config.maxDocumentBytes,
     limits,
     limitPolicies,
     idempotency,

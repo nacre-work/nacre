@@ -305,9 +305,40 @@ export interface ApiOptions {
   readonly layers?: Layers
   readonly grants?: Grants
   readonly serviceAccounts?: ServiceAccountPort
+  /** `NACRE_MAX_DOCUMENT_BYTES`. Over it is `413`, not `400`. */
+  readonly maxBodyBytes?: number
 }
 
+/**
+ * The default body cap, in bytes.
+ *
+ * `NACRE_MAX_DOCUMENT_BYTES` overrides it — the variable was validated at
+ * startup and read by nothing, so `docs/api.md` promised 50 MB while the server
+ * refused anything over 1 MB, and refused it with a `400` whose message did not
+ * mention size. An operator raising the documented limit saw no change.
+ */
 const MAX_BODY_BYTES = 1_000_000
+
+/** Distinguishable from a malformed body, because the answers differ: 413, not 400. */
+class BodyTooLarge extends Error {}
+
+/**
+ * `top_k`, clamped to what the contract declares.
+ *
+ * It was passed through as whatever JSON produced: `1e309` becomes `Infinity`
+ * and reached Qdrant's `limit` verbatim, and with reranking on the same number
+ * decided how many rows to hydrate from Postgres. Negative and fractional
+ * values went through too.
+ *
+ * Clamped rather than refused. The bound is a resource limit and not a
+ * permission one, so a client that asks for more than the maximum is answered
+ * with the maximum — the same thing every paginated endpoint here does.
+ */
+const MAX_TOP_K = 50
+const boundedTopK = (value: unknown): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 10
+  return Math.min(MAX_TOP_K, Math.max(1, Math.floor(value)))
+}
 
 const PRINCIPAL_TYPES = ['user', 'group', 'service_account'] as const
 const PERMISSIONS = ['read', 'write', 'admin'] as const
@@ -387,12 +418,12 @@ function parseGrant(body: Record<string, unknown>): GrantInput | string {
   }
 }
 
-async function readBody(req: IncomingMessage): Promise<unknown> {
+async function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<unknown> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
     size += (chunk as Buffer).length
-    if (size > MAX_BODY_BYTES) throw new Error('body too large')
+    if (size > limit) throw new BodyTooLarge('body too large')
     chunks.push(chunk as Buffer)
   }
   if (chunks.length === 0) return undefined
@@ -767,9 +798,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
   let body: unknown
   try {
-    body = await readBody(req)
-  } catch {
-    const problem = badRequest(instance, requestId, 'The request body could not be read.')
+    body = await readBody(req, options.maxBodyBytes ?? MAX_BODY_BYTES)
+  } catch (error) {
+    // 413 for size and 400 for anything else. They were one answer, and the
+    // message said neither — a caller over the limit was told their body could
+    // not be read, which is true and useless.
+    const problem =
+      error instanceof BodyTooLarge
+        ? new Problem({
+            type: 'https://nacre.work/errors/payload-too-large',
+            title: 'Payload too large',
+            status: 413,
+            detail: `The request body is over the ${options.maxBodyBytes ?? MAX_BODY_BYTES} byte limit set by NACRE_MAX_DOCUMENT_BYTES.`,
+            instance,
+            requestId,
+          })
+        : badRequest(instance, requestId, 'The request body could not be read.')
     send(res, problem.status, problem.toJSON(), requestId)
     return
   }
@@ -905,7 +949,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       const results = await options.search.search(
         auth,
         query,
-        typeof topK === 'number' ? topK : 10,
+        boundedTopK(topK),
         // Only ever a way to turn it off; a deployment with no reranker
         // configured does not acquire one because a client asked.
         rerank === false ? { rerank: false } : {},
