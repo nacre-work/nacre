@@ -70,11 +70,15 @@ REST and MCP over Streamable HTTP and STDIO alike. Revoking a grant removes the
 document from results, and the recomputation that refreshes the index tags runs
 in the worker with a metric on how far behind it is.
 
+Search is rate limited per organization, unsafe methods take an
+`Idempotency-Key`, collections page by cursor, and reranking runs on the search
+path when a deployment configures a reranker. Tombstoned vectors are collected,
+and the SDK and the admin UI are written.
+
 What is not built: no login — tokens are signed with a shared secret and issued
-by the `init` command, so there is no user-facing authentication yet; no
-reranking on the search path; no garbage collection for tombstoned vectors; and
-the SDK and admin UI are empty packages. `docker compose up` has not been run
-from a clean checkout, though its profiles are validated in CI.
+by the `init` command, so there is no user-facing authentication yet. `docker
+compose up` has not been run from a clean checkout, though its profiles are
+validated in CI.
 
 `docs/` is the specification, and it still runs ahead of the code in places —
 start with [docs/authz.md](./docs/authz.md), which everything else depends on.

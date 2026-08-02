@@ -34,6 +34,7 @@ NACRE_DEFAULT_EMBEDDING_MODEL=bge-m3
 NACRE_DEFAULT_EMBEDDING_DIM=1024
 NACRE_RERANKER_ENDPOINT=http://reranker:8081
 NACRE_RERANKER_ENABLED=false          # true needs an endpoint; minimal has none
+NACRE_RERANK_CANDIDATES=50            # fetched from the index, cut to top_k after scoring
 NACRE_PARSER_ENDPOINT=http://parser:8090
 
 # ─── authorization ───

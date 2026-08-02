@@ -85,8 +85,26 @@ export interface SearchHit {
   readonly text: string
 }
 
+/**
+ * What a caller may ask of a search beyond the query itself.
+ *
+ * `rerank` can only ever turn reranking **off**. A deployment without a
+ * reranker configured does not grow one because a client asked for it, so this
+ * is a preference and not a switch — which is the right way round: the client
+ * knows whether it wants latency or quality, the operator knows whether the
+ * model server exists.
+ */
+export interface SearchOptions {
+  readonly rerank?: boolean
+}
+
 export interface SearchService {
-  search(auth: AuthContext, query: string, topK: number): Promise<readonly SearchHit[]>
+  search(
+    auth: AuthContext,
+    query: string,
+    topK: number,
+    options?: SearchOptions,
+  ): Promise<readonly SearchHit[]>
 }
 
 export interface IngestRequest {
@@ -647,13 +665,21 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     if (req.method === 'POST' && instance === '/v1/search') {
       const query = (body as { query?: unknown } | undefined)?.query
       const topK = (body as { top_k?: unknown } | undefined)?.top_k
+      const rerank = (body as { rerank?: unknown } | undefined)?.rerank
       if (typeof query !== 'string' || query.length === 0) {
         const problem = badRequest(instance, requestId, "'query' is required.")
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
 
-      const results = await options.search.search(auth, query, typeof topK === 'number' ? topK : 10)
+      const results = await options.search.search(
+        auth,
+        query,
+        typeof topK === 'number' ? topK : 10,
+        // Only ever a way to turn it off; a deployment with no reranker
+        // configured does not acquire one because a client asked.
+        rerank === false ? { rerank: false } : {},
+      )
       await options.audit.write({
         orgId: auth.orgId,
         actor: `${auth.principal.type}:${auth.principal.id}`,

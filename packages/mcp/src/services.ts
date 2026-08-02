@@ -3,6 +3,7 @@ import {
   NacreSearchService,
   PostgresAudit,
   PostgresDocuments,
+  rerankerFor,
   type AuthContext,
 } from '@nacre.work/api'
 import {
@@ -79,6 +80,11 @@ export function buildServices(config: Config): Services {
     return found
   }
 
+  // The same reranker the REST surface uses. Two surfaces over one index
+  // answering in different orders is the kind of difference nobody reports as
+  // a bug and everybody notices.
+  const reranker = rerankerFor(config)
+
   const search = new NacreSearchService({
     pool,
     vectors,
@@ -86,6 +92,16 @@ export function buildServices(config: Config): Services {
     orgSlug,
     vectorName: vectorName(config.embeddingModel, config.embeddingDim),
     role: APP_ROLE,
+    ...(reranker === undefined ? {} : { reranker }),
+    rerankCandidates: config.rerankCandidates,
+    onRerankFailed: (error) => {
+      console.warn(
+        JSON.stringify({
+          msg: 'reranking failed; results are in fusion order',
+          error: String(error).slice(0, 200),
+        }),
+      )
+    },
   })
   const documents = new PostgresDocuments(pool, APP_ROLE)
   const audit = new PostgresAudit(pool, APP_ROLE)
@@ -150,7 +166,10 @@ export function buildServices(config: Config): Services {
           const query = args.query
           if (typeof query !== 'string' || query.length === 0) throw new Error('query is required')
           const topK = typeof args.top_k === 'number' ? args.top_k : 10
-          const hits = await search.search(auth, query, topK)
+          // The tool schema declares `rerank`, so it has to reach the search
+          // path; a declared parameter the server drops is worse than one that
+          // was never offered.
+          const hits = await search.search(auth, query, topK, args.rerank === false ? { rerank: false } : {})
           await audit.write({
             orgId: auth.orgId,
             actor: `${auth.principal.type}:${auth.principal.id}`,
