@@ -18,7 +18,8 @@ import {
   parseFilters,
   parseMetadata,
   PostgresGroupGraph,
-  resolve,
+  activeResolver,
+  withAuditSinks,
   cachedEffectivePrincipals,
   loadGroupsVersion,
   logger,
@@ -111,7 +112,17 @@ export function buildServices(
       ? undefined
       : { url: (key: string) => objects.presign(key, config.presignTtl) },
   )
-  const audit = new PostgresAudit(pool, APP_ROLE)
+  // Wrapped for the same reason the API wraps its own: a module's sinks want
+  // every recorded event, and this transport records its own. Without it a
+  // deployment's SIEM would hold every REST search and no MCP one, which is
+  // the surface the product is actually for.
+  const audit = withAuditSinks(new PostgresAudit(pool, APP_ROLE), (sink, event, error) => {
+    logger.warn('audit sink failed; the event is still in the table', {
+      sink,
+      action: event.action,
+      error: String(error).slice(0, 200),
+    })
+  })
 
   /**
    * The layer catalog, per caller.
@@ -149,7 +160,13 @@ export function buildServices(
             auth.orgId,
             grants.filter((g) => g.scope.type === 'document').map((g) => g.scope.id),
           )
-          const plan = resolve({ orgId: auth.orgId, role: auth.role, principals, grants, tree }, 'read')
+          // Through the registry, not the built-in directly: this catalog is
+          // permission data, so a module's resolver has to reach it or the
+          // layer list and the search would answer from two different models.
+          const plan = activeResolver().resolve(
+            { orgId: auth.orgId, role: auth.role, principals, grants, tree },
+            'read',
+          )
           if (plan.kind === 'none') return []
 
           const { rows } = await client.query<{

@@ -43,19 +43,29 @@ which is why it is worth stating in the PR rather than assuming.
 
 ## Extension points
 
-Commercial modules plug into points **declared by the core**:
+Commercial modules plug into points **declared by the core**, in
+`packages/core/extensions.ts`. The contract is [docs/extensions.md](../../../docs/extensions.md).
 
 ```ts
 registerAuthProvider(provider)     // sso
 registerAuthzResolver(resolver)    // acl-advanced, tenancy
 registerAuditSink(sink)            // audit
-mountAdminRoutes(router)           // admin-global
+mountAdminRoutes(...routes)        // admin-global
 ```
 
 Adding a fifth is a core change and belongs here. Its *implementation* may not.
 Design the point so the core is complete and correct with nothing plugged in —
 if the core only works once a commercial module registers, the boundary has
 already leaked, whatever the import graph says.
+
+Two rules the registry enforces rather than documents, and both are about a
+module that looks loaded and is not:
+
+- **Registration is open only while `loadModules` is running.** Anything
+  registered later would be configured, present in the startup line, and never
+  consulted.
+- **A second resolver is refused rather than preferred.** The loser would stay
+  loaded and appear to be deciding access.
 
 ## A trap worth naming
 

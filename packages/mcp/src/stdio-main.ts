@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-import { configureLogging, ConfigError, loadConfig, loadJwtKeys, logger } from '@nacre.work/core'
+import {
+  configureLogging,
+  ConfigError,
+  loadConfig,
+  loadModules,
+  loadJwtKeys,
+  logger,
+} from '@nacre.work/core'
 
 import { buildServices } from './services.js'
 import { serveStdio } from './stdio.js'
@@ -30,6 +37,14 @@ async function main(): Promise<void> {
     format: config.logFormat,
     write: (_level, line) => process.stderr.write(`${line}\n`),
   })
+
+  // After the logger is pointed at stderr, which matters more here than
+  // anywhere else: a module that logs on import would otherwise put a line in
+  // the middle of a JSON-RPC frame. This transport answers through the same
+  // authorization service as the other two, so it loads the same modules —
+  // dropping them here would be one surface deciding access differently.
+  await loadModules(config.modules)
+
   const jwt = loadJwtKeys()
 
   const serviceKey = process.env.NACRE_SERVICE_KEY

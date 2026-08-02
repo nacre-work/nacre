@@ -5,6 +5,8 @@ import {
   ConfigError,
   installGuards,
   loadConfig,
+  loadedExtensions,
+  loadModules,
   loadJwtKeys,
   keyFingerprint,
   onListenError,
@@ -38,6 +40,14 @@ async function main(): Promise<void> {
   // validated here and read by nothing, so every process wrote JSON at one level
   // whatever the deployment asked for.
   configureLogging({ level: config.logLevel, format: config.logFormat })
+
+  // Same order and the same reason as the API: this transport shares the
+  // authorization service, so a resolver registered here and not there — or
+  // there and not here — is rule 6 drifting between two surfaces, which is
+  // exactly what the shared service exists to prevent. Both processes read the
+  // same `NACRE_MODULES`.
+  await loadModules(config.modules)
+
   const jwt = loadJwtKeys()
   // The one Redis this process opens, shared by the rate limiter and the
   // effective-principals cache. Two connections for two uses of the same server
@@ -155,7 +165,8 @@ async function main(): Promise<void> {
         jwt_key: keyFingerprint(jwt.verification),
         ...(jwt.alsoAccept.length === 0
           ? {}
-          : { jwt_key_previous: jwt.alsoAccept.map(keyFingerprint) }) })
+          : { jwt_key_previous: jwt.alsoAccept.map(keyFingerprint) }),
+        extensions: loadedExtensions() })
   })
 
   onListenError(server, 'mcp', port)

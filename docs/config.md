@@ -79,6 +79,9 @@ NACRE_COLLECTION_RETENTION_DAYS=7      # >= 1; the reindex rollback window
 NACRE_REINDEX_MIN_RECALL=80            # 0-100; the recall gate, off without a query set
 NACRE_AUDIT_QUERY_TEXT=false           # true stores query text verbatim
 NACRE_AUDIT_SIEM_WEBHOOK=
+
+# ─── modules ───
+NACRE_MODULES=                         # commercial modules to load; see docs/extensions.md
 ```
 
 **`NACRE_PG_URL` must not name a superuser, and should not name the role that
@@ -193,6 +196,29 @@ Three things deliberately do not go through it:
 - **The MCP STDIO transport writes every line to stderr**, including the ones
   that are `info` elsewhere. stdout carries JSON-RPC frames and nothing else; a
   log line in the middle of the stream is a frame the client cannot parse.
+
+### Modules
+
+`NACRE_MODULES` is a comma-separated list of package names to load at startup.
+Empty by default, which is the whole product this repository builds: everything
+the six invariants describe works with nothing loaded.
+
+Read by the API and by both MCP transports, and **not** by the worker — the
+worker consults no extension point, so loading a module there would import it
+and never ask it anything. That is the state this mechanism exists to prevent,
+so it is not done by symmetry.
+
+Each name is imported by name, and the module registers itself. A name that
+cannot be imported is a **startup failure**, not a warning: naming a module
+means the deployment is paying for what it does, and starting without it is
+silently a different product.
+
+The startup line reports what loading actually produced — the resolver, the
+providers, the sinks and the route count — rather than what was named. A module
+that imports cleanly and registers nothing is the failure worth seeing, and it
+is invisible everywhere else.
+
+`docs/extensions.md` is the contract.
 
 ### Discovery
 

@@ -12,6 +12,33 @@ export {
 export type { Metadata } from './metadata.js'
 export { loadConfig, loadJwtKeys, keyFingerprint, ConfigError } from './config.js'
 export { protectedResourceMetadata, PROTECTED_RESOURCE_PATH, JWKS_PATH } from './oauth.js'
+export {
+  activeResolver,
+  ADMIN_PREFIX,
+  adminRoutes,
+  auditSinks,
+  authProviders,
+  loadModules,
+  loadedExtensions,
+  mountAdminRoutes,
+  registerAuditSink,
+  registerAuthProvider,
+  registerAuthzResolver,
+  resetExtensionsForTests,
+  withAuditSinks,
+  withLoadingModuleForTests,
+} from './extensions.js'
+export type {
+  AdminRequest,
+  AdminResponse,
+  AdminRoute,
+  AuditEvent,
+  AuditSink,
+  AuditWriter,
+  AuthProvider,
+  AuthzResolver,
+  ResolvedPrincipal,
+} from './extensions.js'
 export type { ProtectedResourceMetadata } from './oauth.js'
 export type { JwtKeys } from './config.js'
 export type { Config } from './config.js'

@@ -8,17 +8,27 @@ import { hashingLoad, hashPassword, needsRehash, TooBusy, verifyPassword } from 
  * Slow on purpose — each of these spends a real scrypt call, which is the
  * property under test as much as anything else. A suite that ran instantly
  * would mean the cost parameters were not being applied.
+ *
+ * Which is why the timeout is raised rather than left at the default. scrypt
+ * runs on libuv's four-thread pool, so these tests get slower the more of the
+ * suite runs beside them — the same contention `hashingLoad` exists to bound on
+ * the login endpoint. One of them timed out at the default in a full run and
+ * passed alone in the same tree, which is a flaky test rather than a slow
+ * product, and a flaky test in the suite that guards passwords is one people
+ * learn to re-run.
  */
 
+const SLOW = { timeout: 30_000 }
+
 describe('hashing', () => {
-  it('verifies the right password and refuses the wrong one', async () => {
+  it('verifies the right password and refuses the wrong one', SLOW, async () => {
     const encoded = await hashPassword('correct horse battery staple')
     expect(await verifyPassword('correct horse battery staple', encoded)).toBe(true)
     expect(await verifyPassword('correct horse battery stapl', encoded)).toBe(false)
     expect(await verifyPassword('', encoded)).toBe(false)
   })
 
-  it('salts, so two identical passwords do not share a hash', async () => {
+  it('salts, so two identical passwords do not share a hash', SLOW, async () => {
     const a = await hashPassword('same')
     const b = await hashPassword('same')
     expect(a).not.toBe(b)
@@ -27,7 +37,7 @@ describe('hashing', () => {
     expect(await verifyPassword('same', b)).toBe(true)
   })
 
-  it('carries its parameters, so the cost can be raised later', async () => {
+  it('carries its parameters, so the cost can be raised later', SLOW, async () => {
     const encoded = await hashPassword('x')
     const [scheme, n, r, p] = encoded.split('$')
     expect(scheme).toBe('scrypt')
@@ -38,7 +48,7 @@ describe('hashing', () => {
     expect(Number(p)).toBe(1)
   })
 
-  it('normalizes, so the same characters typed two ways still match', async () => {
+  it('normalizes, so the same characters typed two ways still match', SLOW, async () => {
     // "é" as one code point and as e + combining acute. A person typing their
     // password on a different keyboard produces the second and cannot sign in.
     const composed = 'café-password'
@@ -47,7 +57,7 @@ describe('hashing', () => {
     expect(await verifyPassword(decomposed, await hashPassword(composed))).toBe(true)
   })
 
-  it('refuses a malformed record rather than throwing', async () => {
+  it('refuses a malformed record rather than throwing', SLOW, async () => {
     // The caller turns every failure into one refusal, so an exception on one
     // of them would be a way to tell them apart from outside.
     for (const bad of ['', 'not-a-hash', 'scrypt$1$2$3', 'argon2id$v=19$m=1,t=1,p=1$aaa$bbb']) {
@@ -55,7 +65,7 @@ describe('hashing', () => {
     }
   })
 
-  it('refuses a work factor large enough to hang the process', async () => {
+  it('refuses a work factor large enough to hang the process', SLOW, async () => {
     // One poisoned row should not become an outage. A stored record asking for
     // N=2^30 would allocate gigabytes before failing.
     const absurd = `scrypt$${1 << 30}$8$1$YWJj$YWJj`
@@ -64,7 +74,7 @@ describe('hashing', () => {
 })
 
 describe('needsRehash', () => {
-  it('is false for a hash made with the current parameters', async () => {
+  it('is false for a hash made with the current parameters', SLOW, async () => {
     expect(needsRehash(await hashPassword('x'))).toBe(false)
   })
 
@@ -88,7 +98,7 @@ describe('needsRehash', () => {
  * than the limit run at once, and it sheds load rather than queueing forever.
  */
 describe('the hashing gate', () => {
-  it('never runs more hashes at once than its limit', async () => {
+  it('never runs more hashes at once than its limit', SLOW, async () => {
     const { limit } = hashingLoad()
     let peak = 0
 
@@ -106,7 +116,8 @@ describe('the hashing gate', () => {
     expect(hashingLoad()).toEqual({ active: 0, queued: 0, limit })
   })
 
-  it('sheds load instead of queueing without bound', async () => {
+  // Its own, longer than SLOW: 66 real scrypt calls two at a time.
+  it('sheds load instead of queueing without bound', { timeout: 120_000 }, async () => {
     // 64 is the queue bound; ask for well past it in one tick. The refusals
     // must be immediate, and they must be refusals rather than a process that
     // accepts everything and answers nothing.
@@ -123,7 +134,6 @@ describe('the hashing gate', () => {
     // The ones that were not refused still completed. Shedding is not failing.
     expect(results.filter((r) => r === 'ok').length).toBeGreaterThan(0)
     expect(hashingLoad().queued).toBe(0)
-    // Long, and legitimately: 66 real scrypt calls two at a time is the point.
     // Faking the work would test the queue and not the thing it protects.
-  }, 120_000)
+  })
 })
