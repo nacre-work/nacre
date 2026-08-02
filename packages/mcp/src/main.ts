@@ -6,6 +6,7 @@ import {
   installGuards,
   loadConfig,
   loadJwtKeys,
+  keyFingerprint,
   onListenError,
   protectedResourceMetadata,
   PROTECTED_RESOURCE_PATH,
@@ -15,8 +16,6 @@ import {
   Registry,
 } from '@nacre.work/core'
 import { RateLimiter, type LimitPolicy, type Resource } from '@nacre.work/api'
-import { createHash } from 'node:crypto'
-
 import { createMcpServer } from './server.js'
 import { buildServices } from './services.js'
 
@@ -39,7 +38,7 @@ async function main(): Promise<void> {
   // validated here and read by nothing, so every process wrote JSON at one level
   // whatever the deployment asked for.
   configureLogging({ level: config.logLevel, format: config.logFormat })
-  const { key, alsoAccept } = loadJwtKeys()
+  const jwt = loadJwtKeys()
   // The one Redis this process opens, shared by the rate limiter and the
   // effective-principals cache. Two connections for two uses of the same server
   // is a connection to leak on shutdown, and `close()` below only knows about
@@ -115,8 +114,9 @@ async function main(): Promise<void> {
     // `nacre_sk_` token 401 on this transport while the same key worked over
     // STDIO and REST — one credential, three surfaces, two of them agreeing.
     verify: {
-      key,
-      ...(alsoAccept.length === 0 ? {} : { alsoAccept }),
+      key: jwt.verification,
+      ...(jwt.alsoAccept.length === 0 ? {} : { alsoAccept: jwt.alsoAccept }),
+      algorithms: [jwt.algorithm],
       issuer: config.jwtIssuer,
       audience: config.jwtAudience,
       serviceKeys,
@@ -149,11 +149,13 @@ async function main(): Promise<void> {
     // outside. Comparing two printed fingerprints is how an operator sees it in
     // one line. The API has printed its own since it existed; this one did not,
     // which made the comparison impossible from the half that needed it.
-    const print = (k: Uint8Array) => `sha256:${createHash('sha256').update(k).digest('hex').slice(0, 12)}`
     logger.info('mcp listening', { port,
         env: config.env,
-        jwt_key: print(key),
-        ...(alsoAccept.length === 0 ? {} : { jwt_key_previous: alsoAccept.map(print) }) })
+        jwt_alg: jwt.algorithm,
+        jwt_key: keyFingerprint(jwt.verification),
+        ...(jwt.alsoAccept.length === 0
+          ? {}
+          : { jwt_key_previous: jwt.alsoAccept.map(keyFingerprint) }) })
   })
 
   onListenError(server, 'mcp', port)

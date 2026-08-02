@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto'
-
 import {
   configureLogging,
   collectDatabaseGauges,
@@ -8,6 +6,7 @@ import {
   loadConfig,
   logger,
   loadJwtKeys,
+  keyFingerprint,
   protectedResourceMetadata,
   Redis,
   RedisCache,
@@ -58,7 +57,7 @@ async function main(): Promise<void> {
   // validated here and read by nothing, so every process wrote JSON at one level
   // whatever the deployment asked for.
   configureLogging({ level: config.logLevel, format: config.logFormat })
-  const { key, alsoAccept } = loadJwtKeys()
+  const jwt = loadJwtKeys()
 
   const pool = createPool({ connectionString: config.pgUrl, max: config.pgPoolMax })
   const vectors = new VectorStore(
@@ -131,7 +130,12 @@ async function main(): Promise<void> {
 
   const login = new Login({
     pool,
-    key,
+    // The signing key, which for Ed25519 is the private half — the only place
+    // in this process that needs it. Everything else verifies with the public
+    // one.
+    key: jwt.signing,
+    algorithm: jwt.algorithm,
+    ...(jwt.keyId === undefined ? {} : { keyId: jwt.keyId }),
     issuer: config.jwtIssuer,
     audience: config.jwtAudience,
     accessTokenTtl: config.accessTokenTtl,
@@ -171,10 +175,11 @@ async function main(): Promise<void> {
 
   const server = createApi({
     verify: {
-      key,
+      key: jwt.verification,
       // Empty outside a rotation. During one it carries the key being retired,
       // so tokens already in the wild keep verifying until they expire.
-      ...(alsoAccept.length === 0 ? {} : { alsoAccept }),
+      ...(jwt.alsoAccept.length === 0 ? {} : { alsoAccept: jwt.alsoAccept }),
+      algorithms: [jwt.algorithm],
       issuer: config.jwtIssuer,
       audience: config.jwtAudience,
       serviceKeys: new PostgresServiceKeys(pool, APP_ROLE),
@@ -186,6 +191,11 @@ async function main(): Promise<void> {
         ? {}
         : { authorizationServer: config.oauthAuthorizationServer }),
     }),
+    // Only when there is a public half. A deployment on NACRE_JWT_SECRET serves
+    // 404 here, because a shared secret has nothing publishable and an endpoint
+    // that produced something anyway would be publishing the key that mints
+    // tokens.
+    ...(jwt.jwks === undefined ? {} : { jwks: jwt.jwks }),
     // The request path writes what it measures. Four of these were registered
     // and never written, so /metrics served zeros forever — which reads as
     // health rather than as absence.
@@ -246,15 +256,17 @@ async function main(): Promise<void> {
   server.listen(port, () => {
     // The fingerprint, never the secret. An operator needs to know which key is
     // in use when two environments disagree; nobody needs the key in a log.
-    const print = (k: Uint8Array) => `sha256:${createHash('sha256').update(k).digest('hex').slice(0, 12)}`
     logger.info('api listening', { port,
         env: config.env,
         issuer: config.jwtIssuer,
-        jwt_key: print(key),
+        jwt_alg: jwt.algorithm,
+        jwt_key: keyFingerprint(jwt.verification),
         // Present only during a rotation, which is exactly when an operator is
         // reading this line. Its absence is how they know the rotation is
         // finished and the old key is out.
-        ...(alsoAccept.length === 0 ? {} : { jwt_key_previous: alsoAccept.map(print) }) })
+        ...(jwt.alsoAccept.length === 0
+          ? {}
+          : { jwt_key_previous: jwt.alsoAccept.map(keyFingerprint) }) })
   })
 
   onListenError(server, 'api', port)

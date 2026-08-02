@@ -8,6 +8,8 @@ import {
   whileAuthenticating,
   withOrg,
 } from '@nacre.work/core'
+import type { KeyObject } from 'node:crypto'
+
 import { SignJWT } from 'jose'
 import type { Pool, PoolClient } from 'pg'
 
@@ -76,7 +78,18 @@ export interface Tokens {
 
 export interface LoginDeps {
   readonly pool: Pool
-  readonly key: Uint8Array
+  /**
+   * The **signing** key: the secret for HMAC, the private half for Ed25519.
+   *
+   * This is the one place in the process that needs the private key at all —
+   * verification takes the public one — which is what makes the asymmetric mode
+   * worth the configuration.
+   */
+  readonly key: KeyObject | Uint8Array
+  /** Whatever `loadJwtKeys` decided. Defaults to HS256 for a caller with a raw secret. */
+  readonly algorithm?: 'HS256' | 'EdDSA'
+  /** Published in the token header so a JWKS consumer can select a key. */
+  readonly keyId?: string
   readonly issuer: string
   readonly audience: string
   readonly accessTokenTtl: number
@@ -394,7 +407,12 @@ export class Login {
       principal_type: 'user',
       role: user.role,
     })
-      .setProtectedHeader({ alg: 'HS256' })
+      .setProtectedHeader({
+        alg: this.deps.algorithm ?? 'HS256',
+        // Only when there is a published key to point at. A `kid` on an HMAC
+        // token names nothing a caller could fetch.
+        ...(this.deps.keyId === undefined ? {} : { kid: this.deps.keyId }),
+      })
       .setSubject(user.id)
       .setIssuer(this.deps.issuer)
       .setAudience(this.deps.audience)

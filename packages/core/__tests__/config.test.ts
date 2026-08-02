@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { generateKeyPairSync, type KeyObject } from 'node:crypto'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
-import { ConfigError, loadConfig, loadJwtKeys } from '../config.js'
+import { afterAll, describe, expect, it } from 'vitest'
+
+import { ConfigError, loadConfig, loadJwtKeys, keyFingerprint } from '../config.js'
 
 const COMPLETE = {
   NACRE_CANONICAL_URL: 'https://api.nacre.test',
@@ -303,8 +309,11 @@ describe('signing keys', () => {
       NACRE_JWT_SECRET: CURRENT,
       NACRE_JWT_SECRET_PREVIOUS: PREVIOUS,
     })
-    expect(new TextDecoder().decode(keys.key)).toBe(CURRENT)
-    expect(keys.alsoAccept.map((k) => new TextDecoder().decode(k))).toEqual([PREVIOUS])
+    expect(new TextDecoder().decode(keys.signing as Uint8Array)).toBe(CURRENT)
+    // The same value verifies, which is what "symmetric" means and is the
+    // difference from the Ed25519 path below.
+    expect(keys.verification).toBe(keys.signing)
+    expect(keys.alsoAccept.map((k) => new TextDecoder().decode(k as Uint8Array))).toEqual([PREVIOUS])
   })
 
   it('refuses a previous key equal to the current one', () => {
@@ -332,5 +341,118 @@ describe('signing keys', () => {
 
   it('still requires the current key', () => {
     expect(() => loadJwtKeys({ NACRE_JWT_SECRET_PREVIOUS: PREVIOUS })).toThrow(ConfigError)
+  })
+})
+
+describe('signing keys, Ed25519', () => {
+  /**
+   * `NACRE_JWT_PRIVATE_KEY_REF` was in `docs/config.md` from the beginning and
+   * read by nothing, with the file's own comment saying so. These are about the
+   * property that makes it worth having: **the key that verifies is not the key
+   * that signs**, so a process that only checks tokens cannot mint one.
+   */
+  const dir = mkdtempSync(join(tmpdir(), 'nacre-jwt-'))
+  const write = (name: string, key: KeyObject): string => {
+    const path = join(dir, name)
+    writeFileSync(path, key.export({ type: 'pkcs8', format: 'pem' }) as string)
+    return pathToFileURL(path).href
+  }
+
+  const first = generateKeyPairSync('ed25519')
+  const second = generateKeyPairSync('ed25519')
+  const REF = write('first.pem', first.privateKey)
+  const PREVIOUS_REF = write('second.pem', second.privateKey)
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('signs with the private half and verifies with the public one', () => {
+    const keys = loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: REF })
+
+    expect((keys.signing as KeyObject).type).toBe('private')
+    expect((keys.verification as KeyObject).type).toBe('public')
+    expect(keys.algorithm).toBe('EdDSA')
+  })
+
+  it('publishes a JWKS with no private material in it', () => {
+    // `d` is the private scalar. A JWK export of a private key carries it, and
+    // this endpoint is unauthenticated — so its absence is the whole safety of
+    // serving the document at all.
+    const keys = loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: REF })
+
+    expect(keys.jwks).toHaveLength(1)
+    expect(keys.jwks?.[0]).toMatchObject({ kty: 'OKP', crv: 'Ed25519', use: 'sig', alg: 'EdDSA' })
+    expect(keys.jwks?.[0]).not.toHaveProperty('d')
+    expect(JSON.stringify(keys.jwks)).not.toContain('PRIVATE')
+  })
+
+  it('gives the key a kid, and the same one every time', () => {
+    // Derived from the public bytes rather than configured, so two processes
+    // agree without anyone keeping two settings in step.
+    const a = loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: REF })
+    const b = loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: REF })
+
+    expect(a.keyId).toBeTruthy()
+    expect(a.keyId).toBe(b.keyId)
+    expect(a.jwks?.[0]?.kid).toBe(a.keyId)
+  })
+
+  it('publishes the retired key too, or a rotation breaks every outside verifier', () => {
+    const keys = loadJwtKeys({
+      NACRE_JWT_PRIVATE_KEY_REF: REF,
+      NACRE_JWT_PREVIOUS_KEY_REF: PREVIOUS_REF,
+    })
+
+    expect(keys.alsoAccept).toHaveLength(1)
+    expect(keys.jwks).toHaveLength(2)
+    // The current one first, and it is the one that signs.
+    expect(keys.jwks?.[0]?.kid).toBe(keys.keyId)
+  })
+
+  it('refuses a previous key that is the current one', () => {
+    expect(() =>
+      loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: REF, NACRE_JWT_PREVIOUS_KEY_REF: REF }),
+    ).toThrow(/not a rotation/)
+  })
+
+  it('refuses a secret and a key ref together', () => {
+    // Two answers to "what signs a token". Resolving it by precedence would
+    // leave the other one configured, apparently in use, and ignored.
+    expect(() =>
+      loadJwtKeys({ NACRE_JWT_SECRET: CURRENT, NACRE_JWT_PRIVATE_KEY_REF: REF }),
+    ).toThrow(/both set/)
+  })
+
+  it('refuses a key that is not Ed25519, by name', () => {
+    const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 })
+    const ref = write('rsa.pem', rsa.privateKey)
+    expect(() => loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: ref })).toThrow(/rsa key/)
+  })
+
+  it('refuses a reference that is not a file:// URL, or names nothing', () => {
+    expect(() => loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: '/run/secrets/k' })).toThrow(
+      /file:\/\/ URL/,
+    )
+    expect(() => loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: 'vault://secret/jwt' })).toThrow(
+      /file:\/\/ URL/,
+    )
+    expect(() =>
+      loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: pathToFileURL(join(dir, 'nope.pem')).href }),
+    ).toThrow(/cannot be read/)
+  })
+
+  it('refuses a file that is not a key', () => {
+    const path = join(dir, 'not-a-key.pem')
+    writeFileSync(path, 'this is not a key\n')
+    expect(() => loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: pathToFileURL(path).href })).toThrow(
+      /not a PEM private key/,
+    )
+  })
+
+  it('fingerprints the public half, so both processes print the same value', () => {
+    // The comparison this exists for: one process holds the private key and
+    // another holds only the public one, and an operator reading two startup
+    // lines has to be able to tell whether they agree.
+    const keys = loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: REF })
+    expect(keyFingerprint(keys.signing)).toBe(keyFingerprint(keys.verification))
   })
 })

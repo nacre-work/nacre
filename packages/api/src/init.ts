@@ -4,6 +4,7 @@ import {
   createPool,
   hashPassword,
   loadConfig,
+  loadJwtKeys,
   vectorName,
   VectorStore,
 } from '@nacre.work/core'
@@ -257,13 +258,11 @@ async function main(): Promise<void> {
   if (typeof parsed === 'string') throw new ConfigError([parsed])
 
   const config = loadConfig()
-  const secret = process.env.NACRE_JWT_SECRET
-  if (secret === undefined || secret.length < 32) {
-    throw new ConfigError([
-      'NACRE_JWT_SECRET is not set, or is shorter than 32 bytes. It is needed to ' +
-        'issue the first token, and the API will refuse to start without it either.',
-    ])
-  }
+  // Through the same loader the API uses rather than reading the secret here.
+  // Two readers of "what signs a token" is how a deployment ends up with an
+  // `init` that mints HS256 while the API verifies EdDSA, which reads as a
+  // wrong password rather than as a misconfiguration.
+  const jwt = loadJwtKeys()
 
   // Generated, never taken from an argument: `init` runs in a terminal, and an
   // argument ends up in the shell history and in `ps` on a shared machine. Six
@@ -304,21 +303,24 @@ async function main(): Promise<void> {
     await vectors.ensureCollection(parsed.slug, vector, config.embeddingDim)
     say('collection ready', { collection, vector, dimensions: config.embeddingDim })
 
-    // A short life on purpose. This is a symmetric secret signed by the same
-    // value the API verifies with, printed to a terminal and probably into a
-    // shell history; it exists to get through the quickstart, not to be the
-    // credential an installation runs on.
+    // A short life on purpose. It is signed by the same key the API verifies
+    // with, printed to a terminal and probably into a shell history; it exists
+    // to get through the quickstart, not to be the credential an installation
+    // runs on.
     const token = await new SignJWT({
       org: ids.orgId,
       principal_type: 'user',
       role: 'org_admin',
     })
-      .setProtectedHeader({ alg: 'HS256' })
+      .setProtectedHeader({
+        alg: jwt.algorithm,
+        ...(jwt.keyId === undefined ? {} : { kid: jwt.keyId }),
+      })
       .setSubject(ids.userId)
       .setIssuer(config.jwtIssuer)
       .setAudience(config.jwtAudience)
       .setExpirationTime('1h')
-      .sign(new TextEncoder().encode(secret))
+      .sign(jwt.signing)
 
     console.log('')
     console.log(`Organization ${parsed.slug} is ready.`)

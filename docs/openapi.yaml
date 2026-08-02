@@ -714,6 +714,47 @@ paths:
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '204': { description: Deleted }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /.well-known/jwks.json:
+    get:
+      summary: >
+        The public half of the signing key (RFC 7517). Unauthenticated, because
+        a public key is public.
+      description: >
+        Served only by a deployment signing with `NACRE_JWT_PRIVATE_KEY_REF`. On
+        one using `NACRE_JWT_SECRET` this answers `404`, and that is the point
+        rather than a gap: a shared secret has no publishable half, and an
+        endpoint that produced one anyway would be publishing the key that mints
+        tokens.
+
+
+        During a rotation the retired key is here too, for the same reason it is
+        still accepted — there are tokens in the wild signed with it, and a
+        verifier outside the process has to be able to check them. `kid` is
+        derived from the public bytes rather than configured, so every process
+        agrees on it without anyone keeping two settings in step.
+      security: []
+      responses:
+        '200':
+          description: The current key, and the retired one during a rotation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kty: { type: string, enum: [OKP] }
+                        crv: { type: string, enum: [Ed25519] }
+                        x:   { type: string, description: 'The public key, base64url. There is no `d`.' }
+                        kid: { type: string }
+                        use: { type: string, enum: [sig] }
+                        alg: { type: string, enum: [EdDSA] }
+        '404':
+          description: This deployment signs with a shared secret; there is nothing to publish.
   /.well-known/oauth-protected-resource:
     get:
       summary: >

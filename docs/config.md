@@ -38,13 +38,14 @@ NACRE_RERANK_CANDIDATES=50            # fetched from the index, cut to top_k aft
 NACRE_PARSER_ENDPOINT=http://parser:8090
 
 # ─── authorization ───
-# One of these two. NACRE_JWT_SECRET is symmetric, is what the code reads
-# today, and is required — there is no default, because a default signing key is
-# one anybody reading the source can forge tokens with. Asymmetric keys through
-# NACRE_JWT_PRIVATE_KEY_REF are specified below and not implemented yet.
+# Exactly one of these two, and setting both is refused at startup — they are
+# two answers to "what signs a token" and there is no precedence worth
+# inventing. Neither has a default: a signing key in the source is one anybody
+# reading the source can forge tokens with.
 NACRE_JWT_SECRET=                      # >= 32 bytes; a secret-store reference in production
 NACRE_JWT_SECRET_PREVIOUS=             # set only while rotating; see below
-NACRE_JWT_PRIVATE_KEY_REF=file:///run/secrets/jwt_ed25519   # not implemented yet
+NACRE_JWT_PRIVATE_KEY_REF=             # file:// to an Ed25519 PEM; the asymmetric mode
+NACRE_JWT_PREVIOUS_KEY_REF=            # set only while rotating an asymmetric key
 NACRE_JWT_ISSUER=https://api.nacre.work   # must match NACRE_CANONICAL_URL in production
 NACRE_JWT_AUDIENCE=nacre
 NACRE_ACCESS_TOKEN_TTL=900
@@ -408,8 +409,47 @@ to rotate and mis-copy a line: a previous secret shorter than 32 bytes, and a
 previous secret equal to the current one. The second leaves an installation
 that believes it has rotated and has not.
 
-Asymmetric keys through `NACRE_JWT_PRIVATE_KEY_REF` are still not implemented,
-and `NACRE_JWT_SECRET` is still required.
+### Signing with an Ed25519 key
+
+`NACRE_JWT_PRIVATE_KEY_REF` points at a PEM private key:
+
+```bash
+openssl genpkey -algorithm ed25519 -out /run/secrets/jwt_ed25519
+NACRE_JWT_PRIVATE_KEY_REF=file:///run/secrets/jwt_ed25519
+```
+
+**What it buys is that the key which verifies is not the key which signs.**
+With `NACRE_JWT_SECRET`, every process that checks a token can also mint one —
+`api`, `mcp`, and anything else handed the same environment. With an Ed25519
+key, only the process issuing tokens needs the private half, and reading a
+container's environment gets an attacker as far as "can check tokens" rather
+than "can act as any administrator in any organization".
+
+`file://` and no other scheme, which is the whole of the support and is
+deliberate. Every platform with a secret store presents one as a file — Docker
+secrets, Kubernetes, systemd credentials — and a `vault://` or `aws-kms://`
+scheme would put a network client on the startup path, which is a different
+feature with different failure modes.
+
+Ed25519 and no other key type. RSA needs a size check and a padding choice and
+EC needs a curve-to-algorithm mapping; each is a place to be wrong about
+something a signature depends on, and Ed25519 has no parameters at all. A key of
+any other type is refused at startup, by name.
+
+**`GET /.well-known/jwks.json`** publishes the public half, so a gateway or a
+sidecar can verify a token without holding a secret. It answers `404` on a
+deployment using `NACRE_JWT_SECRET`, and that is the point rather than a gap: a
+shared secret has no publishable half, and an endpoint that produced one anyway
+would be publishing the key that mints tokens.
+
+Rotating an asymmetric key is the same two restarts as the symmetric one, with
+`NACRE_JWT_PREVIOUS_KEY_REF` in place of `NACRE_JWT_SECRET_PREVIOUS`. The
+retired key stays in the JWKS for the length of the window, because there are
+tokens in the wild signed with it and a verifier outside the process has to be
+able to check them.
+
+Every token carries `kid`, derived from the public bytes rather than configured,
+so two processes agree on it without anyone keeping two settings in step.
 
 ## Compose profiles
 

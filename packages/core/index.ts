@@ -10,8 +10,8 @@ export {
   MAX_METADATA_VALUE_LENGTH,
 } from './metadata.js'
 export type { Metadata } from './metadata.js'
-export { loadConfig, loadJwtKeys, ConfigError } from './config.js'
-export { protectedResourceMetadata, PROTECTED_RESOURCE_PATH } from './oauth.js'
+export { loadConfig, loadJwtKeys, keyFingerprint, ConfigError } from './config.js'
+export { protectedResourceMetadata, PROTECTED_RESOURCE_PATH, JWKS_PATH } from './oauth.js'
 export type { ProtectedResourceMetadata } from './oauth.js'
 export type { JwtKeys } from './config.js'
 export type { Config } from './config.js'

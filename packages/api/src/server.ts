@@ -14,6 +14,7 @@ import {
   parseFilters,
   parseMetadata,
   PROTECTED_RESOURCE_PATH,
+  JWKS_PATH,
   TooBusy,
   type Metadata,
   type MultipartPart,
@@ -650,6 +651,15 @@ export interface ApiOptions {
    * neither agreed on.
    */
   readonly resourceMetadata?: ProtectedResourceMetadata
+  /**
+   * The public keys served at `/.well-known/jwks.json`.
+   *
+   * Absent — which is the default and the case for a deployment signing with
+   * `NACRE_JWT_SECRET` — makes the endpoint answer `404`. That is deliberate
+   * rather than an omission: a shared secret has no half that is safe to
+   * publish.
+   */
+  readonly jwks?: readonly Record<string, unknown>[]
   /** Absent means the workspace paths answer 404, like any capability a surface lacks. */
   readonly workspaces?: Workspaces
   /** Layer reindex. Absent means the reindex paths answer 404. */
@@ -1363,6 +1373,26 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       return
     }
     send(res, 200, options.resourceMetadata as unknown as Record<string, unknown>, requestId)
+    return
+  }
+
+  if (req.method === 'GET' && instance === JWKS_PATH) {
+    // The public half of the signing key, so anything outside this process can
+    // verify a token without a secret — a gateway, a sidecar, a second service
+    // in the same deployment.
+    //
+    // Unauthenticated, like every other `/.well-known` document, and that is
+    // not a concession: a public key is public. What would be a leak is the
+    // other mode, which is exactly why this answers `404` for a deployment
+    // signing with `NACRE_JWT_SECRET`. A shared secret has no publishable half,
+    // and an endpoint that "helpfully" served one would be serving the key that
+    // mints tokens.
+    if (options.jwks === undefined) {
+      const problem = notFound(instance, requestId)
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+    send(res, 200, { keys: options.jwks }, requestId)
     return
   }
 
