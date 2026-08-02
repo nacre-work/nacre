@@ -105,6 +105,14 @@ export interface Layer {
   readonly documentCount: number
 }
 
+export interface Workspace {
+  readonly id: string
+  readonly slug: string
+  readonly name: string
+  /** Live layers in it, not layers you may read — a per-caller count would leak grants. */
+  readonly layerCount: number
+}
+
 export interface LayerInput {
   readonly workspaceId: string
   readonly slug: string

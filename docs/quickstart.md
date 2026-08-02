@@ -100,9 +100,20 @@ curl -X POST http://localhost:8080/v1/layers \
   -d '{ "workspace_id": "…", "slug": "handbook", "name": "Handbook" }'
 ```
 
-The workspace id is the one `init` printed. A slug already in use answers `409`;
-a workspace you may not administer answers `404`, the same as one that does not
-exist.
+`init` prints the workspace id, and `GET /v1/workspaces` is where to find it
+afterwards — that endpoint exists because it is the one id the rest of the API
+cannot give you:
+
+```bash
+curl -s http://localhost:8080/v1/workspaces -H "Authorization: Bearer $NACRE_TOKEN"
+```
+
+It lists the workspaces you can reach, which is not the same as every workspace
+in the organization. `POST /v1/workspaces` creates another, and takes
+`org_admin` — there is no scope above a workspace to hold a grant on.
+
+A slug already in use answers `409`; a workspace you may not administer answers
+`404`, the same as one that does not exist.
 
 Then grant someone `read` on it:
 

@@ -50,6 +50,9 @@ import type {
   Layers,
   Page,
   PageResult,
+  Workspace,
+  WorkspaceOutcome,
+  Workspaces,
   SearchHit,
   SearchOptions,
   SearchService,
@@ -1233,6 +1236,14 @@ export class PostgresLayers implements Layers {
     )
   }
 
+  async update(
+    auth: AuthContext,
+    layerId: string,
+    input: { name?: string; description?: string },
+  ): Promise<boolean> {
+    return updateLayer(this.pool, auth, layerId, input, this.role)
+  }
+
   async create(
     auth: AuthContext,
     input: { workspaceId: string; slug: string; name: string; providerId?: string },
@@ -1393,6 +1404,226 @@ export class PostgresLayers implements Layers {
       this.scope,
     )
   }
+}
+
+/**
+ * Workspaces.
+ *
+ * The missing link in the API's own flow: creating a layer takes a
+ * `workspace_id`, and until this existed the only way to have one was the line
+ * `init` printed. `docs/quickstart.md` said as much — "the workspace id is the
+ * one `init` printed" — so a second administrator, a client library, or anyone
+ * who closed that terminal had no way forward that did not involve reading the
+ * database directly.
+ */
+export class PostgresWorkspaces implements Workspaces {
+  constructor(
+    private readonly pool: Pool,
+    private readonly role?: string,
+  ) {}
+
+  private get scope() {
+    return this.role === undefined ? {} : { role: this.role }
+  }
+
+  /**
+   * The workspaces this caller can reach, newest last, cursor-paged.
+   *
+   * Two ways to reach one, and the second is the reason this endpoint had to
+   * exist at all:
+   *
+   * 1. it holds a layer the read plan reaches — the ordinary case, and the same
+   *    narrowing the layer listing does;
+   * 2. the caller holds a grant on the workspace itself. An **empty** workspace
+   *    has no layers to be reached through, so without this an administrator
+   *    who had just been granted one could not see it, and therefore could not
+   *    create the first layer in it. That is the exact deadlock this endpoint
+   *    is here to break.
+   *
+   * Filtered in memory rather than in SQL because the second rule is the
+   * resolver's to answer, not a join's, and an organization has tens of
+   * workspaces rather than thousands. The listing is narrowed before it is
+   * paged — a page assembled first and filtered second would leak the count.
+   */
+  async list(auth: AuthContext, page?: Page): Promise<PageResult<Workspace>> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const context = await contextFor(client, auth)
+
+        // No early return on `plan.kind === 'none'`, and that is the whole
+        // point of this endpoint.
+        //
+        // `resolve` flattens a grant set to the layers it reaches, so a
+        // principal whose only grant is `admin` on an **empty** workspace
+        // resolves to `none` — there are no layers for it to name. Bailing out
+        // here left exactly that caller unable to list the workspace they
+        // administer, and therefore unable to create the first layer in it,
+        // which is the deadlock this endpoint was added to break. It was
+        // written that way first and caught by running it.
+        const plan = resolve(context, 'read')
+
+        const { rows } = await client.query<{
+          id: string
+          slug: string
+          name: string
+          created_at: Date
+          layer_ids: string[] | null
+        }>(
+          `SELECT w.id, w.slug, w.name, w.created_at,
+                  (SELECT array_agg(l.id) FROM layers l
+                    WHERE l.workspace_id = w.id AND l.deleted_at IS NULL) AS layer_ids
+             FROM workspaces w
+            WHERE w.org_id = $1 AND w.deleted_at IS NULL
+            ORDER BY w.created_at, w.id`,
+          [auth.orgId],
+        )
+
+        const reachable = rows.filter((w) => {
+          if (plan.kind === 'all') return true
+          if (
+            plan.kind === 'scoped' &&
+            (w.layer_ids ?? []).some((id) => plan.layers.includes(id))
+          ) {
+            return true
+          }
+          // The grant on the workspace itself, which `admin` satisfies for
+          // `read` — invariant 6's other half, and the only thing that answers
+          // for a workspace with nothing in it yet.
+          return referenceAllows(context, { type: 'workspace', id: w.id }, 'read')
+        })
+
+        const items = reachable.map((w) => ({
+          id: w.id,
+          slug: w.slug,
+          name: w.name,
+          layerCount: (w.layer_ids ?? []).length,
+          createdAt: w.created_at.toISOString(),
+        }))
+
+        return pageOf(items, page, (w) => ({ createdAt: w.createdAt, id: w.id }))
+      },
+      this.scope,
+    )
+  }
+
+  /**
+   * Create a workspace. `org_admin` only.
+   *
+   * There is no scope above a workspace to hold a grant on — `scope_type` is
+   * one of workspace, layer, document — so there is no one to ask except the
+   * role. `referenceAllows` would answer this with `role === 'org_admin'` and
+   * nothing else, so the check is written plainly rather than routed through a
+   * resolver call that can only return one thing.
+   *
+   * `platform_admin` is refused along with everyone else. Rule 2: it
+   * administers organizations and reads no documents, and a workspace is where
+   * documents live.
+   */
+  async create(
+    auth: AuthContext,
+    input: { slug: string; name: string },
+  ): Promise<WorkspaceOutcome> {
+    if (auth.role !== 'org_admin') return { kind: 'denied' }
+
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const { rows } = await client.query<{
+          id: string
+          slug: string
+          name: string
+          created_at: Date
+        }>(
+          `INSERT INTO workspaces (org_id, slug, name) VALUES ($1,$2,$3)
+           ON CONFLICT DO NOTHING
+           RETURNING id, slug, name, created_at`,
+          [auth.orgId, input.slug, input.name],
+        )
+
+        const row = rows[0]
+        // ON CONFLICT DO NOTHING returns nothing, and by here the caller is
+        // org_admin — so the only way to get here is a slug already in use.
+        // 409 rather than 404, as on layer create: the caller has proved they
+        // administer the organization, so this is a fact about the resource
+        // rather than about what they can see.
+        if (row === undefined) return { kind: 'conflict' }
+
+        return {
+          kind: 'created',
+          workspace: {
+            id: row.id,
+            slug: row.slug,
+            name: row.name,
+            layerCount: 0,
+            createdAt: row.created_at.toISOString(),
+          },
+        }
+      },
+      this.scope,
+    )
+  }
+}
+
+/**
+ * Rename a layer, or change what it says it is for.
+ *
+ * `admin` on the workspace, which is what creating one takes — the same
+ * question asked of the same resolver, so the two cannot drift into "who may
+ * create" and "who may rename" meaning different things.
+ *
+ * The description is user-facing copy: it is what the MCP tool's generated
+ * description is built from, so an agent's picture of what a layer holds
+ * changes with it. That is the reason it is editable at all.
+ */
+async function updateLayer(
+  pool: Pool,
+  auth: AuthContext,
+  layerId: string,
+  input: { name?: string; description?: string },
+  role?: string,
+): Promise<boolean> {
+  if (!/^[0-9a-f-]{36}$/i.test(layerId)) return false
+  if (input.name === undefined && input.description === undefined) return false
+
+  return withOrg(
+    pool,
+    auth.orgId,
+    async (client) => {
+      const context = await contextFor(client, auth)
+
+      // The layer's workspace, before anything is decided — the grant is on the
+      // workspace, so there is nothing to ask until we know which one.
+      const { rows } = await client.query<{ workspace_id: string }>(
+        `SELECT workspace_id FROM layers
+          WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+        [auth.orgId, layerId],
+      )
+      const workspaceId = rows[0]?.workspace_id
+      if (workspaceId === undefined) return false
+
+      // `referenceAllows` on the workspace rather than a flattened plan, for
+      // the reason layer creation gives: the question is "may this caller
+      // administer this workspace", which the reference answers directly, and
+      // inferring it from the layers a plan happens to contain gets an empty
+      // workspace wrong.
+      if (!referenceAllows(context, { type: 'workspace', id: workspaceId }, 'admin')) return false
+
+      // COALESCE, so an absent field is left alone rather than blanked. PATCH
+      // changes what it names; a missing key is not an instruction to erase.
+      await client.query(
+        `UPDATE layers
+            SET name        = COALESCE($3, name),
+                description = COALESCE($4, description)
+          WHERE org_id = $1 AND id = $2`,
+        [auth.orgId, layerId, input.name ?? null, input.description ?? null],
+      )
+      return true
+    },
+    role === undefined ? {} : { role },
+  )
 }
 
 export class PostgresGrants implements Grants {

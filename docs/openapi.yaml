@@ -156,6 +156,19 @@ components:
         text:       { type: string }
         source_url: { type: string, description: 'Presigned, TTL from NACRE_PRESIGN_TTL. Not implemented yet.' }
         metadata:   { type: object, additionalProperties: true, description: 'The document''s metadata, as supplied on ingest.' }
+    Workspace:
+      type: object
+      required: [id, slug, name, layer_count, created_at]
+      properties:
+        id:          { type: string, format: uuid }
+        slug:        { type: string, description: Unique within the organization }
+        name:        { type: string }
+        layer_count:
+          type: integer
+          description: >
+            Live layers in it — not "layers this caller may read". A count that
+            varied by who asked would leak the shape of somebody else's grants.
+        created_at:  { type: string, format: date-time }
     Layer:
       type: object
       required: [id, slug, name, workspace_id, document_count]
@@ -634,6 +647,94 @@ paths:
             know this answer is possible rather than treating it as a transport
             fault.
 
+  /workspaces:
+    get:
+      summary: >
+        Workspaces this caller can reach. Narrowed by the read plan, not
+        filtered afterwards.
+      description: >
+        Two ways to reach one: it holds a layer the plan reaches, or the caller
+        holds a grant on the workspace itself. The second matters because an
+        empty workspace has no layers to be reached through — without it an
+        administrator who had just been granted one could not see it, and so
+        could not create the first layer in it.
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '200':
+          description: The page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Workspace' } }
+                  next_cursor: { type: [string, 'null'] }
+    post:
+      summary: Create a workspace. `org_admin` only.
+      description: >
+        There is no scope above a workspace to hold a grant on, so the role is
+        the only thing to ask. `platform_admin` is refused with everyone else:
+        it administers organizations and reads no documents, and a workspace is
+        where documents live.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slug, name]
+              properties:
+                slug: { type: string, description: Unique within the organization }
+                name: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workspace' }
+        '409':
+          description: >
+            The slug is already in use. Deliberately not a 404: the caller has
+            proved they administer the organization, so this is a fact about the
+            resource rather than about what they can see.
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /layers/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      summary: Rename a layer, or change its description. Requires admin on the workspace.
+      description: >
+        The slug is not editable: clients address a layer by it — `layers` on
+        search, `layer` on ingest — so renaming one silently breaks every caller
+        that stored it, and there is no redirect to soften that.
+
+        Nor is the embedding provider or the chunk configuration. Both decide
+        how the layer's vectors were built, so changing one without rebuilding
+        them leaves the column disagreeing with the index. That is what
+        `POST /v1/layers/{id}/reindex` is for, and it is not something to get by
+        accident from a PATCH.
+
+        No body, like every other write here that needs `admin` rather than
+        `read`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name:        { type: string }
+                description: { type: string, description: 'User-facing copy; the MCP tool description is built from it.' }
+      responses:
+        '204': { description: Updated }
+        '400': { description: 'Neither name nor description was given, or one is not a string' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /layers:
     get:
       summary: Accessible layers. Narrowed by the caller's read plan, not filtered afterwards.
