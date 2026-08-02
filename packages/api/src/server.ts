@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 // Imported rather than taken from the global scope: `lib` is ES2023 with no
 // DOM, so the global URL is not typed here.
 import { URL } from 'node:url'
@@ -346,6 +346,11 @@ export interface ApiOptions {
    * address is the client — see `source.ts` for why neither default is safe.
    */
   readonly trustProxy?: number
+  /**
+   * A bearer token required on `/metrics`. Absent leaves the endpoint open,
+   * which is the default and is right for an internal port — see the handler.
+   */
+  readonly metricsToken?: string
   /** `Idempotency-Key` on unsafe methods. Absent means the header is ignored. */
   readonly idempotency?: IdempotencyStore
   /** Email and password sign-in. Absent means `/v1/auth/*` is 404. */
@@ -832,14 +837,40 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   const instance = url.pathname
 
   if (req.method === 'GET' && instance === '/metrics') {
-    // Unauthenticated, like every Prometheus endpoint, and therefore carrying
-    // nothing that is not already a count. No document ids, no query text, no
-    // organization ids — organizations appear by slug, which is in the URL of
-    // every request that tenant makes anyway.
+    // Unauthenticated by default, like every Prometheus endpoint, and therefore
+    // carrying nothing that is not already a count. No document ids, no query
+    // text, no organization ids — organizations appear by slug, which is in the
+    // URL of every request that tenant makes anyway.
+    //
+    // A token is available and off unless configured. Requiring one would break
+    // every existing scrape config for a product people self-host, and the
+    // default is right for the deployment this is designed around: the port is
+    // on an internal network. It stops being right the moment somebody puts the
+    // API behind a public ingress without carving this path out, which is a
+    // thing that happens — so `NACRE_METRICS_TOKEN` exists for the operator who
+    // knows they are in that situation. See docs/config.md.
     if (options.metrics === undefined) {
       const problem = notFound(instance, requestId)
       send(res, problem.status, problem.toJSON(), requestId)
       return
+    }
+
+    if (options.metricsToken !== undefined) {
+      const header = req.headers.authorization
+      const presented = header?.startsWith('Bearer ') === true ? header.slice(7) : undefined
+      // Constant time, and length-checked first because timingSafeEqual throws
+      // on a mismatch. A scrape token is a credential like any other.
+      const expected = Buffer.from(options.metricsToken, 'utf8')
+      const given = Buffer.from(presented ?? '', 'utf8')
+      if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+        // 404 rather than 401, for the same reason invariant 4 gives: a
+        // deployment that hides its metrics endpoint should not confirm it has
+        // one. There is nothing to authenticate *into* here, so a challenge
+        // would only say "keep guessing".
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
     }
     const body = await options.metrics.render()
     res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' })

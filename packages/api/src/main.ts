@@ -197,6 +197,7 @@ async function main(): Promise<void> {
     limits,
     limitPolicies,
     trustProxy: config.trustProxy,
+    ...(config.metricsToken === undefined ? {} : { metricsToken: config.metricsToken }),
     idempotency,
     login,
     documents: new PostgresDocuments(pool, APP_ROLE),

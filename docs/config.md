@@ -70,6 +70,7 @@ NACRE_RATE_LOGIN_PER_15MIN=10          # per email address, not per organization
 NACRE_RATE_LOGIN_SOURCE_PER_15MIN=60   # per client; what bounds a spray across addresses
 NACRE_TRUST_PROXY=0                    # proxies in front of this process; 0 ignores X-Forwarded-For
 NACRE_MAX_DOCUMENT_BYTES=52428800
+NACRE_METRICS_TOKEN=                   # unset leaves /metrics open; >= 16 chars if set
 
 # ─── audit ───
 NACRE_AUDIT_RETENTION_DAYS=400         # >= 30; the floor is not a tunable
@@ -261,7 +262,34 @@ packaging one — see [licensing.md](./licensing.md).
   endpoint you supply, a search fails loudly without it, and making readiness
   depend on somebody else's uptime turns their outage into a rollout that never
   completes.
-- `/metrics` — Prometheus.
+- `/metrics` — Prometheus. Unauthenticated by default, and carrying nothing
+  that is not already a count: no document ids, no query text, no organization
+  ids — organizations appear by slug, which is in the URL of every request that
+  tenant makes anyway.
+
+  **`NACRE_METRICS_TOKEN`** requires a bearer token on this path. Unset is the
+  default, because requiring one would break every existing scrape config and
+  because the default is right for the deployment this is designed around — the
+  port is on an internal network. It stops being right the moment the API goes
+  behind a public ingress without carving `/metrics` out, which is the situation
+  the variable exists for. A wrong or absent token gets `404`, not `401`: a
+  deployment hiding its metrics endpoint should not confirm it has one, and
+  there is nothing to authenticate *into*, so a challenge would only say "keep
+  guessing". Minimum 16 characters, or unset — a short token reads as protection
+  and is a moment's guessing.
+
+  **Collected values are reused for ten seconds.** The gauges below are database
+  queries, one per organization, so without a bound whoever can reach the port
+  decides how often the API queries every tenant's `documents` table, on the
+  same pool the request path uses — a scrape loop is a denial of service that
+  looks like monitoring. Ten seconds is shorter than any sensible scrape
+  interval, so a real Prometheus never sees a cached value; it only collapses
+  the excess. Concurrent scrapes share one collection rather than each starting
+  their own.
+
+  One query per organization, not three. It was three — counts, tombstones, lag
+  — each in its own `withOrg`, which on eighteen organizations measured 271
+  statements per scrape against 91 now, and 1355 for five scrapes against zero.
 
 Required metrics:
 

@@ -28,71 +28,81 @@ export function collectDatabaseGauges(pool: Pool, metrics: Metrics, role?: strin
       metrics.aclPropagationLag.reset()
 
       for (const org of orgs) {
-        const counts = await withOrg(
+        // One query per organization, not three.
+        //
+        // It was three — document counts, pending tombstones, propagation lag —
+        // each a separate round trip inside its own `withOrg`, so a scrape cost
+        // 3N+1 queries and each of those three also paid for a connection
+        // checkout and a `SET LOCAL app.current_org`. At five hundred tenants
+        // that is fifteen hundred queries every fifteen seconds, on the same
+        // pool the request path uses, triggered by an endpoint that anyone who
+        // can reach the port may call as fast as they like.
+        //
+        // All three read `documents` for one organization, so they are one
+        // grouped query with FILTERed aggregates. Still per organization and
+        // still inside `withOrg`: collapsing across tenants would mean reading
+        // every tenant's documents from the API process, and the row-level
+        // policies are not something to route around for a gauge.
+        const rows = await withOrg(
           pool,
           org.id,
           async (c) =>
             (
-              await c.query<{ status: string; n: string }>(
-                `SELECT status, count(*)::text AS n FROM documents
-                  WHERE org_id = $1 AND deleted_at IS NULL GROUP BY status`,
-                [org.id],
+              await c.query<{
+                status: string
+                live: string
+                tombstoned: string
+                oldest_stale: string | null
+              }>(
+                `SELECT status,
+                        count(*) FILTER (WHERE deleted_at IS NULL)::text AS live,
+                        count(*) FILTER (
+                          WHERE deleted_at IS NOT NULL AND vectors_purged_at IS NULL
+                        )::text AS tombstoned,
+                        -- The oldest document whose tags predate the current
+                        -- groups_version. chunk_count > 0 is the whole
+                        -- correctness of this one, and it was missing once: the
+                        -- number is the age of the oldest document still
+                        -- carrying tags built from a superseded grant set, which
+                        -- only a document with points in the index can do.
+                        -- Without the clause a single failed or pending
+                        -- document pinned the gauge at its own age forever,
+                        -- because the retag loop claims neither and nothing else
+                        -- can clear it — the one metric with an alert on it
+                        -- became a stuck alert, which is how it gets muted.
+                        --
+                        -- Deliberately not status = 'indexed'. A document that
+                        -- indexed once and failed on a later pass still has the
+                        -- earlier pass's points and still carries their tags,
+                        -- and is exactly the case this is meant to catch.
+                        -- claimStale uses the same predicate; the two must
+                        -- agree, or the gauge counts what the loop cannot claim.
+                        min(COALESCE(acl_tagged_at, created_at)) FILTER (
+                          WHERE deleted_at IS NULL AND chunk_count > 0
+                            AND acl_version < $2
+                        )::text AS oldest_stale
+                   FROM documents
+                  WHERE org_id = $1
+                  GROUP BY status`,
+                [org.id, Number(org.groups_version)],
               )
             ).rows,
           scope,
         )
-        for (const row of counts) {
-          metrics.documents.set(Number(row.n), { org: org.slug, status: row.status })
+
+        let tombstoned = 0
+        let oldest: number | undefined
+        for (const row of rows) {
+          metrics.documents.set(Number(row.live), { org: org.slug, status: row.status })
+          tombstoned += Number(row.tombstoned)
+          if (row.oldest_stale !== null) {
+            const at = Date.parse(row.oldest_stale)
+            if (!Number.isNaN(at) && (oldest === undefined || at < oldest)) oldest = at
+          }
         }
 
-        const pending = await withOrg(
-          pool,
-          org.id,
-          async (c) =>
-            (
-              await c.query<{ n: string }>(
-                `SELECT count(*)::text AS n FROM documents
-                  WHERE org_id = $1 AND deleted_at IS NOT NULL AND vectors_purged_at IS NULL`,
-                [org.id],
-              )
-            ).rows[0]?.n ?? '0',
-          scope,
-        )
-        metrics.tombstonesPending.set(Number(pending), { org: org.slug })
+        metrics.tombstonesPending.set(tombstoned, { org: org.slug })
 
-        // The oldest document whose tags predate the current groups_version.
-        // Zero when everything is caught up; the age of the laggard otherwise.
-        const lag = await withOrg(
-          pool,
-          org.id,
-          async (c) =>
-            (
-              await c.query<{ lag: string | null }>(
-                // `chunk_count > 0` is the whole correctness of this gauge, and
-                // it was missing. The number is meant to be the age of the
-                // oldest document still carrying tags built from a superseded
-                // grant set — which only a document with points in the index
-                // can do. Without the clause it counted every document behind
-                // the version, including ones that never reached the index at
-                // all: a single `failed` or `pending` document pinned the gauge
-                // at its own age forever, because the retag loop claims neither
-                // and nothing else can ever clear it. The one metric with an
-                // alert on it became a stuck alert, which is how it gets muted.
-                //
-                // Deliberately not `status = 'indexed'`. A document that
-                // indexed once and failed on a later pass still has the
-                // earlier pass's points, still carries their tags, and is
-                // exactly the case this is supposed to catch — so the predicate
-                // is "has points", and `claimStale` uses the same one.
-                `SELECT COALESCE(EXTRACT(EPOCH FROM (now() - min(COALESCE(acl_tagged_at, created_at)))), 0)::text AS lag
-                   FROM documents
-                  WHERE org_id = $1 AND deleted_at IS NULL AND chunk_count > 0
-                    AND acl_version < $2`,
-                [org.id, Number(org.groups_version)],
-              )
-            ).rows[0]?.lag ?? '0',
-          scope,
-        )
         // Per organization, and set even when it is zero.
         //
         // A single worst-across-tenants number was the first shape of this and
@@ -105,7 +115,8 @@ export function collectDatabaseGauges(pool: Pool, metrics: Metrics, role?: strin
         // Zero is written rather than omitted: an absent series and a zero one
         // mean "caught up" and "not being measured", and those must not look
         // alike on the one metric that evidences I4.
-        metrics.aclPropagationLag.set(Number(lag), { org: org.slug })
+        const lag = oldest === undefined ? 0 : Math.max(0, (Date.now() - oldest) / 1000)
+        metrics.aclPropagationLag.set(lag, { org: org.slug })
       }
     } finally {
       client.release()

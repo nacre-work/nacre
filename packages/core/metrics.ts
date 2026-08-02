@@ -163,10 +163,62 @@ export class Registry {
     this.#collectors.push(fn)
   }
 
-  async render(): Promise<string> {
+  /**
+   * How long a collected value is reused.
+   *
+   * `/metrics` is unauthenticated by default and the collectors are database
+   * queries — one per organization. Without this, anyone who can reach the port
+   * decides how often the API queries every tenant's `documents` table, on the
+   * same pool the request path uses. A scrape loop is a denial of service that
+   * looks like monitoring.
+   *
+   * Ten seconds is shorter than any sensible scrape interval, so a real
+   * Prometheus never sees a cached value and the numbers are as live as they
+   * were. It only collapses the excess: a second scraper, a human with `watch
+   * curl`, or a flood.
+   */
+  static readonly COLLECT_TTL_MS = 10_000
+
+  /**
+   * When the collectors last finished, on the same clock `render` was given.
+   *
+   * `undefined` and not 0, because "never collected" and "collected at time
+   * zero" have to be different: a caller injecting a clock — a test, or
+   * anything replaying — would otherwise find a fresh registry believing it had
+   * just collected, and the first scrape would return empty gauges.
+   */
+  #collectedAt: number | undefined
+  #collecting: Promise<void> | undefined
+
+  /**
+   * Run the collectors, at most one run at a time and at most one per window.
+   *
+   * The single-flight part matters as much as the cache: two scrapes arriving
+   * together used to start two full sweeps, so concurrency multiplied the cost
+   * that the cache alone would bound only in sequence.
+   */
+  async #collectOnce(now: number): Promise<void> {
+    if (this.#collecting !== undefined) return this.#collecting
+    if (this.#collectedAt !== undefined && now - this.#collectedAt < Registry.COLLECT_TTL_MS) return
+
     // A collector that fails must not blank the whole exposition: the metrics
     // that still work are how you find out which one broke.
-    await Promise.allSettled(this.#collectors.map((fn) => fn()))
+    this.#collecting = Promise.allSettled(this.#collectors.map((fn) => fn())).then(() => {
+      // Stamped with the clock this call was given, never with Date.now().
+      // Mixing the two means an injected clock is compared against a real one,
+      // and the window is then either always open or never.
+      //
+      // On completion rather than on entry, so a sweep slower than the window
+      // does not have the next one queued behind it the instant it finishes.
+      this.#collectedAt = now
+      this.#collecting = undefined
+    })
+
+    return this.#collecting
+  }
+
+  async render(now: number = Date.now()): Promise<string> {
+    await this.#collectOnce(now)
 
     const lines: string[] = []
     for (const metric of this.#metrics) {
