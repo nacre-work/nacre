@@ -6,6 +6,8 @@ import {
   loadConfig,
   loadJwtKeys,
   onListenError,
+  protectedResourceMetadata,
+  PROTECTED_RESOURCE_PATH,
   Redis,
   Registry,
 } from '@nacre.work/core'
@@ -113,7 +115,13 @@ async function main(): Promise<void> {
     tools,
     // Discovery lives on the API host, never on the apex — static hosting there
     // intercepts /.well-known/* before the API sees it.
-    resourceMetadataUrl: new URL('/.well-known/oauth-protected-resource', config.canonicalUrl).toString(),
+    resourceMetadataUrl: new URL(PROTECTED_RESOURCE_PATH, config.canonicalUrl).toString(),
+    resourceMetadata: protectedResourceMetadata({
+      canonicalUrl: config.canonicalUrl,
+      ...(config.oauthAuthorizationServer === ''
+        ? {}
+        : { authorizationServer: config.oauthAuthorizationServer }),
+    }),
     limits,
     limitPolicies,
     metrics: registry,

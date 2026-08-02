@@ -6,6 +6,7 @@ import {
   createPool,
   loadConfig,
   loadJwtKeys,
+  protectedResourceMetadata,
   Redis,
   Registry,
   VectorStore,
@@ -149,6 +150,12 @@ async function main(): Promise<void> {
       serviceKeys: new PostgresServiceKeys(pool, APP_ROLE),
     },
     metrics: registry,
+    resourceMetadata: protectedResourceMetadata({
+      canonicalUrl: config.canonicalUrl,
+      ...(config.oauthAuthorizationServer === ''
+        ? {}
+        : { authorizationServer: config.oauthAuthorizationServer }),
+    }),
     // The request path writes what it measures. Four of these were registered
     // and never written, so /metrics served zeros forever — which reads as
     // health rather than as absence.

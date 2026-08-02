@@ -1,7 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 
-import { MetadataError } from '@nacre.work/core'
+import {
+  MetadataError,
+  PROTECTED_RESOURCE_PATH,
+  type ProtectedResourceMetadata,
+} from '@nacre.work/core'
 import {
   authenticate,
   findTenantOverride,
@@ -60,6 +64,8 @@ export interface McpOptions {
   readonly tools: ToolRunner
   /** Where a 401 points the client for discovery, per RFC 9728. */
   readonly resourceMetadataUrl: string
+  /** The document that URL resolves to. Built once, in main, and shared with the API. */
+  readonly resourceMetadata: ProtectedResourceMetadata
 
   /**
    * The same limiter and the same policies the REST surface uses.
@@ -188,6 +194,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
     const body = await options.metrics.render()
     res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' })
     res.end(body)
+    return
+  }
+
+  // The path this transport's own 401 names. Served here as well as on the API
+  // because a client may be pointed straight at the MCP port — and served from
+  // the same document, built once in main, so the two can never disagree about
+  // the resource identifier a token is audience-bound to.
+  //
+  // Not a JSON-RPC route: discovery is plain HTTP GET, and answering it in the
+  // RPC envelope would make it unreadable to every client that follows RFC 9728.
+  if (req.method === 'GET' && path === PROTECTED_RESOURCE_PATH) {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(options.resourceMetadata))
     return
   }
 
