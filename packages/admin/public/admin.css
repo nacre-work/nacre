@@ -322,6 +322,34 @@ a { color: var(--n-accent); }
 .card h1 { margin-bottom: 4px; }
 .card .lede { margin-bottom: 20px; font-size: 14px; }
 
+/* Password or a pasted token. Two ways in, not two products, so the tabs are
+   quiet: a bottom rule and weight, no boxes. */
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin: 18px 0 20px;
+  border-bottom: 1px solid var(--n-border-color);
+}
+.tab {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--n-text-muted);
+  cursor: pointer;
+}
+.tab:hover { color: var(--n-text); }
+.tab.active {
+  color: var(--n-text);
+  font-weight: 550;
+  /* The permitted ramp, which is what "you are here" is. */
+  border-bottom-color: var(--n-s4);
+}
+
 /* ─── Narrow ──────────────────────────────────────────────────────────── */
 @media (max-width: 720px) {
   .masthead { height: auto; flex-wrap: wrap; padding: 10px 14px; gap: 10px 16px; }

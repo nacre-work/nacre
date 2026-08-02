@@ -1,4 +1,13 @@
-import { client, explain, readBase, readToken, signIn, signOut } from './api.js'
+import {
+  client,
+  explain,
+  readBase,
+  readToken,
+  signInWithPassword,
+  signInWithToken,
+  signOut,
+  whenSessionEnds,
+} from './api.js'
 import { clear, h } from './dom.js'
 import { accountsView } from './views/accounts.js'
 import { grantsView } from './views/grants.js'
@@ -10,9 +19,12 @@ import { searchView } from './views/search.js'
  *
  * One organization, which is the whole of the open core's model — the global
  * admin, quotas, and cross-organization anything are commercial and do not
- * belong here (docs/licensing.md). There is no login either, so this takes a
- * token or a service account key directly and says so rather than pretending
- * to be one.
+ * belong here (docs/licensing.md).
+ *
+ * Sign in with the address and password `init` printed, or paste a token. The
+ * first is what a person has and it renews itself; the second is what `init`
+ * and a service account key are, and it lasts exactly as long as the credential
+ * does.
  *
  * Routed on the hash so it can be served as static files from any path without
  * the server needing a rewrite rule, which is what makes it a directory nginx
@@ -86,7 +98,10 @@ function shell(): { main: HTMLElement; nav: HTMLElement } {
         status,
         h('code', { class: 'base', title: 'Where this UI is sending requests' }, readBase().replace(/^https?:\/\//, '')),
         h('button', { class: 'btn btn-quiet', onclick: () => {
-          signOut()
+          // The screen changes first. Revoking the refresh token is a request
+          // that can fail, and someone who clicked "sign out" should not be
+          // left looking at an administration console while it retries.
+          void signOut()
           start()
         } }, 'Sign out'),
       ),
@@ -119,53 +134,142 @@ function route(main: HTMLElement, nav: HTMLElement): void {
 /**
  * The sign-in screen.
  *
- * It says what the token is and where it comes from, because there is no login
- * to guess at: `init` prints one, `/v1/service-accounts` mints the other. A
- * screen that just said "Token" would leave a first-time operator with nowhere
- * to look.
+ * Two tabs, and the order is the recommendation. A password gets a session that
+ * renews itself; a pasted token expires when it expires — an hour for the one
+ * `init` prints, and never for a service account key, which is why both are
+ * still here.
+ *
+ * The token tab says where each kind comes from, because a field labelled just
+ * "Token" leaves a first-time operator with nowhere to look.
  */
 function signInView(): void {
-  const token = h('input', { class: 'input mono', type: 'password', placeholder: 'eyJ… or nacre_sk_…', required: true })
-  const base = h('input', { class: 'input mono', value: location.origin })
   const message = h('p', { class: 'form-message' })
+  const forms = h('div', {})
+
+  const say = (text: string, bad = false): void => {
+    message.className = bad ? 'form-message error' : 'form-message'
+    message.textContent = text
+  }
+
+  const passwordForm = (): HTMLElement => {
+    const email = h('input', { class: 'input', type: 'email', autocomplete: 'username', required: true })
+    const password = h('input', {
+      class: 'input',
+      type: 'password',
+      autocomplete: 'current-password',
+      required: true,
+    })
+    const organization = h('input', { class: 'input', placeholder: 'only if you have accounts in several' })
+    const base = h('input', { class: 'input mono', value: readBase() })
+
+    return h('form', { onsubmit: async (e: Event) => {
+      e.preventDefault()
+      say('Signing in…')
+      try {
+        const ok = await signInWithPassword({
+          email: email.value.trim(),
+          password: password.value,
+          organization: organization.value.trim(),
+          baseUrl: base.value.trim().replace(/\/+$/, ''),
+        })
+        // One refusal with one message, deliberately. The server does not say
+        // which of five things was wrong and neither does this.
+        if (!ok) return say('Those credentials are not valid.', true)
+        start()
+      } catch (error) {
+        say(explain(error), true)
+      }
+    } },
+      h('label', { class: 'field' }, h('span', {}, 'Email'), email),
+      h('label', { class: 'field' }, h('span', {}, 'Password'), password),
+      h('label', { class: 'field' }, h('span', {}, 'Organization'), organization),
+      h('label', { class: 'field' }, h('span', {}, 'API'), base),
+      h('p', { class: 'hint' },
+        'The address and password ',
+        h('code', {}, 'init'),
+        ' printed. The session renews itself and ends when you sign out or close the tab.'),
+      message,
+      h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Sign in'),
+    )
+  }
+
+  const tokenForm = (): HTMLElement => {
+    const token = h('input', {
+      class: 'input mono',
+      type: 'password',
+      placeholder: 'eyJ… or nacre_sk_…',
+      required: true,
+    })
+    const base = h('input', { class: 'input mono', value: readBase() })
+
+    return h('form', { onsubmit: async (e: Event) => {
+      e.preventDefault()
+      say('Checking…')
+      signInWithToken(token.value.trim(), base.value.trim().replace(/\/+$/, ''))
+      try {
+        // A real call, not a health check. Health needs no token, so it would
+        // accept a wrong one and fail on the first screen instead.
+        await client().layers.list()
+        start()
+      } catch (error) {
+        void signOut()
+        say(explain(error), true)
+      }
+    } },
+      h('label', { class: 'field' }, h('span', {}, 'Token'), token),
+      h('label', { class: 'field' }, h('span', {}, 'API'), base),
+      h('p', { class: 'hint' },
+        'The token ',
+        h('code', {}, 'init'),
+        ' printed, which lasts an hour, or a service account key, which lasts until it is revoked. ',
+        'Neither can be renewed, so this session ends when the credential does.'),
+      message,
+      h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Sign in'),
+    )
+  }
+
+  const TABS = [
+    { label: 'Password', build: passwordForm },
+    { label: 'Token', build: tokenForm },
+  ]
+  const tabs = h('div', { class: 'tabs', role: 'tablist' })
+
+  const show = (index: number): void => {
+    clear(tabs)
+    for (const [i, tab] of TABS.entries()) {
+      tabs.append(
+        h('button', {
+          type: 'button',
+          role: 'tab',
+          class: i === index ? 'tab active' : 'tab',
+          'aria-selected': i === index ? 'true' : 'false',
+          onclick: () => show(i),
+        }, tab.label),
+      )
+    }
+    say('')
+    clear(forms)
+    forms.append(TABS[index]!.build())
+  }
 
   document.body.replaceChildren(
     h('main', { class: 'signin' },
-      h('form', { class: 'card', onsubmit: async (e: Event) => {
-        e.preventDefault()
-        message.className = 'form-message'
-        message.textContent = 'Checking…'
-        signIn(token.value.trim(), base.value.trim().replace(/\/+$/, ''))
-        try {
-          // A real call, not a health check. Health needs no token, so it would
-          // accept a wrong one and fail on the first screen instead.
-          await client().layers.list()
-          start()
-        } catch (error) {
-          signOut()
-          message.className = 'form-message error'
-          message.textContent = explain(error)
-        }
-      } },
+      h('div', { class: 'card' },
         h('div', { class: 'brand brand-lg' }, mark(), h('span', {}, 'Nacre'), h('span', { class: 'brand-sub' }, 'admin')),
         h('h1', {}, 'Sign in'),
-        h('p', { class: 'lede' },
-          'There is no login yet. Paste the token ',
-          h('code', {}, 'init'),
-          ' printed, or a service account key.',
-        ),
-        h('label', { class: 'field' }, h('span', {}, 'Token'), token),
-        h('label', { class: 'field' }, h('span', {}, 'API'), base),
-        h('p', { class: 'hint' },
-          'Kept in sessionStorage and gone when this tab closes. It is a bearer credential with nothing behind it to invalidate, so that is the only sign-out this build can honestly offer.'),
-        message,
-        h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Sign in'),
+        tabs,
+        forms,
       ),
     ),
   )
+  show(0)
 }
 
 function start(): void {
+  // Re-registered on every start so a session that ends mid-use puts the
+  // sign-in screen back rather than leaving a console nothing can load into.
+  whenSessionEnds(() => start())
+
   if (readToken() === null) {
     signInView()
     return

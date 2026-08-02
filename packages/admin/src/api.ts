@@ -1,13 +1,26 @@
 import { NacreClient, NacreError, type ClientOptions } from '@nacre.work/sdk'
 
 /**
- * The client, and where the token lives.
+ * The client, and where the session lives.
  *
- * `sessionStorage`, not `localStorage`. The token is a bearer credential with
- * no server-side session behind it — there is no login yet, so it cannot be
- * invalidated from anywhere — and `localStorage` would leave it on the machine
- * until something explicitly removed it. Closing the tab should end the
- * session, because that is the only sign-out this build can honestly offer.
+ * Two ways in, because there are two kinds of credential and neither replaces
+ * the other:
+ *
+ * - **Email and password.** What a person has. Produces an access token and a
+ *   refresh token, and the session outlives the access token's fifteen minutes
+ *   because this file renews it — see `renewingFetch`.
+ * - **A pasted token.** What `init` prints, and what a service account key is.
+ *   Neither has a refresh token, so such a session ends when the credential
+ *   does. Kept rather than replaced: signing in *as* a service account is how
+ *   an administrator checks what an agent can actually see, which is a question
+ *   this UI should be able to answer.
+ *
+ * `sessionStorage`, not `localStorage`, and a refresh token makes that argument
+ * stronger rather than weaker — it is the longer-lived of the two credentials
+ * here, so leaving it on the machine until something explicitly removed it is
+ * the direction not to go. Closing the tab ends the session, and `signOut` now
+ * also revokes it on the server, which is the part that was not possible when
+ * the only credential was a JWT with nothing behind it.
  *
  * The API's own origin is the default. An admin UI served from somewhere other
  * than the API is a CORS problem and a cookie problem and, mostly, a decision
@@ -16,25 +29,156 @@ import { NacreClient, NacreError, type ClientOptions } from '@nacre.work/sdk'
  */
 
 const TOKEN_KEY = 'nacre.admin.token'
+const REFRESH_KEY = 'nacre.admin.refresh'
 const BASE_KEY = 'nacre.admin.base'
 
 export const readToken = (): string | null => sessionStorage.getItem(TOKEN_KEY)
 export const readBase = (): string => sessionStorage.getItem(BASE_KEY) ?? location.origin
 
-export function signIn(token: string, baseUrl: string): void {
+/**
+ * Called when a session ends underneath the UI — the refresh token was spent,
+ * replayed, or revoked, and there is nothing left to renew with.
+ *
+ * A callback rather than a redirect from in here: this module knows the session
+ * is over, and `index.ts` knows what to put on the screen.
+ */
+let onSessionEnded: () => void = () => undefined
+export const whenSessionEnds = (fn: () => void): void => {
+  onSessionEnded = fn
+}
+
+/** A pasted credential: `init`'s JWT, or a `nacre_sk_` service account key. */
+export function signInWithToken(token: string, baseUrl: string): void {
   sessionStorage.setItem(TOKEN_KEY, token)
+  // Explicitly removed rather than left alone. Switching from a password
+  // session to a pasted token must not leave the previous session's refresh
+  // token behind to renew a credential this one did not come from.
+  sessionStorage.removeItem(REFRESH_KEY)
   sessionStorage.setItem(BASE_KEY, baseUrl)
 }
 
-export function signOut(): void {
+/**
+ * Email and password.
+ *
+ * `false` for a refusal, and there is exactly one refusal: the server answers a
+ * single `401` with a single message for an unknown address, a wrong password,
+ * a wrong organization, a disabled account and an account with no password set
+ * — in the same time. A screen that distinguished them would hand back the
+ * information the API is careful not to give.
+ */
+export async function signInWithPassword(input: {
+  email: string
+  password: string
+  organization?: string
+  baseUrl: string
+}): Promise<boolean> {
+  // A bare client on the plain `fetch`: there is nothing to renew with yet, and
+  // pointing the renewing one at the sign-in call is a loop waiting to happen.
+  const bare = new NacreClient({ baseUrl: input.baseUrl, token: 'unauthenticated' })
+  const tokens = await bare.auth.login({
+    email: input.email,
+    password: input.password,
+    ...(input.organization === undefined || input.organization === ''
+      ? {}
+      : { organization: input.organization }),
+  })
+  if (tokens === undefined) return false
+
+  sessionStorage.setItem(TOKEN_KEY, tokens.accessToken)
+  sessionStorage.setItem(REFRESH_KEY, tokens.refreshToken)
+  sessionStorage.setItem(BASE_KEY, input.baseUrl)
+  return true
+}
+
+/** Forget the session in this browser. Reaches nothing; see `signOut`. */
+function forget(): void {
   sessionStorage.removeItem(TOKEN_KEY)
+  sessionStorage.removeItem(REFRESH_KEY)
   sessionStorage.removeItem(BASE_KEY)
+}
+
+/**
+ * End the session, on the server as well as here.
+ *
+ * Best effort, and the local half happens first and regardless: someone who
+ * clicked "sign out" gets a signed-out browser whether or not the API is
+ * reachable. Keeping the token because a request failed would be the worst of
+ * both.
+ */
+export async function signOut(): Promise<void> {
+  const refresh = sessionStorage.getItem(REFRESH_KEY)
+  const base = readBase()
+  forget()
+
+  if (refresh === null) return
+  try {
+    await new NacreClient({ baseUrl: base, token: 'unauthenticated' }).auth.logout(refresh)
+  } catch {
+    // The session is over here either way and the refresh token expires on its
+    // own. Reporting this would be telling someone about a failure in something
+    // they have, from their side, already finished.
+  }
+}
+
+/**
+ * A `fetch` that renews the access token once, when the API says it is spent.
+ *
+ * Reactive rather than a timer. A timer has to guess the clock skew between
+ * this browser and the API and it fires whether or not anyone is using the
+ * page; a `401` is the API stating the fact directly.
+ *
+ * This is the SDK's own seam — `ClientOptions.fetch` — rather than a wrapper
+ * around fourteen call sites, so no view has to know a session can be renewed.
+ * The client deliberately does not swap its own credential (see its note on
+ * why), which is exactly the reason the swap belongs out here.
+ *
+ * The renewal itself goes through the plain `fetch`, never this one: a `401`
+ * from the refresh endpoint must not trigger another refresh.
+ */
+function renewingFetch(): typeof globalThis.fetch {
+  return (async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const first = await globalThis.fetch(url, init)
+    if (first.status !== 401) return first
+
+    const refresh = sessionStorage.getItem(REFRESH_KEY)
+    // A pasted token has no refresh token, so its 401 is the end of the road
+    // and the caller should see it. There is only ever one retry: the second
+    // attempt returns whatever it gets.
+    if (refresh === null) return first
+
+    let renewed: { accessToken: string; refreshToken: string } | undefined
+    try {
+      renewed = await new NacreClient({
+        baseUrl: readBase(),
+        token: 'unauthenticated',
+      }).auth.refresh(refresh)
+    } catch {
+      renewed = undefined
+    }
+
+    if (renewed === undefined) {
+      // Spent, replayed, or revoked — replaying one revokes the whole family by
+      // design, so there is nothing left to retry with. Putting the sign-in
+      // screen back is more honest than letting every subsequent call fail on
+      // its own with a message about a token.
+      forget()
+      onSessionEnded()
+      return first
+    }
+
+    sessionStorage.setItem(TOKEN_KEY, renewed.accessToken)
+    sessionStorage.setItem(REFRESH_KEY, renewed.refreshToken)
+
+    const headers = new Headers(init?.headers as HeadersInit | undefined)
+    headers.set('authorization', `Bearer ${renewed.accessToken}`)
+    return globalThis.fetch(url, { ...init, headers })
+  }) as typeof globalThis.fetch
 }
 
 export function client(): NacreClient {
   const token = readToken()
   if (token === null) throw new Error('not signed in')
-  const options: ClientOptions = { baseUrl: readBase(), token }
+  const options: ClientOptions = { baseUrl: readBase(), token, fetch: renewingFetch() }
   return new NacreClient(options)
 }
 
@@ -48,7 +192,7 @@ export function client(): NacreClient {
  */
 export function explain(error: unknown): string {
   if (error instanceof NacreError) {
-    if (error.status === 401) return 'The token is not valid. Sign in again.'
+    if (error.status === 401) return 'This session has ended. Sign in again.'
     if (error.status === 404) return 'Not found, or not visible to this token.'
     return `${error.detail} (request ${error.requestId})`
   }
