@@ -109,6 +109,64 @@ components:
           type: number
           description: '0 to 1, clamped. An empty layer reads 1, because it is finished.'
         error:    { type: [string, 'null'] }
+        check:
+          oneOf:
+            - { type: 'null' }
+            - { $ref: '#/components/schemas/RecallCheck' }
+          description: >
+            What the recall gate scored, once it has run. `null` until then, and
+            `null` forever for a layer with no reference query set — that layer
+            has no gate. Null rather than absent: absent would read as "this
+            deployment does not check recall", which is a different claim.
+
+    RecallCheck:
+      type: object
+      description: >
+        The gate between a finished reindex and the switch that makes it live.
+        Recall@10 against documents the deployment picked, per reference query,
+        averaged over the set — and `passed` false ends the reindex at `failed`
+        with `vector_name` left on the model the layer was already on.
+      required: [recall, floor, passed, queries, scores]
+      properties:
+        recall: { type: number, description: 'The mean of `scores`, 0 to 1.' }
+        floor:  { type: number, description: 'NACRE_REINDEX_MIN_RECALL as a fraction.' }
+        passed: { type: boolean }
+        queries: { type: integer }
+        scores:
+          type: array
+          description: >
+            Per reference query, keyed by id rather than by text — the text is
+            on GET /layers/{id}/reference-queries, one join away, and a status
+            response is read by more people than wrote the set.
+          items:
+            type: object
+            properties:
+              query_id: { type: string, format: uuid }
+              recall:   { type: number }
+        unresolved:
+          type: array
+          items: { type: string }
+          description: >
+            External ids in the set naming no live document. Any of these means
+            `passed` is false whatever `recall` says: a stale reference set and
+            a model that lost recall are different problems, and scoring a
+            missing document as a miss would report the first as the second.
+
+    ReferenceQuery:
+      type: object
+      required: [id, query, expected]
+      properties:
+        id:    { type: string, format: uuid }
+        query: { type: string, maxLength: 1024 }
+        expected:
+          type: array
+          maxItems: 10
+          items: { type: string }
+          description: >
+            External ids the query must still find, and at most ten because that
+            is how many the check retrieves. A longer list could never score 1.0,
+            so its floor would be unreachable and would read as a regression in
+            the model rather than as a mistake in the set.
 
     AuditEvent:
       type: object
@@ -861,6 +919,92 @@ paths:
             see, and answering 404 leaves an administrator unable to tell a
             name collision from having no permission.
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /layers/{id}/reference-queries:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: The query set a reindex of this layer is checked against
+      description: >
+        Requires `admin` on the layer, not `read`. The entries name the
+        documents someone considers the canonical answers to a query, which is
+        a statement about the layer's contents — and rule 7 makes `admin` the
+        permission that implies being allowed to see them, while rule 6 means
+        `write` does not.
+
+
+        An empty list is the normal state and means the layer has no recall
+        gate.
+      responses:
+        '200':
+          description: The set, in the order it was written.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ReferenceQuery' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+    put:
+      summary: Replace the query set whole
+      description: >
+        A reference set is one statement about what search must keep doing, so
+        it is replaced rather than edited entry by entry — a partial edit is how
+        half of one ends up describing a layer nobody has looked at since. The
+        write is idempotent and there are no ids to invent on the way in.
+
+
+        Sending `{"queries": []}` removes the gate.
+
+
+        The external ids are **not** checked against the documents here. A set
+        is often written before the documents it names are ingested, and
+        refusing it then would make the gate impossible to set up on a new
+        layer. They are resolved when the check runs, and an entry that resolves
+        to nothing fails that reindex by name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [queries]
+              properties:
+                queries:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [query, expected]
+                    properties:
+                      query: { type: string, minLength: 1, maxLength: 1024 }
+                      expected:
+                        type: array
+                        minItems: 1
+                        maxItems: 10
+                        items: { type: string }
+      responses:
+        '200':
+          description: The set as stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ReferenceQuery' }
+        '400':
+          description: >
+            Over a bound, or an entry missing a query or its expected documents.
+            Every bound is a refusal and never a truncation — a truncated set is
+            measured later as a recall number nobody can reconcile with what
+            they wrote.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /layers/{id}/reindex:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -878,11 +1022,16 @@ paths:
         changes which model answers every future query.
 
 
-        Two of the six steps in docs/architecture.md are not built and are named
-        there rather than skipped quietly: the Recall@10 gate before switching,
-        which needs a reference query set that does not exist anywhere in this
-        product, and dropping the old vector after a rollback window. The old
-        vector stays, which is what makes a rollback one statement.
+        The Recall@10 gate runs before the switch **where the layer has a
+        reference query set**, and the layer stays on its current model if the
+        gate fails. A layer with no set has no gate: the check needs documents
+        the deployment picked, and there is nowhere else to get them. See
+        `/layers/{id}/reference-queries`.
+
+
+        The old vector is left in place after the switch and reclaimed by a
+        sweep past `NACRE_COLLECTION_RETENTION_DAYS`, along with the collection
+        the copy replaced. That window is what makes a rollback one statement.
       requestBody:
         required: true
         content:

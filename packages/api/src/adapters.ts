@@ -34,6 +34,8 @@ import type {
   Reindex,
   ReindexOutcome,
   ReindexStatus,
+  ReferenceQueries,
+  ReferenceQuery,
   AuditEvent,
   AuditQuery,
   AuditReader,
@@ -2367,6 +2369,116 @@ export class PostgresReindex implements Reindex {
       failed: state.failed,
       progress: reindexProgress(live),
       error: state.error ?? null,
+      check: state.check ?? null,
     }
+  }
+}
+
+/**
+ * The reference query set behind the reindex recall gate.
+ *
+ * `admin` on the layer for both operations, and that is a decision rather than
+ * a copy of the reindex adapter above. Reading the set reveals which documents
+ * an operator considers the canonical answers to a query, which is a statement
+ * about the layer's contents; rule 7 makes `admin` the permission that implies
+ * being allowed to see them, and rule 6 means `write` does not.
+ */
+export class PostgresReferenceQueries implements ReferenceQueries {
+  constructor(
+    private readonly pool: Pool,
+    private readonly role?: string,
+    private readonly principalsCache?: PrincipalsCache,
+  ) {}
+
+  private get scope(): { role?: string } {
+    return this.role === undefined ? {} : { role: this.role }
+  }
+
+  /**
+   * The layer, if this caller may administer it.
+   *
+   * `undefined` for a layer that is not there and for one they may not touch —
+   * one answer, which the handler turns into `404`. Deleted layers are not
+   * there: a reference set on a deleted layer describes nothing.
+   */
+  private async administrable(
+    client: PoolClient,
+    auth: AuthContext,
+    layerId: string,
+  ): Promise<boolean> {
+    const plan = resolve(await contextFor(client, auth, this.principalsCache), 'admin')
+    if (plan.kind === 'none') return false
+    if (plan.kind === 'scoped' && !plan.layers.includes(layerId)) return false
+
+    const { rows } = await client.query<{ id: string }>(
+      'SELECT id FROM layers WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL',
+      [auth.orgId, layerId],
+    )
+    return rows.length > 0
+  }
+
+  async list(auth: AuthContext, layerId: string): Promise<readonly ReferenceQuery[] | undefined> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client): Promise<readonly ReferenceQuery[] | undefined> => {
+        if (!(await this.administrable(client, auth, layerId))) return undefined
+
+        const { rows } = await client.query<{ id: string; query: string; expected: string[] }>(
+          `SELECT id, query, expected FROM reference_queries
+            WHERE org_id = $1 AND layer_id = $2 ORDER BY ordinal`,
+          [auth.orgId, layerId],
+        )
+        return rows.map((r) => ({ id: r.id, query: r.query, expected: r.expected }))
+      },
+      this.scope,
+    )
+  }
+
+  async replace(
+    auth: AuthContext,
+    layerId: string,
+    queries: readonly { query: string; expected: readonly string[] }[],
+  ): Promise<readonly ReferenceQuery[] | undefined> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client): Promise<readonly ReferenceQuery[] | undefined> => {
+        if (!(await this.administrable(client, auth, layerId))) return undefined
+
+        // Delete then insert, in the transaction `withOrg` already opened. A
+        // set is one statement about the layer, so there is no moment at which
+        // half of the old one and half of the new one are both in the table —
+        // which matters because the worker reads this to decide whether a layer
+        // has a gate at all.
+        await client.query('DELETE FROM reference_queries WHERE org_id = $1 AND layer_id = $2', [
+          auth.orgId,
+          layerId,
+        ])
+
+        const inserted: ReferenceQuery[] = []
+        for (const [ordinal, q] of queries.entries()) {
+          const { rows } = await client.query<{ id: string }>(
+            `INSERT INTO reference_queries (org_id, layer_id, query, expected, ordinal)
+             VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+            [auth.orgId, layerId, q.query, [...q.expected], ordinal],
+          )
+          inserted.push({
+            id: rows[0]?.id as string,
+            query: q.query,
+            expected: [...q.expected],
+          })
+        }
+
+        // The external ids are deliberately **not** validated against
+        // `documents` here. A reference set is often written before the
+        // documents it names are ingested, and refusing it then would make the
+        // gate impossible to set up on a new layer. The check resolves them
+        // when it runs, and an entry that resolves to nothing fails the reindex
+        // by name — which is the moment it actually matters.
+        return inserted
+      },
+      this.scope,
+    )
   }
 }

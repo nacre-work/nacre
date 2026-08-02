@@ -543,6 +543,58 @@ export interface ReindexStatus {
   readonly failed: number
   readonly progress: number
   readonly error: string | null
+  /**
+   * The recall check, once it has run. `null` until then, and forever for a
+   * layer with no reference query set — that layer has no gate.
+   */
+  readonly check: RecallCheck | null
+}
+
+/**
+ * What the reindex was scored at before its layer was allowed to switch.
+ *
+ * `scores` is per reference query and keyed by id rather than by text: the
+ * caller wrote the text and can join it from
+ * `GET /v1/layers/{id}/reference-queries`, and a status endpoint that echoes
+ * stored query strings is a shape this repository keeps out of responses and
+ * logs on principle.
+ */
+export interface RecallCheck {
+  readonly recall: number
+  readonly floor: number
+  readonly passed: boolean
+  readonly queries: number
+  readonly scores: readonly { readonly queryId: string; readonly recall: number }[]
+  /** External ids in the set that name no live document. Any means it failed. */
+  readonly unresolved?: readonly string[]
+}
+
+/** One line of the reference set: a query and the documents it must still find. */
+export interface ReferenceQuery {
+  readonly id: string
+  readonly query: string
+  readonly expected: readonly string[]
+}
+
+/**
+ * The query set a reindex of this layer is checked against.
+ *
+ * Replaced whole rather than edited entry by entry. A reference set is one
+ * statement about what search must keep doing, and a partial edit is how half
+ * of one ends up describing a layer nobody has looked at since. There are also
+ * no ids to invent on the way in, which keeps the write idempotent.
+ *
+ * `admin` on the layer, not `read`: the entries name documents, and rule 7
+ * makes `admin` the permission that implies being allowed to see them.
+ */
+export interface ReferenceQueries {
+  /** `undefined` for a layer the caller may not administer and for one that is not there. */
+  list(auth: AuthContext, layerId: string): Promise<readonly ReferenceQuery[] | undefined>
+  replace(
+    auth: AuthContext,
+    layerId: string,
+    queries: readonly { query: string; expected: readonly string[] }[],
+  ): Promise<readonly ReferenceQuery[] | undefined>
 }
 
 export interface AuditReader {
@@ -602,6 +654,8 @@ export interface ApiOptions {
   readonly workspaces?: Workspaces
   /** Layer reindex. Absent means the reindex paths answer 404. */
   readonly reindex?: Reindex
+  /** The reindex recall gate's query set. Absent means those paths answer 404. */
+  readonly referenceQueries?: ReferenceQueries
   /** Reads the access log back. Absent means `/v1/audit` answers 404. */
   readonly auditReader?: AuditReader
   /** `Idempotency-Key` on unsafe methods. Absent means the header is ignored. */
@@ -821,7 +875,90 @@ function reindexJson(status: ReindexStatus): Record<string, unknown> {
     failed: status.failed,
     progress: status.progress,
     error: status.error,
+    // `null` and not omitted. Absent would read as "this deployment does not do
+    // recall checks"; null says "this migration has not been scored", which for
+    // a layer with no reference set is the permanent and correct answer.
+    check:
+      status.check === null
+        ? null
+        : {
+            recall: status.check.recall,
+            floor: status.check.floor,
+            passed: status.check.passed,
+            queries: status.check.queries,
+            scores: status.check.scores.map((s) => ({ query_id: s.queryId, recall: s.recall })),
+            ...(status.check.unresolved === undefined
+              ? {}
+              : { unresolved: [...status.check.unresolved] }),
+          },
   }
+}
+
+/** One reference query on the wire, snake case like every other response here. */
+function referenceQueryJson(q: ReferenceQuery): Record<string, unknown> {
+  return { id: q.id, query: q.query, expected: [...q.expected] }
+}
+
+/** At most this many queries in a set, and this many expected documents in one. */
+const MAX_REFERENCE_QUERIES = 50
+const MAX_EXPECTED_PER_QUERY = 10
+
+/**
+ * The reference set from a request body.
+ *
+ * Every bound here is a refusal rather than a truncation, for the reason the
+ * multipart parser gives: a truncation is a silent disagreement between what
+ * was sent and what got stored, and this one would be measured later as a
+ * recall number the operator cannot reconcile with what they wrote.
+ *
+ * `MAX_EXPECTED_PER_QUERY` is not a size limit, it is `RECALL_K`. A query
+ * naming more expected documents than the check retrieves could never score
+ * 1.0, so its floor would be unreachable and would read as a regression in the
+ * model rather than as a mistake in the set.
+ *
+ * An empty list is accepted and means "no gate on this layer", which is how a
+ * set is removed. Refusing it would leave no way back from having written one.
+ */
+function parseReferenceQueries(
+  body: unknown,
+): { queries: { query: string; expected: string[] }[] } | { error: string } {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { error: 'The body must be an object with a "queries" array.' }
+  }
+  const raw = (body as Record<string, unknown>)['queries']
+  if (!Array.isArray(raw)) return { error: "'queries' must be an array." }
+  if (raw.length > MAX_REFERENCE_QUERIES) {
+    return { error: `A reference set may hold at most ${MAX_REFERENCE_QUERIES} queries.` }
+  }
+
+  const queries: { query: string; expected: string[] }[] = []
+  for (const [i, entry] of raw.entries()) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return { error: `queries[${i}] must be an object.` }
+    }
+    const { query, expected } = entry as Record<string, unknown>
+    if (typeof query !== 'string' || query.trim() === '' || query.length > 1024) {
+      return { error: `queries[${i}].query must be a string of 1 to 1024 characters.` }
+    }
+    if (!Array.isArray(expected) || expected.length === 0) {
+      return { error: `queries[${i}].expected must be a non-empty array of external ids.` }
+    }
+    if (expected.length > MAX_EXPECTED_PER_QUERY) {
+      return {
+        error:
+          `queries[${i}].expected may name at most ${MAX_EXPECTED_PER_QUERY} documents, ` +
+          'which is how many the check retrieves. A longer list could never score 1.0.',
+      }
+    }
+    if (!expected.every((e) => typeof e === 'string' && e !== '')) {
+      return { error: `queries[${i}].expected must hold non-empty external ids.` }
+    }
+    // Deduplicated rather than refused: a repeated id is a typo with an obvious
+    // reading, and leaving it in would divide the score by a denominator the
+    // caller did not mean.
+    queries.push({ query, expected: [...new Set(expected as string[])] })
+  }
+  return { queries }
 }
 
 function send(
@@ -2215,6 +2352,62 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       }
 
       send(res, 204, null, requestId)
+      return
+    }
+
+    // `/v1/layers/{id}/reference-queries`
+    const referencePath = /^\/v1\/layers\/([0-9a-f-]{36})\/reference-queries$/i.exec(instance)
+    if (referencePath !== null) {
+      const layerId = referencePath[1] as string
+
+      if (options.referenceQueries === undefined || (req.method !== 'GET' && req.method !== 'PUT')) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      if (req.method === 'GET') {
+        const found = await options.referenceQueries.list(auth, layerId)
+        if (found === undefined) {
+          // No such layer and no permission to administer it, one answer.
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        send(res, 200, { items: found.map(referenceQueryJson) }, requestId)
+        return
+      }
+
+      const parsed = parseReferenceQueries(body)
+      if ('error' in parsed) {
+        const problem = badRequest(instance, requestId, parsed.error)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const replaced = await options.referenceQueries.replace(auth, layerId, parsed.queries)
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'reference_queries.replace',
+        result: replaced === undefined ? 'deny' : 'allow',
+        target: { layer_id: layerId },
+        // The count and never the queries. They are the operator's own text
+        // rather than a caller's search, so this is not the rule about query
+        // text — but the journal is read by more people than the endpoint is,
+        // and a document's title has already reached it once by this route.
+        detail: { layer_id: layerId, queries: parsed.queries.length },
+        requestId,
+      })
+
+      if (replaced === undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      send(res, 200, { items: replaced.map(referenceQueryJson) }, requestId)
       return
     }
 

@@ -15,6 +15,8 @@ DELETE /v1/documents/{id}            tombstone
 POST   /v1/search
 GET    /v1/workspaces    POST /v1/workspaces
 GET    /v1/layers        POST /v1/layers        PATCH /v1/layers/{id}
+GET    /v1/layers/{id}/reindex             POST /v1/layers/{id}/reindex
+GET    /v1/layers/{id}/reference-queries   PUT  /v1/layers/{id}/reference-queries
 GET    /v1/grants        POST /v1/grants        DELETE /v1/grants/{id}
 GET    /v1/service-accounts  POST  /v1/service-accounts  DELETE /v1/service-accounts/{id}
 GET    /v1/jobs/{id}
@@ -299,7 +301,8 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 | `GET /v1/documents/{id}`, `GET /v1/jobs/{id}` | resolved per caller |
 | `GET`/`POST /v1/workspaces` | a layer needs a workspace id, and until this existed the only way to have one was the line `init` printed |
 | `GET`/`POST /v1/layers`, `PATCH /v1/layers/{id}` | `provider_id` optional on create; PATCH takes name and description and nothing that decides how the vectors were built |
-| `GET`/`POST /v1/layers/{id}/reindex` | `202` and a path to poll; `copying` then `embedding` |
+| `GET`/`POST /v1/layers/{id}/reindex` | `202` and a path to poll; `copying` then `embedding`, and a `check` once the recall gate has run |
+| `GET`/`PUT /v1/layers/{id}/reference-queries` | the query set the gate scores against; `admin`, replaced whole |
 | `GET /v1/audit` | newest first, cursor-paged, JSON/JSONL/CSV by content negotiation |
 | `GET`/`POST /v1/grants`, `DELETE /v1/grants/{id}` | |
 | `GET`/`POST /v1/service-accounts`, `DELETE /v1/service-accounts/{id}` | |

@@ -60,6 +60,38 @@ export interface ReindexState {
   readonly done: number
   readonly failed: number
   readonly error?: string
+  /**
+   * What the recall check scored, once it has run.
+   *
+   * Absent until then, and absent forever for a layer with no reference query
+   * set — that layer has no gate, and `finishReindexIfDone` says so by asking
+   * whether the set exists rather than by looking for this key.
+   */
+  readonly check?: ReindexCheck
+}
+
+/**
+ * The verdict of the gate between a finished reindex and its switch.
+ *
+ * `scores` is keyed by reference query id and not by text. The text is the
+ * operator's own, so echoing it would break no rule — but a status endpoint and
+ * a jsonb column are both read by more people than wrote the set, and the
+ * endpoint that lists it is one join away.
+ */
+export interface ReindexCheck {
+  /** The mean of `scores`, in [0, 1]. */
+  readonly recall: number
+  readonly floor: number
+  readonly passed: boolean
+  readonly queries: number
+  readonly scores: readonly { readonly queryId: string; readonly recall: number }[]
+  /**
+   * External ids in the set naming no live document. Any means `passed` is
+   * false whatever `recall` says: a stale reference set and a bad model are
+   * different problems, and scoring a missing document as a miss reports the
+   * first as the second.
+   */
+  readonly unresolved?: readonly string[]
 }
 
 /**
@@ -97,6 +129,50 @@ export function toStateJson(state: ReindexState): Record<string, unknown> {
     done: state.done,
     failed: state.failed,
     ...(state.error === undefined ? {} : { error: state.error }),
+    ...(state.check === undefined ? {} : { check: toCheckJson(state.check) }),
+  }
+}
+
+/**
+ * The verdict as it is stored, snake case like the rest of the column.
+ *
+ * Its own function because the worker writes this key on its own — one
+ * `jsonb_set` rather than a rewrite of the whole state — and a second
+ * hand-written shape there is how the two would drift. `passed` is read back
+ * out of this object by the SQL predicate that performs the switch, so its name
+ * and its type are load-bearing rather than cosmetic.
+ */
+export function toCheckJson(check: ReindexCheck): Record<string, unknown> {
+  return {
+    recall: check.recall,
+    floor: check.floor,
+    passed: check.passed,
+    queries: check.queries,
+    scores: check.scores.map((s) => ({ query_id: s.queryId, recall: s.recall })),
+    ...(check.unresolved === undefined ? {} : { unresolved: [...check.unresolved] }),
+  }
+}
+
+function fromCheckJson(raw: unknown): ReindexCheck | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const o = raw as Record<string, unknown>
+  if (typeof o.recall !== 'number' || typeof o.passed !== 'boolean') return undefined
+
+  const scores = Array.isArray(o.scores) ? o.scores : []
+  return {
+    recall: o.recall,
+    floor: typeof o.floor === 'number' ? o.floor : 0,
+    passed: o.passed,
+    queries: typeof o.queries === 'number' ? o.queries : scores.length,
+    scores: scores.flatMap((s) => {
+      if (s === null || typeof s !== 'object') return []
+      const e = s as Record<string, unknown>
+      if (typeof e.query_id !== 'string' || typeof e.recall !== 'number') return []
+      return [{ queryId: e.query_id, recall: e.recall }]
+    }),
+    ...(Array.isArray(o.unresolved) && o.unresolved.length > 0
+      ? { unresolved: o.unresolved.filter((u): u is string => typeof u === 'string') }
+      : {}),
   }
 }
 
@@ -129,5 +205,9 @@ export function fromStateJson(raw: unknown): ReindexState | undefined {
     done: typeof o.done === 'number' ? o.done : 0,
     failed: typeof o.failed === 'number' ? o.failed : 0,
     ...(typeof o.error === 'string' ? { error: o.error } : {}),
+    ...(() => {
+      const check = fromCheckJson(o.check)
+      return check === undefined ? {} : { check }
+    })(),
   }
 }

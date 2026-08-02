@@ -30,6 +30,7 @@ import {
   PostgresGrants,
   PostgresJobs,
   PostgresLayers,
+  PostgresReferenceQueries,
   PostgresReindex,
   PostgresWorkspaces,
 } from './adapters.js'
@@ -199,6 +200,7 @@ async function main(): Promise<void> {
     login,
     auditReader: new PostgresAuditReader(pool, APP_ROLE, principalsCache),
     reindex: new PostgresReindex(pool, vectors, APP_ROLE, principalsCache),
+    referenceQueries: new PostgresReferenceQueries(pool, APP_ROLE, principalsCache),
     documents: new PostgresDocuments(
       pool,
       vectors,

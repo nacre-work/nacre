@@ -6,6 +6,7 @@ import {
   loadGroupsVersion,
   METADATA_PREFIX,
   MetadataIndexer,
+  toCheckJson,
   withOrg,
 } from '@nacre.work/core'
 import type { PrincipalRef } from '@nacre.work/core'
@@ -16,6 +17,7 @@ import type { StaleDocument } from './retag.js'
 import type { PurgeTarget } from './collect.js'
 import type { StrandedDocument } from './reap.js'
 import type { ReindexTarget } from './reindex.js'
+import type { RecallTarget, RecallVerdict } from './recall.js'
 
 /**
  * The adapters behind the ingest ports.
@@ -456,7 +458,81 @@ export class QdrantVectorWriter implements VectorWriter {
       filter: { must: [{ key: 'doc_id', match: { value: documentId } }] },
     } as never)
   }
+
+  /**
+   * The documents one reference query retrieves, on the shadow vector.
+   *
+   * ─── this has no ACL filter, and here is why that is allowed ───
+   *
+   * Everywhere else in this repository a query against the index without the
+   * permission filter is the leak every other rule exists to prevent. This one
+   * is different for a structural reason rather than a judgement call: **there
+   * is no principal.** Nothing calls it on behalf of a caller, there is no
+   * request and no token to resolve, and its result is fed to arithmetic that
+   * returns a ratio. No id, no text and no payload leaves the worker.
+   *
+   * Two things keep it that way rather than merely intending it:
+   *
+   * - The signature takes a layer and a vector, never a filter. There is no
+   *   argument through which a caller-assembled query could reach the index, so
+   *   this cannot be reused from a request path by passing something different
+   *   — which is the shape of the reuse that would turn it into a leak.
+   * - `deleted = false` and `org_id` are still here, because they are not
+   *   permission checks. Invariant 5 holds for every query in this system
+   *   without exception, and scoring recall against tombstoned documents would
+   *   also be wrong on its own terms.
+   *
+   * `limit` is a document count, not a point count: the same document usually
+   * holds several chunks, so it is over-fetched at the point level and reduced
+   * to distinct documents in order. That is not the over-fetch invariant 2
+   * forbids — nothing is being trimmed on permission, and there is no caller to
+   * withhold a result from.
+   */
+  async retrieveDocuments(input: {
+    collection: string
+    orgId: string
+    layerId: string
+    vectorName: string
+    vector: readonly number[]
+    limit: number
+  }): Promise<readonly string[]> {
+    const found = await this.client.query(input.collection, {
+      query: [...input.vector],
+      using: input.vectorName,
+      // Points, not documents. A document with twenty chunks would otherwise
+      // fill the whole answer and every reference query would score 1/n.
+      limit: input.limit * MAX_CHUNKS_PER_DOCUMENT_ASSUMED,
+      with_payload: true,
+      filter: {
+        must: [
+          { key: 'org_id', match: { value: input.orgId } },
+          { key: 'layer_id', match: { value: input.layerId } },
+          { key: 'deleted', match: { value: false } },
+        ],
+      },
+    } as never)
+
+    const documents: string[] = []
+    for (const point of found.points ?? []) {
+      const docId = (point.payload ?? {})['doc_id']
+      if (typeof docId !== 'string' || documents.includes(docId)) continue
+      documents.push(docId)
+      if (documents.length >= input.limit) break
+    }
+    return documents
+  }
 }
+
+/**
+ * How many points to ask for per document wanted.
+ *
+ * A guess, and it is allowed to be one: guessing low costs a slightly harsher
+ * score on a layer of very long documents, and guessing high costs one larger
+ * response on a query that runs once per migration. Neither is a correctness
+ * property, which is why this is a constant here rather than a variable in
+ * `docs/config.md` that an operator would have to reason about.
+ */
+const MAX_CHUNKS_PER_DOCUMENT_ASSUMED = 8
 
 /**
  * The parser sidecar.
@@ -1151,6 +1227,24 @@ export async function finishReindexIfDone(
                WHERE d.org_id = l.org_id AND d.layer_id = l.id
                  AND d.deleted_at IS NULL AND d.chunk_count > 0
                  AND d.reindexed_vector IS DISTINCT FROM $3
+            )
+            -- The recall gate, in this statement rather than in front of it.
+            --
+            -- Anywhere else it would be a check the caller performs and then
+            -- acts on, with a window between the two. Here it is a predicate,
+            -- so a reference set written while the check was being scored
+            -- blocks the switch instead of being outrun by it — the same
+            -- argument as the NOT EXISTS above, applied to a different table.
+            --
+            -- No reference set, no gate. That is the documented arrangement
+            -- and not an oversight: the check needs documents an operator
+            -- picked, so a deployment that has not picked any has nothing to
+            -- be checked against, and failing every migration in that case
+            -- would make the feature a way to break reindexing.
+            AND (
+              NOT EXISTS (SELECT 1 FROM reference_queries rq
+                           WHERE rq.org_id = l.org_id AND rq.layer_id = l.id)
+              OR (l.reindex_state -> 'check' ->> 'passed') = 'true'
             )`,
         [orgId, layerId, shadowVector],
       )
@@ -1269,10 +1363,10 @@ export async function finishCopy(
           [orgId, retired],
         )
       }
-      // Out of the copy phase, and straight to complete for a layer with
-      // nothing to re-embed.
+      // Out of the copy phase, and straight to complete for a layer that
+      // nothing is still holding back.
       //
-      // The `NOT EXISTS` is the same predicate `finishReindexIfDone` uses, and
+      // The document half is the same predicate `finishReindexIfDone` uses, and
       // it has to be here as well: that function only ever runs for layers
       // whose documents a pass actually claimed, so a layer with none — one
       // created against a new provider, or an empty one being migrated — sat in
@@ -1280,15 +1374,38 @@ export async function finishCopy(
       // `vector_name` was already right and ingest worked, which is what made
       // it a stuck status report rather than a stuck layer, and reporting a
       // migration as running for good is its own bug.
+      //
+      // The reference-set half is the recall gate reaching the path that skips
+      // the embedding pass. Without it a layer with nothing to re-embed would
+      // complete here, unchecked, while an identical layer holding one document
+      // went through the gate — the same feature applying or not depending on
+      // whether the corpus happened to be empty. `recallOnce` is what moves one
+      // of these afterwards, and it switches through `finishReindexIfDone` like
+      // every other layer does.
+      //
+      // One CTE rather than the three copies of the same EXISTS this replaced.
+      // They had to agree and nothing made them.
       await client.query(
-        `UPDATE layers l
-            SET reindex_state =
-                  CASE WHEN EXISTS (
+        `WITH held AS (
+           SELECT l.id,
+                  EXISTS (
                     SELECT 1 FROM documents d
                      WHERE d.org_id = l.org_id AND d.layer_id = l.id
                        AND d.deleted_at IS NULL AND d.chunk_count > 0
                        AND d.reindexed_vector IS DISTINCT FROM (l.reindex_state ->> 'shadow_vector')
                   )
+                  OR EXISTS (
+                    SELECT 1 FROM reference_queries rq
+                     WHERE rq.org_id = l.org_id AND rq.layer_id = l.id
+                  ) AS waiting
+             FROM layers l
+            WHERE l.org_id = $1
+              AND l.reindex_state ->> 'status' = 'running'
+              AND l.reindex_state ->> 'phase'  = 'copying'
+         )
+         UPDATE layers l
+            SET reindex_state =
+                  CASE WHEN h.waiting
                   THEN jsonb_set(l.reindex_state, '{phase}', '"embedding"')
                   ELSE jsonb_set(
                          jsonb_set(
@@ -1297,24 +1414,18 @@ export async function finishCopy(
                          '{finished_at}', to_jsonb(now()::text))
                   END,
                 -- And the same switch finishReindexIfDone makes, for the same
-                -- reason, on the path that skips it: a layer with nothing to
-                -- re-embed is finished the moment the collection exists, and
-                -- the two columns have to move together or the layer names one
+                -- reason, on the path that skips it: a layer with nothing left
+                -- to do is finished the moment the collection exists, and the
+                -- two columns have to move together or the layer names one
                 -- model and embeds with another. A no-op for a layer created
                 -- against the new provider, which is already on both.
-                vector_name = CASE WHEN EXISTS (
-                    SELECT 1 FROM documents d
-                     WHERE d.org_id = l.org_id AND d.layer_id = l.id
-                       AND d.deleted_at IS NULL AND d.chunk_count > 0
-                       AND d.reindexed_vector IS DISTINCT FROM (l.reindex_state ->> 'shadow_vector')
-                  ) THEN l.vector_name ELSE l.reindex_state ->> 'shadow_vector' END,
-                provider_id = CASE WHEN EXISTS (
-                    SELECT 1 FROM documents d
-                     WHERE d.org_id = l.org_id AND d.layer_id = l.id
-                       AND d.deleted_at IS NULL AND d.chunk_count > 0
-                       AND d.reindexed_vector IS DISTINCT FROM (l.reindex_state ->> 'shadow_vector')
-                  ) THEN l.provider_id ELSE (l.reindex_state ->> 'provider_id')::uuid END
-          WHERE l.org_id = $1
+                vector_name = CASE WHEN h.waiting
+                  THEN l.vector_name ELSE l.reindex_state ->> 'shadow_vector' END,
+                provider_id = CASE WHEN h.waiting
+                  THEN l.provider_id ELSE (l.reindex_state ->> 'provider_id')::uuid END
+           FROM held h
+          WHERE h.id = l.id
+            AND l.org_id = $1
             AND l.reindex_state ->> 'status' = 'running'
             AND l.reindex_state ->> 'phase'  = 'copying'`,
         [orgId],
@@ -1423,6 +1534,153 @@ export async function failReindex(
                   '{error}', to_jsonb($3::text))
           WHERE org_id = $1 AND id = $2 AND reindex_state ->> 'status' = 'running'`,
         [orgId, layerId, error.slice(0, 500)],
+      )
+    },
+    role === undefined ? {} : { role },
+  )
+}
+
+/**
+ * Layers whose reindex has embedded everything and has not been checked.
+ *
+ * Four conditions, and each one is load-bearing:
+ *
+ * - **`status = 'running'` and `phase = 'embedding'`** — not a layer still
+ *   waiting on the collection copy, which has no shadow vectors at all.
+ * - **`NOT EXISTS` over outstanding documents** — the *same* predicate
+ *   `finishReindexIfDone` switches on. A verdict computed while a document was
+ *   outstanding would describe an index the switch is not about to make live.
+ *   The switch re-evaluates it in its own statement, so a document ingested
+ *   between the check and the switch still blocks the switch; this one is
+ *   about not wasting the check.
+ * - **no `check` key yet** — the verdict is written once. Re-checking a layer
+ *   whose numbers are already recorded would let a flapping embedder turn a
+ *   failed migration into a passed one on the next pass.
+ * - **at least one reference query** — a layer without a set has no gate, and
+ *   scoring an empty set averages to zero, which would fail every migration in
+ *   the deployment.
+ *
+ * `expected` is resolved from external ids to document ids here, in SQL,
+ * because the index answers in document ids and the operator wrote external
+ * ones. What does not resolve comes back in `missing` rather than as a shorter
+ * list: a reference set naming a document that is gone is a different problem
+ * from a model that cannot find it, and the two must not produce one number.
+ */
+export async function dueChecks(
+  pool: Pool,
+  limit: number,
+): Promise<readonly RecallTarget[]> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{
+      org_id: string
+      layer_id: string
+      collection: string
+      shadow_vector: string
+      provider_id: string
+      queries: {
+        id: string
+        query: string
+        expected: string[]
+        found: { id: string; external_id: string }[]
+      }[]
+    }>(
+      `SELECT l.org_id, l.id AS layer_id, o.vector_collection AS collection,
+              l.reindex_state ->> 'shadow_vector' AS shadow_vector,
+              l.reindex_state ->> 'provider_id'   AS provider_id,
+              (SELECT json_agg(json_build_object(
+                        'id', rq.id, 'query', rq.query, 'expected', rq.expected,
+                        -- Both ids, because both are needed and for different
+                        -- things: the document id is what the index answers in
+                        -- and the score is computed over, and the external id
+                        -- is what says which entry of the set failed to
+                        -- resolve. Deriving the second from a count instead
+                        -- reports every entry as missing when one is.
+                        --
+                        -- Live documents only, and in this layer only. An
+                        -- external id is unique per layer, so a reference set
+                        -- cannot be made to resolve against a neighbouring
+                        -- layer's document by naming it.
+                        'found', (SELECT coalesce(json_agg(json_build_object(
+                                           'id', d.id, 'external_id', d.external_id)), '[]'::json)
+                                    FROM documents d
+                                   WHERE d.org_id = rq.org_id
+                                     AND d.layer_id = rq.layer_id
+                                     AND d.external_id = ANY (rq.expected)
+                                     AND d.deleted_at IS NULL))
+                      ORDER BY rq.ordinal)
+                 FROM reference_queries rq
+                WHERE rq.org_id = l.org_id AND rq.layer_id = l.id) AS queries
+         FROM layers l
+         JOIN organizations o ON o.id = l.org_id
+        WHERE l.deleted_at IS NULL
+          AND o.deleted_at IS NULL
+          AND l.reindex_state ->> 'status' = 'running'
+          AND l.reindex_state ->> 'phase'  = 'embedding'
+          AND NOT l.reindex_state ? 'check'
+          AND EXISTS (SELECT 1 FROM reference_queries rq
+                       WHERE rq.org_id = l.org_id AND rq.layer_id = l.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM documents d
+             WHERE d.org_id = l.org_id AND d.layer_id = l.id
+               AND d.deleted_at IS NULL AND d.chunk_count > 0
+               AND d.reindexed_vector IS DISTINCT FROM (l.reindex_state ->> 'shadow_vector')
+          )
+        ORDER BY l.id
+        LIMIT $1`,
+      [limit],
+    )
+
+    return rows.map((r) => ({
+      orgId: r.org_id,
+      layerId: r.layer_id,
+      collection: r.collection,
+      shadowVector: r.shadow_vector,
+      providerId: r.provider_id,
+      queries: (r.queries ?? []).map((q) => {
+        const resolved = new Set(q.found.map((f) => f.external_id))
+        return {
+          id: q.id,
+          query: q.query,
+          // Document ids, because that is what the index answers in.
+          expected: q.found.map((f) => f.id),
+          // And the external ids that produced none, named individually. The
+          // operator wrote these strings; telling them the set is stale without
+          // saying which line is the difference between a fix and a re-read.
+          missing: q.expected.filter((e) => !resolved.has(e)),
+        }
+      }),
+    }))
+  })
+}
+
+/** Write the verdict where the switch predicate and the operator both read it. */
+export async function recordCheck(
+  pool: Pool,
+  orgId: string,
+  layerId: string,
+  shadowVector: string,
+  verdict: RecallVerdict,
+  role?: string,
+): Promise<void> {
+  await withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      await client.query(
+        // Guarded on the shadow vector as well as the layer. A verdict computed
+        // for one migration must not land on the next: a second reindex started
+        // while this one was being scored writes a different shadow vector, and
+        // its `check` key would otherwise arrive pre-passed.
+        `UPDATE layers
+            SET reindex_state = jsonb_set(reindex_state, '{check}', $4::jsonb)
+          WHERE org_id = $1 AND id = $2
+            AND reindex_state ->> 'status' = 'running'
+            AND reindex_state ->> 'shadow_vector' = $3`,
+        // Through the core codec, not JSON.stringify of the verdict. The rest
+        // of this column is snake case and the SQL predicate that performs the
+        // switch reads `passed` out of it — a second hand-written shape here is
+        // how the writer and the reader drift apart with nothing failing.
+        [orgId, layerId, shadowVector, JSON.stringify(toCheckJson(verdict))],
       )
     },
     role === undefined ? {} : { role },

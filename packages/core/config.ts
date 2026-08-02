@@ -95,6 +95,14 @@ export interface Config {
   /** The reindex rollback window: how long a superseded collection survives. */
   readonly collectionRetentionDays: number
 
+  /**
+   * The recall a reindex must reach before its layer switches, as a fraction.
+   *
+   * Read from a whole-number percentage. Applies only to a layer that has a
+   * reference query set — there is no gate without one.
+   */
+  readonly reindexMinRecall: number
+
   /** How long a presigned link to a document's bytes stays valid. */
   readonly presignTtl: number
 
@@ -459,6 +467,24 @@ export function loadConfig(env: Env = process.env): Config {
     // most likely to be found wrong. Setting it high costs disk: each retained
     // collection is a full copy of the organization's vectors.
     collectionRetentionDays: r.number('NACRE_COLLECTION_RETENTION_DAYS', 7, { min: 1 }),
+
+    // The floor a reindex's recall check must reach before the layer switches.
+    //
+    // A whole-number percentage rather than a fraction, because this reader
+    // takes integers and `0.8` typed into an environment file is a value two
+    // different parsers would disagree about. Divided here so everything
+    // downstream works in the [0, 1] the arithmetic produces.
+    //
+    // The default is 80 and it gates nothing on its own: a layer with no
+    // reference query set has no check at all, so this applies to deployments
+    // that went and wrote one — which is a deployment asking for a gate.
+    //
+    // 0 is allowed and means measure without blocking. That is arithmetic
+    // rather than a special case for "disabled": every recall is at least 0, so
+    // the comparison passes and the number is still recorded. `min: 1` would be
+    // wrong here for exactly the reason it is right on the retention window
+    // above — there the low value destroys something, here it destroys nothing.
+    reindexMinRecall: r.number('NACRE_REINDEX_MIN_RECALL', 80, { min: 0, max: 100 }) / 100,
 
     // How long a `source_url` outlives the permission check that minted it.
     //

@@ -77,6 +77,7 @@ NACRE_METRICS_TOKEN=                   # unset leaves /metrics open; >= 16 chars
 # ─── audit ───
 NACRE_AUDIT_RETENTION_DAYS=400         # >= 30; the floor is not a tunable
 NACRE_COLLECTION_RETENTION_DAYS=7      # >= 1; the reindex rollback window
+NACRE_REINDEX_MIN_RECALL=80            # 0-100; the recall gate, off without a query set
 NACRE_AUDIT_QUERY_TEXT=false           # true stores query text verbatim
 NACRE_AUDIT_SIEM_WEBHOOK=
 ```
@@ -298,6 +299,43 @@ dropped from disk.
 All three are unurgent and block nothing, so a pass that fails is logged and
 retried an hour later. They fail independently: a refused audit prune does not
 stop token expiry, and neither stops the collection sweep.
+
+### The reindex recall gate
+
+`NACRE_REINDEX_MIN_RECALL` is the recall a migration must reach before its layer
+switches onto the new model, as a whole-number percentage. A fraction would be a
+value two parsers disagree about in an environment file; 80 means 0.8.
+
+**It gates nothing until a layer has a reference query set.** A reindex succeeds
+mechanically whether or not the new model works — every document gets a shadow
+vector, the count reaches zero, `vector_name` moves — so the wrong model name
+behind the right endpoint collapses retrieval with every step reporting success.
+The gate is the only part of the sequence that asks whether the new model can
+still answer. Answering it needs documents someone picked, which is a thing only
+the deployment has, so the set is written through
+`PUT /v1/layers/{id}/reference-queries` and there is no gate before that.
+
+Not agreement with the old model, which would need nothing from anyone and would
+be the wrong measurement: a better model disagrees with the worse one it
+replaces, so a gate on agreement blocks the migrations worth making and passes a
+new model that reproduces the old one's mistakes.
+
+`0` is allowed and means measure without blocking — the number is still recorded
+and still visible on `GET /v1/layers/{id}/reindex`, and every recall clears a
+floor of zero. That is arithmetic rather than a special case, which is why this
+has no minimum where `NACRE_COLLECTION_RETENTION_DAYS` has one: a low value
+there destroys the rollback, and a low value here destroys nothing.
+
+A check that **fails** ends the reindex at `failed` with the numbers recorded.
+The pointer does not move, the layer stays on the model it was already on, and
+the shadow vectors stay in the collection — so the next step is looking at the
+per-query scores rather than starting again. A check that **cannot run**, because
+the embedder is unreachable, is not a failure: no verdict is written and the next
+pass tries again.
+
+There is no metric for it. A gauge would carry one series per layer, and the
+number is read once per migration by someone already polling the reindex
+endpoint that carries it.
 
 Two variables are **refused** rather than ignored, because ignoring them would
 silently overrule a decision about isolation:
