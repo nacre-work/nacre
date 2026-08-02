@@ -1,6 +1,8 @@
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { PostgresLayers } from '@nacre.work/api'
+
 import { createPool, withOrg } from '../../db/client.js'
 import { cachedEffectivePrincipals, MemoryCache, principalsCacheKey } from '../cache.js'
 import { effectivePrincipals } from '../principals.js'
@@ -146,6 +148,65 @@ when('adversarial · revocation under load', () => {
       c.release()
     }
   }
+
+  /**
+   * The gap this file did not cover, and the reason it did not look like a gap.
+   *
+   * Every case above exercises `cachedEffectivePrincipals` directly. All of them
+   * passed while **nothing in the request path called it**: `NACRE_ACL_CACHE_TTL`
+   * was validated at startup and read by nothing, so the API resolved the group
+   * closure from scratch on every request and this suite proved a code path that
+   * did not run. A cache tested and never called is the same shape as a
+   * configuration variable accepted and never read.
+   *
+   * So these two ask the adapter, not the module.
+   */
+  it('the request path consults the cache it is given', async () => {
+    await join()
+    const counting = new MemoryCache()
+    let reads = 0
+    const store = {
+      get: async (key: string) => {
+        reads++
+        return counting.get(key)
+      },
+      set: (key: string, value: string, ttl: number) => counting.set(key, value, ttl),
+    }
+
+    const layers = new PostgresLayers(pool, { vectorsOf: async () => ({}) }, 'nacre_app', {
+      store,
+      ttlSeconds: 60,
+    })
+
+    await layers.list({ orgId: ORG, principal: alice, role: 'member' })
+    await layers.list({ orgId: ORG, principal: alice, role: 'member' })
+
+    // Two requests, two reads. Zero would mean the adapter was constructed with
+    // a cache and resolves without it, which is the state this change fixes and
+    // which every other test in this file would still pass through.
+    expect(reads).toBe(2)
+    expect(counting.size).toBe(1)
+  })
+
+  it('T11 · a revocation is immediate through the adapter, not merely through the module', async () => {
+    await join()
+    const cache = new MemoryCache()
+    const principals = { store: cache, ttlSeconds: 60 }
+    const layers = new PostgresLayers(pool, { vectorsOf: async () => ({}) }, 'nacre_app', principals)
+    const auth = { orgId: ORG, principal: alice, role: 'member' as const }
+
+    const before = await layers.list(auth)
+    expect(before.items.map((l) => l.slug)).toContain('secret')
+
+    // The entry for the version just used is now warm. If the adapter served
+    // from it, this revocation would be invisible for the length of the TTL.
+    await leave()
+
+    const after = await layers.list(auth)
+    expect(after.items.map((l) => l.slug)).not.toContain('secret')
+
+    await join()
+  })
 
   it('a membership change moves groups_version, by trigger', async () => {
     const version = async () =>

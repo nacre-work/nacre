@@ -9,6 +9,7 @@ import {
   protectedResourceMetadata,
   PROTECTED_RESOURCE_PATH,
   Redis,
+  RedisCache,
   Registry,
 } from '@nacre.work/core'
 import { RateLimiter, type LimitPolicy, type Resource } from '@nacre.work/api'
@@ -32,7 +33,15 @@ import { buildServices } from './services.js'
 async function main(): Promise<void> {
   const config = loadConfig()
   const { key, alsoAccept } = loadJwtKeys()
-  const { pool, layers, tools, serviceKeys } = buildServices(config)
+  // The one Redis this process opens, shared by the rate limiter and the
+  // effective-principals cache. Two connections for two uses of the same server
+  // is a connection to leak on shutdown, and `close()` below only knows about
+  // one.
+  const redis = new Redis({ url: config.redisUrl })
+
+  const { pool, layers, tools, serviceKeys } = buildServices(config, {
+    principalsCache: { store: new RedisCache(redis), ttlSeconds: config.aclCacheTtl },
+  })
 
   // The same Redis, the same policies, the same keys the REST surface uses.
   //
@@ -43,7 +52,6 @@ async function main(): Promise<void> {
   // Shared buckets rather than one per surface, deliberately. Separate counters
   // would hand a caller twice the documented allowance for holding two clients,
   // which is the same hole one level up.
-  const redis = new Redis({ url: config.redisUrl })
   const limitPolicies: Record<Resource, LimitPolicy> = {
     search: { limit: config.rateSearchPerMin, windowSeconds: 60 },
     ingest: { limit: config.rateIngestPerHour, windowSeconds: 3600 },

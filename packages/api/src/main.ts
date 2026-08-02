@@ -8,6 +8,7 @@ import {
   loadJwtKeys,
   protectedResourceMetadata,
   Redis,
+  RedisCache,
   Registry,
   S3,
   VectorStore,
@@ -70,6 +71,19 @@ async function main(): Promise<void> {
   // the API waiting on its healthcheck, since before anything connected to it.
   // Rate limiting and Idempotency-Key are what it was declared for.
   const redis = new Redis({ url: config.redisUrl })
+
+  // The effective-principals cache, shared with MCP through Redis so both
+  // surfaces answer from one place. `NACRE_ACL_CACHE_TTL` had been validated at
+  // startup and read by nothing since it was added: the cache existed, was
+  // tested, and was never called, so every request recomputed the transitive
+  // group closure.
+  //
+  // Safe to cache because the key carries `organizations.groups_version`, which
+  // triggers bump on every change to groups, group_members and grants — a
+  // revoked grant is not served stale, the next request simply looks somewhere
+  // else. The TTL bounds memory, not correctness.
+  const principalsCache = { store: new RedisCache(redis), ttlSeconds: config.aclCacheTtl }
+
 
   const limitPolicies: Record<Resource, LimitPolicy> = {
     search: { limit: config.rateSearchPerMin, windowSeconds: 60 },
@@ -186,10 +200,11 @@ async function main(): Promise<void> {
     ...(config.metricsToken === undefined ? {} : { metricsToken: config.metricsToken }),
     idempotency,
     login,
-    auditReader: new PostgresAuditReader(pool, APP_ROLE),
-    reindex: new PostgresReindex(pool, vectors, APP_ROLE),
-    documents: new PostgresDocuments(pool, vectors, APP_ROLE),
+    auditReader: new PostgresAuditReader(pool, APP_ROLE, principalsCache),
+    reindex: new PostgresReindex(pool, vectors, APP_ROLE, principalsCache),
+    documents: new PostgresDocuments(pool, vectors, APP_ROLE, principalsCache),
     search: new NacreSearchService({
+      principalsCache,
       pool,
       vectors,
       embedderFor: HttpEmbedder.pool(),
@@ -211,15 +226,16 @@ async function main(): Promise<void> {
     }),
     ingest: new NacreIngest({
       pool,
+      principalsCache,
       tombstone: vectors,
       ...(objects === undefined ? {} : { objects }),
       role: APP_ROLE,
     }),
     audit: new PostgresAudit(pool, APP_ROLE),
-    jobs: new PostgresJobs(pool, APP_ROLE),
-    layers: new PostgresLayers(pool, vectors, APP_ROLE),
-    workspaces: new PostgresWorkspaces(pool, APP_ROLE),
-    grants: new PostgresGrants(pool, APP_ROLE),
+    jobs: new PostgresJobs(pool, APP_ROLE, principalsCache),
+    layers: new PostgresLayers(pool, vectors, APP_ROLE, principalsCache),
+    workspaces: new PostgresWorkspaces(pool, APP_ROLE, principalsCache),
+    grants: new PostgresGrants(pool, APP_ROLE, principalsCache),
     serviceAccounts: new PostgresServiceAccounts(pool, APP_ROLE),
   })
 

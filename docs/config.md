@@ -129,9 +129,11 @@ deployment takes an afternoon.
 Three combinations parse individually and are refused together, because a
 per-variable check cannot catch them:
 
-- `NACRE_ACL_CACHE_TTL` longer than `NACRE_ACL_PROPAGATION_SLA`. The cache
-  would still be serving a revoked grant after the SLA it promises, while
-  `nacre_acl_propagation_lag_seconds` reported compliance.
+- `NACRE_ACL_CACHE_TTL` longer than `NACRE_ACL_PROPAGATION_SLA`. Not because it
+  would delay a revocation — the effective-principals cache is keyed on the
+  permission epoch, so it cannot — but because a value above the SLA is what
+  someone sets who has read it as "how long a stale permission may live". The
+  TTL bounds memory. The refusal interrupts the misunderstanding.
 - `NACRE_RERANKER_ENABLED=true` with no endpoint set.
 - `NACRE_REFRESH_TOKEN_TTL` no longer than `NACRE_ACCESS_TOKEN_TTL`. A refresh
   token that expires no later than the access token it renews cannot renew
@@ -152,7 +154,6 @@ should know that setting one changes nothing today:
 |---|---|
 | `NACRE_LOG_LEVEL`, `NACRE_LOG_FORMAT` | all logging is structured JSON at one level |
 | `NACRE_AUDIT_QUERY_TEXT` | query text is never written, with or without it |
-| `NACRE_ACL_CACHE_TTL` | the resolver cache is written and not wired in, so every search recomputes the group closure. Safe — it errs towards recomputing — and slower than it should be |
 | `NACRE_PRESIGN_TTL` | nothing hands out a presigned URL yet; `GET /v1/documents/{id}` returns metadata, never a link to the bytes |
 | `NACRE_OAUTH_CIMD_ENABLED`, `NACRE_OAUTH_DCR_ENABLED`, `NACRE_EMA_*` | client registration and EMA are not built |
 | `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |

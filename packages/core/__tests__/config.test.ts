@@ -88,7 +88,10 @@ describe('configuration', () => {
       NACRE_ACL_CACHE_TTL: '120',
       NACRE_ACL_PROPAGATION_SLA: '60',
     })
-    expect(found.join('\n')).toContain('would still be served after the SLA')
+    // The refusal stands; its reason changed when the cache was wired in. It is
+    // keyed on the permission epoch, so it cannot delay a revocation — what a
+    // value above the SLA reveals is that it was read as though it could.
+    expect(found.join('\n')).toContain('does not delay a revocation')
   })
 
   it('refuses a setting that would silently do nothing', () => {

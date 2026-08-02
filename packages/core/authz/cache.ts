@@ -26,6 +26,39 @@ export interface CacheStore {
   set(key: string, value: string, ttlSeconds: number): Promise<void>
 }
 
+/**
+ * The shared implementation, over the Redis this deployment already runs.
+ *
+ * Lives here rather than in `packages/api` because MCP needs the same one, and
+ * two processes caching effective principals under two different key schemes
+ * would give the two surfaces different answers for the same principal — which
+ * is the failure mode `NACRE_RATE_*` had before both surfaces shared a bucket.
+ *
+ * Every method swallows nothing: `cachedEffectivePrincipals` is what decides
+ * that a cache failure falls through to the graph, and it can only decide that
+ * if the failure reaches it.
+ */
+export class RedisCache implements CacheStore {
+  constructor(
+    private readonly redis: {
+      command(...parts: string[]): Promise<string | number | null | unknown[]>
+    },
+  ) {}
+
+  async get(key: string): Promise<string | undefined> {
+    const reply = await this.redis.command('GET', key)
+    return typeof reply === 'string' ? reply : undefined
+  }
+
+  async set(key: string, value: string, ttlSeconds: number): Promise<void> {
+    // EX rather than a separate EXPIRE: two commands leave a window where a
+    // crash between them writes a key that never expires, and this key is
+    // per principal per version — the set of them that never expire is
+    // unbounded.
+    await this.redis.command('SET', key, value, 'EX', String(Math.max(1, Math.floor(ttlSeconds))))
+  }
+}
+
 /** For a single process, and for tests. Redis is the shared implementation. */
 export class MemoryCache implements CacheStore {
   readonly #entries = new Map<string, { value: string; expires: number }>()

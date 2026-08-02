@@ -278,6 +278,23 @@ round trip that puts the worker and the search path against each other.
 A leak nobody thought to write down is still unguarded, and adding a case to
 `test-plan.ts` is how that changes.
 
+The effective-principals cache is wired in. `NACRE_ACL_CACHE_TTL` had been
+validated at startup and read by nothing, and the cache itself was written *and
+tested* — seven cases in `propagation.test.ts` exercising a function no request
+path called, so every request recomputed the transitive group closure and the
+suite proved a code path that did not run. A cache tested and never called is
+the same shape as a variable accepted and never read.
+
+Caching a permission input is safe here for a structural reason rather than a
+temporal one: the key carries `organizations.groups_version`, which triggers bump
+on every change to `groups`, `group_members` and `grants`. A revoked grant is not
+served stale — the next request composes a different key and the old entry is
+never asked for again. Verified against a running database (create a group, add
+a member, remove one, grant, revoke, delete the group: the version moved for
+every one) and pinned by two tests that ask the *adapter* rather than the module.
+The TTL bounds memory, which is why the refusal of a TTL above the propagation
+SLA now says so instead of claiming it delays a revocation.
+
 **Test what you write by running it, not only by testing it.** Twelve of the
 worst defects found so far were each invisible to a green suite and obvious
 within a minute of starting the processes: the worker indexing nothing at all,

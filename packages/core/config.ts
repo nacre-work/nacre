@@ -508,12 +508,24 @@ export function loadConfig(env: Env = process.env): Config {
   }
 
   if (config.aclCacheTtl > config.aclPropagationSla) {
-    // The cache would still be serving a revoked grant after the SLA has
-    // passed, and nacre_acl_propagation_lag_seconds would report compliance.
+    // Kept, and the reason it is kept has changed.
+    //
+    // It used to say a longer TTL would serve a revoked grant past the SLA.
+    // That is not true of the cache that now runs: the key carries
+    // `organizations.groups_version`, which triggers bump on every change to
+    // groups, group_members and grants, so a revoked grant is never served —
+    // the next request composes a different key. The TTL bounds memory.
+    //
+    // What it still catches is an operator who believes otherwise. Setting this
+    // above the SLA is what someone does when they have read it as "how long a
+    // stale permission may live", and a deployment configured on that belief
+    // has a misunderstanding worth interrupting at boot rather than a setting
+    // worth honouring.
     r.problems.push(
       `NACRE_ACL_CACHE_TTL (${config.aclCacheTtl}) is longer than ` +
-        `NACRE_ACL_PROPAGATION_SLA (${config.aclPropagationSla}); a revoked grant ` +
-        'would still be served after the SLA it promises.',
+        `NACRE_ACL_PROPAGATION_SLA (${config.aclPropagationSla}). The cache is keyed ` +
+        'on the permission epoch, so this does not delay a revocation — but a value ' +
+        'above the SLA usually means it was read as though it did.',
     )
   }
 
