@@ -247,6 +247,15 @@ is searching now.
 Not built: OAuth dynamic client registration and CIMD, multipart upload on
 ingest, and the recall check against a reference query set on a reindex.
 
+Multipart is bigger than its one line suggests, and `docs/api.md` now says so.
+**No binary document can be ingested today except by URL:** `Parser.parse` takes
+`{ content?: string, url?: string }` and has no bytes argument, `source_ref` is
+`text`, and `content_hash` is over the parsed text. So it is a change to the
+parser port, the sidecar's contract, the ingest signature and the hash — and it
+implies that binary upload requires `NACRE_S3_*`, because that is the only place
+bytes can live. Deciding that deliberately is cheaper than discovering it
+halfway through the handler.
+
 **Object storage is wired.** `NACRE_S3_*` spent its whole life in
 `docs/config.md` and in the `full` Compose profile while `loadConfig` did not
 mention it, so a wrong endpoint or a missing credential was silent and MinIO sat

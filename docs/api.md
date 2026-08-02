@@ -8,7 +8,7 @@ body, a path, or a header.
 Implemented:
 
 ```
-POST   /v1/documents                 ingest (json; multipart not built)
+POST   /v1/documents                 ingest (json; multipart not built — see below)
 GET    /v1/documents/{id}
 PATCH  /v1/documents/{id}            metadata only; no re-embed
 DELETE /v1/documents/{id}            tombstone
@@ -310,3 +310,26 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 Not implemented, and the document describes them anyway because they are the
 contract they will be built to: OAuth discovery and dynamic client
 registration, and multipart upload on `POST /v1/documents`.
+
+### What multipart upload actually costs
+
+Worth stating, because the one-line "not built" above reads like a missing
+handler and it is not. **No binary document can be ingested today except by
+URL**, and the reason is that the whole ingest path carries text:
+
+- `Parser.parse` takes `{ content?: string, url?: string }`. There is no bytes
+  argument, so the sidecar that exists to turn bytes into text can only be
+  handed a string or an address to fetch.
+- `documents.source_ref` is `text`. Without object storage there is nowhere in
+  the schema to put bytes at all.
+- `content_hash` is computed over the parsed text, so idempotency is defined on
+  the text rather than on what was uploaded.
+
+So it is an end-to-end change — the parser port, the sidecar's contract, the
+ingest signature, and the hash — not a branch in the request handler. And it
+implies a rule worth deciding deliberately rather than discovering: **binary
+upload requires `NACRE_S3_*`**, because that is the only place bytes can live.
+
+The half that would work today without any of that is a multipart envelope
+around a *text* document, which is the half nobody needs: JSON already carries
+text.
