@@ -22,10 +22,10 @@ afterEach(() => {
 
 function capture(): void {
   const on = process.on.bind(process)
-  vi.spyOn(process, 'on').mockImplementation((event: string, fn: never) => {
-    listeners.push([event, fn])
+  vi.spyOn(process, 'on').mockImplementation(((event: string | symbol, fn: never) => {
+    listeners.push([String(event), fn])
     return on(event as never, fn)
-  })
+  }) as typeof process.on)
 }
 
 describe('installGuards', () => {

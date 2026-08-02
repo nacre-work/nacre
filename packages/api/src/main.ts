@@ -184,6 +184,10 @@ async function main(): Promise<void> {
       serviceKeys: new PostgresServiceKeys(pool, APP_ROLE),
     },
     metrics: registry,
+    // The request path writes what it measures. Four of these were registered
+    // and never written, so /metrics served zeros forever — which reads as
+    // health rather than as absence.
+    observe: metrics,
     ready,
     maxBodyBytes: config.maxDocumentBytes,
     limits,

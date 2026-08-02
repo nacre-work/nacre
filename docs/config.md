@@ -181,21 +181,19 @@ packaging one — see [licensing.md](./licensing.md).
 Required metrics:
 
 ```
-nacre_acl_propagation_lag_seconds{org}     # target < 60. Emitted.
-nacre_documents_total{org,status}          # emitted
-nacre_tombstones_pending_total{org}        # emitted; climbing means GC is losing
-```
-
-Registered and **not yet emitted** — the series exist and stay at zero, which is
-worse than absent because it reads as health. Wiring them is outstanding work,
-not a decision:
-
-```
-nacre_search_duration_seconds{quantile}    # target p95 < 200ms at 10M vectors
-nacre_search_results_total{layer}
+nacre_acl_propagation_lag_seconds{org}     # target < 60
+nacre_documents_total{org,status}
+nacre_tombstones_pending_total{org}        # climbing means GC is losing
+nacre_search_duration_seconds              # target p95 < 200ms at 10M vectors
+nacre_search_results_total
 nacre_acl_denials_total{reason}
-nacre_ingest_duration_seconds{stage}
+nacre_ingest_duration_seconds{stage}       # the accept stage; the worker has no registry
 ```
+
+`nacre_acl_denials_total` counts what a denial looks like on each surface. On
+ingest that is a refused layer. On search there is no `403` to count, by design
+— invariant 4 makes an invisible layer indistinguishable from an absent one —
+so zero permitted results is the denial, under `reason="search_empty"`.
 
 Specified and not registered at all, both tied to reindexing, which is not
 built: `nacre_reindex_progress_ratio{layer}`, `nacre_vectors_total{org}`.

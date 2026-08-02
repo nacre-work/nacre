@@ -627,6 +627,60 @@ describe('the administrative surface', () => {
     })
   })
 
+  it('the request path writes the metrics it was only registering', async () => {
+    // Four were registered and never written, so /metrics served
+    // `nacre_search_results_total 0` and `nacre_acl_denials_total 0` forever
+    // and the two histograms rendered no series at all. A number pinned at zero
+    // reads as health, so the p95 target in docs/config.md was not merely unmet
+    // — it was unmeasurable and looked fine.
+    const seen: string[] = []
+    const record =
+      (name: string) =>
+      (a?: unknown, b?: unknown): void => {
+        seen.push(`${name}:${JSON.stringify(a)}:${JSON.stringify(b)}`)
+      }
+
+    const probe = createApi({
+      verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE },
+      observe: {
+        searchDuration: { observe: record('searchDuration') },
+        searchResults: { inc: record('searchResults') },
+        aclDenials: { inc: record('aclDenials') },
+        ingestDuration: { observe: record('ingestDuration') },
+      },
+      documents: { read: async () => undefined },
+      search: {
+        search: async () => [
+          { chunk_id: 'c', doc_id: 'd', layer: 'l', title: null, score: 1, text: 't' },
+        ],
+      },
+      ingest: { queue: async () => undefined, remove: async () => false },
+      audit: { write: async () => {} },
+    })
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve))
+    const at = `http://127.0.0.1:${(probe.address() as AddressInfo).port}`
+
+    await fetch(`${at}/v1/search`, {
+      method: 'POST',
+      headers: await auth(),
+      body: JSON.stringify({ query: 'x' }),
+    })
+    await fetch(`${at}/v1/documents`, {
+      method: 'POST',
+      headers: await auth(),
+      body: JSON.stringify({ layer: 'nope', external_id: 'e', content: 'c' }),
+    })
+    await new Promise<void>((resolve) => probe.close(() => resolve()))
+
+    expect(seen.filter((s) => s.startsWith('searchDuration')).length).toBe(1)
+    expect(seen).toContain('searchResults:{}:1')
+    expect(seen.filter((s) => s.startsWith('ingestDuration')).length).toBe(1)
+    // The ingest above was refused, and a refusal is what a denial counter is
+    // for. On search there is no 403 to count by design, so zero permitted
+    // results is the denial — which is why the counter sat at zero.
+    expect(seen).toContain('aclDenials:{"reason":"ingest_layer"}:undefined')
+  })
+
   it('the admin routes need a token', async () => {
     for (const path of ['/v1/layers', '/v1/grants', `/v1/jobs/${DOC}`]) {
       expect((await fetch(`${base}${path}`)).status, path).toBe(401)
