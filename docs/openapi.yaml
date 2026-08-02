@@ -154,7 +154,17 @@ components:
         title:      { type: [string, 'null'] }
         score:      { type: number }
         text:       { type: string }
-        source_url: { type: string, description: 'Presigned, TTL from NACRE_PRESIGN_TTL. Not implemented yet.' }
+        source_url:
+          type: string
+          description: >
+            Not present on a search result, and deliberately. A presigned URL is
+            a bearer capability that outlives the permission check which minted
+            it, and answering a question about relevance by issuing one per hit
+            would hand out ten capabilities where the caller wanted an ordering
+            — most of them never followed, every one of them valid for
+            NACRE_PRESIGN_TTL. Ask for the document: GET /v1/documents/{id}
+            carries source_url when the deployment stores bytes in object
+            storage.
         metadata:   { type: object, additionalProperties: true, description: 'The document''s metadata, as supplied on ingest.' }
     Workspace:
       type: object
@@ -206,6 +216,19 @@ components:
           description: >
             What the document was tagged with, and what `filters` reads back.
             `{}` for a document that was never tagged.
+        source_url:
+          type: string
+          format: uri
+          description: >
+            A presigned link to the original bytes, valid for
+            NACRE_PRESIGN_TTL. Present only where the deployment stores document
+            bytes in object storage and this document's source is one of them —
+            absent for an inline document, for one ingested by URL, and for
+            every deployment without a bucket. It is minted after the permission
+            check and only for a caller holding `read`, and it is a bearer
+            capability from that point on: whoever holds it fetches the object
+            without a Nacre credential, and a revocation inside the window does
+            not reach it.
     DocumentMetadata:
       type: object
       description: >

@@ -319,6 +319,26 @@ truncated, or two records of one long query would not match each other, which is
 the comparison an investigation makes. `latency_ms` went in beside it: the
 number was already measured for the histogram and never reached the journal.
 
+`GET /v1/documents/{id}` carries a presigned `source_url` where a deployment
+stores bytes in object storage, and `NACRE_PRESIGN_TTL` is finally read. Minted
+after the permission check and only for a caller holding `read`, so rule 6 keeps
+it away from `write` alone — and absent entirely for an inline document, for one
+ingested by URL, and for a deployment with no bucket.
+
+The search response does **not** carry one, which is a deliberate deviation from
+what `docs/mcp.md` and the OpenAPI document said, raised rather than absorbed. A
+presigned URL is a bearer capability that outlives the check which minted it, so
+answering a question about relevance by issuing one per hit hands out ten
+capabilities where the caller wanted an ordering, most never followed. Both
+documents now say so.
+
+Every property of the signing was checked against a real MinIO, including the
+ones that must fail: no signature, one character of the signature flipped, the
+link repointed at another key, the expiry rewritten in the URL, and the window
+elapsed — 403 for all five, 200 for the untouched link. The first attempt at
+that check reported a pass on a tampered signature; the tamper had not applied,
+because the regex assumed a one-character signature and it is sixty-four.
+
 **Test what you write by running it, not only by testing it.** Twelve of the
 worst defects found so far were each invisible to a green suite and obvious
 within a minute of starting the processes: the worker indexing nothing at all,
