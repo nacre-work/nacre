@@ -15,6 +15,10 @@
  * carrying a credential.
  */
 
+import { createHash, createPrivateKey, createPublicKey, type KeyObject } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
 export interface Config {
   readonly env: 'development' | 'production'
   readonly canonicalUrl: string
@@ -138,28 +142,228 @@ export interface Config {
  */
 export interface JwtKeys {
   /** Everything issued from now on is signed with this. */
-  readonly key: Uint8Array
+  readonly signing: KeyObject | Uint8Array
+  /**
+   * What a token is verified against.
+   *
+   * The same value as `signing` for a shared secret, and the **public half**
+   * for Ed25519 — which is the whole reason the asymmetric mode is worth
+   * having. A process that only verifies never needs the private key, so the
+   * blast radius of reading a container's environment stops at "can check
+   * tokens" instead of "can mint them".
+   */
+  readonly verification: KeyObject | Uint8Array
   /** Accepted on verification, never used to sign. Empty outside a rotation. */
-  readonly alsoAccept: readonly Uint8Array[]
+  readonly alsoAccept: readonly (KeyObject | Uint8Array)[]
+  /**
+   * Pinned, and passed to `jwtVerify` rather than left to the token's header.
+   *
+   * A verifier that accepts whatever `alg` a token claims is the classic JWT
+   * mistake. `jose` already refuses the worst shapes — `none`, and an HMAC
+   * algorithm against an asymmetric `KeyObject` — but "the library happens to
+   * stop it" is not the same statement as "this deployment accepts exactly one
+   * algorithm", and only the second one survives a dependency upgrade.
+   */
+  readonly algorithm: 'HS256' | 'EdDSA'
+  /**
+   * The current key's `kid`, put in the header of every token this process
+   * signs so a JWKS consumer can select rather than try each. Absent for HMAC,
+   * where it would name nothing anyone could fetch.
+   */
+  readonly keyId?: string
+  /**
+   * What `/.well-known/jwks.json` serves. Absent for HMAC.
+   *
+   * A shared secret has no publishable half, and serving one would be serving
+   * the signing key — so this is optional rather than always present, and the
+   * endpoint exists only when there is something safe to put in it.
+   *
+   * The retired key is in here too during a rotation, for the same reason it is
+   * still accepted: there are tokens in the wild signed with it, and a verifier
+   * outside this process has to be able to check them. Assembled here rather
+   * than by each caller, because a JWKS missing the previous key is a rotation
+   * that breaks every external verifier at the restart.
+   */
+  readonly jwks?: readonly Record<string, unknown>[]
+}
+
+/** A stable identifier for a key, from its public bytes. Never from the secret. */
+function fingerprint(der: Buffer): string {
+  return createHash('sha256').update(der).digest('base64url').slice(0, 16)
+}
+
+/**
+ * One public key as a JWK.
+ *
+ * `kid` is derived from the public bytes rather than configured, so it is
+ * stable across restarts and identical in every process without anyone having
+ * to keep two settings in step.
+ */
+function publicJwk(key: KeyObject): Record<string, unknown> {
+  const der = key.export({ type: 'spki', format: 'der' })
+  return {
+    ...(key.export({ format: 'jwk' }) as Record<string, unknown>),
+    kid: fingerprint(der),
+    use: 'sig',
+    alg: 'EdDSA',
+  }
+}
+
+/**
+ * A short, non-reversible name for whichever key is in use, for a startup line.
+ *
+ * An operator needs to know *which* key a process loaded when two environments
+ * disagree — and nobody needs the key itself in a log. `api` and `mcp` each had
+ * their own copy of this, taking a `Uint8Array`; two copies of a function that
+ * hashes a secret is two chances for one of them to log the wrong thing.
+ *
+ * For an asymmetric key it is a digest of the **public** half, which means the
+ * value printed by a process holding the private key matches the one printed by
+ * a process holding only the public key. That is precisely the comparison this
+ * exists to let someone make.
+ */
+export function keyFingerprint(key: KeyObject | Uint8Array): string {
+  if (key instanceof Uint8Array) {
+    return `sha256:${createHash('sha256').update(key).digest('hex').slice(0, 12)}`
+  }
+  const der = (key.type === 'private' ? createPublicKey(key) : key).export({
+    type: 'spki',
+    format: 'der',
+  })
+  return `ed25519:${fingerprint(der)}`
+}
+
+/**
+ * One Ed25519 key from a `file://` reference, plus its public half.
+ *
+ * `file://` only, and that is the whole of the scheme support. The variable is
+ * named `_REF` because `docs/config.md` requires secrets to be references into
+ * a secret store rather than values, and every platform that has one — Docker
+ * secrets, Kubernetes, systemd credentials — presents it as a file. A `vault://`
+ * or `aws-kms://` scheme would be a network client on the startup path, which
+ * is a different feature with different failure modes.
+ */
+function loadEd25519(ref: string, variable: string): { private: KeyObject; public: KeyObject } {
+  let path: string
+  try {
+    const url = new URL(ref)
+    if (url.protocol !== 'file:') {
+      throw new Error(`scheme ${url.protocol} is not supported`)
+    }
+    path = fileURLToPath(url)
+  } catch (cause) {
+    throw new ConfigError([
+      `${variable} is not a file:// URL: ${String(cause)}. ` +
+        'It names a file holding a PEM private key, for example ' +
+        'file:///run/secrets/jwt_ed25519.',
+    ])
+  }
+
+  let pem: string
+  try {
+    pem = readFileSync(path, 'utf8')
+  } catch (cause) {
+    throw new ConfigError([
+      `${variable} names ${path}, which cannot be read: ${String(cause)}.`,
+    ])
+  }
+
+  let key: KeyObject
+  try {
+    key = createPrivateKey(pem)
+  } catch (cause) {
+    throw new ConfigError([
+      `${variable} names ${path}, which is not a PEM private key: ${String(cause)}.`,
+    ])
+  }
+
+  if (key.asymmetricKeyType !== 'ed25519') {
+    // One algorithm, refused rather than adapted. RSA needs a size check and a
+    // padding choice, and EC needs a curve-to-algorithm mapping — each a place
+    // to be wrong about something a token's signature depends on. Ed25519 has
+    // no parameters, and it is what `docs/config.md` has named in its example
+    // since the variable was written.
+    throw new ConfigError([
+      `${variable} names a ${String(key.asymmetricKeyType)} key. Only Ed25519 is ` +
+        'accepted: it has no parameters to get wrong, and it is what the example ' +
+        'in docs/config.md names. Generate one with ' +
+        '`openssl genpkey -algorithm ed25519 -out jwt_ed25519.pem`.',
+    ])
+  }
+
+  return { private: key, public: createPublicKey(key) }
 }
 
 export function loadJwtKeys(env: NodeJS.ProcessEnv = process.env): JwtKeys {
-  // Development uses a symmetric secret. Production is meant to load an Ed25519
-  // key through NACRE_JWT_PRIVATE_KEY_REF; until that lands, refusing is the
-  // honest behaviour — a hardcoded fallback here would be a signing key anyone
-  // reading the source can forge tokens with.
   const secret = env.NACRE_JWT_SECRET
+  const ref = env.NACRE_JWT_PRIVATE_KEY_REF
+
+  if (secret !== undefined && secret !== '' && ref !== undefined && ref !== '') {
+    // Refused rather than resolved by precedence. Whichever one this picked, the
+    // other would be configured, apparently in use, and silently ignored — and
+    // the operator would find out when the tokens they expected to be Ed25519
+    // turned out to be HMAC, or the other way round.
+    throw new ConfigError([
+      'NACRE_JWT_SECRET and NACRE_JWT_PRIVATE_KEY_REF are both set. They are two ' +
+        'answers to "what signs a token" and there is no order of precedence ' +
+        'worth inventing. Set one.',
+    ])
+  }
+
+  if (ref !== undefined && ref !== '') {
+    const current = loadEd25519(ref, 'NACRE_JWT_PRIVATE_KEY_REF')
+    const der = current.public.export({ type: 'spki', format: 'der' })
+
+    const previousRef = env.NACRE_JWT_PREVIOUS_KEY_REF
+    const previous =
+      previousRef === undefined || previousRef === ''
+        ? undefined
+        : loadEd25519(previousRef, 'NACRE_JWT_PREVIOUS_KEY_REF')
+
+    if (
+      previous !== undefined &&
+      previous.public.export({ type: 'spki', format: 'der' }).equals(der)
+    ) {
+      // The same refusal the symmetric path makes, for the same reason: this is
+      // what an operator does when they mean to rotate and copy the wrong path,
+      // and it leaves an installation that believes it has rotated and has not.
+      throw new ConfigError([
+        'NACRE_JWT_PREVIOUS_KEY_REF names the same key as NACRE_JWT_PRIVATE_KEY_REF. ' +
+          'That is not a rotation: it accepts one key twice. Point ' +
+          'NACRE_JWT_PRIVATE_KEY_REF at the new key and NACRE_JWT_PREVIOUS_KEY_REF ' +
+          'at the one it replaces.',
+      ])
+    }
+
+    return {
+      signing: current.private,
+      verification: current.public,
+      alsoAccept: previous === undefined ? [] : [previous.public],
+      algorithm: 'EdDSA',
+      keyId: fingerprint(der),
+      jwks: [
+        publicJwk(current.public),
+        ...(previous === undefined ? [] : [publicJwk(previous.public)]),
+      ],
+    }
+  }
+
+  // A symmetric secret is still supported and is still the default. It is what
+  // a laptop and a Compose file want, and refusing it would make the asymmetric
+  // path mandatory for a product whose first run is `docker compose up`.
   if (secret === undefined || secret.length < 32) {
     throw new ConfigError([
       'NACRE_JWT_SECRET is not set, or is shorter than 32 bytes. ' +
-        'Asymmetric keys through NACRE_JWT_PRIVATE_KEY_REF are not implemented yet; ' +
-        'until they are, this is required and there is no default.',
+        'Set it, or point NACRE_JWT_PRIVATE_KEY_REF at an Ed25519 private key. ' +
+        'There is no default: a signing key in the source is one anybody reading ' +
+        'the source can forge tokens with.',
     ])
   }
 
   const previous = env.NACRE_JWT_SECRET_PREVIOUS
   if (previous === undefined || previous === '') {
-    return { key: new TextEncoder().encode(secret), alsoAccept: [] }
+    const key = new TextEncoder().encode(secret)
+    return { signing: key, verification: key, alsoAccept: [], algorithm: 'HS256' }
   }
 
   if (previous.length < 32) {
@@ -181,9 +385,12 @@ export function loadJwtKeys(env: NodeJS.ProcessEnv = process.env): JwtKeys {
     ])
   }
 
+  const key = new TextEncoder().encode(secret)
   return {
-    key: new TextEncoder().encode(secret),
+    signing: key,
+    verification: key,
     alsoAccept: [new TextEncoder().encode(previous)],
+    algorithm: 'HS256',
   }
 }
 

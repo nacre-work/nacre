@@ -421,6 +421,32 @@ elapsed — 403 for all five, 200 for the untouched link. The first attempt at
 that check reported a pass on a tampered signature; the tamper had not applied,
 because the regex assumed a one-character signature and it is sixty-four.
 
+**Tokens can be signed with an Ed25519 key.** `NACRE_JWT_PRIVATE_KEY_REF` was in
+`docs/config.md` from the beginning, read by nothing, with `loadJwtKeys`'s own
+comment saying "until that lands". What it buys is that **the key which verifies
+is not the key which signs**: with a shared secret every process that can check
+a token can also mint one, and reading a container's environment gets an
+attacker from "can check tokens" to "can act as any administrator in any
+organization". The public half is published at `/.well-known/jwks.json`, which
+`404`s on a secret-based deployment — a shared secret has no publishable half,
+and an endpoint that produced one would be publishing the signing key.
+
+`file://` only, and Ed25519 only. Every platform with a secret store presents
+one as a file, and a `vault://` scheme would put a network client on the startup
+path; RSA needs a size and a padding choice and EC a curve mapping, while
+Ed25519 has no parameters to be wrong about. Both refusals are at startup, by
+name. Setting a secret and a key ref together is refused too: two answers to
+"what signs a token", and resolving it by precedence leaves the other one
+configured, apparently in use, and ignored.
+
+The verification algorithm is pinned rather than taken from the token header.
+That changes nothing observable today and the check confirmed it — `jose`
+already refuses an HS256 token offered against an asymmetric `KeyObject`, and
+the forgery was tried three ways against a running server with the pin removed
+and refused every time. It is there because "the library happens to stop it" is
+not the same statement as "this deployment accepts one algorithm", and only the
+second survives a dependency upgrade.
+
 `init` no longer prints a password that does not work. The upsert has always
 kept an existing hash — a re-run must not let whoever can run the command lock
 out the person who did — but the output did not know that, so a second run

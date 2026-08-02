@@ -29,6 +29,21 @@ export interface VerifyOptions {
    * the path every invalid token takes. Two is the number a rotation needs.
    */
   readonly alsoAccept?: readonly (KeyObject | Uint8Array)[]
+  /**
+   * The one algorithm this deployment accepts, passed to `jwtVerify` rather
+   * than taken from the token's header.
+   *
+   * A verifier that trusts the header's `alg` is the classic JWT mistake, and
+   * the mixed case is where it bites: with an Ed25519 public key configured, a
+   * token claiming `HS256` invites the library to treat those public bytes as
+   * an HMAC secret — and the public key is published at
+   * `/.well-known/jwks.json`. `jose` refuses that shape on its own, and pinning
+   * says so here rather than relying on it continuing to.
+   *
+   * Optional so a caller constructing this by hand cannot be broken by the
+   * field appearing; absent means HS256, which is what every such caller means.
+   */
+  readonly algorithms?: readonly string[]
   readonly issuer: string
   readonly audience: string
   /**
@@ -146,6 +161,7 @@ export async function authenticate(
   for (const key of [options.key, ...(options.alsoAccept ?? [])]) {
     try {
       const verified = await jwtVerify<NacreClaims>(bearer, key, {
+        algorithms: [...(options.algorithms ?? ['HS256'])],
         issuer: options.issuer,
         audience: options.audience,
       })

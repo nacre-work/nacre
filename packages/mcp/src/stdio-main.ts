@@ -30,7 +30,7 @@ async function main(): Promise<void> {
     format: config.logFormat,
     write: (_level, line) => process.stderr.write(`${line}\n`),
   })
-  const { key, alsoAccept } = loadJwtKeys()
+  const jwt = loadJwtKeys()
 
   const serviceKey = process.env.NACRE_SERVICE_KEY
   if (serviceKey === undefined || serviceKey.length === 0) {
@@ -48,8 +48,9 @@ async function main(): Promise<void> {
       // meant to outlive a session — a token from `init` expires in an hour,
       // which is not a credential for an agent that runs for a week.
       verify: {
-        key,
-        ...(alsoAccept.length === 0 ? {} : { alsoAccept }),
+        key: jwt.verification,
+        ...(jwt.alsoAccept.length === 0 ? {} : { alsoAccept: jwt.alsoAccept }),
+        algorithms: [jwt.algorithm],
         issuer: config.jwtIssuer,
         audience: config.jwtAudience,
         serviceKeys,

@@ -39,6 +39,17 @@ export interface ProtectedResourceMetadata {
 /** The path RFC 9728 fixes, and the one the `WWW-Authenticate` header names. */
 export const PROTECTED_RESOURCE_PATH = '/.well-known/oauth-protected-resource'
 
+/**
+ * Where the public signing key is published — RFC 7517, and the conventional
+ * path every JWT library looks at first.
+ *
+ * Served only by a deployment that signs asymmetrically. With
+ * `NACRE_JWT_SECRET` there is nothing to publish and this answers `404`: a
+ * shared secret has no public half, and an endpoint that produced one anyway
+ * would be handing out the key that mints tokens.
+ */
+export const JWKS_PATH = '/.well-known/jwks.json'
+
 export function protectedResourceMetadata(input: {
   /** `NACRE_CANONICAL_URL`. Baked into the issuer of every token ever minted. */
   readonly canonicalUrl: string
