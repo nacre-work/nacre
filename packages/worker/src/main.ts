@@ -17,11 +17,14 @@ import {
   claimReindexable,
   claimStale,
   claimStranded,
+  dueCollections,
   failReindex,
   finishCopy,
   finishReindexIfDone,
-  markReindexed,
+  forgetCollection,
   HttpParser,
+  isLiveCollection,
+  markReindexed,
   PostgresDocumentStore,
   pruneAuditEvents,
   pruneExpiredTokens,
@@ -35,6 +38,7 @@ import { pruneOnce } from './prune.js'
 import { reapOnce } from './reap.js'
 import { reindexOnce } from './reindex.js'
 import { retagOnce } from './retag.js'
+import { retireOnce } from './retire.js'
 
 /**
  * The indexing worker.
@@ -90,6 +94,11 @@ const REAP_EVERY_MS = 60_000
 // rows in three weeks without ever holding a lock long enough to be noticed.
 const PRUNE_BATCH = 2000
 const PRUNE_EVERY_MS = 3_600_000
+
+// On the prune clock, and small. A deployment accumulates one of these per
+// model migration, so the backlog is measured in single digits and a batch that
+// could work through a million rows would only make a bad delete faster.
+const RETIRE_BATCH = 8
 
 // Reindexing a layer onto a different model. Small batches on a slow clock,
 // because every document in one is an embedding round trip against the model
@@ -300,6 +309,32 @@ async function main(): Promise<void> {
           attempts: document.attempts,
           outcome,
         }),
+      )
+    },
+  }
+
+  const retirePorts = {
+    due: (days: number, limit: number) => dueCollections(pool, days, limit),
+    isLive: (name: string) => isLiveCollection(pool, name),
+    // Tolerates one that is already gone, which is the state a pass that
+    // dropped and then failed to forget leaves behind.
+    drop: async (name: string) => {
+      await store.dropCollection(name)
+    },
+    forget: (collection: { orgId: string; name: string }) => forgetCollection(pool, collection),
+    onDropped: (collection: { orgId: string; name: string }) => {
+      console.log(JSON.stringify({ msg: 'collection dropped', collection: collection.name }))
+    },
+    onRevived: (collection: { orgId: string; name: string }) => {
+      // Not an error. The pointer went back to it, which is the cheap rollback,
+      // and the row is stale rather than the collection being wrong.
+      console.log(
+        JSON.stringify({ msg: 'collection is live again, not dropping', collection: collection.name }),
+      )
+    },
+    onError: (collection: { orgId: string; name: string }, error: unknown) => {
+      console.error(
+        JSON.stringify({ msg: 'collection drop failed', collection: collection.name, error: String(error) }),
       )
     },
   }
@@ -661,6 +696,23 @@ async function main(): Promise<void> {
         const pruned = await pruneOnce(prunePorts, PRUNE_BATCH, config.auditRetentionDays)
         if (pruned.tokens > 0 || pruned.audit > 0) {
           console.log(JSON.stringify({ msg: 'pruned', ...pruned }))
+        }
+
+        // Same clock, and deliberately not the same function: retention here is
+        // a rollback window over data in Qdrant, and the tables above are rows
+        // in Postgres. A failure to reach Qdrant must not look like a failed
+        // audit prune, and its own errors are per collection inside retireOnce.
+        try {
+          const retired = await retireOnce(
+            retirePorts,
+            config.collectionRetentionDays,
+            RETIRE_BATCH,
+          )
+          if (retired.dropped > 0 || retired.revived > 0 || retired.failed > 0) {
+            console.log(JSON.stringify({ msg: 'collections retired', ...retired }))
+          }
+        } catch (error) {
+          console.error(JSON.stringify({ msg: 'retire pass failed', error: String(error) }))
         }
       }
 

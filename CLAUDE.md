@@ -222,9 +222,22 @@ path in `WWW-Authenticate` since the transport existed and nothing served it.
 deliberately never pointed at Nacre: this is a resource server, and a client
 sent here for a token endpoint would find nothing.
 
+The collection a reindex replaces is reclaimed. Every migration used to leave a
+full copy of the organization's vectors behind forever, and the runbook's manual
+cleanup was the wrong rule as well as a manual one: "every collection Qdrant has
+that nothing points at" describes the *target* of a copy still running, so
+running it mid-migration deleted the migration. Candidates come from a table
+written by the same transaction that moves the pointer, and the pointer is
+checked again before each delete — so a collection rolled back onto is dropped
+from the list rather than from disk. `NACRE_COLLECTION_RETENTION_DAYS` is the
+rollback window, not a tidiness delay: moving the pointer back is the cheap
+rollback and it works only while the old collection exists.
+
 Not built: OAuth dynamic client registration and CIMD, multipart upload on
 ingest, the recall check against a reference query set on a reindex, and
-dropping the old vector after a rollback window.
+dropping the old *named vector* from a collection after a rollback window —
+which is a different job from dropping the collection, and the cheaper half is
+the one still missing.
 
 **Object storage is not wired, and `NACRE_S3_*` is not even validated** —
 `loadConfig` does not mention it, so a wrong endpoint or a missing credential is

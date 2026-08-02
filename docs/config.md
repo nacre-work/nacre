@@ -76,6 +76,7 @@ NACRE_METRICS_TOKEN=                   # unset leaves /metrics open; >= 16 chars
 
 # ─── audit ───
 NACRE_AUDIT_RETENTION_DAYS=400         # >= 30; the floor is not a tunable
+NACRE_COLLECTION_RETENTION_DAYS=7      # >= 1; the reindex rollback window
 NACRE_AUDIT_QUERY_TEXT=false           # true stores query text verbatim
 NACRE_AUDIT_SIEM_WEBHOOK=
 ```
@@ -249,9 +250,25 @@ Two tables are swept by the worker, hourly, in bounded batches:
   is refused at startup**, not clamped: a deployment configured for a week of
   audit history should not come up believing it has one.
 
-Neither is urgent and neither blocks anything, so a pass that fails is logged
-and retried an hour later. They fail independently: a refused audit prune does
-not stop token expiry.
+On the same clock, and third, the worker reclaims **the collections a model
+migration replaced**, past `NACRE_COLLECTION_RETENTION_DAYS`. Each one is a full
+copy of an organization's vectors, and until this existed nothing removed them —
+disk that grew with every migration.
+
+The window is a rollback window, not a tidiness delay: the cheap rollback in a
+reindex is moving `organizations.vector_collection` back, and that works for
+exactly as long as the collection it points back to still exists.
+
+Candidates come from a table written by the same transaction that moves the
+pointer, never from "every collection Qdrant has that nothing points at" — a
+copy still being built matches that description, and deleting it would destroy
+the migration in progress. Before each delete the pointer is checked again, so a
+collection an operator has rolled back onto is dropped from the list instead of
+dropped from disk.
+
+All three are unurgent and block nothing, so a pass that fails is logged and
+retried an hour later. They fail independently: a refused audit prune does not
+stop token expiry, and neither stops the collection sweep.
 
 Two variables are **refused** rather than ignored, because ignoring them would
 silently overrule a decision about isolation:
@@ -375,6 +392,7 @@ Required metrics:
 nacre_acl_propagation_lag_seconds{org}     # target < 60
 nacre_documents_total{org,status}
 nacre_tombstones_pending_total{org}        # climbing means GC is losing
+nacre_collections_retired_total{org}       # superseded collections still on disk
 nacre_search_duration_seconds              # target p95 < 200ms at 10M vectors
 nacre_search_results_total
 nacre_acl_denials_total{reason}

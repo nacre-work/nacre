@@ -833,6 +833,78 @@ export async function pruneAuditEvents(
 }
 
 /**
+ * Superseded collections whose rollback window has closed.
+ *
+ * Cross-tenant, oldest first, so a backlog drains in the order it accumulated
+ * rather than by whichever organization sorts first.
+ *
+ * The interval is built from a bound integer rather than interpolated: the
+ * value comes from `NACRE_COLLECTION_RETENTION_DAYS`, which `loadConfig`
+ * already refuses below 1, and `make_interval` takes it as a parameter so there
+ * is no string concatenation anywhere near it.
+ */
+export async function dueCollections(
+  pool: Pool,
+  retentionDays: number,
+  limit: number,
+): Promise<readonly { orgId: string; name: string }[]> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{ org_id: string; name: string }>(
+      `SELECT org_id, name
+         FROM retired_collections
+        WHERE retired_at < now() - make_interval(days => $1::int)
+        ORDER BY retired_at
+        LIMIT $2`,
+      [retentionDays, limit],
+    )
+    return rows.map((r) => ({ orgId: r.org_id, name: r.name }))
+  })
+}
+
+/**
+ * Whether any organization is pointing at this collection right now.
+ *
+ * Asked before every delete, and it is D2 in the rollback runbook rather than
+ * distrust of the table: moving the pointer back to a superseded collection is
+ * the cheap rollback, and it leaves the row here untouched. Without this the
+ * sweep would delete the collection an operator had just rolled back onto.
+ *
+ * Deleted organizations count. Their collection is still theirs until the
+ * organization is purged, and reclaiming disk from one is a different job with
+ * a different confirmation.
+ */
+export async function isLiveCollection(pool: Pool, name: string): Promise<boolean> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{ live: string }>(
+      'SELECT 1 AS live FROM organizations WHERE vector_collection = $1 LIMIT 1',
+      [name],
+    )
+    return rows.length > 0
+  })
+}
+
+export async function forgetCollection(
+  pool: Pool,
+  collection: { orgId: string; name: string },
+): Promise<void> {
+  await acrossOrganizations(pool, async (client) => {
+    await client.query('DELETE FROM retired_collections WHERE org_id = $1 AND name = $2', [
+      collection.orgId,
+      collection.name,
+    ])
+  })
+}
+
+export async function countRetiredCollections(pool: Pool): Promise<number> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{ n: string }>(
+      'SELECT count(*) AS n FROM retired_collections',
+    )
+    return Number(rows[0]?.n ?? 0)
+  })
+}
+
+/**
  * Documents in a reindexing layer that do not yet carry the shadow vector.
  *
  * Cross-tenant, under the worker's BYPASSRLS role, so `org_id` comes back and
@@ -1052,10 +1124,33 @@ export async function finishCopy(
     pool,
     orgId,
     async (client) => {
+      const { rows: before } = await client.query<{ vector_collection: string }>(
+        'SELECT vector_collection FROM organizations WHERE id = $1',
+        [orgId],
+      )
+
       await client.query('UPDATE organizations SET vector_collection = $2 WHERE id = $1', [
         orgId,
         collection,
       ])
+
+      // In the same transaction as the pointer move, and that ordering is the
+      // safety property rather than a tidiness one. A row that exists without
+      // the pointer having moved names a collection something is still
+      // searching, and the sweep would delete it. The reverse — the pointer
+      // moving without a row — leaks a collection, which is the state that
+      // existed before this table.
+      //
+      // The old name, not the new one. A migration that somehow lands on the
+      // name it started from retires nothing.
+      const retired = before[0]?.vector_collection
+      if (retired !== undefined && retired !== collection) {
+        await client.query(
+          `INSERT INTO retired_collections (org_id, name) VALUES ($1, $2)
+             ON CONFLICT (org_id, name) DO NOTHING`,
+          [orgId, retired],
+        )
+      }
       // Out of the copy phase, and straight to complete for a layer with
       // nothing to re-embed.
       //
