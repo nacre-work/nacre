@@ -61,6 +61,26 @@ that is the trade for a credential that does not expire on its own.
 
 ### `search`
 
+## Limits and metrics
+
+The rate limits are the API's, shared: `search` spends
+`NACRE_RATE_SEARCH_PER_MIN`, `ingest_document` and `delete_document` spend
+`NACRE_RATE_INGEST_PER_HOUR`, and the counters are the same keys the REST
+surface increments. Shared rather than per-surface on purpose — separate buckets
+would give a caller twice the documented allowance for holding two clients.
+`list_layers` is unlimited: one indexed query, and refusing it breaks discovery.
+
+A refusal is JSON-RPC `-32003` over HTTP `429`, with the RFC 9331 `RateLimit-*`
+headers. It is checked **after** the catalog lookup, so a tool the caller may
+not see answers the same way as one that does not exist — a `429` on an unknown
+tool would confirm it exists.
+
+This process serves `/metrics`: `nacre_mcp_tool_duration_seconds{tool}`,
+`nacre_mcp_tool_calls_total{tool,result}`, and `nacre_acl_denials_total{reason}`
+with the same reason strings the REST surface uses, so the two add up on one
+dashboard. Zero results from `search` is what a denial looks like here —
+invariant I4 leaves no `403` to count.
+
 **The description is generated dynamically** from the layer catalog visible to
 the caller. A generic "searches the knowledge base" pushes the model to fall
 back on web search instead of querying the index.

@@ -154,6 +154,24 @@ should know that setting one changes nothing today:
 | `NACRE_OAUTH_*`, `NACRE_EMA_*` | OAuth discovery, DCR and EMA are not built |
 | `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
 
+### The limits apply to MCP too
+
+`NACRE_RATE_SEARCH_PER_MIN` and `NACRE_RATE_INGEST_PER_HOUR` used to apply to
+REST only, so the MCP transport was unlimited: a client that had spent its
+search budget could point at the MCP port and carry on. Two doors into one
+authorization service, one of them with a lock.
+
+They share buckets rather than counting per surface, deliberately — separate
+counters would hand a caller twice the documented allowance for holding two
+clients, which is the same hole one level up. `search` spends the search budget;
+`ingest_document` and `delete_document` spend the ingest one. `list_layers` is
+unlimited: it is one indexed query, and refusing it breaks discovery for a
+client that is otherwise behaving.
+
+A refusal is JSON-RPC error `-32003` with HTTP `429` and the RFC 9331
+`RateLimit-*` headers, checked after the catalog lookup so that an unknown tool
+stays indistinguishable from one the caller may not see.
+
 ### The login endpoint is limited twice
 
 Once per email address and once per client, because either alone leaves a hole.
@@ -310,6 +328,23 @@ so zero permitted results is the denial, under `reason="search_empty"`.
 
 Specified and not registered at all, both tied to reindexing, which is not
 built: `nacre_reindex_progress_ratio{layer}`, `nacre_vectors_total{org}`.
+
+**The MCP server has its own `/metrics`**, on its own port, with its own
+registry:
+
+```
+nacre_mcp_tool_duration_seconds{tool}
+nacre_mcp_tool_calls_total{tool,result}
+nacre_acl_denials_total{reason}           # the same name and reasons as REST
+```
+
+Not the database gauges: those are one process's job, and a second exporter
+publishing the same series would be two answers to one question. It honours
+`NACRE_METRICS_TOKEN` on the same terms as the API's endpoint.
+
+It recorded nothing at all before — no registry, no endpoint — so everything
+above was true of REST and silent on the transport the product is actually for.
+An agent's search was not slow or failing; it was absent.
 
 The worker emits no metrics of any kind — it serves no port. Its only external
 signal is the propagation gauge above, which the API exports.

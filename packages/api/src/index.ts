@@ -48,5 +48,12 @@ export {
   prefixOf,
 } from './service-keys.js'
 export type { ServiceAccount, ServiceAccounts, ServiceKeyResolver } from './service-keys.js'
+// The limiter, so the MCP transport can share it rather than growing a second
+// one. Two limiters would be two buckets, and a caller out of budget on one
+// surface would simply use the other — which is what happened before this was
+// exported: NACRE_RATE_* applied to REST only.
+export { limitHeaders, RateLimiter } from './limits.js'
+export type { LimitDecision, LimitPolicy, Resource } from './limits.js'
+export { clientSource } from './source.js'
 export { Login } from './login.js'
 export type { LoginDeps, LoginRequest, Tokens } from './login.js'
