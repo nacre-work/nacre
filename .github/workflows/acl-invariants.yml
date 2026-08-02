@@ -111,6 +111,14 @@ jobs:
       - name: I5 · a deleted document leaves the index
         run: pnpm test:acl:group "I5 · the delete path"
 
+      # `layers` on a search is the caller restricting themselves, and it is a
+      # `must` on top of the permission `should` rather than a replacement for
+      # it. Its own step because the failure mode is a widening: compose the two
+      # wrong and a query parameter reaches a layer no grant does — I2 broken by
+      # something that reads like a convenience feature.
+      - name: I2 · a caller restriction only ever removes results
+        run: pnpm test:acl:group "narrowing"
+
       # Fast on a pull request, exhaustive at night. The nightly run is where a
       # rare interaction between deny and inheritance actually gets found.
       - name: property · resolve vs the reference implementation

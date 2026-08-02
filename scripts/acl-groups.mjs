@@ -32,6 +32,12 @@ export const ACL_GROUPS = [
   // of most permission systems, so it is the rule someone eventually corrects.
   { selector: 'permission implication', title: 'rule 6 · write does not imply read' },
   { selector: 'I5 · the delete path', title: 'I5 · a deleted document leaves the index' },
+  // The caller's own `layers` restriction, which sits on top of the permission
+  // filter rather than replacing it. It belongs in the required job because the
+  // failure mode is a widening: get the composition wrong and a query parameter
+  // reaches a layer no grant does, which is invariant I2 broken by a feature
+  // that looks like a convenience.
+  { selector: 'narrowing', title: 'I2 · a caller restriction only ever removes results' },
 ]
 
 /** The property run is its own step with its own run count; not a group. */
