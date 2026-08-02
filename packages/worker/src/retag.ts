@@ -15,7 +15,8 @@
 
 export interface StaleDocument {
   readonly orgId: string
-  readonly orgSlug: string
+  /** The organization's collection, not derived from its slug. */
+  readonly collection: string
   readonly documentId: string
   readonly layerId: string
 }
@@ -27,7 +28,7 @@ export interface RetagPorts {
   tagsFor(orgId: string, layerId: string): Promise<{ tags: readonly string[]; version: number }>
   /** Rewrite the payload tags of every point of a document. */
   retag(input: {
-    orgSlug: string
+    collection: string
     documentId: string
     aclTags: readonly string[]
     aclVersion: number
@@ -78,7 +79,7 @@ export async function retagOnce(ports: RetagPorts, batch: number, concurrency: n
         // caught up while its points still carry a revoked grant.
         const acl = await ports.tagsFor(document.orgId, document.layerId)
         await ports.retag({
-          orgSlug: document.orgSlug,
+          collection: document.collection,
           documentId: document.documentId,
           aclTags: acl.tags,
           aclVersion: acl.version,

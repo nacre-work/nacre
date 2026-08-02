@@ -159,7 +159,7 @@ when('saturation · top_k returns k permitted results', () => {
   it('T9 · 20 layers, access to 1, top_k=10 returns exactly 10 from that layer', async () => {
     const hits = await store.search({
       orgId: ORG,
-      orgSlug: SLUG,
+      collection: collectionName(SLUG),
       plan: planFor([ALLOWED]),
       branches: branches(0.3),
       topK: 10,
@@ -176,7 +176,7 @@ when('saturation · top_k returns k permitted results', () => {
     for (const topK of [1, 5, 25]) {
       const hits = await store.search({
         orgId: ORG,
-        orgSlug: SLUG,
+        collection: collectionName(SLUG),
         plan: planFor([ALLOWED]),
         branches: branches(0.7),
         topK,
@@ -189,7 +189,7 @@ when('saturation · top_k returns k permitted results', () => {
   it('T10 · a 5-document layer with top_k=10 returns 5, with no topping up', async () => {
     const hits = await store.search({
       orgId: ORG,
-      orgSlug: SLUG,
+      collection: collectionName(SLUG),
       plan: planFor([SMALL]),
       branches: branches(0.5),
       topK: 10,
@@ -206,7 +206,7 @@ when('saturation · top_k returns k permitted results', () => {
     // that depending on GC timing would leave open.
     const hits = await store.search({
       orgId: ORG,
-      orgSlug: SLUG,
+      collection: collectionName(SLUG),
       plan: planFor([ALLOWED]),
       branches: branches(0.99),
       topK: 30,
@@ -218,7 +218,7 @@ when('saturation · top_k returns k permitted results', () => {
   it('the tenant check passes on results that came through the filter', async () => {
     const hits = await store.search({
       orgId: ORG,
-      orgSlug: SLUG,
+      collection: collectionName(SLUG),
       plan: planFor([ALLOWED]),
       branches: branches(0.2),
       topK: 5,
@@ -230,7 +230,7 @@ when('saturation · top_k returns k permitted results', () => {
     const target = uuid('d0c', 3)
     const hits = await store.search({
       orgId: ORG,
-      orgSlug: SLUG,
+      collection: collectionName(SLUG),
       plan: { kind: 'scoped', layers: [], extraDocs: [target], deniedDocs: [] },
       branches: branches(0.4),
       topK: 10,
@@ -244,7 +244,7 @@ when('saturation · top_k returns k permitted results', () => {
     const denied = uuid('d0c', 1)
     const hits = await store.search({
       orgId: ORG,
-      orgSlug: SLUG,
+      collection: collectionName(SLUG),
       plan: { kind: 'scoped', layers: [ALLOWED], extraDocs: [], deniedDocs: [denied] },
       branches: branches(0.6),
       topK: 30,

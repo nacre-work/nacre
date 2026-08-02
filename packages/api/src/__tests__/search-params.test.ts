@@ -180,6 +180,25 @@ describe('NacreSearchService options', () => {
     ({
       connect: async () => ({
         query: async (text: string) => {
+          if (text.includes('vector_collection FROM organizations')) {
+            return { rows: [{ vector_collection: 'org_acme' }] }
+          }
+          // The layer catalogue the branch grouping is built from: one layer on
+          // one provider, which is the ordinary single-model shape.
+          if (text.includes('JOIN embedding_providers')) {
+            return {
+              rows: [
+                {
+                  id: LAYER,
+                  vector_name: 'v_test',
+                  provider_id: 'provider-1',
+                  endpoint: 'http://embedder.invalid',
+                  model: 'test',
+                  dimensions: 2,
+                },
+              ],
+            }
+          }
           if (text.includes('FROM layers WHERE org_id = $1 AND slug = ANY')) {
             return { rows: layerLookup.map((id) => ({ id })) }
           }
@@ -221,9 +240,7 @@ describe('NacreSearchService options', () => {
           return [{ id: 'chunk-1', score: 0.9, payload: { org_id: ORG } }]
         },
       },
-      embedder: { embed: async () => [[0.1, 0.2]] },
-      orgSlug: async () => 'acme',
-      vectorName: 'v_test',
+      embedderFor: () => ({ embed: async () => [[0.1, 0.2]] }),
     } as never)
 
   const context = { orgId: ORG, role: 'member', principal: { type: 'user', id: 'alice' } } as never

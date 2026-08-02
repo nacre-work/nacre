@@ -126,9 +126,7 @@ when('baseline · the search path', () => {
     new NacreSearchService({
       pool,
       vectors: vectors as never,
-      embedder,
-      orgSlug: async (orgId) => (orgId === A ? 'sp-a' : orgId === B ? 'sp-b' : undefined),
-      vectorName: 'v',
+      embedderFor: () => embedder,
       role: AS_APP,
     })
 

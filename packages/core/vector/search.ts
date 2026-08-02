@@ -10,7 +10,17 @@ export interface VectorStoreOptions {
 
 export interface SearchRequest {
   readonly orgId: string
-  readonly orgSlug: string
+  /**
+   * The organization's collection, read from `organizations.vector_collection`.
+   *
+   * Not derived from the slug. It was, everywhere, and the column was written
+   * once at `init` and read by nothing — so a reindex that moved the pointer
+   * moved a pointer no query followed, and the copy it had just finished sat
+   * unused while search carried on against the old collection. The name is a
+   * value the database owns; deriving it in six places is what let the two
+   * disagree silently.
+   */
+  readonly collection: string
   /** What the caller may reach. `none` is not accepted — see buildFilter. */
   readonly plan: QueryablePlan
   readonly branches: readonly Branch[]
@@ -57,10 +67,18 @@ export class VectorStore {
     )
   }
 
-  async ensureCollection(orgSlug: string, vectorName: string, size: number): Promise<void> {
+  /**
+   * Create an organization's first collection, if it is not there.
+   *
+   * `collectionName(orgSlug)` is the *initial* name and only that. Once a
+   * reindex has rebuilt the collection the organization's name no longer
+   * derives from its slug, which is why every other method here takes the
+   * collection rather than working it out.
+   */
+  async ensureCollection(orgSlug: string, vectorName: string, size: number): Promise<string> {
     const name = collectionName(orgSlug)
     const existing = await this.#client.getCollections()
-    if (existing.collections.some((c) => c.name === name)) return
+    if (existing.collections.some((c) => c.name === name)) return name
 
     await this.#client.createCollection(name, collectionConfig(vectorName, size) as never)
 
@@ -73,6 +91,8 @@ export class VectorStore {
         wait: true,
       })
     }
+
+    return name
   }
 
   /**
@@ -88,8 +108,8 @@ export class VectorStore {
    * is tombstoned in Postgres but not here stays searchable until a background
    * job gets to it. That window is exactly what invariant I5 forbids.
    */
-  async tombstone(orgSlug: string, documentId: string): Promise<void> {
-    await this.#client.setPayload(collectionName(orgSlug), {
+  async tombstone(collection: string, documentId: string): Promise<void> {
+    await this.#client.setPayload(collection, {
       wait: true,
       payload: { deleted: true },
       filter: { must: [{ key: 'doc_id', match: { value: documentId } }] },
@@ -213,7 +233,7 @@ export class VectorStore {
       limit: request.topK,
     })
 
-    const result = await this.#client.query(collectionName(request.orgSlug), query as never)
+    const result = await this.#client.query(request.collection, query as never)
 
     return result.points.map((p) => ({
       id: String(p.id),

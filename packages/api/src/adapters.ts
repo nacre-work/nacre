@@ -14,6 +14,7 @@ import {
   vectorName,
   withOrg,
   type Hit,
+  type QueryablePlan,
   type ReindexState,
 } from '@nacre.work/core'
 import { createHash } from 'node:crypto'
@@ -140,10 +141,19 @@ export class PostgresDocuments implements Documents {
 export interface SearchDeps {
   readonly pool: Pool
   readonly vectors: VectorStore
-  readonly embedder: Embedder
-  /** Resolved per organization; the collection name is derived from it. */
-  readonly orgSlug: (orgId: string) => Promise<string | undefined>
-  readonly vectorName: string
+  /**
+   * The query embedder for a given provider.
+   *
+   * Per provider and not one for the whole process. `NACRE_EMBEDDING_MODEL`
+   * used to decide both the named vector a search looked in and the model the
+   * query was embedded with, for every layer in every organization — so a layer
+   * created against a second provider was silently unsearchable: its points
+   * carry `v_small_v2_768` and the query went to `v_bge_m3_1024`, which matches
+   * nothing and raises nothing. `embedding_providers` has had an `org_id`
+   * column and a documented "NULL = global default" since the first migration;
+   * the search path was the half that never honoured it.
+   */
+  readonly embedderFor: (provider: EmbeddingProvider) => Embedder
   readonly role?: string
   /** Absent means reranking is off, which is what the `minimal` profile is. */
   readonly reranker?: Reranker
@@ -156,6 +166,21 @@ export interface SearchDeps {
   readonly onRerankFailed?: (error: unknown) => void
 }
 
+/** What a layer needs embedded with, and where. */
+export interface EmbeddingProvider {
+  readonly id: string
+  readonly endpoint: string
+  readonly model: string
+  readonly dimensions: number
+}
+
+/** One dense branch's worth of the organization: a model and the layers on it. */
+interface ModelGroup {
+  readonly vectorName: string
+  readonly provider: EmbeddingProvider
+  readonly layerIds: readonly string[]
+}
+
 export class NacreSearchService implements SearchService {
   constructor(private readonly deps: SearchDeps) {}
 
@@ -165,17 +190,23 @@ export class NacreSearchService implements SearchService {
     topK: number,
     options: SearchOptions = {},
   ): Promise<readonly SearchHit[]> {
-    const slug = await this.deps.orgSlug(auth.orgId)
-    if (slug === undefined) {
-      // The token names an organization that is not there. Rule I3: a
-      // permission that cannot be evaluated denies.
-      return []
-    }
-
-    const plan = await withOrg(
+    const context = await withOrg(
       this.deps.pool,
       auth.orgId,
       async (client) => {
+        // The collection, from the column that owns it. Read in the transaction
+        // the plan needs anyway rather than through a cache: a reindex moves
+        // this pointer, and a cached one means the API keeps searching the
+        // collection the worker has stopped writing to. That failure returns
+        // results, just increasingly stale ones, which is the kind nobody
+        // notices.
+        const { rows: orgs } = await client.query<{ vector_collection: string }>(
+          'SELECT vector_collection FROM organizations WHERE id = $1 AND deleted_at IS NULL',
+          [auth.orgId],
+        )
+        const collection = orgs[0]?.vector_collection
+        if (collection === undefined) return undefined
+
         const graph = await PostgresGroupGraph.load(client, auth.orgId)
         const principals = effectivePrincipals(auth.principal, graph)
         const grants = await loadGrants(client, auth.orgId, principals)
@@ -184,10 +215,41 @@ export class NacreSearchService implements SearchService {
           auth.orgId,
           grants.filter((g) => g.scope.type === 'document').map((g) => g.scope.id),
         )
-        return resolve({ orgId: auth.orgId, role: auth.role, principals, grants, tree }, 'read')
+        const plan = resolve(
+          { orgId: auth.orgId, role: auth.role, principals, grants, tree },
+          'read',
+        )
+
+        // Every live layer with the model it is on. Small — an installation
+        // runs tens of layers per organization, not thousands — and it is what
+        // decides how many branches the query has.
+        const { rows: layers } = await client.query<{
+          id: string
+          vector_name: string
+          provider_id: string
+          endpoint: string
+          model: string
+          dimensions: number
+        }>(
+          `SELECT l.id, l.vector_name, p.id AS provider_id, p.endpoint, p.model, p.dimensions
+             FROM layers l
+             JOIN embedding_providers p ON p.id = l.provider_id
+            WHERE l.org_id = $1 AND l.deleted_at IS NULL`,
+          [auth.orgId],
+        )
+
+        return { collection, plan, layers }
       },
       this.deps.role === undefined ? {} : { role: this.deps.role },
     )
+
+    if (context === undefined) {
+      // The token names an organization that is not there. Rule I3: a
+      // permission that cannot be evaluated denies.
+      return []
+    }
+
+    const { collection, plan } = context
 
     // No access at all. Returning early rather than querying is not an
     // optimization — buildFilter refuses this plan, and it refuses it because
@@ -236,17 +298,47 @@ export class NacreSearchService implements SearchService {
       narrow = { layers: permitted }
     }
 
-    const [vector] = await this.deps.embedder.embed([query])
-    if (vector === undefined) throw new Error('the embedder returned no vector for the query')
+    // One branch per model actually in scope.
+    //
+    // Almost always exactly one: an organization runs a single embedding model
+    // and every layer is on it. Two while a reindex is part-way through, and
+    // two for as long as an operator keeps layers on different providers.
+    // Zero means the organization has no layers, or none the caller can reach,
+    // and there is nothing to ask the index.
+    const groups = this.groupsInScope(context.layers, plan, narrow)
+    if (groups.length === 0) return []
+
+    const branches = await Promise.all(
+      groups.map(async (group) => {
+        const [vector] = await this.deps.embedderFor(group.provider).embed([query])
+        if (vector === undefined) {
+          throw new Error(`the embedder for ${group.provider.model} returned no vector for the query`)
+        }
+        return {
+          kind: 'dense' as const,
+          using: group.vectorName,
+          vector,
+          // Confined to the layers on this model. A reindexed layer keeps its
+          // old vector until the collection is rebuilt without it, so without
+          // this it would match the other model's branch too and fusion would
+          // rank it above everything for no reason but having been migrated.
+          //
+          // Only when there is more than one group: with a single model this
+          // clause is every layer in the organization, which is a longer filter
+          // that removes nothing.
+          ...(groups.length > 1 ? { onlyLayers: group.layerIds } : {}),
+        }
+      }),
+    )
 
     // Off unless the deployment configured a reranker and the caller left it on.
     const reranking = this.deps.reranker !== undefined && options.rerank !== false
 
     const hits = await this.deps.vectors.search({
       orgId: auth.orgId,
-      orgSlug: slug,
+      collection,
       plan,
-      branches: [{ kind: 'dense', using: this.deps.vectorName, vector }],
+      branches,
       // Without a reranker this is passed through uncorrected: asking for more
       // and trimming would be a post-filter that also costs more.
       //
@@ -273,6 +365,61 @@ export class NacreSearchService implements SearchService {
     // Last, because reranking scores the query against the text. Dropping it
     // earlier would rerank against nothing.
     return options.includeContent === false ? ranked.map((hit) => ({ ...hit, text: '' })) : ranked
+  }
+
+  /**
+   * The organization's layers, grouped by the model they are indexed with.
+   *
+   * Restricted first to what this search can actually reach — the permission
+   * plan, then the caller's own `layers` narrowing — so a query never embeds
+   * against a provider whose layers contribute nothing. That is not only a
+   * saving: an embedding endpoint that is down would otherwise fail a search
+   * over layers that have no connection to it.
+   *
+   * A plan carrying `extraDocs` keeps every group. Documents granted
+   * individually can sit in any layer, including one the caller reaches no
+   * other way, so dropping a group here would answer empty where the correct
+   * answer is "the documents you were granted".
+   */
+  private groupsInScope(
+    layers: readonly {
+      id: string
+      vector_name: string
+      provider_id: string
+      endpoint: string
+      model: string
+      dimensions: number
+    }[],
+    plan: QueryablePlan,
+    narrow: { layers: readonly string[] } | undefined,
+  ): readonly ModelGroup[] {
+    const reachable = layers.filter((l) => {
+      if (narrow !== undefined && !narrow.layers.includes(l.id)) return false
+      if (plan.kind === 'all') return true
+      if (plan.extraDocs.length > 0) return true
+      return plan.layers.includes(l.id)
+    })
+
+    const byVector = new Map<string, { provider: EmbeddingProvider; layerIds: string[] }>()
+    for (const layer of reachable) {
+      const group = byVector.get(layer.vector_name) ?? {
+        provider: {
+          id: layer.provider_id,
+          endpoint: layer.endpoint,
+          model: layer.model,
+          dimensions: layer.dimensions,
+        },
+        layerIds: [],
+      }
+      group.layerIds.push(layer.id)
+      byVector.set(layer.vector_name, group)
+    }
+
+    return [...byVector].map(([vectorName, group]) => ({
+      vectorName,
+      provider: group.provider,
+      layerIds: group.layerIds,
+    }))
   }
 
   /**
@@ -489,6 +636,30 @@ export class HttpEmbedder implements Embedder {
     private readonly timeoutMs = 15_000,
   ) {}
 
+  /**
+   * One embedder per provider, built once and reused.
+   *
+   * Keyed on the provider's id, so an operator who edits an endpoint has to
+   * restart — which is true of every other piece of configuration here, and the
+   * alternative is a cache that has to be invalidated from a table nothing
+   * watches.
+   */
+  static pool(timeoutMs?: number): (provider: EmbeddingProvider) => Embedder {
+    const embedders = new Map<string, HttpEmbedder>()
+    return (provider) => {
+      const cached = embedders.get(provider.id)
+      if (cached !== undefined) return cached
+      const embedder = new HttpEmbedder(
+        provider.endpoint,
+        provider.model,
+        provider.dimensions,
+        ...(timeoutMs === undefined ? [] : ([timeoutMs] as const)),
+      )
+      embedders.set(provider.id, embedder)
+      return embedder
+    }
+  }
+
   async embed(texts: readonly string[]): Promise<readonly (readonly number[])[]> {
     if (texts.length === 0) return []
 
@@ -548,13 +719,11 @@ export interface IngestDeps {
    * would let a later change reach the index without a plan.
    */
   readonly tombstone: DocumentTombstone
-  /** Resolved per organization; the collection name is derived from it. */
-  readonly orgSlug: (orgId: string) => Promise<string | undefined>
   readonly role?: string
 }
 
 export interface DocumentTombstone {
-  tombstone(orgSlug: string, documentId: string): Promise<void>
+  tombstone(collection: string, documentId: string): Promise<void>
 }
 
 export class NacreIngest implements Ingest {
@@ -654,16 +823,21 @@ export class NacreIngest implements Ingest {
   async remove(auth: AuthContext, documentId: string): Promise<boolean> {
     if (!/^[0-9a-f-]{36}$/i.test(documentId)) return false
 
-    const slug = await this.deps.orgSlug(auth.orgId)
-    // The token names an organization that is not there. Refusing rather than
-    // deleting only in Postgres: a tombstone we cannot mirror into the index is
-    // a document that stays searchable while the API reports it gone.
-    if (slug === undefined) return false
-
     return withOrg(
       this.pool,
       auth.orgId,
       async (client) => {
+        // The collection, from the column that owns it, inside the same
+        // transaction as the permission check. Refusing rather than deleting
+        // only in Postgres: a tombstone we cannot mirror into the index is a
+        // document that stays searchable while the API reports it gone.
+        const { rows: orgs } = await client.query<{ vector_collection: string }>(
+          'SELECT vector_collection FROM organizations WHERE id = $1 AND deleted_at IS NULL',
+          [auth.orgId],
+        )
+        const collection = orgs[0]?.vector_collection
+        if (collection === undefined) return false
+
         const graph = await PostgresGroupGraph.load(client, auth.orgId)
         const principals = effectivePrincipals(auth.principal, graph)
         const grants = await loadGrants(client, auth.orgId, principals)
@@ -704,7 +878,7 @@ export class NacreIngest implements Ingest {
         // which purges rather than repairs. Index-first fails the other way: the
         // points are marked, the row is not, the caller sees an error and
         // retries, and in the meantime the document is already invisible.
-        await this.deps.tombstone.tombstone(slug, documentId)
+        await this.deps.tombstone.tombstone(collection, documentId)
 
         // A tombstone, not a delete, on this side too. Physical removal of the
         // points is the collector's job, and `deleted_at` is what puts the
@@ -831,6 +1005,18 @@ interface LayerRow {
 export class PostgresLayers implements Layers {
   constructor(
     private readonly pool: Pool,
+    /**
+     * Only to ask which named vectors the organization's collection has.
+     *
+     * A layer is created against a provider, and the provider decides which
+     * named vector the layer's points go into. Qdrant fixes that set when the
+     * collection is created and has no way to extend it, so a layer on a
+     * provider the collection has no slot for is a layer whose every document
+     * fails in the worker with `Not existing vector name` — after the API has
+     * answered 202 and the row says `pending`. Checking here is what turns that
+     * into a collection rebuild instead.
+     */
+    private readonly vectors: { vectorsOf(collection: string): Promise<Record<string, number>> },
     private readonly role?: string,
   ) {}
 
@@ -960,6 +1146,47 @@ export class PostgresLayers implements Layers {
         // Request` and would return nothing even if it did not.
         const vector = vectorName(provider.model, provider.dimensions)
 
+        // Does the collection have room for this model?
+        //
+        // Usually yes: `init` creates the collection and the global provider
+        // from the same configuration, so every layer lands on the slot that is
+        // already there. An operator who adds a second provider is the case
+        // this exists for — `embedding_providers` has carried an `org_id` and a
+        // documented "NULL = global default" since the first migration, and a
+        // layer created against an organization's own provider used to accept
+        // documents and fail every one of them, forever, with the API reporting
+        // `queued` throughout.
+        const { rows: orgs } = await client.query<{ vector_collection: string }>(
+          'SELECT vector_collection FROM organizations WHERE id = $1 AND deleted_at IS NULL',
+          [auth.orgId],
+        )
+        const collection = orgs[0]?.vector_collection
+        if (collection === undefined) return { kind: 'denied' }
+
+        const present = await this.vectors.vectorsOf(collection)
+        // A copy in flight if the slot is missing. The layer is created either
+        // way — it is a real layer with a real provider — and the worker holds
+        // its documents at `pending` until the collection that can hold them
+        // exists. See `claimNext`.
+        //
+        // Reusing the reindex's own state rather than inventing a second
+        // mechanism: this *is* the copy phase of a reindex, with no documents
+        // to re-embed afterwards, so `finishCopy` and `finishReindexIfDone`
+        // close it out with nothing added.
+        const state =
+          vector in present
+            ? null
+            : toStateJson({
+                status: 'running',
+                phase: 'copying',
+                shadowVector: vector,
+                providerId: provider.id,
+                startedAt: new Date().toISOString(),
+                total: 0,
+                done: 0,
+                failed: 0,
+              })
+
         const { rows } = await client.query<{
           id: string
           slug: string
@@ -968,11 +1195,11 @@ export class PostgresLayers implements Layers {
           description: string | null
           created_at: Date
         }>(
-          `INSERT INTO layers (org_id, workspace_id, slug, name, provider_id, vector_name)
-           VALUES ($1,$2,$3,$4,$5,$6)
+          `INSERT INTO layers (org_id, workspace_id, slug, name, provider_id, vector_name, reindex_state)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
            ON CONFLICT DO NOTHING
            RETURNING id, slug, name, workspace_id, description, created_at`,
-          [auth.orgId, input.workspaceId, input.slug, input.name, provider.id, vector],
+          [auth.orgId, input.workspaceId, input.slug, input.name, provider.id, vector, state],
         )
 
         const row = rows[0]

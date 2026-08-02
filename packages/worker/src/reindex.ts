@@ -31,7 +31,8 @@
 
 export interface ReindexTarget {
   readonly orgId: string
-  readonly orgSlug: string
+  /** The organization's collection, not derived from its slug. */
+  readonly collection: string
   readonly layerId: string
   readonly documentId: string
   readonly shadowVector: string
@@ -51,7 +52,7 @@ export interface ReindexPorts {
   embed(providerId: string, texts: readonly string[]): Promise<readonly (readonly number[])[]>
   /** Add the named vector to points that already exist. Never a full write. */
   addVector(
-    orgSlug: string,
+    collection: string,
     vectorName: string,
     points: readonly { pointId: string; vector: readonly number[] }[],
   ): Promise<void>
@@ -66,6 +67,23 @@ export interface ReindexPorts {
    * live one.
    */
   finishIfDone(orgId: string, layerId: string, shadowVector: string): Promise<boolean>
+  /**
+   * How a pass over one layer went, written where the operator polls.
+   *
+   * Separate from `onError` because `onError` writes to a log and this writes
+   * to `reindex_state`. Both existed in the design; only the log was
+   * implemented, so `GET /v1/layers/{id}/reindex` reported `failed: 0,
+   * status: running` for a reindex that had failed every document it ever
+   * claimed and would go on failing them.
+   */
+  recordPass(input: {
+    orgId: string
+    layerId: string
+    shadowVector: string
+    succeeded: number
+    failed: number
+    error?: string
+  }): Promise<void>
   onError(target: ReindexTarget, error: unknown): void
 }
 
@@ -83,6 +101,21 @@ export async function reindexOnce(ports: ReindexPorts, batch: number): Promise<R
 
   let reindexed = 0
   let failed = 0
+
+  /** Per layer, because the state that records it is per layer. */
+  const passes = new Map<string, { target: ReindexTarget; succeeded: number; failed: number; error?: string }>()
+  const passFor = (t: ReindexTarget) => {
+    const key = `${t.orgId}:${t.layerId}:${t.shadowVector}`
+    const existing = passes.get(key)
+    if (existing !== undefined) return existing
+    const fresh: { target: ReindexTarget; succeeded: number; failed: number; error?: string } = {
+      target: t,
+      succeeded: 0,
+      failed: 0,
+    }
+    passes.set(key, fresh)
+    return fresh
+  }
 
   for (const target of targets) {
     try {
@@ -107,7 +140,7 @@ export async function reindexOnce(ports: ReindexPorts, batch: number): Promise<R
       }
 
       await ports.addVector(
-        target.orgSlug,
+        target.collection,
         target.shadowVector,
         target.chunks.map((c, i) => ({ pointId: c.pointId, vector: vectors[i] as readonly number[] })),
       )
@@ -118,8 +151,12 @@ export async function reindexOnce(ports: ReindexPorts, batch: number): Promise<R
       // cannot answer for part of the layer.
       await ports.markReindexed(target.orgId, target.documentId, target.shadowVector)
       reindexed++
+      passFor(target).succeeded++
     } catch (error) {
       failed++
+      const pass = passFor(target)
+      pass.failed++
+      pass.error = String(error)
       ports.onError(target, error)
     }
   }
@@ -127,11 +164,23 @@ export async function reindexOnce(ports: ReindexPorts, batch: number): Promise<R
   // Only for layers this pass actually touched, and only once each. Asking
   // every reindexing layer on every pass would be a query per layer per two
   // seconds for the whole duration of a migration.
-  const layers = new Map<string, ReindexTarget>()
-  for (const t of targets) layers.set(`${t.orgId}:${t.layerId}:${t.shadowVector}`, t)
-
   let switched = 0
-  for (const t of layers.values()) {
+  for (const pass of passes.values()) {
+    const t = pass.target
+
+    // Recorded before the switch is attempted. A layer that just crossed the
+    // failure bound is no longer running, and `finishIfDone` requires it to be
+    // — so the order is what stops a reindex being marked failed and complete
+    // by the same pass.
+    await ports.recordPass({
+      orgId: t.orgId,
+      layerId: t.layerId,
+      shadowVector: t.shadowVector,
+      succeeded: pass.succeeded,
+      failed: pass.failed,
+      ...(pass.error === undefined ? {} : { error: pass.error }),
+    })
+
     if (await ports.finishIfDone(t.orgId, t.layerId, t.shadowVector)) switched++
   }
 

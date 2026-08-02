@@ -261,7 +261,7 @@ when('PostgresDocumentStore · markTagged', () => {
 
     // Left at 0 by beforeEach, so it is behind whatever the version is now.
     expect(await mine()).toHaveLength(1)
-    expect((await mine())[0]?.orgSlug).toBe('store')
+    expect((await mine())[0]?.collection).toBe('org_store')
 
     await store.markTagged(ORG, ids.doc, current)
 
@@ -493,7 +493,7 @@ when('garbage collection, against real storage', () => {
     await tombstone(7200)
     const claimed = await mine(3600)
     expect(claimed).toHaveLength(1)
-    expect(claimed[0]?.orgSlug).toBe('gcorg')
+    expect(claimed[0]?.collection).toBe('org_gcorg')
     expect(claimed[0]?.deletedAgeSeconds).toBeGreaterThan(7000)
   })
 

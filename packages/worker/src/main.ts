@@ -26,6 +26,7 @@ import {
   pruneAuditEvents,
   pruneExpiredTokens,
   QdrantVectorWriter,
+  recordReindexPass,
   tagsForLayer,
 } from './adapters.js'
 import { ingest } from './ingest.js'
@@ -99,9 +100,18 @@ const PRUNE_EVERY_MS = 3_600_000
 const REINDEX_BATCH = 10
 const REINDEX_EVERY_MS = 5000
 
+// Consecutive passes over one layer that achieved nothing before the reindex is
+// marked failed. Twenty at five seconds apart is a little under two minutes of
+// getting nowhere, which is long enough to ride out a model server restart and
+// short enough that an operator polling the endpoint is told rather than left
+// watching a number that will never move. Reset by any document succeeding —
+// see recordReindexPass.
+const REINDEX_FAILURE_BOUND = 20
+
 interface Claim {
   readonly orgId: string
-  readonly orgSlug: string
+  /** The organization's collection, not derived from its slug. */
+  readonly collection: string
   readonly documentId: string
   readonly layerId: string
   readonly externalId: string
@@ -125,19 +135,39 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
     const { rows } = await client.query<{
       id: string
       org_id: string
-      slug: string
+      collection: string
       layer_id: string
       external_id: string | null
       vector_name: string
       source_ref: string | null
       source_type: string
     }>(
-      `SELECT d.id, d.org_id, o.slug, d.layer_id, d.external_id, l.vector_name,
+      `SELECT d.id, d.org_id, o.vector_collection AS collection, d.layer_id, d.external_id, l.vector_name,
               d.source_ref, d.source_type
          FROM documents d
          JOIN organizations o ON o.id = d.org_id
          JOIN layers l        ON l.id = d.layer_id
         WHERE d.status = 'pending' AND d.deleted_at IS NULL
+          -- Not while this organization's collection is being copied.
+          --
+          -- The copy scrolls the old collection and the pointer moves when it
+          -- finishes, so a document indexed in between lands in the collection
+          -- that is about to be abandoned: Postgres says 'indexed', the new
+          -- collection has never heard of it, and nothing queues it again.
+          -- Silent, permanent, and proportional to how long the copy takes.
+          --
+          -- Waiting is the whole fix. The row stays 'pending', which is a
+          -- queue and not an error, and the copy is the only thing it waits
+          -- on. It also covers the case the copy exists for: a layer created
+          -- against a provider the collection has no slot for yet, whose
+          -- documents would otherwise fail every attempt with
+          -- "Not existing vector name".
+          AND NOT EXISTS (
+            SELECT 1 FROM layers c
+             WHERE c.org_id = d.org_id
+               AND c.reindex_state ->> 'status' = 'running'
+               AND c.reindex_state ->> 'phase'  = 'copying'
+          )
         ORDER BY d.created_at
         LIMIT 1
         FOR UPDATE OF d SKIP LOCKED`,
@@ -161,7 +191,7 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
 
     return {
       orgId: row.org_id,
-      orgSlug: row.slug,
+      collection: row.collection,
       documentId: row.id,
       layerId: row.layer_id,
       externalId: row.external_id ?? row.id,
@@ -415,6 +445,14 @@ async function main(): Promise<void> {
       markReindexed(pool, orgId, documentId, shadow, APP_ROLE),
     finishIfDone: (orgId: string, layerId: string, shadow: string) =>
       finishReindexIfDone(pool, orgId, layerId, shadow, APP_ROLE),
+    recordPass: (input: {
+      orgId: string
+      layerId: string
+      shadowVector: string
+      succeeded: number
+      failed: number
+      error?: string
+    }) => recordReindexPass(pool, input, REINDEX_FAILURE_BOUND, APP_ROLE),
     onError: (target: { documentId: string }, error: unknown) => {
       console.error(
         JSON.stringify({ msg: 'reindex failed', document_id: target.documentId, error: String(error) }),
@@ -631,7 +669,7 @@ async function main(): Promise<void> {
       const result = await ingest(
         {
           orgId: claim.orgId,
-          orgSlug: claim.orgSlug,
+          collection: claim.collection,
           layerId: claim.layerId,
           vectorName: claim.vectorName,
           externalId: claim.externalId,

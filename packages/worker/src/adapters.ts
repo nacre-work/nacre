@@ -1,5 +1,5 @@
 import { QdrantClient } from '@qdrant/js-client-rest'
-import { acrossOrganizations, aclTags, collectionName, loadGroupsVersion, withOrg } from '@nacre.work/core'
+import { acrossOrganizations, aclTags, loadGroupsVersion, withOrg } from '@nacre.work/core'
 import type { PrincipalRef } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
@@ -241,7 +241,7 @@ export class QdrantVectorWriter implements VectorWriter {
 
   async write(input: {
     orgId: string
-    orgSlug: string
+    collection: string
     layerId: string
     documentId: string
     vectorName: string
@@ -252,7 +252,7 @@ export class QdrantVectorWriter implements VectorWriter {
     try {
       if (input.points.length > 0) await this.upsertPoints(input)
     } catch (cause) {
-      throw new Error(`upsert into ${collectionName(input.orgSlug)} rejected: ${explain(cause)}`, { cause })
+      throw new Error(`upsert into ${input.collection} rejected: ${explain(cause)}`, { cause })
     }
 
     // After the upsert, never before, for the same reason the delete path is
@@ -262,9 +262,9 @@ export class QdrantVectorWriter implements VectorWriter {
     // second means the worst case is the state that existed before this line —
     // points nobody joins to — rather than a hole in the index.
     try {
-      await this.sweep(input.orgSlug, input.documentId, input.points.map((p) => p.pointId))
+      await this.sweep(input.collection, input.documentId, input.points.map((p) => p.pointId))
     } catch (cause) {
-      throw new Error(`sweep of ${collectionName(input.orgSlug)} rejected: ${explain(cause)}`, { cause })
+      throw new Error(`sweep of ${input.collection} rejected: ${explain(cause)}`, { cause })
     }
   }
 
@@ -283,19 +283,19 @@ export class QdrantVectorWriter implements VectorWriter {
    * touched.
    */
   async addVector(
-    orgSlug: string,
+    collection: string,
     vectorName: string,
     points: readonly { pointId: string; vector: readonly number[] }[],
   ): Promise<void> {
     if (points.length === 0) return
     try {
-      await this.client.updateVectors(collectionName(orgSlug), {
+      await this.client.updateVectors(collection, {
         wait: true,
         points: points.map((p) => ({ id: p.pointId, vector: { [vectorName]: [...p.vector] } })),
       } as never)
     } catch (cause) {
       throw new Error(
-        `adding ${vectorName} to ${collectionName(orgSlug)} rejected: ${explain(cause)}`,
+        `adding ${vectorName} to ${collection} rejected: ${explain(cause)}`,
         { cause },
       )
     }
@@ -314,8 +314,8 @@ export class QdrantVectorWriter implements VectorWriter {
    * A filtered delete rather than a delete by id: the set to remove is
    * "whatever else is there", which is only knowable to the index.
    */
-  private async sweep(orgSlug: string, documentId: string, keep: readonly string[]): Promise<void> {
-    await this.client.delete(collectionName(orgSlug), {
+  private async sweep(collection: string, documentId: string, keep: readonly string[]): Promise<void> {
+    await this.client.delete(collection, {
       wait: true,
       filter: {
         must: [{ key: 'doc_id', match: { value: documentId } }],
@@ -329,14 +329,14 @@ export class QdrantVectorWriter implements VectorWriter {
 
   private async upsertPoints(input: {
     orgId: string
-    orgSlug: string
+    collection: string
     layerId: string
     vectorName: string
     points: readonly { pointId: string; ordinal: number; vector: readonly number[]; docId: string }[]
     aclTags: readonly string[]
     aclVersion: number
   }): Promise<void> {
-    await this.client.upsert(collectionName(input.orgSlug), {
+    await this.client.upsert(input.collection, {
       wait: true,
       points: input.points.map((p) => ({
         id: p.pointId,
@@ -373,12 +373,12 @@ export class QdrantVectorWriter implements VectorWriter {
    * standing in the way.
    */
   async retag(input: {
-    orgSlug: string
+    collection: string
     documentId: string
     aclTags: readonly string[]
     aclVersion: number
   }): Promise<void> {
-    await this.client.setPayload(collectionName(input.orgSlug), {
+    await this.client.setPayload(input.collection, {
       wait: true,
       payload: { acl_tags: [...input.aclTags], acl_version: input.aclVersion },
       filter: { must: [{ key: 'doc_id', match: { value: input.documentId } }] },
@@ -394,9 +394,9 @@ export class QdrantVectorWriter implements VectorWriter {
    * authority for what should exist is Postgres, and a vector store that
    * disagrees loses.
    */
-  async purge(orgSlug: string, documentId: string): Promise<void> {
+  async purge(collection: string, documentId: string): Promise<void> {
     try {
-      await this.client.delete(collectionName(orgSlug), {
+      await this.client.delete(collection, {
         wait: true,
         filter: { must: [{ key: 'doc_id', match: { value: documentId } }] },
       } as never)
@@ -406,7 +406,7 @@ export class QdrantVectorWriter implements VectorWriter {
       // alternative is a target that fails on every sweep, forever, at the head
       // of a queue ordered oldest-first.
       if (collectionMissing(cause)) return
-      throw new Error(`purge from ${collectionName(orgSlug)} rejected: ${explain(cause)}`, { cause })
+      throw new Error(`purge from ${collection} rejected: ${explain(cause)}`, { cause })
     }
   }
 
@@ -418,8 +418,8 @@ export class QdrantVectorWriter implements VectorWriter {
    * is still in the index. Depending on the sweep's timing is how invariant I5
    * gets broken.
    */
-  async tombstone(orgSlug: string, documentId: string): Promise<void> {
-    await this.client.setPayload(collectionName(orgSlug), {
+  async tombstone(collection: string, documentId: string): Promise<void> {
+    await this.client.setPayload(collection, {
       wait: true,
       payload: { deleted: true },
       filter: { must: [{ key: 'doc_id', match: { value: documentId } }] },
@@ -522,7 +522,7 @@ export async function claimStale(
       const { rows } = await client.query<{
         id: string
         org_id: string
-        slug: string
+        collection: string
         layer_id: string
       }>(
         `WITH claimed AS (
@@ -564,13 +564,13 @@ export async function claimStale(
            FROM claimed c
            JOIN organizations o ON TRUE
           WHERE d.id = c.id AND o.id = d.org_id
-          RETURNING d.id, d.org_id, o.slug, d.layer_id`,
+          RETURNING d.id, d.org_id, o.vector_collection AS collection, d.layer_id`,
         [limit, leaseSeconds],
       )
 
       return rows.map((r) => ({
         orgId: r.org_id,
-        orgSlug: r.slug,
+        collection: r.collection,
         documentId: r.id,
         layerId: r.layer_id,
       }))
@@ -594,7 +594,7 @@ export async function claimPurgeable(
       const { rows } = await client.query<{
         id: string
         org_id: string
-        slug: string
+        collection: string
         age: string
       }>(
         `WITH claimed AS (
@@ -617,14 +617,14 @@ export async function claimPurgeable(
            FROM claimed c
            JOIN organizations o ON TRUE
           WHERE d.id = c.id AND o.id = d.org_id
-          RETURNING d.id, d.org_id, o.slug,
+          RETURNING d.id, d.org_id, o.vector_collection AS collection,
                     EXTRACT(EPOCH FROM (now() - d.deleted_at))::text AS age`,
         [limit, graceSeconds, leaseSeconds],
       )
 
       return rows.map((r) => ({
         orgId: r.org_id,
-        orgSlug: r.slug,
+        collection: r.collection,
         documentId: r.id,
         deletedAgeSeconds: Number(r.age),
       }))
@@ -820,14 +820,14 @@ export async function claimReindexable(
   return acrossOrganizations(pool, async (client) => {
     const { rows } = await client.query<{
       org_id: string
-      slug: string
+      collection: string
       layer_id: string
       document_id: string
       shadow_vector: string
       provider_id: string
       chunks: { point_id: string; text: string }[]
     }>(
-      `SELECT d.org_id, o.slug, d.layer_id, d.id AS document_id,
+      `SELECT d.org_id, o.vector_collection AS collection, d.layer_id, d.id AS document_id,
               l.reindex_state ->> 'shadow_vector' AS shadow_vector,
               l.reindex_state ->> 'provider_id'   AS provider_id,
               (SELECT json_agg(json_build_object('point_id', c.point_id, 'text', c.text)
@@ -851,7 +851,7 @@ export async function claimReindexable(
       .filter((r) => r.chunks !== null && r.chunks.length > 0)
       .map((r) => ({
         orgId: r.org_id,
-        orgSlug: r.slug,
+        collection: r.collection,
         layerId: r.layer_id,
         documentId: r.document_id,
         shadowVector: r.shadow_vector,
@@ -1020,6 +1020,86 @@ export async function finishCopy(
             AND reindex_state ->> 'status' = 'running'
             AND reindex_state ->> 'phase'  = 'copying'`,
         [orgId],
+      )
+    },
+    role === undefined ? {} : { role },
+  )
+}
+
+/**
+ * Record how a pass over one layer went, and give up if it keeps going badly.
+ *
+ * Two things were missing and they are the same omission twice. Nothing wrote
+ * a per-document failure into `reindex_state`, so `GET` on the reindex path
+ * answered `failed: 0, status: running` while the worker logged the same two
+ * failures every five seconds — the endpoint an operator is told to poll was
+ * the one place the failure was invisible. And nothing bounded the retries, so
+ * a reindex that could never succeed retried until somebody noticed.
+ *
+ * `failed` counts **consecutive** failures rather than total: a pass that got
+ * anywhere resets it, so a slow embedder dropping one request in ten does not
+ * accumulate its way to a stop over an afternoon. Only a layer that is making
+ * no progress at all reaches the bound.
+ *
+ * The whole thing is one statement, so two workers passing over the same layer
+ * cannot both read `failed` and both write the same increment — which is how a
+ * bounded retry becomes an unbounded one at exactly the moment the bound
+ * matters.
+ */
+export async function recordReindexPass(
+  pool: Pool,
+  input: {
+    orgId: string
+    layerId: string
+    shadowVector: string
+    succeeded: number
+    failed: number
+    error?: string
+  },
+  bound: number,
+  role?: string,
+): Promise<void> {
+  if (input.failed === 0 && input.succeeded === 0) return
+
+  await withOrg(
+    pool,
+    input.orgId,
+    async (client) => {
+      await client.query(
+        `UPDATE layers l
+            SET reindex_state =
+                  CASE
+                    WHEN $4::int > 0 THEN
+                      -- Progress. The consecutive count goes back to zero and
+                      -- the stale error goes with it, because an error left
+                      -- behind after a successful pass reads as the reason a
+                      -- finished reindex stopped.
+                      jsonb_set(l.reindex_state, '{failed}', '0') - 'error'
+                    WHEN COALESCE((l.reindex_state ->> 'failed')::int, 0) + $5::int >= $6::int THEN
+                      jsonb_set(
+                        jsonb_set(
+                          jsonb_set(l.reindex_state, '{failed}',
+                            to_jsonb(COALESCE((l.reindex_state ->> 'failed')::int, 0) + $5::int)),
+                          '{status}', '"failed"'),
+                        '{error}', to_jsonb($7::text))
+                    ELSE
+                      jsonb_set(
+                        jsonb_set(l.reindex_state, '{failed}',
+                          to_jsonb(COALESCE((l.reindex_state ->> 'failed')::int, 0) + $5::int)),
+                        '{error}', to_jsonb($7::text))
+                  END
+          WHERE l.org_id = $1 AND l.id = $2
+            AND l.reindex_state ->> 'status' = 'running'
+            AND l.reindex_state ->> 'shadow_vector' = $3`,
+        [
+          input.orgId,
+          input.layerId,
+          input.shadowVector,
+          input.succeeded,
+          input.failed,
+          bound,
+          (input.error ?? '').slice(0, 500),
+        ],
       )
     },
     role === undefined ? {} : { role },

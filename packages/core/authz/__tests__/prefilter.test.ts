@@ -54,8 +54,49 @@ describe('baseline · the pre-filter reaches every branch', () => {
     // A Branch carries only what makes a branch different: the vector and the
     // named vector to use. The absence of a `filter` field is the guarantee —
     // if this assertion ever needs changing, the guarantee went with it.
+    // `onlyLayers` is the one addition, and it restricts: it becomes a `must`
+    // alongside the filter's own, never a filter of its own.
     const branch: Branch = BRANCHES[0] as Branch
     expect(Object.keys(branch).sort()).toEqual(['kind', 'using', 'vector'])
+  })
+
+  it('a per-branch restriction intersects the filter rather than replacing it', () => {
+    // An organization can hold layers on more than one embedding model — during
+    // a reindex, or because two layers were created against different providers
+    // — and one named vector cannot answer for both. Each branch is then
+    // confined to the layers on its model, and the question this asks is
+    // whether the permission clauses survive that.
+    const filter = buildFilter(ORG, scopedPlan())
+    const query = buildHybridQuery({
+      branches: [{ kind: 'dense', using: 'v_small_v2_768', vector: [0.1], onlyLayers: ['layer-a'] }],
+      filter,
+      limit: 10,
+    })
+
+    const branch = query.prefetch[0]
+    // Everything the shared filter had, still there.
+    expect(branch?.filter.must).toEqual(
+      expect.arrayContaining([
+        { key: 'org_id', match: { value: ORG } },
+        { key: 'deleted', match: { value: false } },
+      ]),
+    )
+    expect(branch?.filter.should, 'the permission constraint must survive').toEqual(filter.should)
+    // Plus the restriction, as a `must` so it can only remove.
+    expect(branch?.filter.must).toContainEqual({ key: 'layer_id', match: { any: ['layer-a'] } })
+  })
+
+  it('a branch restricted to no layers is refused rather than emitted', () => {
+    // An empty `any` is not "match nothing" in Qdrant. Emitting it would turn a
+    // per-model branch into a query over every model at once.
+    const filter = buildFilter(ORG, scopedPlan())
+    expect(() =>
+      buildHybridQuery({
+        branches: [{ kind: 'dense', using: 'v', vector: [0.1], onlyLayers: [] }],
+        filter,
+        limit: 10,
+      }),
+    ).toThrow(/narrowed to no layers/)
   })
 
   it('a query with no branches is refused rather than emitted', () => {

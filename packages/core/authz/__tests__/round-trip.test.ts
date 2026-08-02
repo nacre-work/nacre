@@ -86,7 +86,7 @@ async function index(layerId: string, externalId: string, content: string): Prom
   await ingest(
     {
       orgId: ORG,
-      orgSlug: SLUG,
+      collection: collectionName(SLUG),
       layerId,
       vectorName: VECTOR,
       externalId,
@@ -177,9 +177,7 @@ when('pipeline round trip · the worker and the search path agree', () => {
     search = new NacreSearchService({
       pool,
       vectors: new VectorStore({ url: qdrantUrl as string }),
-      embedder,
-      orgSlug: async () => SLUG,
-      vectorName: VECTOR,
+      embedderFor: () => embedder,
       role: 'nacre_app',
     })
 
@@ -286,7 +284,7 @@ when('pipeline round trip · the worker and the search path agree', () => {
       AS_APP,
     )
 
-    await new QdrantVectorWriter(client).tombstone(SLUG, documentId)
+    await new QdrantVectorWriter(client).tombstone(collectionName(SLUG), documentId)
 
     // Invariant I5. The points are still there — garbage collection has not
     // run — and the only thing keeping them out of this answer is the

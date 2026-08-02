@@ -14,7 +14,7 @@ import { collectOnce, type CollectPorts, type PurgeTarget } from '../collect.js'
 
 const target = (n: number): PurgeTarget => ({
   orgId: 'org-1',
-  orgSlug: 'acme',
+  collection: 'org_acme',
   documentId: `doc-${n}`,
   deletedAgeSeconds: 7200,
 })

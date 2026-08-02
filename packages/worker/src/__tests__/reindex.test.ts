@@ -15,7 +15,7 @@ import { reindexProgress, fromStateJson, toStateJson, type ReindexState } from '
 
 const target = (over: Partial<ReindexTarget> = {}): ReindexTarget => ({
   orgId: 'org-1',
-  orgSlug: 'acme',
+  collection: 'org_acme',
   layerId: 'layer-1',
   documentId: 'doc-1',
   shadowVector: 'v_new_1024',
@@ -32,13 +32,14 @@ interface Recorded {
   readonly marked: string[]
   readonly finished: string[]
   readonly errors: string[]
+  readonly passes: { succeeded: number; failed: number; error?: string }[]
 }
 
 const ports = (
   targets: readonly ReindexTarget[],
   over: Partial<ReindexPorts> = {},
 ): ReindexPorts & { recorded: Recorded } => {
-  const recorded: Recorded = { added: [], marked: [], finished: [], errors: [] }
+  const recorded: Recorded = { added: [], marked: [], finished: [], errors: [], passes: [] }
   return {
     recorded,
     claim: async () => targets,
@@ -48,6 +49,13 @@ const ports = (
     },
     markReindexed: async (_org, documentId) => {
       recorded.marked.push(documentId)
+    },
+    recordPass: async (input) => {
+      recorded.passes.push({
+        succeeded: input.succeeded,
+        failed: input.failed,
+        ...(input.error === undefined ? {} : { error: input.error }),
+      })
     },
     finishIfDone: async (_org, layerId) => {
       recorded.finished.push(layerId)
@@ -94,6 +102,43 @@ describe('reindexOnce', () => {
     expect(await reindexOnce(p, 10)).toMatchObject({ reindexed: 0, failed: 1 })
     expect(p.recorded.added).toEqual([])
     expect(p.recorded.marked).toEqual([])
+  })
+
+  it('reports the pass where the operator polls, not only in the log', async () => {
+    // The finding this exists for: the worker logged "reindexed 0 failed 2"
+    // every five seconds while GET on the reindex path answered `failed: 0,
+    // status: running`. The endpoint an operator is told to poll was the one
+    // place the failure did not appear.
+    const p = ports([target()], {
+      addVector: async () => {
+        throw new Error('qdrant said no')
+      },
+    })
+
+    await reindexOnce(p, 10)
+
+    expect(p.recorded.passes).toEqual([
+      { succeeded: 0, failed: 1, error: 'Error: qdrant said no' },
+    ])
+  })
+
+  it('records the pass before asking to finish', async () => {
+    // A pass that crosses the failure bound stops the layer running, and
+    // finishIfDone requires it to be running. The other order would let one
+    // pass mark a reindex both failed and complete.
+    const order: string[] = []
+    const p = ports([target()], {
+      recordPass: async () => {
+        order.push('record')
+      },
+      finishIfDone: async () => {
+        order.push('finish')
+        return true
+      },
+    })
+
+    await reindexOnce(p, 10)
+    expect(order).toEqual(['record', 'finish'])
   })
 
   it('one failure does not stop the rest of the batch', async () => {
