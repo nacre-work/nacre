@@ -65,7 +65,8 @@ docker compose run --rm api node packages/api/dist/init.js \
   --org acme --email you@example.com --name "Acme"
 ```
 
-It prints the workspace id and an administrator token valid for one hour:
+It prints the workspace id, an administrator token valid for one hour, and a
+password:
 
 ```
 Organization acme is ready.
@@ -76,15 +77,40 @@ Organization acme is ready.
 An administrator token, valid for one hour:
 
   export NACRE_TOKEN=eyJhbGciOiJIUzI1NiJ9…
+
+And a password for signing in, which is not printed again:
+
+  …
 ```
 
 Run it twice and the second run changes nothing — it reports what already
-existed. That matters more than it sounds: a first install that dies halfway
-leaves exactly the state you would otherwise have to unpick by hand.
+existed, and **it does not reset the password**. That matters more than it
+sounds: a first install that dies halfway leaves exactly the state you would
+otherwise have to unpick by hand, and a re-run cannot lock an administrator out
+of their own installation.
 
 The token is signed with `NACRE_JWT_SECRET`, printed to a terminal and probably
-into a shell history. It exists to get you through this page. Proper token
-issuance is not built yet, which is the honest reason it expires in an hour.
+into a shell history. It exists to get you through this page, which is why it
+expires in an hour.
+
+**When it does, sign in for another.** The password above is the one that lasts:
+
+```bash
+curl -sX POST http://localhost:8080/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"…"}'
+```
+
+```jsonc
+{ "access_token": "eyJ…", "token_type": "Bearer",
+  "expires_in": 900, "refresh_token": "…" }
+```
+
+`POST /v1/auth/refresh` exchanges the refresh token for a new pair, and the old
+refresh token stops working the moment it does — replaying one revokes the whole
+family, because by then the legitimate holder has already exchanged it and there
+is no way to tell which of the two holders is genuine. See
+[api.md](./api.md#signing-in).
 
 ## A layer, and someone allowed to read it
 

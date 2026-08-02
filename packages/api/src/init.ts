@@ -91,6 +91,16 @@ export interface InitResult {
   readonly workspaceId: string
   /** False when the organization was already there — the run changed nothing. */
   readonly created: boolean
+  /**
+   * Whether **this run** set the administrator's password.
+   *
+   * False on every re-run, because the upsert deliberately leaves an existing
+   * hash alone. The caller needs to know because it generated a plaintext
+   * before calling, and printing one the database did not accept is worse than
+   * printing nothing: an operator writes it down, discards the real one, and
+   * finds out an hour later when the token from the first run expires.
+   */
+  readonly passwordSet: boolean
 }
 
 /**
@@ -135,20 +145,31 @@ export async function initialize(
     // itself is not covered — it is the tenant registry, not tenant data.
     await client.query('SELECT set_config($1, $2, true)', ['app.current_org', org.id])
 
-    const { rows: users } = await client.query<{ id: string }>(
+    const { rows: users } = await client.query<{ id: string; password_set: boolean }>(
       // The password is set only when this run generated one — re-running init
       // against an existing organization must not silently reset the
       // administrator's password and lock them out of their own installation.
+      //
+      // `password_set` reports whether the COALESCE above took this run's value
+      // or kept the stored one, by comparing the row as written against what
+      // was offered. The caller has a plaintext in hand either way and must not
+      // print it when the answer is no: the hash carries its own salt, so two
+      // hashes of the same password differ, and equality here can only mean
+      // this statement is what put it there.
       `INSERT INTO users (org_id, email, role, password_hash) VALUES ($1,$2,'org_admin',$3)
        ON CONFLICT (org_id, email) DO UPDATE
          SET email = EXCLUDED.email,
              password_hash = COALESCE(users.password_hash, EXCLUDED.password_hash)
-       RETURNING id`,
+       RETURNING id, ($3 IS NOT NULL AND password_hash IS NOT DISTINCT FROM $3) AS password_set`,
       [org.id, options.email, options.passwordHash ?? null],
     )
     const userId = users[0]?.id
     if (userId === undefined) throw new Error('the user insert returned no row')
-    log('admin user ready', { user_id: userId, email: options.email })
+    log('admin user ready', {
+      user_id: userId,
+      email: options.email,
+      password_set: users[0]?.password_set === true,
+    })
 
     // Shared across organizations by default: one endpoint serves every tenant
     // in a self-hosted install, and a per-organization provider is the
@@ -190,7 +211,13 @@ export async function initialize(
     log('workspace ready', { workspace_id: workspaceId, slug: options.workspace })
 
     await client.query('COMMIT')
-    return { orgId: org.id, userId, workspaceId, created: !org.existed }
+    return {
+      orgId: org.id,
+      userId,
+      workspaceId,
+      created: !org.existed,
+      passwordSet: users[0]?.password_set === true,
+    }
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {})
     throw error
@@ -303,14 +330,31 @@ async function main(): Promise<void> {
     console.log('')
     console.log(`  export NACRE_TOKEN=${token}`)
     console.log('')
-    console.log('And a password for signing in, which is not printed again:')
-    console.log('')
-    console.log(`  ${password}`)
-    console.log('')
-    console.log(`  curl -X POST ${config.canonicalUrl}/v1/auth/login \\`)
-    console.log(`    -H 'Content-Type: application/json' \\`)
-    console.log(`    -d '{"email":"${parsed.email}","password":"…"}'`)
-    console.log('')
+
+    // Only when this run is what set it.
+    //
+    // A re-run generates a plaintext like any other run and the database
+    // deliberately keeps the stored hash, so the string in hand belongs to
+    // nothing. Printing it under "a password for signing in" is the most
+    // damaging thing this command could say: an operator writes it down,
+    // discards the one that works, and finds out an hour later when the token
+    // above expires. Found by running init twice and trying both.
+    if (ids.passwordSet) {
+      console.log('And a password for signing in, which is not printed again:')
+      console.log('')
+      console.log(`  ${password}`)
+      console.log('')
+      console.log(`  curl -X POST ${config.canonicalUrl}/v1/auth/login \\`)
+      console.log(`    -H 'Content-Type: application/json' \\`)
+      console.log(`    -d '{"email":"${parsed.email}","password":"…"}'`)
+      console.log('')
+    } else {
+      console.log(`${parsed.email} already has a password and it is unchanged.`)
+      console.log('')
+      console.log('  This run set nothing. A re-run must not reset an administrator\'s')
+      console.log('  password, or anyone who can run init can lock out the person who did.')
+      console.log('')
+    }
     console.log('Create a layer with it, then follow docs/quickstart.md:')
     console.log('')
     console.log(`  curl -X POST ${config.canonicalUrl}/v1/layers \\`)
