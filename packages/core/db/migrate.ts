@@ -6,6 +6,20 @@ import { Client } from 'pg'
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations/', import.meta.url))
 
+/**
+ * How long a migration may wait for a lock before giving up. See the call site.
+ *
+ * A migration that needs longer can say so: `SET LOCAL lock_timeout` inside the
+ * file overrides this for the rest of that transaction, and it is the right
+ * place for the exception because the migration is what knows it is unusual.
+ *
+ * `statement_timeout` is deliberately not touched. Some managed platforms set
+ * one globally and a long index build will hit it — but that is the operator's
+ * configuration, the failure rolls back cleanly, and quietly overriding a bound
+ * somebody chose is worse than failing where they can see it.
+ */
+const LOCK_TIMEOUT = '10s'
+
 export interface Migration {
   readonly name: string
   readonly sql: string
@@ -114,6 +128,30 @@ export async function migrate(
 
       await client.query('BEGIN')
       try {
+        // Bounded waiting, set inside the transaction so it reverts on its own.
+        //
+        // `ALTER TABLE` takes ACCESS EXCLUSIVE, which conflicts with everything
+        // including a plain SELECT. With no timeout the sequence on a busy
+        // database is: the ALTER waits behind one long-running query, and every
+        // statement arriving afterwards queues behind the ALTER — because a
+        // lock request is not overtaken by weaker ones. One slow reporting
+        // query therefore stops the entire application for as long as it runs,
+        // and the migration that appeared to be "just adding a column" is what
+        // the outage gets blamed on.
+        //
+        // `lock_timeout`, not `statement_timeout`: the two failures are not
+        // alike. Waiting for a lock is a scheduling problem and retrying in a
+        // quieter minute fixes it, so failing fast is free. Doing the work is
+        // not — a backfill or an index build on a large table legitimately
+        // takes longer than any bound worth setting, and killing it halfway
+        // achieves nothing except a rollback. So the wait is capped and the
+        // work is not.
+        //
+        // Ten seconds because it is far longer than any lock this schema takes
+        // when the queue is empty, and far shorter than a deploy timeout — the
+        // migration fails with `55P03 lock_not_available`, which names the
+        // problem, instead of hanging until someone kills it and has to guess.
+        await client.query(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`)
         await client.query(migration.sql)
         await client.query('INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)', [
           migration.name,
@@ -123,6 +161,23 @@ export async function migrate(
         applied.push(migration.name)
       } catch (cause) {
         await client.query('ROLLBACK')
+
+        // 55P03 is `lock_not_available`, and it is worth naming: it is the one
+        // failure here that says nothing about the migration. The SQL is fine,
+        // something else was holding the table, and the fix is to look at
+        // pg_stat_activity rather than at the file.
+        if ((cause as { code?: string }).code === '55P03') {
+          throw new Error(
+            `migration ${migration.name} gave up waiting for a lock after ${LOCK_TIMEOUT} ` +
+              'and was rolled back. Something else is holding the table — a long query, an ' +
+              'idle-in-transaction session, another migration — so this is not a problem with ' +
+              'the migration itself and re-running it once the holder is gone will work. ' +
+              'The wait is capped deliberately: an ALTER queued behind one slow query blocks ' +
+              'every statement that arrives after it, which takes the application down.',
+            { cause },
+          )
+        }
+
         throw new Error(`migration ${migration.name} failed and was rolled back`, { cause })
       }
     }
