@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto'
 
 import { QdrantClient } from '@qdrant/js-client-rest'
 import {
+  configureLogging,
   acrossOrganizations,
   ConfigError,
   createPool,
   installGuards,
+  logger,
   S3,
   VectorStore,
   loadConfig,
@@ -246,6 +248,11 @@ async function markFailed(
 
 async function main(): Promise<void> {
   const config = loadConfig()
+
+  // Before anything else logs. `NACRE_LOG_LEVEL` and `NACRE_LOG_FORMAT` had been
+  // validated here and read by nothing, so every process wrote JSON at one level
+  // whatever the deployment asked for.
+  configureLogging({ level: config.logLevel, format: config.logFormat })
   const pool = createPool({ connectionString: config.pgUrl, max: config.pgPoolMax })
   const parser = new HttpParser(config.parserEndpoint)
   const vectors = new QdrantVectorWriter(
@@ -289,9 +296,7 @@ async function main(): Promise<void> {
     retag: vectors.retag.bind(vectors),
     markTagged: documents.markTagged.bind(documents),
     onError: (document: { documentId: string }, error: unknown) => {
-      console.error(
-        JSON.stringify({ msg: 'retag failed', document_id: document.documentId, error: String(error) }),
-      )
+      logger.error('retag failed', { document_id: document.documentId, error: String(error) })
     },
   }
 
@@ -311,24 +316,17 @@ async function main(): Promise<void> {
     },
     markPurged: documents.markPurged.bind(documents),
     onError: (target: { documentId: string }, error: unknown) => {
-      console.error(
-        JSON.stringify({ msg: 'purge failed', document_id: target.documentId, error: String(error) }),
-      )
+      logger.error('purge failed', { document_id: target.documentId, error: String(error) })
     },
   }
 
   const reapPorts = {
     claim: (limit: number, lease: number, max: number) => claimStranded(pool, limit, lease, max),
     onReaped: (document: { documentId: string; heldSeconds: number; attempts: number }, outcome: string) => {
-      console.warn(
-        JSON.stringify({
-          msg: 'reclaimed an abandoned claim',
-          document_id: document.documentId,
+      logger.warn('reclaimed an abandoned claim', { document_id: document.documentId,
           held_seconds: Math.round(document.heldSeconds),
           attempts: document.attempts,
-          outcome,
-        }),
-      )
+          outcome })
     },
   }
 
@@ -342,19 +340,15 @@ async function main(): Promise<void> {
     },
     forget: (collection: { orgId: string; name: string }) => forgetCollection(pool, collection),
     onDropped: (collection: { orgId: string; name: string }) => {
-      console.log(JSON.stringify({ msg: 'collection dropped', collection: collection.name }))
+      logger.info('collection dropped', { collection: collection.name })
     },
     onRevived: (collection: { orgId: string; name: string }) => {
       // Not an error. The pointer went back to it, which is the cheap rollback,
       // and the row is stale rather than the collection being wrong.
-      console.log(
-        JSON.stringify({ msg: 'collection is live again, not dropping', collection: collection.name }),
-      )
+      logger.info('collection is live again, not dropping', { collection: collection.name })
     },
     onError: (collection: { orgId: string; name: string }, error: unknown) => {
-      console.error(
-        JSON.stringify({ msg: 'collection drop failed', collection: collection.name, error: String(error) }),
-      )
+      logger.error('collection drop failed', { collection: collection.name, error: String(error) })
     },
   }
 
@@ -365,7 +359,7 @@ async function main(): Promise<void> {
       // Warn rather than error: nothing is broken by a prune that did not run,
       // and the one failure an operator must act on — a retention below the
       // function's floor — carries its own message from the database.
-      console.warn(JSON.stringify({ msg: 'prune failed', what, error: String(error) }))
+      logger.warn('prune failed', { what, error: String(error) })
     },
   }
 
@@ -472,16 +466,14 @@ async function main(): Promise<void> {
       // looking at Qdrant can tell which collection replaced which.
       const to = `${target.collection}_${target.shadowVector}`
       try {
-        console.log(
-          JSON.stringify({ msg: 'copying collection', org: target.orgSlug, from: target.collection, to }),
-        )
+        logger.info('copying collection', { org: target.orgSlug, from: target.collection, to })
         await store.copyCollection({
           from: target.collection,
           to,
           addVector: { name: target.shadowVector, size: target.dimensions },
         })
         await finishCopy(pool, target.orgId, to, APP_ROLE)
-        console.log(JSON.stringify({ msg: 'collection copied', org: target.orgSlug, collection: to }))
+        logger.info('collection copied', { org: target.orgSlug, collection: to })
         done++
       } catch (error) {
         // Failed rather than left running. A layer that sits in `copying`
@@ -489,9 +481,7 @@ async function main(): Promise<void> {
         // operator watches a progress number that will never move and has
         // nothing to read. The old collection is untouched and still live, so
         // failing costs only the attempt.
-        console.error(
-          JSON.stringify({ msg: 'collection copy failed', org: target.orgSlug, error: String(error) }),
-        )
+        logger.error('collection copy failed', { org: target.orgSlug, error: String(error) })
         await failReindex(pool, target.orgId, target.layerId, String(error), APP_ROLE).catch(() => {})
       }
     }
@@ -517,9 +507,7 @@ async function main(): Promise<void> {
       error?: string
     }) => recordReindexPass(pool, input, REINDEX_FAILURE_BOUND, APP_ROLE),
     onError: (target: { documentId: string }, error: unknown) => {
-      console.error(
-        JSON.stringify({ msg: 'reindex failed', document_id: target.documentId, error: String(error) }),
-      )
+      logger.error('reindex failed', { document_id: target.documentId, error: String(error) })
     },
   }
 
@@ -570,7 +558,7 @@ async function main(): Promise<void> {
     })
 
   const stop = (signal: string) => {
-    console.log(JSON.stringify({ msg: 'draining', signal }))
+    logger.info('draining', { signal })
     running = false
     wake?.()
   }
@@ -581,14 +569,14 @@ async function main(): Promise<void> {
   // a SIGKILL. A document interrupted mid-pipeline is reclaimed by its lease.
   installGuards({ service: 'worker', shutdown: async () => { stop('shutdown'); await pool.end() } })
 
-  console.log(JSON.stringify({ msg: 'worker started', env: config.env }))
+  logger.info('worker started', { env: config.env })
 
   while (running) {
     let claim: Claim | undefined
     try {
       claim = await claimNext(pool)
     } catch (error) {
-      console.error(JSON.stringify({ msg: 'claim failed', error: String(error) }))
+      logger.error('claim failed', { error: String(error) })
       await sleep(IDLE_MS)
       continue
     }
@@ -605,7 +593,7 @@ async function main(): Promise<void> {
       try {
         const pass = await retagOnce(retagPorts, RETAG_BATCH, RETAG_CONCURRENCY)
         if (pass.retagged > 0 || pass.failed > 0) {
-          console.log(JSON.stringify({ msg: 'retagged', ...pass }))
+          logger.info('retagged', { ...pass })
         }
         // Only progress earns another immediate pass. A pass that retagged
         // nothing and failed on everything will fail again in two milliseconds,
@@ -621,7 +609,7 @@ async function main(): Promise<void> {
           barren = 0
         }
       } catch (error) {
-        console.error(JSON.stringify({ msg: 'retag pass failed', error: String(error) }))
+        logger.error('retag pass failed', { error: String(error) })
         barren++
         wait = backoff()
       }
@@ -639,7 +627,7 @@ async function main(): Promise<void> {
             continue
           }
         } catch (error) {
-          console.error(JSON.stringify({ msg: 'reap pass failed', error: String(error) }))
+          logger.error('reap pass failed', { error: String(error) })
         }
       }
 
@@ -660,7 +648,7 @@ async function main(): Promise<void> {
         try {
           const swept = await collectOnce(collectPorts, GC_BATCH, config.gcGrace)
           if (swept.purged > 0 || swept.failed > 0) {
-            console.log(JSON.stringify({ msg: 'collected', ...swept }))
+            logger.info('collected', { ...swept })
           }
           // A full batch means the backlog is longer than one sweep, so the next
           // one runs on the idle tick rather than a minute later. Anything less
@@ -670,7 +658,7 @@ async function main(): Promise<void> {
             continue
           }
         } catch (error) {
-          console.error(JSON.stringify({ msg: 'collect pass failed', error: String(error) }))
+          logger.error('collect pass failed', { error: String(error) })
         }
       }
 
@@ -691,7 +679,7 @@ async function main(): Promise<void> {
 
           const pass = await reindexOnce(reindexPorts, REINDEX_BATCH)
           if (pass.reindexed > 0 || pass.failed > 0 || pass.switched > 0) {
-            console.log(JSON.stringify({ msg: 'reindexed', ...pass }))
+            logger.info('reindexed', { ...pass })
           }
           // A full batch means there is more, so come back now rather than in
           // five seconds. A migration of a large layer should not be paced by
@@ -701,7 +689,7 @@ async function main(): Promise<void> {
             continue
           }
         } catch (error) {
-          console.error(JSON.stringify({ msg: 'reindex pass failed', error: String(error) }))
+          logger.error('reindex pass failed', { error: String(error) })
         }
       }
 
@@ -714,7 +702,7 @@ async function main(): Promise<void> {
         lastPrune = Date.now()
         const pruned = await pruneOnce(prunePorts, PRUNE_BATCH, config.auditRetentionDays)
         if (pruned.tokens > 0 || pruned.audit > 0) {
-          console.log(JSON.stringify({ msg: 'pruned', ...pruned }))
+          logger.info('pruned', { ...pruned })
         }
 
         // Same clock, and deliberately not the same function: retention here is
@@ -728,10 +716,10 @@ async function main(): Promise<void> {
             RETIRE_BATCH,
           )
           if (retired.dropped > 0 || retired.revived > 0 || retired.failed > 0) {
-            console.log(JSON.stringify({ msg: 'collections retired', ...retired }))
+            logger.info('collections retired', { ...retired })
           }
         } catch (error) {
-          console.error(JSON.stringify({ msg: 'retire pass failed', error: String(error) }))
+          logger.error('retire pass failed', { error: String(error) })
         }
       }
 
@@ -795,18 +783,11 @@ async function main(): Promise<void> {
         },
       )
 
-      console.log(
-        JSON.stringify({
-          msg: 'indexed',
-          document_id: result.documentId,
+      logger.info('indexed', { document_id: result.documentId,
           chunks: result.chunkCount,
-          unchanged: result.unchanged,
-        }),
-      )
+          unchanged: result.unchanged })
     } catch (error) {
-      console.error(
-        JSON.stringify({ msg: 'indexing failed', document_id: claim.documentId, error: String(error) }),
-      )
+      logger.error('indexing failed', { document_id: claim.documentId, error: String(error) })
       await markFailed(pool, claim, error).catch(() => {})
     }
   }
@@ -820,6 +801,6 @@ main().catch((error: unknown) => {
     console.error(error.message)
     process.exit(2)
   }
-  console.error(JSON.stringify({ msg: 'failed to start', error: String(error) }))
+  logger.error('failed to start', { error: String(error) })
   process.exit(1)
 })

@@ -1,3 +1,5 @@
+import { logger } from './logging.js'
+
 /**
  * What every process does when it is asked to stop, and when it is about to
  * die for a reason nobody wrote down.
@@ -36,8 +38,20 @@ export interface Guards {
   readonly exit?: (code: number) => void
 }
 
-const log = (service: string, msg: string, extra: Record<string, unknown> = {}): void => {
-  console.error(JSON.stringify({ msg, service, ...extra }))
+/**
+ * Through the process logger, so `NACRE_LOG_FORMAT` reaches these too.
+ *
+ * The level is a parameter rather than always `error`: a clean shutdown is not
+ * a failure, and reporting it as one is how a dashboard counting errors turns
+ * every deploy into an incident. What is an error stays an error.
+ */
+const log = (
+  level: 'info' | 'error',
+  service: string,
+  msg: string,
+  extra: Record<string, unknown> = {},
+): void => {
+  logger[level](msg, { service, ...extra })
 }
 
 /**
@@ -56,12 +70,12 @@ export function installGuards(guards: Guards): { stop: (signal: string) => void 
     // nobody awaited failing means the process is in a state its author did not
     // plan for, and continuing from there is how one bad request becomes a
     // corrupt one.
-    log(service, 'unhandled rejection; exiting', { error: String(reason).slice(0, 500) })
+    log('error', service, 'unhandled rejection; exiting', { error: String(reason).slice(0, 500) })
     exit(1)
   })
 
   process.on('uncaughtException', (error) => {
-    log(service, 'uncaught exception; exiting', {
+    log('error', service, 'uncaught exception; exiting', {
       error: String(error).slice(0, 500),
       stack: error.stack?.split('\n').slice(1, 6).join(' | '),
     })
@@ -71,12 +85,12 @@ export function installGuards(guards: Guards): { stop: (signal: string) => void 
   const stop = (signal: string): void => {
     if (stopping) return
     stopping = true
-    log(service, 'shutting down', { signal })
+    log('info', service, 'shutting down', { signal })
 
     // The deadline runs whatever happens, and `unref` keeps it from being the
     // thing that holds the process open once everything else has let go.
     const deadline = setTimeout(() => {
-      log(service, 'shutdown did not finish in time; exiting anyway', { grace_ms: graceMs })
+      log('error', service, 'shutdown did not finish in time; exiting anyway', { grace_ms: graceMs })
       exit(1)
     }, graceMs)
     deadline.unref()
@@ -87,7 +101,7 @@ export function installGuards(guards: Guards): { stop: (signal: string) => void 
         clearTimeout(deadline)
         exit(0)
       } catch (error) {
-        log(service, 'shutdown failed', { error: String(error).slice(0, 500) })
+        log('error', service, 'shutdown failed', { error: String(error).slice(0, 500) })
         clearTimeout(deadline)
         exit(1)
       }
@@ -120,7 +134,7 @@ export function onListenError(
         : error.code === 'EACCES'
           ? `port ${port} needs privileges this process does not have`
           : String(error)
-    log(service, 'could not listen', { port, detail })
+    log('error', service, 'could not listen', { port, detail })
     exit(2)
   })
 }

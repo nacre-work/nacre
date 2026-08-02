@@ -1,6 +1,7 @@
 import { QdrantClient } from '@qdrant/js-client-rest'
 
 import { buildFilter, METADATA_PREFIX, type Narrowing, type QueryablePlan } from '../authz/filter.js'
+import { logger } from '../logging.js'
 import { buildHybridQuery, collectionConfig, collectionName, PAYLOAD_INDEXES, vectorParams, type Branch } from './query.js'
 
 /**
@@ -147,14 +148,9 @@ export class MetadataIndexer {
           // correctly; it stops being answered from an index.
           if (!this.#atLimit.has(collection)) {
             this.#atLimit.add(collection)
-            console.warn(
-              JSON.stringify({
-                msg: 'metadata index limit reached',
-                collection,
+            logger.warn('metadata index limit reached', { collection,
                 limit: this.#limit,
-                unindexed: field,
-              }),
-            )
+                unindexed: field })
           }
           continue
         }
@@ -168,13 +164,8 @@ export class MetadataIndexer {
       }
     } catch (cause) {
       // Never fatal. See the note on this class.
-      console.warn(
-        JSON.stringify({
-          msg: 'metadata index build failed',
-          collection,
-          error: explainQdrant(cause),
-        }),
-      )
+      logger.warn('metadata index build failed', { collection,
+          error: explainQdrant(cause) })
     }
   }
 
