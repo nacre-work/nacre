@@ -202,6 +202,27 @@ filtered down to whatever survived — 5 permitted results, because the filter i
 applied inside the index traversal. If that distinction is new, read
 [authz.md](./authz.md); it is the reason this project exists.
 
+## The same thing in a browser
+
+Everything above has a screen, in `packages/admin` — search, layers, grants and
+service accounts, for one organization. It is static files rather than a
+service, which is why it is not in the Compose stack:
+
+```bash
+pnpm --filter @nacre.work/admin build     # writes packages/admin/dist
+```
+
+Serve that directory **from the same origin as the API**. The API sets no CORS
+headers, deliberately, so a UI on a different origin is a decision to make in a
+proxy rather than something that works by accident — put `/` on the directory
+and `/v1` on the API and both are same-origin. `packages/admin/README.md` has
+the two headers to add, and why one of them cannot come from a meta tag.
+
+Sign in with the address and password `init` printed. The session renews itself,
+so it outlives the hour that token above has. Pasting the token works too, and
+so does a service account key — which is how you look at exactly what an agent
+can see, from the other side of this page.
+
 ## Connecting an agent
 
 Over MCP, Streamable HTTP:
