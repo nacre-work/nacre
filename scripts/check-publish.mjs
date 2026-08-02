@@ -20,12 +20,28 @@
  *    tag never having been applied to anything.
  *
  * Run with a tag to check 3 as well: `node scripts/check-publish.mjs v0.2.0`.
+ * Run with `--list` to print the publishable names and nothing else.
  */
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 const PACKAGES = 'packages'
-const tag = process.argv[2]
+const args = process.argv.slice(2)
+
+/**
+ * Print the publishable package names, one per line, for the release workflow
+ * to iterate over.
+ *
+ * The list belongs here rather than in the workflow because "publishable" is a
+ * rule — `private !== true` — and every check below is written against that
+ * same rule. Two copies of it disagree the moment a package changes side, and
+ * the way they disagree is that the release publishes a package none of the
+ * checks ever looked at.
+ *
+ * Diagnostics go to stderr, so stdout stays consumable.
+ */
+const listOnly = args.includes('--list')
+const tag = args.find((arg) => !arg.startsWith('-'))
 
 let failed = false
 const manifests = new Map()
@@ -83,8 +99,13 @@ for (const [dir, { path, json }] of manifests) {
 }
 
 if (!failed) {
-  const names = [...published].sort().join(', ')
-  console.log(`publishable: ${names}${tag === undefined ? '' : ` — all at ${tag.replace(/^v/, '')}`}`)
+  const names = [...published].sort()
+  console.log(
+    listOnly
+      ? names.join('\n')
+      : `publishable: ${names.join(', ')}` +
+          `${tag === undefined ? '' : ` — all at ${tag.replace(/^v/, '')}`}`,
+  )
 }
 
 process.exit(failed ? 1 : 0)
