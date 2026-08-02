@@ -421,6 +421,16 @@ elapsed — 403 for all five, 200 for the untouched link. The first attempt at
 that check reported a pass on a tampered signature; the tamper had not applied,
 because the regex assumed a one-character signature and it is sixty-four.
 
+`init` no longer prints a password that does not work. The upsert has always
+kept an existing hash — a re-run must not let whoever can run the command lock
+out the person who did — but the output did not know that, so a second run
+generated a plaintext, printed it under "a password for signing in, which is not
+printed again", and the database kept the old one. Found by running it twice and
+trying both. It reports whether *this run* set it, and says so instead when it
+did not. `docs/quickstart.md` had the matching hole: it said "proper token
+issuance is not built yet" next to a token that expires in an hour, months after
+email and password sign-in landed, so the documented path ran out at hour two.
+
 **Test what you write by running it, not only by testing it.** Twelve of the
 worst defects found so far were each invisible to a green suite and obvious
 within a minute of starting the processes: the worker indexing nothing at all,

@@ -32,6 +32,13 @@ const options = {
   workspace: 'default',
 }
 
+// Stand-ins for a stored scrypt record. Sixteen characters at least — the
+// schema refuses a shorter one, which is a floor against a column that got a
+// truncated value rather than a hash.
+const STORED_FIRST = 'scrypt$n=16384$first-run-hash'
+const STORED_SECOND = 'scrypt$n=16384$second-run-hash'
+const STORED_LATER = 'scrypt$n=16384$later-run-hash'
+
 let pool: Pool
 
 describe('parseArgs', () => {
@@ -108,6 +115,49 @@ when('initialize', () => {
     } finally {
       c.release()
     }
+  })
+
+  it('says whether it set the password, and a second run says it did not', async () => {
+    // The caller has a plaintext in hand on every run and only sometimes owns
+    // it. Printing one the database did not accept is the most damaging thing
+    // this command can say: an operator writes it down, discards the one that
+    // works, and finds out an hour later when the token expires.
+    const first = await initialize(pool, { ...options, passwordHash: STORED_FIRST }, PROVIDER, 'org_inittest')
+    expect(first.passwordSet).toBe(true)
+
+    const second = await initialize(pool, { ...options, passwordHash: STORED_SECOND }, PROVIDER, 'org_inittest')
+    expect(second.passwordSet).toBe(false)
+
+    // And the stored hash is still the first one. The report and the row have
+    // to agree — a truthful `false` over a password that was quietly reset
+    // would be the same bug wearing the other mask.
+    const c = await pool.connect()
+    try {
+      await c.query('SELECT set_config($1, $2, false)', ['app.current_org', second.orgId])
+      const { rows } = await c.query<{ password_hash: string }>(
+        `SELECT password_hash FROM users WHERE id = $1`,
+        [second.userId],
+      )
+      expect(rows[0]?.password_hash).toBe(STORED_FIRST)
+    } finally {
+      c.release()
+    }
+  })
+
+  it('sets a password on an administrator who had none, rather than never', async () => {
+    // The other half of the same COALESCE. An organization created before
+    // passwords existed, or by a run that passed none, must still be able to
+    // get one — otherwise "it is not printed again" becomes "there is no way
+    // to have one".
+    // Its own address, because the tests above share one row and this needs an
+    // administrator who has never had a password rather than one who has.
+    const fresh = { ...options, email: 'nopassword@inittest.test' }
+
+    const none = await initialize(pool, fresh, PROVIDER, 'org_inittest')
+    expect(none.passwordSet).toBe(false)
+
+    const set = await initialize(pool, { ...fresh, passwordHash: STORED_LATER }, PROVIDER, 'org_inittest')
+    expect(set.passwordSet).toBe(true)
   })
 
   it('the admin is an org_admin, or nothing that follows can grant anything', async () => {
