@@ -219,13 +219,49 @@ export class QdrantVectorWriter implements VectorWriter {
     aclTags: readonly string[]
     aclVersion: number
   }): Promise<void> {
-    if (input.points.length === 0) return
-
     try {
-      await this.upsertPoints(input)
+      if (input.points.length > 0) await this.upsertPoints(input)
     } catch (cause) {
       throw new Error(`upsert into ${collectionName(input.orgSlug)} rejected: ${explain(cause)}`, { cause })
     }
+
+    // After the upsert, never before, for the same reason the delete path is
+    // ordered the other way round: sweeping first leaves the document
+    // unsearchable for the length of an embedding round trip, and a reader who
+    // hits that window sees an empty result rather than a stale one. Sweeping
+    // second means the worst case is the state that existed before this line —
+    // points nobody joins to — rather than a hole in the index.
+    try {
+      await this.sweep(input.orgSlug, input.documentId, input.points.map((p) => p.pointId))
+    } catch (cause) {
+      throw new Error(`sweep of ${collectionName(input.orgSlug)} rejected: ${explain(cause)}`, { cause })
+    }
+  }
+
+  /**
+   * Remove every point of this document that is not in the set just written.
+   *
+   * Each indexing pass mints fresh point ids, so `upsert` overwrites nothing —
+   * without this, the previous pass's points stay behind with `deleted = false`
+   * and match every query the document matches. They cannot leak text, because
+   * hydration joins on a chunk row that no longer exists; what they do is take
+   * places in `top_k` and hand them to nobody, so a search for ten results
+   * quietly returns six.
+   *
+   * A filtered delete rather than a delete by id: the set to remove is
+   * "whatever else is there", which is only knowable to the index.
+   */
+  private async sweep(orgSlug: string, documentId: string, keep: readonly string[]): Promise<void> {
+    await this.client.delete(collectionName(orgSlug), {
+      wait: true,
+      filter: {
+        must: [{ key: 'doc_id', match: { value: documentId } }],
+        // Empty `keep` means the document has no points at all now, and every
+        // one of them goes — an emptied file leaving its old text behind in
+        // results is the same bug with worse consequences.
+        ...(keep.length === 0 ? {} : { must_not: [{ has_id: [...keep] }] }),
+      },
+    } as never)
   }
 
   private async upsertPoints(input: {

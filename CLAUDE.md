@@ -124,16 +124,19 @@ round trip that puts the worker and the search path against each other.
 A leak nobody thought to write down is still unguarded, and adding a case to
 `test-plan.ts` is how that changes.
 
-**Test what you write by running it, not only by testing it.** Ten of the worst
-defects found so far were each invisible to a green suite and obvious within a
-minute of starting the processes: the worker indexing nothing at all, layers
-naming a vector that did not exist, MCP answering in a shape no client can
-parse, a propagation gauge that could never fire, a retag loop that starved
+**Test what you write by running it, not only by testing it.** Twelve of the
+worst defects found so far were each invisible to a green suite and obvious
+within a minute of starting the processes: the worker indexing nothing at all,
+layers naming a vector that did not exist, MCP answering in a shape no client
+can parse, a propagation gauge that could never fire, a retag loop that starved
 garbage collection entirely, a document stranded in `parsing` with no error
 anywhere, `migrate()` throwing ENOENT from the built package, search returning
 no text at all — because every test asserted on the payload, which *was* the
-response — a duplicate service account name answering 500, and the worker
-erasing a document's title, which was visible only in a screenshot.
+response — a duplicate service account name answering 500, the worker erasing a
+document's title, which was visible only in a screenshot, a service account key
+sitting in the idempotency cache in plaintext for 24 hours, found with
+`redis-cli GET`, and re-indexing leaving every previous point in the index,
+found by noticing that a search for five results returned four.
 
 ## Conventions
 

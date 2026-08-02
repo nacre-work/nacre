@@ -300,4 +300,73 @@ when('pipeline round trip · the worker and the search path agree', () => {
     })
     expect(points.length, 'the points must still exist, or this proved nothing').toBeGreaterThan(0)
   })
+
+  it('re-indexing replaces a document’s points rather than adding to them', async () => {
+    // Found by running the stack, not by a test: after several ingests of the
+    // same documents, Qdrant held two points per document and Postgres held
+    // one chunk each. Every pass mints fresh point ids, so `upsert` overwrote
+    // nothing — the previous pass's points stayed behind with `deleted = false`.
+    //
+    // They cannot leak text: hydration joins on a chunk row that is gone. What
+    // they do is match the filter and take places in `top_k`, so a search for
+    // ten results silently returned six, permanently, and got worse with every
+    // edit. Nothing failed anywhere.
+    await index(ids.open, 'revisions', 'The first revision of a document that will be edited.')
+
+    const idOf = async (externalId: string): Promise<string> =>
+      withOrg(
+        pool,
+        ORG,
+        async (c) =>
+          (
+            await c.query<{ id: string }>(
+              'SELECT id FROM documents WHERE org_id = $1 AND external_id = $2',
+              [ORG, externalId],
+            )
+          ).rows[0]?.id as string,
+        AS_APP,
+      )
+
+    const documentId = await idOf('revisions')
+    const pointsFor = async (): Promise<string[]> =>
+      (
+        await client.scroll(collectionName(SLUG), {
+          limit: 100,
+          filter: { must: [{ key: 'doc_id', match: { value: documentId } }] },
+        })
+      ).points.map((p) => String(p.id))
+
+    const first = await pointsFor()
+    expect(first.length).toBeGreaterThan(0)
+
+    // Different content, so it is a real re-index and not an idempotent repeat.
+    await index(ids.open, 'revisions', 'The second revision, with entirely different words in it.')
+
+    const second = await pointsFor()
+    expect(second.length).toBeGreaterThan(0)
+    // Fresh ids, which is exactly why an upsert alone left the old ones behind.
+    expect(second).not.toEqual(first)
+    for (const id of first) expect(second, 'a point from the previous pass survived').not.toContain(id)
+
+    // The index and the chunk table agree on how many there are. This is the
+    // assertion that would have caught it: everything else looked correct.
+    const chunks = await withOrg(
+      pool,
+      ORG,
+      async (c) =>
+        (
+          await c.query<{ n: string }>('SELECT count(*) AS n FROM chunks WHERE document_id = $1', [
+            documentId,
+          ])
+        ).rows[0]?.n as string,
+      AS_APP,
+    )
+    expect(second.length).toBe(Number(chunks))
+
+    // And a search for the old wording finds nothing of it, because there is
+    // nothing of it left rather than because it ranked badly.
+    const hits = await search.search(as(ids.alice), 'first revision', 10)
+    expect(hits.some((h) => h.text.includes('second revision'))).toBe(true)
+    expect(hits.some((h) => h.text.includes('The first revision'))).toBe(false)
+  })
 })

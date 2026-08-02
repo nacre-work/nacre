@@ -157,6 +157,23 @@ hourly.
 sweep there is a window in which the document is still in the index, and
 depending on GC timing is how invariant I5 gets broken.
 
+## Re-indexing is a replacement
+
+Every indexing pass mints fresh point ids, so an upsert overwrites nothing: the
+previous pass's points would stay in the collection with `deleted = false`
+unless they are removed. After the upsert, and never before, the writer deletes
+every point carrying this `doc_id` that is not in the set just written —
+sweeping first would leave the document unsearchable for the length of an
+embedding round trip, and a reader landing in that window sees an empty result
+rather than a stale one.
+
+Points left behind this way cannot leak text: hydration joins on a chunk row
+that no longer exists. What they do is match the permission filter and take
+places in `top_k`, so a search asking for ten results silently returns six, and
+gets worse with every edit. A collection built before this reconciliation
+existed needs a reindex; nothing in the sweep removes points from a pass it did
+not perform.
+
 ## Backups
 
 A consistent set is three parts: a PostgreSQL dump, a snapshot of the Qdrant
