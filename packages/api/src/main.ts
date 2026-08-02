@@ -224,6 +224,7 @@ async function main(): Promise<void> {
       role: APP_ROLE,
     }),
     audit: new PostgresAudit(pool, APP_ROLE),
+    auditQueryText: config.auditQueryText,
     jobs: new PostgresJobs(pool, APP_ROLE, principalsCache),
     layers: new PostgresLayers(pool, vectors, APP_ROLE, principalsCache),
     workspaces: new PostgresWorkspaces(pool, APP_ROLE, principalsCache),

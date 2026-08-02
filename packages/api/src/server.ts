@@ -7,6 +7,7 @@ import { URL } from 'node:url'
 import {
   logger,
   MetadataError,
+  queryAudit,
   parseFilters,
   parseMetadata,
   PROTECTED_RESOURCE_PATH,
@@ -602,6 +603,11 @@ export interface ApiOptions {
   readonly serviceAccounts?: ServiceAccountPort
   /** `NACRE_MAX_DOCUMENT_BYTES`. Over it is `413`, not `400`. */
   readonly maxBodyBytes?: number
+  /**
+   * `NACRE_AUDIT_QUERY_TEXT`. Absent is the default and means the journal keeps
+   * the hash of a query and not the query.
+   */
+  readonly auditQueryText?: boolean
 }
 
 /**
@@ -1427,7 +1433,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // rerank — because that is what a caller waits for and what the p95
       // target in docs/config.md is about. It was never observed at all, so the
       // histogram rendered no series and the target was unmeasurable.
-      options.observe?.searchDuration.observe(Number(process.hrtime.bigint() - started) / 1e9)
+      const elapsedNs = Number(process.hrtime.bigint() - started)
+      options.observe?.searchDuration.observe(elapsedNs / 1e9)
       options.observe?.searchResults.inc({}, results.length)
       if (results.length === 0) {
         // Zero permitted results is what a denial looks like on this endpoint:
@@ -1442,15 +1449,25 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         result: 'allow',
         // `docs/audit.md` opens by promising that "show me which documents your
         // agent read last quarter has to get a precise answer". That needs the
-        // ids, and this wrote a count. The query text is deliberately still not
-        // here — CLAUDE.md forbids logging it, and `NACRE_AUDIT_QUERY_TEXT`
-        // exists for deployments that decide otherwise.
+        // ids, and this wrote a count.
         target: {
           returned_docs: [...new Set(results.map((r) => r.doc_id))],
           layers: [...new Set(results.map((r) => r.layer))],
           top_k: boundedTopK(request.top_k),
         },
-        detail: { returned: results.length },
+        // The hash always, the text only where a deployment asked for it. The
+        // same call on the MCP side, so one search leaves one shape of record
+        // whichever door it came through.
+        // `latency_ms` is in the documented shape of a search event and was
+        // not written either. The number is already measured for the histogram
+        // one line above; it just never reached the journal, where it is what
+        // makes "this search was slow" answerable per caller rather than only
+        // as a percentile.
+        detail: {
+          returned: results.length,
+          latency_ms: Math.round(elapsedNs / 1e6),
+          ...queryAudit(query, options.auditQueryText === true),
+        },
         requestId,
       })
       send(res, 200, { items: results }, requestId)

@@ -22,6 +22,7 @@ import {
   cachedEffectivePrincipals,
   loadGroupsVersion,
   logger,
+  queryAudit,
   S3,
   VectorStore,
   withOrg,
@@ -255,7 +256,12 @@ export function buildServices(
               layers: [...new Set(hits.map((h) => h.layer))],
               top_k: topK,
             },
-            detail: { returned: hits.length },
+            // The same shape as the REST surface, from the same function. Two
+            // doors into one authorization service must leave one journal.
+            detail: {
+              returned: hits.length,
+              ...queryAudit(query, config.auditQueryText),
+            },
             requestId,
           })
           return hits

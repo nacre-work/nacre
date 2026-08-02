@@ -152,7 +152,6 @@ should know that setting one changes nothing today:
 
 | Variable | What it would do |
 |---|---|
-| `NACRE_AUDIT_QUERY_TEXT` | query text is never written, with or without it |
 | `NACRE_PRESIGN_TTL` | nothing hands out a presigned URL yet; `GET /v1/documents/{id}` returns metadata, never a link to the bytes |
 | `NACRE_OAUTH_CIMD_ENABLED`, `NACRE_OAUTH_DCR_ENABLED`, `NACRE_EMA_*` | client registration and EMA are not built |
 | `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
