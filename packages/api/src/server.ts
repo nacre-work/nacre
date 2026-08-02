@@ -492,11 +492,22 @@ function resourceFor(method: string, instance: string): Resource | undefined {
  * survives this cache expiring and is therefore the stronger guarantee.
  * Wrapping it would add a weaker one on top and a second thing to reason about.
  *
+ * `/v1/search` is here because it is the one response made entirely of other
+ * people's documents. Caching it put chunk text in Redis for 24 hours — the
+ * defect already found once with service account keys, on the endpoint that
+ * returns the most sensitive thing in the product. A search is also safe to
+ * repeat by definition, so idempotency bought it nothing in the first place.
+ *
  * The test for adding a path: **would the response be a problem in a cache
- * dump?** If a response is only ever shown once on purpose, it does not go in a
- * store with a 24-hour TTL and no access control of its own.
+ * dump?** If a response is only ever shown once on purpose, or is assembled
+ * from what one caller in particular may read, it does not go in a store with a
+ * 24-hour TTL and no access control of its own.
  */
-const NEVER_CACHED: ReadonlySet<string> = new Set(['/v1/service-accounts', '/v1/documents'])
+const NEVER_CACHED: readonly string[] = ['/v1/service-accounts', '/v1/documents', '/v1/search']
+
+/** Prefix rather than exact match, so `/v1/service-accounts/{id}` is covered too. */
+const neverCached = (instance: string): boolean =>
+  NEVER_CACHED.some((path) => instance === path || instance.startsWith(`${path}/`))
 
 /**
  * `/v1/auth/*`: the endpoints that exist to produce a credential.
@@ -794,11 +805,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     idempotencyKey.length > 0 &&
     options.idempotency !== undefined &&
     ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method ?? '') &&
-    !NEVER_CACHED.has(instance)
+    !neverCached(instance)
   ) {
     const outcome = await options.idempotency.begin(
       idempotencyKey,
-      auth.orgId,
+      // The principal, not just the organization. Two principals in one tenant
+      // see different things, so a response cached for one must never be
+      // replayed to another — a replay is sent before any handler runs, so
+      // there is no permission check left to catch it.
+      { orgId: auth.orgId, type: auth.principal.type, id: auth.principal.id },
       req.method ?? '',
       instance,
       body,

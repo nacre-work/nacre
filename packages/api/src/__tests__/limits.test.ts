@@ -25,7 +25,10 @@ if (!url && process.env.CI) {
 const when = url ? describe : describe.skip
 
 const ORG = 'org-limits-1'
+const ALICE = { orgId: ORG, type: 'user', id: 'alice' }
+const BOB = { orgId: ORG, type: 'user', id: 'bob' }
 const OTHER = 'org-limits-2'
+const OTHER_ORG_ALICE = { orgId: OTHER, type: 'user', id: 'alice' }
 
 let redis: Redis
 
@@ -160,58 +163,90 @@ when('idempotency', () => {
 
   it('replays the stored response for a repeat of the same request', async () => {
     const k = key()
-    const first = await idem().begin(k, ORG, 'POST', '/v1/grants', { a: 1 })
+    const first = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 1 })
     expect(isReplay(first)).toBe(false)
     if (isReplay(first) || isConflict(first)) throw new Error('expected to proceed')
 
     await first.store(201, { id: 'grant-1' })
 
-    const second = await idem().begin(k, ORG, 'POST', '/v1/grants', { a: 1 })
+    const second = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 1 })
     expect(isReplay(second)).toBe(true)
     if (!isReplay(second)) throw new Error('expected a replay')
     expect(second.cached).toEqual({ status: 201, body: { id: 'grant-1' } })
   })
 
+  it('the same key from another principal in the same organization is a different key', async () => {
+    // The leak this replaced. Scoped to the organization alone, any principal
+    // in the tenant who presented the same key and the same body was handed
+    // whatever the first one got — replayed before any handler runs, so with no
+    // permission check left to catch it. Two principals in one organization see
+    // different things; that is the entire product.
+    const k = key()
+    const mine = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 1 })
+    if (isReplay(mine) || isConflict(mine)) throw new Error('expected to proceed')
+    await mine.store(201, { id: 'alice-only' })
+
+    const theirs = await idem().begin(k, BOB, 'POST', '/v1/grants', { a: 1 })
+    expect(isReplay(theirs), 'Bob must not receive Alice’s cached response').toBe(false)
+    // And not a conflict either — Bob's key is simply his own, so his request
+    // proceeds and is answered by the handler, which will refuse him if it must.
+    expect(isConflict(theirs)).toBe(false)
+  })
+
+  it('never stores a failure, so one cannot be replayed or poison a key', async () => {
+    const k = key()
+    const first = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 1 })
+    if (isReplay(first) || isConflict(first)) throw new Error('expected to proceed')
+    await first.store(404, { title: 'Not found' })
+
+    // A retry must reach the handler rather than the cached refusal. Storing a
+    // failure makes a transient fault permanent for a day and denies exactly
+    // the retry this feature exists to serve.
+    const retry = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 1 })
+    expect(isReplay(retry)).toBe(false)
+    expect(isConflict(retry)).toBe(false)
+  })
+
   it('the same key from another organization is a different key', async () => {
     const k = key()
-    const mine = await idem().begin(k, ORG, 'POST', '/v1/grants', { a: 1 })
+    const mine = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 1 })
     if (isReplay(mine) || isConflict(mine)) throw new Error('expected to proceed')
     await mine.store(201, { id: 'mine' })
 
     // The key is a string the caller chose. Without the organization in the
     // cache key, `Idempotency-Key: 1` would hand one tenant's response to
     // another — invariant I1 broken by a convenience feature.
-    const theirs = await idem().begin(k, OTHER, 'POST', '/v1/grants', { a: 1 })
+    const theirs = await idem().begin(k, OTHER_ORG_ALICE, 'POST', '/v1/grants', { a: 1 })
     expect(isReplay(theirs)).toBe(false)
   })
 
   it('the same key with a different body is a conflict, not a replay', async () => {
     const k = key()
-    const first = await idem().begin(k, ORG, 'POST', '/v1/grants', { a: 1 })
+    const first = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 1 })
     if (isReplay(first) || isConflict(first)) throw new Error('expected to proceed')
     await first.store(201, { id: 'grant-1' })
 
     // A caller who changed the payload and kept the key is not asking for the
     // old answer, and giving it to them silently is the worst of the options.
-    const changed = await idem().begin(k, ORG, 'POST', '/v1/grants', { a: 2 })
+    const changed = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 2 })
     expect(isConflict(changed)).toBe(true)
   })
 
   it('a second attempt while the first is still running is a conflict', async () => {
     const k = key()
-    const first = await idem().begin(k, ORG, 'POST', '/v1/grants', { a: 1 })
+    const first = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 1 })
     expect(isReplay(first) || isConflict(first)).toBe(false)
 
     // Nothing stored yet: replaying a response that does not exist is not an
     // option, and neither is running the work twice.
-    const concurrent = await idem().begin(k, ORG, 'POST', '/v1/grants', { a: 1 })
+    const concurrent = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 1 })
     expect(isConflict(concurrent)).toBe(true)
   })
 
   it('exactly one of many concurrent attempts proceeds', async () => {
     const k = key()
     const outcomes = await Promise.all(
-      Array.from({ length: 8 }, () => idem().begin(k, ORG, 'POST', '/v1/grants', { a: 1 })),
+      Array.from({ length: 8 }, () => idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 1 })),
     )
     const proceeded = outcomes.filter((o) => !isReplay(o) && !isConflict(o))
     expect(proceeded).toHaveLength(1)
@@ -219,12 +254,12 @@ when('idempotency', () => {
 
   it('the method and the path are part of the key', async () => {
     const k = key()
-    const post = await idem().begin(k, ORG, 'POST', '/v1/grants', { a: 1 })
+    const post = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 1 })
     if (isReplay(post) || isConflict(post)) throw new Error('expected to proceed')
     await post.store(201, { id: 'x' })
 
-    expect(isConflict(await idem().begin(k, ORG, 'DELETE', '/v1/grants', { a: 1 }))).toBe(true)
-    expect(isConflict(await idem().begin(k, ORG, 'POST', '/v1/layers', { a: 1 }))).toBe(true)
+    expect(isConflict(await idem().begin(k, ALICE, 'DELETE', '/v1/grants', { a: 1 }))).toBe(true)
+    expect(isConflict(await idem().begin(k, ALICE, 'POST', '/v1/layers', { a: 1 }))).toBe(true)
   })
 
   it('fails open when redis is unreachable', async () => {
@@ -232,7 +267,7 @@ when('idempotency', () => {
     const degraded: unknown[] = []
     const outcome = await new Idempotency({ redis: broken, onDegraded: (e) => degraded.push(e) }).begin(
       key(),
-      ORG,
+      ALICE,
       'POST',
       '/v1/grants',
       {},

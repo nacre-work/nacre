@@ -58,7 +58,7 @@ const revoked: string[] = []
 const cached: { path: string; status: number; body: unknown }[] = []
 
 const idempotency = {
-  begin: async (_key: string, _orgId: string, _method: string, path: string) => ({
+  begin: async (_key: string, _principal: unknown, _method: string, path: string) => ({
     proceed: true as const,
     store: async (status: number, body: unknown) => {
       cached.push({ path, status, body })
