@@ -1,0 +1,22 @@
+-- Pin the search_path on the one SECURITY DEFINER function.
+--
+-- `0003` made `bump_groups_version()` SECURITY DEFINER and did not pin its
+-- search_path. The body's unqualified `organizations` therefore resolves
+-- through the *caller's* search_path, and any role may create objects in
+-- `pg_temp`. A caller who shadows the table stops `groups_version` advancing —
+-- so revocations never propagate, while `nacre_acl_propagation_lag_seconds`
+-- reports a healthy zero because nothing is behind a version that never moved.
+-- A silent failure of invariant 4, with its own evidence metric confirming
+-- health.
+--
+-- It runs as the migration owner, which `docs/config.md` allows to be a
+-- superuser, so the ceiling is high. Reaching it needs database access as
+-- `nacre_app` — defence in depth rather than a remote hole — which is exactly
+-- what the second line of defence is for in a product whose first line is a
+-- permission model.
+--
+-- A separate migration rather than an edit to 0003: migrations are
+-- forward-only and their checksums are re-verified on every run, so editing an
+-- applied file makes the next `migrate` fail on every existing database.
+
+ALTER FUNCTION bump_groups_version() SET search_path = pg_catalog, public;

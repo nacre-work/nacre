@@ -31,9 +31,11 @@ cleared for — and being able to prove it to an auditor.
   HNSW traversal, not after ranking, so `top_k` returns k permitted results
   rather than k minus whatever got stripped out.
 - **MCP as a first-class surface.** Streamable HTTP per the 2026-07-28 spec,
-  OAuth 2.1 with PKCE and CIMD. Local STDIO for developer agents.
+  and local STDIO for developer agents. Agents authenticate with a service
+  account key today; OAuth discovery is specified and not built.
 - **Bring your own models.** Embeddings through any OpenAI-compatible
-  endpoint, bound per layer, swappable with zero-downtime reindexing.
+  endpoint, bound per layer. Changing the model on an existing layer needs a
+  reindex, which is specified and not built.
 - **Stays inside your network.** Docker Compose, no phone-home.
 
 ## Quickstart
@@ -79,8 +81,10 @@ Signing in works: email and password, with rotating refresh tokens that end the
 session if one is replayed. `init` creates the first administrator and prints a
 generated password once. SSO is a commercial module.
 
-What is not built: OAuth discovery and dynamic client registration, and
-multipart upload on ingest. `docker compose up` has not been run from a clean
+What is not built, all of it described in `docs/` because that is the contract
+it will be built to: `POST /v1/layers/{id}/reindex` and `GET /v1/audit`, OAuth
+discovery and dynamic client registration, and multipart upload on ingest. The
+audit log is written on every access and cannot yet be read back over the API. `docker compose up` has not been run from a clean
 checkout, though its profiles are validated in CI.
 
 `docs/` is the specification, and it still runs ahead of the code in places —
@@ -100,7 +104,12 @@ Details in [docs/authz.md](./docs/authz.md).
 
 ## License
 
-Apache 2.0. Multi-tenancy, SSO/SCIM, EMA, and audit ship as separate
-commercial modules — see [nacre.work/enterprise](https://nacre.work/enterprise).
+Apache 2.0 — all of it. Everything above is in this repository and stays there.
+
+Multi-tenancy, SSO/SCIM, document-level deny rules, EMA and SIEM export are
+planned as commercial modules and **none of them is written yet**; there is
+nothing to buy today. Where this build meets one of them it refuses in the
+open — a `deny` rule or a document-scoped grant is answered `400` with the
+reason, rather than accepted and silently not enforced.
 
 The Nacre name and mark are trademarks; see [TRADEMARK.md](./TRADEMARK.md).

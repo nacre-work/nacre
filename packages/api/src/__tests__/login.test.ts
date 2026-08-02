@@ -193,6 +193,25 @@ when('signing in', () => {
     expect(await login.refresh(third!.refreshToken)).toBeUndefined()
   })
 
+  it('lets exactly one of many concurrent redemptions win', async () => {
+    // The read-modify-write this replaced let all eight through: every request
+    // read `used_at IS NULL` before any of them wrote it, so a stolen token
+    // bought unlimited sessions and the reuse detection never fired. Rotation
+    // without an atomic claim detects nothing — it only makes theft quieter.
+    const first = await login.login({ email: 'alice@login.test', password: PASSWORD })
+
+    const outcomes = await Promise.all(
+      Array.from({ length: 8 }, () => login.refresh(first!.refreshToken)),
+    )
+    expect(outcomes.filter((o) => o !== undefined)).toHaveLength(1)
+
+    // And the losers are treated as reuse, so the family is gone: the one that
+    // won is dead too. Eight simultaneous redemptions of one token is not a
+    // client retrying, and the honest response is to end the session.
+    const winner = outcomes.find((o) => o !== undefined)
+    expect(await login.refresh(winner!.refreshToken)).toBeUndefined()
+  })
+
   it('does not renew a session for an account that has since been disabled', async () => {
     const tokens = await login.login({ email: 'alice@login.test', password: PASSWORD })
 

@@ -155,6 +155,25 @@ async function main(): Promise<void> {
     role: APP_ROLE,
   })
 
+  // What this process cannot serve a request without. S3 is in the documented
+  // list and is not checked, because nothing in the tree reads it yet — a probe
+  // that reported on a dependency the code never uses would be reporting on
+  // nothing. The embedder is not checked either: it is an external endpoint an
+  // operator supplies, a search fails loudly without it, and making readiness
+  // depend on somebody else's uptime turns their outage into a rollout that
+  // never completes.
+  const ready = async (): Promise<Record<string, boolean>> => {
+    const [postgres, qdrant, redisUp] = await Promise.all([
+      withOrg(pool, '00000000-0000-0000-0000-000000000000', async (c) => {
+        await c.query('SELECT 1')
+        return true
+      }, { role: APP_ROLE }).catch(() => false),
+      vectors.ready().catch(() => false),
+      redis.ping().catch(() => false),
+    ])
+    return { postgres, qdrant, redis: redisUp }
+  }
+
   const server = createApi({
     verify: {
       key,
@@ -163,6 +182,8 @@ async function main(): Promise<void> {
       serviceKeys: new PostgresServiceKeys(pool, APP_ROLE),
     },
     metrics: registry,
+    ready,
+    maxBodyBytes: config.maxDocumentBytes,
     limits,
     limitPolicies,
     idempotency,

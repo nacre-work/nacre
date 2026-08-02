@@ -11,21 +11,35 @@ import type { Redis } from '@nacre.work/core'
  * issuing a grant, revoking one, creating a service account. A client that
  * times out and retries should not end up with two accounts.
  *
- * ## Scoped to the organization and to the request
+ * ## Scoped to the caller, not to the tenant
  *
- * The cache key mixes the key the caller sent with the organization from the
- * token, the method, the path, **and a hash of the body**. Two of those are not
- * optional:
+ * The cache key mixes the key the caller sent with the organization, **the
+ * principal**, the method, the path, and a hash of the body. Three of those are
+ * not optional.
  *
- * The organization, because a key is a string the caller chose. Without it,
- * `Idempotency-Key: 1` from one tenant would hand another tenant's cached
- * response to whoever asked next — a cross-tenant leak through a cache, which
- * is invariant I1 broken by a convenience feature.
+ * The organization, because a key is a string the caller chose: without it,
+ * `Idempotency-Key: 1` from one tenant hands another tenant's response to
+ * whoever asks next.
+ *
+ * The principal, for the same reason one level down, and this one was missing.
+ * Two principals in one organization see different things — that is the whole
+ * product — so a cache scoped to the tenant let any of them replay any other's
+ * response, verbatim and unchecked, because a replay is sent before any handler
+ * runs. It bypassed the pre-filter (invariant 2), handed read results to a
+ * `write`-only service account (invariant 6), and kept serving a principal
+ * whose grant had been revoked for a further 24 hours (invariant 4).
  *
  * The body, because reusing a key with different content is a client bug, and
  * the useful answer to it is `409` rather than silently replaying the first
  * result. A caller who changes the payload and keeps the key is not asking for
  * the old answer.
+ *
+ * ## Only responses, and only successful ones
+ *
+ * A failure is never stored. The point is to stop a retry repeating an
+ * **effect**, and a request that failed had none — while a cached `500` makes a
+ * transient fault permanent for a day and denies the retry the feature exists
+ * to serve.
  *
  * ## Failing open
  *
@@ -75,8 +89,30 @@ export const isConflict = (o: Outcome): o is Conflict => 'conflict' in o
  * responses get there at all*, since one of them must never.
  */
 export interface IdempotencyStore {
-  begin(key: string, orgId: string, method: string, path: string, body: unknown): Promise<Outcome>
+  begin(
+    key: string,
+    principal: Principal,
+    method: string,
+    path: string,
+    body: unknown,
+  ): Promise<Outcome>
 }
+
+/**
+ * Who a cached response belongs to.
+ *
+ * A response is cached for the principal that produced it and for nobody else.
+ * Two principals in one organization are as separate here as two organizations
+ * are — they see different things, which is the entire product.
+ */
+export interface Principal {
+  readonly orgId: string
+  readonly type: string
+  readonly id: string
+}
+
+/** Organization, then principal. Both, in that order, so neither can be crossed. */
+const orgId = (p: Principal): string => `${p.orgId}:${p.type}:${p.id}`
 
 export interface IdempotencyOptions {
   readonly redis: Redis
@@ -97,15 +133,26 @@ export class Idempotency implements IdempotencyStore {
    */
   async begin(
     key: string,
-    orgId: string,
+    principal: Principal,
     method: string,
     path: string,
     body: unknown,
   ): Promise<Outcome> {
     const fingerprint = digest(JSON.stringify({ method, path, body: body ?? null }))
-    // The organization first, so the namespace cannot be crossed by a key the
-    // caller picked.
-    const cacheKey = `nacre:idem:${orgId}:${digest(key)}`
+    // The organization AND the principal, and the second one is not optional.
+    //
+    // Scoped to the organization alone, this was a cross-principal read: the
+    // key is a string the caller chose, so any principal in the tenant who
+    // presented the same key and the same body was handed whatever the first
+    // one got — replayed verbatim, with no permission check on the way out,
+    // because the cached response is sent before any handler runs.
+    //
+    // That is invariant 2 bypassed (the answer comes from a cache rather than
+    // from a filtered index traversal), invariant 6 bypassed (a `write`-only
+    // service account receives read results), and invariant 4 defeated for
+    // 24 hours (a principal whose grant was revoked replays their own key and
+    // keeps being served). One convenience feature, four rules.
+    const cacheKey = `nacre:idem:${orgId(principal)}:${digest(key)}`
 
     try {
       const existing = await this.options.redis.command('GET', cacheKey)
@@ -137,6 +184,16 @@ export class Idempotency implements IdempotencyStore {
       return {
         proceed: true,
         store: async (status, responseBody) => {
+          // Only what succeeded. A cached failure is never useful and is often
+          // harmful: the point of this cache is to stop a retry repeating an
+          // *effect*, and a request that failed had none to repeat. Storing one
+          // makes a transient 500 permanent for 24 hours and turns the retry
+          // the feature exists to serve into the one thing it cannot do.
+          if (status >= 400) {
+            await this.options.redis.command('DEL', cacheKey).catch(() => undefined)
+            return
+          }
+
           try {
             await this.options.redis.command(
               'SET',

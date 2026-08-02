@@ -173,6 +173,75 @@ when('observability · the database gauges', () => {
     expect(gauge(await scrape(), 'nacre_acl_propagation_lag_seconds', '{org="obs"}')).toBe(0)
   })
 
+  it('a document with no points in the index never contributes lag', async () => {
+    await tag(ids.fresh, 5, 10)
+    await tag(ids.stale, 5, 10)
+
+    // Saved and restored: this fixture is shared with the tests below, which
+    // assert on status counts.
+    const before = await withOrg(
+      pool,
+      ORG,
+      async (c) =>
+        (
+          await c.query<{ status: string; chunk_count: number }>(
+            'SELECT status, chunk_count FROM documents WHERE org_id = $1 AND id = $2',
+            [ORG, ids.stale],
+          )
+        ).rows[0],
+      AS_APP,
+    )
+
+    // A document that never reached the index — `pending`, or `failed` before
+    // its first successful pass — has no points, so it carries no tags and can
+    // leak no revoked grant. It also cannot be drained: the retag loop claims
+    // on the same predicate, so counting it pinned the gauge at that document's
+    // age forever. The one metric with an alert on it became a stuck alert,
+    // which is how an alert gets muted.
+    await withOrg(
+      pool,
+      ORG,
+      (c) =>
+        c.query(
+          `UPDATE documents SET acl_version = 0, chunk_count = 0, status = 'failed',
+                                acl_tagged_at = now() - make_interval(secs => 100000)
+            WHERE org_id = $1 AND id = $2`,
+          [ORG, ids.stale],
+        ),
+      AS_APP,
+    )
+
+    expect(gauge(await scrape(), 'nacre_acl_propagation_lag_seconds', '{org="obs"}')).toBe(0)
+
+    // And one that *does* have points is still counted, whatever its status —
+    // a document that indexed once and failed on a later pass still has the
+    // earlier pass's points, which is the case this metric exists for.
+    await withOrg(
+      pool,
+      ORG,
+      (c) =>
+        c.query(`UPDATE documents SET chunk_count = 3 WHERE org_id = $1 AND id = $2`, [ORG, ids.stale]),
+      AS_APP,
+    )
+
+    expect(
+      gauge(await scrape(), 'nacre_acl_propagation_lag_seconds', '{org="obs"}'),
+    ).toBeGreaterThanOrEqual(99_000)
+
+    await withOrg(
+      pool,
+      ORG,
+      (c) =>
+        c.query('UPDATE documents SET status = $3, chunk_count = $4 WHERE org_id = $1 AND id = $2', [
+          ORG,
+          ids.stale,
+          before?.status ?? 'indexed',
+          before?.chunk_count ?? 1,
+        ]),
+      AS_APP,
+    )
+  })
+
   it('revoking a grant makes the lag visible', async () => {
     // The scenario the metric is named for, end to end. Everything current,
     // then a grant is revoked; the version moves and the documents are behind

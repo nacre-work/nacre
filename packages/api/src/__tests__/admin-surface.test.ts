@@ -58,7 +58,7 @@ const revoked: string[] = []
 const cached: { path: string; status: number; body: unknown }[] = []
 
 const idempotency = {
-  begin: async (_key: string, _orgId: string, _method: string, path: string) => ({
+  begin: async (_key: string, _principal: unknown, _method: string, path: string) => ({
     proceed: true as const,
     store: async (status: number, body: unknown) => {
       cached.push({ path, status, body })
@@ -556,6 +556,75 @@ describe('the administrative surface', () => {
       }),
     })
     expect(res.status).toBe(403)
+  })
+
+  it('top_k is clamped rather than passed through', async () => {
+    // It reached Qdrant's `limit` verbatim, and with reranking on it also
+    // decided how many rows to hydrate from Postgres. `1e309` parses to
+    // Infinity; negatives and fractions went through unexamined.
+    const asked: number[] = []
+    const probe = createApi({
+      verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE },
+      documents: { read: async () => undefined },
+      search: {
+        search: async (_a, _q, topK) => {
+          asked.push(topK)
+          return []
+        },
+      },
+      ingest: { queue: async () => undefined, remove: async () => false },
+      audit: { write: async () => {} },
+    })
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve))
+    const at = `http://127.0.0.1:${(probe.address() as AddressInfo).port}`
+
+    // Number.POSITIVE_INFINITY rather than the literal 1e309: eslint refuses a
+    // literal that loses precision, and JSON.stringify writes both as `null`
+    // anyway — the wire form a client sending 1e309 actually produces.
+    for (const value of [Number.POSITIVE_INFINITY, -5, 2.7, 5000, 'ten', undefined]) {
+      await fetch(`${at}/v1/search`, {
+        method: 'POST',
+        headers: await auth(),
+        body: JSON.stringify(value === undefined ? { query: 'x' } : { query: 'x', top_k: value }),
+      })
+    }
+    await new Promise<void>((resolve) => probe.close(() => resolve()))
+
+    // Clamped, not refused: the bound is a resource limit rather than a
+    // permission one, so asking for more is answered with the maximum.
+    //
+    // `1e309` is the exception and gets the default rather than the maximum.
+    // JSON parses it to Infinity, which is not a number a client can have
+    // meant — so it is treated as malformed input rather than as a large
+    // request, the same as the string.
+    expect(asked).toEqual([10, 1, 2, 50, 10, 10])
+  })
+
+  it('a body over the limit is 413 and says so, not 400', async () => {
+    const probe = createApi({
+      verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE },
+      maxBodyBytes: 512,
+      documents: { read: async () => undefined },
+      search: { search: async () => [] },
+      ingest: { queue: async () => undefined, remove: async () => false },
+      audit: { write: async () => {} },
+    })
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve))
+    const at = `http://127.0.0.1:${(probe.address() as AddressInfo).port}`
+
+    const res = await fetch(`${at}/v1/search`, {
+      method: 'POST',
+      headers: await auth(),
+      body: JSON.stringify({ query: 'x'.repeat(2000) }),
+    })
+    await new Promise<void>((resolve) => probe.close(() => resolve()))
+
+    // It was 400 "The request body could not be read" — true, and useless to a
+    // caller trying to work out what to change.
+    expect(res.status).toBe(413)
+    expect((await res.json()) as { detail: string }).toMatchObject({
+      detail: expect.stringContaining('NACRE_MAX_DOCUMENT_BYTES'),
+    })
   })
 
   it('the admin routes need a token', async () => {

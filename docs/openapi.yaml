@@ -164,12 +164,17 @@ components:
       in: header
       required: false
       description: >
-        Caches the response for 24 hours, scoped to the organization, the
-        method, the path and a hash of the body. Reusing a key with a different
-        body is 409, as is a second attempt while the first is still in flight.
-        Ignored on POST /documents, which is already idempotent on content, and
-        on POST /service-accounts, whose response carries a credential that must
-        not be cached.
+        Caches the response for 24 hours, scoped to the organization, **the
+        principal**, the method, the path and a hash of the body. The principal
+        is in that list because two principals in one organization see different
+        things: a cache scoped to the tenant alone let either of them replay the
+        other's response. Reusing a key with a different body is 409, as is a
+        second attempt while the first is still in flight. Only successful
+        responses are stored — a cached failure makes a transient fault
+        permanent for a day. Ignored on POST /documents (already idempotent on
+        content), on POST /search (safe to repeat, and its response is made of
+        other people's documents), and on /service-accounts, whose response
+        carries a credential.
       schema: { type: string, maxLength: 255 }
   headers:
     RateLimitLimit:
@@ -421,6 +426,18 @@ paths:
         gets 404, identical to a workspace that does not exist.
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspace_id, slug, name]
+              properties:
+                workspace_id: { type: string, format: uuid }
+                slug:         { type: string, description: Unique within the organization }
+                name:         { type: string }
+                description:  { type: string }
       responses:
         '201':
           description: Created
@@ -437,7 +454,13 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /layers/{id}/reindex:
     post:
-      summary: Reindex onto a different model. Search stays available throughout.
+      summary: 'Reindex onto a different model. NOT IMPLEMENTED.'
+      description: >
+        Specified and not built. There is no route: a request to this path is
+        answered 404 like any other unknown path. It is documented because this
+        is the contract it will be built to — search staying available
+        throughout is the requirement, not a description of current behaviour.
+        See docs/architecture.md for the intended sequence.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -583,10 +606,21 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /audit:
     get:
-      summary: Access log. Cursor pagination; JSONL and CSV export.
+      summary: 'Access log. NOT IMPLEMENTED.'
+      description: >
+        Specified and not built; a request to this path is answered 404. Events
+        are written on every access — see docs/audit.md — and there is no way to
+        read them back over the API yet. Cursor pagination and JSONL/CSV export
+        are the contract this will be built to.
       parameters:
         - { $ref: '#/components/parameters/Limit' }
         - { $ref: '#/components/parameters/Cursor' }
       responses:
         '200': { description: Events }
-        '403': { description: The caller may not read this organization's audit log }
+        '404':
+          description: >
+            Not 403, which an earlier draft of this document published and which
+            would have been the only 403 in the contract. Invariant 4 reserves
+            403 for an operation forbidden on an object the caller can already
+            see; whether an organization has an audit log is not something a
+            caller who may not read it is told.

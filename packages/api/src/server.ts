@@ -279,6 +279,14 @@ export interface ApiOptions {
   /** Rendered at /metrics. Absent means the endpoint answers 404. */
   readonly metrics?: { render(): Promise<string> }
   /**
+   * Answered at `/v1/ready`. Absent means the endpoint answers 404.
+   *
+   * One boolean per dependency, and never an error string: this endpoint is
+   * unauthenticated, so what it says about the inside of the deployment is what
+   * anyone who can reach the port learns.
+   */
+  readonly ready?: () => Promise<Record<string, boolean>>
+  /**
    * Per-organization rate limiting. Absent means unlimited, which is the right
    * default for a surface being tested and the wrong one for a deployment —
    * `main.ts` always provides it.
@@ -297,9 +305,40 @@ export interface ApiOptions {
   readonly layers?: Layers
   readonly grants?: Grants
   readonly serviceAccounts?: ServiceAccountPort
+  /** `NACRE_MAX_DOCUMENT_BYTES`. Over it is `413`, not `400`. */
+  readonly maxBodyBytes?: number
 }
 
+/**
+ * The default body cap, in bytes.
+ *
+ * `NACRE_MAX_DOCUMENT_BYTES` overrides it — the variable was validated at
+ * startup and read by nothing, so `docs/api.md` promised 50 MB while the server
+ * refused anything over 1 MB, and refused it with a `400` whose message did not
+ * mention size. An operator raising the documented limit saw no change.
+ */
 const MAX_BODY_BYTES = 1_000_000
+
+/** Distinguishable from a malformed body, because the answers differ: 413, not 400. */
+class BodyTooLarge extends Error {}
+
+/**
+ * `top_k`, clamped to what the contract declares.
+ *
+ * It was passed through as whatever JSON produced: `1e309` becomes `Infinity`
+ * and reached Qdrant's `limit` verbatim, and with reranking on the same number
+ * decided how many rows to hydrate from Postgres. Negative and fractional
+ * values went through too.
+ *
+ * Clamped rather than refused. The bound is a resource limit and not a
+ * permission one, so a client that asks for more than the maximum is answered
+ * with the maximum — the same thing every paginated endpoint here does.
+ */
+const MAX_TOP_K = 50
+const boundedTopK = (value: unknown): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 10
+  return Math.min(MAX_TOP_K, Math.max(1, Math.floor(value)))
+}
 
 const PRINCIPAL_TYPES = ['user', 'group', 'service_account'] as const
 const PERMISSIONS = ['read', 'write', 'admin'] as const
@@ -379,12 +418,12 @@ function parseGrant(body: Record<string, unknown>): GrantInput | string {
   }
 }
 
-async function readBody(req: IncomingMessage): Promise<unknown> {
+async function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<unknown> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
     size += (chunk as Buffer).length
-    if (size > MAX_BODY_BYTES) throw new Error('body too large')
+    if (size > limit) throw new BodyTooLarge('body too large')
     chunks.push(chunk as Buffer)
   }
   if (chunks.length === 0) return undefined
@@ -492,11 +531,22 @@ function resourceFor(method: string, instance: string): Resource | undefined {
  * survives this cache expiring and is therefore the stronger guarantee.
  * Wrapping it would add a weaker one on top and a second thing to reason about.
  *
+ * `/v1/search` is here because it is the one response made entirely of other
+ * people's documents. Caching it put chunk text in Redis for 24 hours — the
+ * defect already found once with service account keys, on the endpoint that
+ * returns the most sensitive thing in the product. A search is also safe to
+ * repeat by definition, so idempotency bought it nothing in the first place.
+ *
  * The test for adding a path: **would the response be a problem in a cache
- * dump?** If a response is only ever shown once on purpose, it does not go in a
- * store with a 24-hour TTL and no access control of its own.
+ * dump?** If a response is only ever shown once on purpose, or is assembled
+ * from what one caller in particular may read, it does not go in a store with a
+ * 24-hour TTL and no access control of its own.
  */
-const NEVER_CACHED: ReadonlySet<string> = new Set(['/v1/service-accounts', '/v1/documents'])
+const NEVER_CACHED: readonly string[] = ['/v1/service-accounts', '/v1/documents', '/v1/search']
+
+/** Prefix rather than exact match, so `/v1/service-accounts/{id}` is covered too. */
+const neverCached = (instance: string): boolean =>
+  NEVER_CACHED.some((path) => instance === path || instance.startsWith(`${path}/`))
 
 /**
  * `/v1/auth/*`: the endpoints that exist to produce a credential.
@@ -702,6 +752,31 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     return
   }
 
+  if (req.method === 'GET' && instance === '/v1/ready') {
+    // Readiness, which is the opposite of liveness and touches everything this
+    // process cannot serve a request without.
+    //
+    // `docs/config.md` has told operators to point a Kubernetes readinessProbe
+    // here since before there was a server, and the path answered `401` — it
+    // fell through to the authenticator, so the probe never succeeded and the
+    // rollout never completed. Unauthenticated for the same reason `/metrics`
+    // is: a probe has no credential to present, and the body says only which
+    // dependency is unhappy, never why.
+    //
+    // `503` rather than `200` with a body to parse. An orchestrator reads the
+    // status code, and a readiness endpoint that answers 200 while saying it is
+    // not ready is a readiness endpoint that does nothing.
+    if (options.ready === undefined) {
+      const problem = notFound(instance, requestId)
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+    const checks = await options.ready()
+    const ok = Object.values(checks).every(Boolean)
+    send(res, ok ? 200 : 503, { status: ok ? 'ready' : 'not ready', checks }, requestId)
+    return
+  }
+
   // Sign-in, before authentication, because it is what produces the credential
   // everything below this line requires.
   //
@@ -723,9 +798,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
   let body: unknown
   try {
-    body = await readBody(req)
-  } catch {
-    const problem = badRequest(instance, requestId, 'The request body could not be read.')
+    body = await readBody(req, options.maxBodyBytes ?? MAX_BODY_BYTES)
+  } catch (error) {
+    // 413 for size and 400 for anything else. They were one answer, and the
+    // message said neither — a caller over the limit was told their body could
+    // not be read, which is true and useless.
+    const problem =
+      error instanceof BodyTooLarge
+        ? new Problem({
+            type: 'https://nacre.work/errors/payload-too-large',
+            title: 'Payload too large',
+            status: 413,
+            detail: `The request body is over the ${options.maxBodyBytes ?? MAX_BODY_BYTES} byte limit set by NACRE_MAX_DOCUMENT_BYTES.`,
+            instance,
+            requestId,
+          })
+        : badRequest(instance, requestId, 'The request body could not be read.')
     send(res, problem.status, problem.toJSON(), requestId)
     return
   }
@@ -794,11 +882,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     idempotencyKey.length > 0 &&
     options.idempotency !== undefined &&
     ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method ?? '') &&
-    !NEVER_CACHED.has(instance)
+    !neverCached(instance)
   ) {
     const outcome = await options.idempotency.begin(
       idempotencyKey,
-      auth.orgId,
+      // The principal, not just the organization. Two principals in one tenant
+      // see different things, so a response cached for one must never be
+      // replayed to another — a replay is sent before any handler runs, so
+      // there is no permission check left to catch it.
+      { orgId: auth.orgId, type: auth.principal.type, id: auth.principal.id },
       req.method ?? '',
       instance,
       body,
@@ -857,7 +949,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       const results = await options.search.search(
         auth,
         query,
-        typeof topK === 'number' ? topK : 10,
+        boundedTopK(topK),
         // Only ever a way to turn it off; a deployment with no reranker
         // configured does not acquire one because a client asked.
         rerank === false ? { rerank: false } : {},

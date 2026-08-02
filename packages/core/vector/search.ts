@@ -125,6 +125,18 @@ export class VectorStore {
     return hits
   }
 
+  /**
+   * Whether the vector store is answering.
+   *
+   * `getCollections` rather than a bare TCP connect: Qdrant accepting a socket
+   * while refusing queries is the failure a readiness probe exists to catch,
+   * and the Compose healthcheck already covers the socket.
+   */
+  async ready(): Promise<boolean> {
+    await this.#client.getCollections()
+    return true
+  }
+
   async close(): Promise<void> {
     // The REST client holds no pool; this exists so callers have one shape to
     // depend on when it does.

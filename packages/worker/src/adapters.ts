@@ -441,7 +441,17 @@ export async function claimStale(pool: Pool, limit: number): Promise<readonly St
           WHERE d.deleted_at IS NULL
             AND o.deleted_at IS NULL
             AND d.acl_version < o.groups_version
-            AND d.status = 'indexed'
+            -- "Has points", not "is currently indexed". A document that
+            -- indexed once and failed on a later pass still has the earlier
+            -- pass's points in the index, still carries their tags, and is the
+            -- one case where a revoked grant can actually leak — and
+            -- a status filter skipped precisely those. It also left them
+            -- counted by nacre_acl_propagation_lag_seconds with nothing able to
+            -- drain them, pinning the one alerted metric permanently.
+            --
+            -- observability.ts uses the same predicate. The two must agree: a
+            -- gauge that counts what the loop cannot claim is a stuck alert.
+            AND d.chunk_count > 0
           ORDER BY COALESCE(d.acl_tagged_at, d.created_at)
           LIMIT $1`,
         [limit],

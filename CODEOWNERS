@@ -4,7 +4,15 @@
 
 /packages/core/authz/       @nacre-work/security @nacre-work/maintainers
 /packages/core/authz/**     @nacre-work/security @nacre-work/maintainers
-/packages/mcp/auth/         @nacre-work/security @nacre-work/maintainers
+# packages/mcp/auth/ was here and has never existed, so the rule protected
+# nothing. These are the paths that actually decide who sees what.
+/packages/api/src/auth.ts   @nacre-work/security @nacre-work/maintainers
+/packages/api/src/login.ts  @nacre-work/security @nacre-work/maintainers
+/packages/api/src/service-keys.ts  @nacre-work/security @nacre-work/maintainers
+/packages/api/src/idempotency.ts   @nacre-work/security @nacre-work/maintainers
+/packages/core/passwords.ts        @nacre-work/security @nacre-work/maintainers
+/packages/core/db/client.ts        @nacre-work/security @nacre-work/maintainers
+/packages/core/migrations/  @nacre-work/security @nacre-work/maintainers
 /docs/authz.md              @nacre-work/security
 /SECURITY.md                @nacre-work/security
 /TRADEMARK.md               @nacre-work/maintainers

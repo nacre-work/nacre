@@ -1,7 +1,7 @@
 {
   "name": "@nacre.work/core",
   "version": "0.0.0",
-  "description": "Data model, permission resolver, shared types",
+  "description": "Nacre core: data model, permission resolver, and shared types",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nacre-work/nacre.git",
@@ -26,7 +26,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "NOTICE"
   ],
   "dependencies": {
     "@qdrant/js-client-rest": "^1.18.0",
@@ -35,5 +37,21 @@
   "devDependencies": {
     "@types/node": "^26.1.2",
     "jose": "^6.2.7"
+  },
+  "keywords": [
+    "nacre",
+    "rag",
+    "permissions",
+    "access-control",
+    "authorization",
+    "vector-search",
+    "self-hosted"
+  ],
+  "bugs": {
+    "url": "https://github.com/nacre-work/nacre/issues"
+  },
+  "author": "Nacre",
+  "engines": {
+    "node": ">=22"
   }
 }

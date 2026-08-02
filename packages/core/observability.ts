@@ -68,9 +68,26 @@ export function collectDatabaseGauges(pool: Pool, metrics: Metrics, role?: strin
           async (c) =>
             (
               await c.query<{ lag: string | null }>(
+                // `chunk_count > 0` is the whole correctness of this gauge, and
+                // it was missing. The number is meant to be the age of the
+                // oldest document still carrying tags built from a superseded
+                // grant set — which only a document with points in the index
+                // can do. Without the clause it counted every document behind
+                // the version, including ones that never reached the index at
+                // all: a single `failed` or `pending` document pinned the gauge
+                // at its own age forever, because the retag loop claims neither
+                // and nothing else can ever clear it. The one metric with an
+                // alert on it became a stuck alert, which is how it gets muted.
+                //
+                // Deliberately not `status = 'indexed'`. A document that
+                // indexed once and failed on a later pass still has the
+                // earlier pass's points, still carries their tags, and is
+                // exactly the case this is supposed to catch — so the predicate
+                // is "has points", and `claimStale` uses the same one.
                 `SELECT COALESCE(EXTRACT(EPOCH FROM (now() - min(COALESCE(acl_tagged_at, created_at)))), 0)::text AS lag
                    FROM documents
-                  WHERE org_id = $1 AND deleted_at IS NULL AND acl_version < $2`,
+                  WHERE org_id = $1 AND deleted_at IS NULL AND chunk_count > 0
+                    AND acl_version < $2`,
                 [org.id, Number(org.groups_version)],
               )
             ).rows[0]?.lag ?? '0',

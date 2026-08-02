@@ -1,7 +1,7 @@
 {
   "name": "@nacre.work/mcp",
   "version": "0.0.0",
-  "description": "MCP server: Streamable HTTP and STDIO",
+  "description": "Nacre MCP server: Streamable HTTP and STDIO",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nacre-work/nacre.git",
@@ -29,7 +29,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "NOTICE"
   ],
   "dependencies": {
     "@nacre.work/api": "workspace:*",
@@ -37,5 +39,21 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.2"
+  },
+  "keywords": [
+    "nacre",
+    "mcp",
+    "model-context-protocol",
+    "agents",
+    "rag",
+    "permissions",
+    "self-hosted"
+  ],
+  "bugs": {
+    "url": "https://github.com/nacre-work/nacre/issues"
+  },
+  "author": "Nacre",
+  "engines": {
+    "node": ">=22"
   }
 }

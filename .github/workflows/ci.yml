@@ -74,6 +74,11 @@ jobs:
       # This one is here rather than only in release, where it is a gate: an
       # unpublishable manifest should fail on the pull request that wrote it,
       # not months later on the tag that was supposed to ship it.
+      # Apache 2.0 §4(a) and §4(d) travel with anything redistributed, and npm
+      # only picks these up from a package's own root — so a workspace with one
+      # copy at the repository root publishes neither. All four tarballs on npm
+      # today contain no LICENSE and no NOTICE.
+      - run: pnpm lint:legal
       - run: pnpm lint:publish
       - run: pnpm migrate
       - run: pnpm test:unit

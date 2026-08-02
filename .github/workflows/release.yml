@@ -22,8 +22,22 @@ jobs:
           --health-cmd pg_isready --health-interval 5s
           --health-timeout 5s --health-retries 10
         ports: ["5432:5432"]
+      # Both here for the same reason as postgres: the suites below refuse to
+      # skip when CI is set, and a release that quietly ran fewer of them than a
+      # pull request is the one artifact nobody can take back.
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+        ports: ["6379:6379"]
+      qdrant:
+        image: qdrant/qdrant:v1.15.1
+        ports: ["6333:6333"]
     env:
       NACRE_PG_URL: postgres://postgres:test@localhost:5432/nacre_test
+      NACRE_REDIS_URL: redis://localhost:6379/0
+      NACRE_QDRANT_URL: http://localhost:6333
     steps:
       - uses: actions/checkout@v4
       # The version comes from packageManager in package.json — passing it here
@@ -59,9 +73,37 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm lint:openapi
+      - run: pnpm lint:compose
       - run: pnpm lint:entrypoints
+      - run: pnpm lint:legal
       - run: pnpm migrate
       - run: pnpm test:unit
+
+      # The gate that matters, and it was not here.
+      #
+      # `test:unit` excludes packages/core/authz by design — the leak suite has
+      # its own job because it needs a real Qdrant. So a tag could be pushed at
+      # any commit and publish to the registry without T1-T15, the property test
+      # against the reference resolver, or the round trip ever having run
+      # against the tagged tree. Breaking one of those is, by this project's own
+      # rule, a security incident; publishing without checking is worse than a
+      # pull request that skips it, because the artifact cannot be withdrawn.
+      - run: pnpm lint:acl-groups
+      - run: pnpm test:acl
+
+      # The open/commercial boundary, for the same reason: the packages being
+      # published here are the ones a customer installs, and a core that
+      # references the private repository does not build for them at all.
+      - name: core must not reference private packages
+        run: |
+          set -euo pipefail
+          for d in packages services; do
+            [ -d "$d" ] || { echo "::error::$d/ is missing; boundary check cannot run"; exit 1; }
+          done
+          if grep -rn "@nacre.work/enterprise" --include="*.ts" --include="*.json" packages/ services/; then
+            echo "::error::public core references enterprise modules"
+            exit 1
+          fi
 
       # Trusted publishing, no token. Each package is configured on npmjs.com
       # under Settings -> Trusted Publisher against this repository and this
