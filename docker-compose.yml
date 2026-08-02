@@ -126,7 +126,16 @@ services:
       retries: 10
 
   qdrant:
-    image: qdrant/qdrant:v1.15.1
+    # Pinned to a version the client in packages/core actually supports.
+    #
+    # It was v1.15.1 against a `^1.18.0` client, so every process logged
+    # "Client version 1.18.0 is incompatible with server version 1.15.1" on
+    # startup, forever. A warning that appears on every boot is a warning
+    # nobody reads, which is how the one that matters gets missed.
+    #
+    # CI ran `qdrant/qdrant:latest` at the same time, so the version this file
+    # ships was the one version nothing tested against. Both are this now.
+    image: qdrant/qdrant:v1.18.3
     restart: unless-stopped
     volumes: ["qdrant:/qdrant/storage"]
     # Not published by default. The vector store holds every embedding in the

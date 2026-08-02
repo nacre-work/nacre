@@ -8,6 +8,19 @@ FROM node:22-alpine AS build
 WORKDIR /app
 RUN corepack enable
 
+# A build is not an interactive session, and pnpm needs telling.
+#
+# The second install below switches the tree from full to production-only, which
+# means pnpm removes `node_modules` and lays it down again. It refuses to do that
+# without confirmation when there is no TTY — and a `docker build` never has one,
+# so the step failed with ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY on every
+# machine, every time. Not an environment quirk: this image could not be built by
+# anyone.
+#
+# `CI=true` is what pnpm's own message suggests and is true of every context this
+# stage runs in. It is on the build stage only; the runtime image never sees it.
+ENV CI=true
+
 # Manifests first, so a source-only change reuses the dependency layer.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/core/package.json    packages/core/

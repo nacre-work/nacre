@@ -9,9 +9,12 @@
 > results while the points were still in the index. Four bugs were found doing
 > it and are fixed.
 >
-> One thing is still unrehearsed: `docker compose up` itself. The processes were
-> started directly, so the compose file's wiring is checked by `lint:compose`
-> and not by having run it.
+> **`docker compose --profile minimal up` has now been run too**, from a clean
+> clone, and it found three things: the image could not build at all (pnpm
+> refuses to replace `node_modules` without a TTY, and a build never has one),
+> `.env.example` defaulted the embedding endpoint to a service that only the
+> `full` profile starts, and the vector store was pinned to a version its own
+> client warns about on every boot. All three are fixed.
 
 ## What you will need
 
@@ -25,6 +28,25 @@
 ```bash
 git clone https://github.com/nacre-work/nacre && cd nacre
 cp .env.example .env
+```
+
+**Now set `NACRE_DEFAULT_EMBEDDING_ENDPOINT` in `.env`.** It ships empty on
+purpose and the API refuses to start without it, naming the variable. `minimal`
+starts no embedder — that is what keeps it runnable on a laptop without a GPU —
+so this is a value only you can supply:
+
+```ini
+# any OpenAI-compatible /embeddings endpoint
+NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://host.docker.internal:8000
+```
+
+On `--profile full`, use the embedder that profile brings:
+`http://embedder:80`. Either way, `NACRE_DEFAULT_EMBEDDING_DIM` has to match the
+model or the index is built with the wrong width and every search misses.
+
+Then:
+
+```bash
 docker compose --profile minimal up -d
 ```
 

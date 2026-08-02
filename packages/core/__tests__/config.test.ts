@@ -161,9 +161,22 @@ describe('configuration', () => {
     }
   })
 
-  it('.env.example is enough to boot in development', async () => {
-    // The file the quickstart tells people to copy. If it is missing something
-    // required, the first thing a new user sees is a crash.
+  /**
+   * `.env.example` must leave exactly one thing for the operator to supply.
+   *
+   * The assertion used to be "copying it is enough to start", and that was
+   * weaker than it looked: it passed with the embedding endpoint defaulted to
+   * `http://embedder:80`, a service only the `full` profile runs. The
+   * documented `minimal` first run therefore came up healthy, reported ready,
+   * accepted a document, and failed to index it against a hostname that does
+   * not exist — which is the exact failure the "no silent defaults for URLs"
+   * rule at the top of config.ts is about.
+   *
+   * So the file now ships that one variable empty, and this pins the list.
+   * Anything else going missing still fails here; anything else acquiring a
+   * placeholder default has to come past this test and say why.
+   */
+  const envExample = async (): Promise<Record<string, string>> => {
     const { readFileSync } = await import('node:fs')
     const { fileURLToPath } = await import('node:url')
     const text = readFileSync(fileURLToPath(new URL('../../../.env.example', import.meta.url)), 'utf8')
@@ -173,7 +186,22 @@ describe('configuration', () => {
       const match = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim())
       if (match) env[match[1] as string] = match[2] as string
     }
+    return env
+  }
 
-    expect(problems(env), 'copying .env.example must be enough to start').toEqual([])
+  it('.env.example leaves exactly one variable for the operator', async () => {
+    const env = await envExample()
+
+    // Named, not counted: a second blank appearing silently is the regression
+    // this catches, and "one problem" would not say which.
+    expect(problems(env)).toEqual(['NACRE_DEFAULT_EMBEDDING_ENDPOINT is not set'])
+  })
+
+  it('and supplying that one is enough to boot in development', async () => {
+    const env = await envExample()
+    expect(
+      problems({ ...env, NACRE_DEFAULT_EMBEDDING_ENDPOINT: 'http://embedder:80' }),
+      'copying .env.example and naming an embedder must be enough to start',
+    ).toEqual([])
   })
 })

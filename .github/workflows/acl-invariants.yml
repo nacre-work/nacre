@@ -43,7 +43,12 @@ jobs:
           --health-timeout 5s --health-retries 10
         ports: ["5432:5432"]
       qdrant:
-        image: qdrant/qdrant:latest
+        # The same pin as docker-compose.yml, not `latest`. Testing against
+        # whatever was published this morning while shipping a fixed version
+        # means the version operators run is the one nothing ran the suite
+        # against — and a `latest` that moves turns an unrelated pull request
+        # red for reasons no one changed.
+        image: qdrant/qdrant:v1.18.3
         ports: ["6333:6333"]
     env:
       # The integration tests refuse to skip when CI is set — a tenant-isolation

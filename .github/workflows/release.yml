@@ -32,7 +32,7 @@ jobs:
           --health-timeout 5s --health-retries 10
         ports: ["6379:6379"]
       qdrant:
-        image: qdrant/qdrant:v1.15.1
+        image: qdrant/qdrant:v1.18.3
         ports: ["6333:6333"]
     env:
       NACRE_PG_URL: postgres://postgres:test@localhost:5432/nacre_test

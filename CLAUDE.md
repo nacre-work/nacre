@@ -147,9 +147,16 @@ of them and believed otherwise.
 Not built: OAuth discovery and dynamic client registration, multipart upload on
 ingest, and filtering on document metadata — the worker writes no metadata to
 the vector payload, which is why `filters` answers `400` rather than being a
-silent no-op. `docker compose up` has still not been run from a clean checkout; four separate things that made it
-impossible are fixed, and the path is validated by `lint:compose` and by
-reading, not by a machine that has done it.
+silent no-op.
+
+**`docker compose --profile minimal up` has now been run from a clean clone**,
+and the whole loop driven through it: init, layer, ingest, indexed, search,
+grant, revoke. It found four more things, one of them a regression from the
+sweep lease two commits earlier — `sweep_claimed_at` was set on claim and never
+released, so after one retag a document was locked out of the loop for the full
+`NACRE_INDEX_LEASE`. Fifteen minutes against a documented sixty-second SLA, with
+the alerted gauge climbing the whole time and the worker log silent after one
+success. Every test passed throughout.
 
 The docs are still normative rather than descriptive, and in places still ahead
 of the code. Where one disagrees with the tree, that is a bug in one of them —
