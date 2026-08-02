@@ -1,6 +1,6 @@
 import { QdrantClient } from '@qdrant/js-client-rest'
 
-import { buildFilter, type QueryablePlan } from '../authz/filter.js'
+import { buildFilter, type Narrowing, type QueryablePlan } from '../authz/filter.js'
 import { buildHybridQuery, collectionConfig, collectionName, PAYLOAD_INDEXES, type Branch } from './query.js'
 
 export interface VectorStoreOptions {
@@ -15,6 +15,14 @@ export interface SearchRequest {
   readonly plan: QueryablePlan
   readonly branches: readonly Branch[]
   readonly topK: number
+  /**
+   * A restriction the caller asked for, layered on top of the permission one.
+   *
+   * Still not a filter the caller assembles — it is a list of layer ids that
+   * `buildFilter` turns into a `must`, so it can only ever remove results. The
+   * distinction is the whole reason this is not `filter?: VectorFilter`.
+   */
+  readonly narrow?: Narrowing
 }
 
 export interface Hit {
@@ -89,7 +97,7 @@ export class VectorStore {
   }
 
   async search(request: SearchRequest): Promise<readonly Hit[]> {
-    const filter = buildFilter(request.orgId, request.plan)
+    const filter = buildFilter(request.orgId, request.plan, request.narrow)
     const query = buildHybridQuery({
       branches: request.branches,
       filter,

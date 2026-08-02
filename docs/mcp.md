@@ -61,6 +61,26 @@ that is the trade for a credential that does not expire on its own.
 
 ### `search`
 
+## Limits and metrics
+
+The rate limits are the API's, shared: `search` spends
+`NACRE_RATE_SEARCH_PER_MIN`, `ingest_document` and `delete_document` spend
+`NACRE_RATE_INGEST_PER_HOUR`, and the counters are the same keys the REST
+surface increments. Shared rather than per-surface on purpose — separate buckets
+would give a caller twice the documented allowance for holding two clients.
+`list_layers` is unlimited: one indexed query, and refusing it breaks discovery.
+
+A refusal is JSON-RPC `-32003` over HTTP `429`, with the RFC 9331 `RateLimit-*`
+headers. It is checked **after** the catalog lookup, so a tool the caller may
+not see answers the same way as one that does not exist — a `429` on an unknown
+tool would confirm it exists.
+
+This process serves `/metrics`: `nacre_mcp_tool_duration_seconds{tool}`,
+`nacre_mcp_tool_calls_total{tool,result}`, and `nacre_acl_denials_total{reason}`
+with the same reason strings the REST surface uses, so the two add up on one
+dashboard. Zero results from `search` is what a denial looks like here —
+invariant I4 leaves no `403` to count.
+
 **The description is generated dynamically** from the layer catalog visible to
 the caller. A generic "searches the knowledge base" pushes the model to fall
 back on web search instead of querying the index.
@@ -75,17 +95,30 @@ Template: `Semantic search over corporate documents. Available: {layer.name} —
     "type": "object",
     "properties": {
       "query":   { "type": "string", "description": "Natural-language query" },
-      "layers":  { "type": "array", "items": { "type": "string" },
-                   "description": "Layers to search. Empty means all accessible ones." },
+      "layers":  { "type": "array", "items": { "type": "string" }, "maxItems": 64,
+                   "description": "Layer slugs to restrict the search to. Empty or absent means every layer you can read." },
       "top_k":   { "type": "integer", "default": 10, "minimum": 1, "maximum": 50 },
-      "filters": { "type": "object", "description": "Filter on document metadata fields" },
       "rerank":  { "type": "boolean", "default": true },
-      "include_content": { "type": "boolean", "default": true }
+      "include_content": { "type": "boolean", "default": true,
+                   "description": "false omits the chunk text, leaving ids and scores." }
     },
     "required": ["query"]
   }
 }
 ```
+
+`layers` narrows and can never widen: it becomes a `must` on `layer_id` inside
+the index traversal, on top of the permission constraint, so naming a layer you
+cannot read returns nothing from it — and is indistinguishable from naming one
+that does not exist, which is invariant I4 applied to a query parameter.
+
+**`filters` was here and is gone.** It was advertised and read by nothing, so a
+client that filtered a search got everything back and believed it had narrowed
+the query. Filtering on document metadata needs that metadata in the vector
+payload, which the worker does not write yet; an advertised parameter that does
+nothing is a lie told to an agent, which will act on it. The REST surface keeps
+it in the contract and answers `400` — it will be built. Here it is simply not
+offered, because a tool schema is what a model plans against.
 
 Returns an array of `{ chunk_id, doc_id, layer, title, score, text?, source_url?,
 metadata }`. `source_url` is presigned, living for `NACRE_PRESIGN_TTL`.

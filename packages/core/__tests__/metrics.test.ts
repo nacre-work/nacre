@@ -115,3 +115,69 @@ describe('metrics', () => {
     expect(await registry.render()).toContain('nacre_acl_propagation_lag_seconds 0')
   })
 })
+
+/**
+ * Collector caching.
+ *
+ * `/metrics` is unauthenticated by default and the collectors are database
+ * queries — one per organization. Without a bound, whoever can reach the port
+ * decides how often the API queries every tenant's documents table, on the same
+ * pool the request path uses. A scrape loop is a denial of service that looks
+ * like monitoring.
+ */
+describe('collector caching', () => {
+  it('runs collectors once per window, not once per scrape', async () => {
+    const registry = new Registry()
+    let runs = 0
+    registry.collect(async () => {
+      runs++
+    })
+
+    const t0 = 1_000_000
+    await registry.render(t0)
+    await registry.render(t0 + 1)
+    await registry.render(t0 + 9_000)
+    expect(runs).toBe(1)
+
+    // Past the window it collects again. A cache that never expired would be a
+    // dashboard reporting whatever was true when the process started.
+    await registry.render(t0 + Registry.COLLECT_TTL_MS + 1_000)
+    expect(runs).toBe(2)
+  })
+
+  it('collapses concurrent scrapes into one collection', async () => {
+    const registry = new Registry()
+    let runs = 0
+    let release: (() => void) | undefined
+    registry.collect(async () => {
+      runs++
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+    })
+
+    // Two scrapes arriving together. Without the single-flight guard both start
+    // a full sweep, so concurrency multiplies the cost the cache alone bounds
+    // only in sequence.
+    const a = registry.render(0)
+    const b = registry.render(0)
+    await Promise.resolve()
+    expect(runs).toBe(1)
+
+    release?.()
+    await Promise.all([a, b])
+    expect(runs).toBe(1)
+  })
+
+  it('still renders when a collector throws', async () => {
+    const registry = new Registry()
+    registry.collect(async () => {
+      throw new Error('the database is down')
+    })
+    const counter = registry.register(new Counter('probe_total', 'a probe'))
+    counter.inc({}, 3)
+
+    // The metrics that still work are how you find out which collector broke.
+    await expect(registry.render(0)).resolves.toContain('probe_total 3')
+  })
+})

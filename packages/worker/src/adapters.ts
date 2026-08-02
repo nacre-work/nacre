@@ -435,13 +435,26 @@ export class HttpParser implements Parser {
  * oldest first: the lag gauge reports the worst laggard, so clearing the oldest
  * is what actually moves the number an alert fires on.
  *
- * No `FOR UPDATE SKIP LOCKED` and no claim column. Retagging is idempotent —
- * two replicas writing the same tags to the same points produce the same
- * payload — so the cost of a double retag is a wasted call, while the cost of a
- * claim that leaks on a crash is a document nothing retries. The version guard
- * in `markTagged` is what keeps concurrent passes from disagreeing.
+ * Claimed under a lease, in the same statement that selects. Retagging is
+ * idempotent — two replicas writing the same tags to the same points produce
+ * the same payload — so the claim is an optimisation and not a correctness
+ * mechanism; `markTagged`'s version guard remains what keeps concurrent passes
+ * from disagreeing.
+ *
+ * It is still necessary. Without it every replica selected the same oldest
+ * batch and did the same work, so throughput stayed at one worker's rate
+ * however many ran while the load on Qdrant multiplied by the replica count —
+ * and scaling the worker out, the documented response to a climbing
+ * propagation alert, did nothing at all.
+ *
+ * Leased rather than owned, so a worker that dies mid-sweep does not park rows
+ * forever: the claim expires and the next pass picks them up.
  */
-export async function claimStale(pool: Pool, limit: number): Promise<readonly StaleDocument[]> {
+export async function claimStale(
+  pool: Pool,
+  limit: number,
+  leaseSeconds = 900,
+): Promise<readonly StaleDocument[]> {
   return acrossOrganizations(pool, async (client) => {
       const { rows } = await client.query<{
         id: string
@@ -449,12 +462,13 @@ export async function claimStale(pool: Pool, limit: number): Promise<readonly St
         slug: string
         layer_id: string
       }>(
-        `SELECT d.id, d.org_id, o.slug, d.layer_id
-           FROM documents d
-           JOIN organizations o ON o.id = d.org_id
-          WHERE d.deleted_at IS NULL
-            AND o.deleted_at IS NULL
-            AND d.acl_version < o.groups_version
+        `WITH claimed AS (
+           SELECT d.id
+             FROM documents d
+             JOIN organizations o ON o.id = d.org_id
+            WHERE d.deleted_at IS NULL
+              AND o.deleted_at IS NULL
+              AND d.acl_version < o.groups_version
             -- "Has points", not "is currently indexed". A document that
             -- indexed once and failed on a later pass still has the earlier
             -- pass's points in the index, still carries their tags, and is the
@@ -466,9 +480,29 @@ export async function claimStale(pool: Pool, limit: number): Promise<readonly St
             -- observability.ts uses the same predicate. The two must agree: a
             -- gauge that counts what the loop cannot claim is a stuck alert.
             AND d.chunk_count > 0
-          ORDER BY COALESCE(d.acl_tagged_at, d.created_at)
-          LIMIT $1`,
-        [limit],
+              -- Unclaimed, or claimed long enough ago that the worker holding
+              -- it is gone. The lease is what keeps a crashed sweep from
+              -- parking rows forever.
+              AND (d.sweep_claimed_at IS NULL
+                   OR d.sweep_claimed_at < now() - make_interval(secs => $2))
+            ORDER BY COALESCE(d.acl_tagged_at, d.created_at)
+            LIMIT $1
+            FOR UPDATE OF d SKIP LOCKED
+         )
+         -- The claim is written in the same statement as the selection, which
+         -- is what makes it a claim. SKIP LOCKED on its own does not: the lock
+         -- ends when this transaction commits, and the actual work — a Qdrant
+         -- round trip — happens afterwards, so two replicas polling a second
+         -- apart still collided. Throughput stayed at one worker's rate however
+         -- many ran, and scaling out, the documented response to a climbing
+         -- propagation alert, did nothing.
+         UPDATE documents d
+            SET sweep_claimed_at = now()
+           FROM claimed c
+           JOIN organizations o ON TRUE
+          WHERE d.id = c.id AND o.id = d.org_id
+          RETURNING d.id, d.org_id, o.slug, d.layer_id`,
+        [limit, leaseSeconds],
       )
 
       return rows.map((r) => ({
@@ -491,6 +525,7 @@ export async function claimPurgeable(
   pool: Pool,
   limit: number,
   graceSeconds: number,
+  leaseSeconds = 900,
 ): Promise<readonly PurgeTarget[]> {
   return acrossOrganizations(pool, async (client) => {
       const { rows } = await client.query<{
@@ -499,16 +534,29 @@ export async function claimPurgeable(
         slug: string
         age: string
       }>(
-        `SELECT d.id, d.org_id, o.slug,
-                EXTRACT(EPOCH FROM (now() - d.deleted_at))::text AS age
-           FROM documents d
-           JOIN organizations o ON o.id = d.org_id
-          WHERE d.deleted_at IS NOT NULL
-            AND d.vectors_purged_at IS NULL
-            AND d.deleted_at < now() - make_interval(secs => $2)
-          ORDER BY d.deleted_at
-          LIMIT $1`,
-        [limit, graceSeconds],
+        `WITH claimed AS (
+           SELECT d.id
+             FROM documents d
+            WHERE d.deleted_at IS NOT NULL
+              AND d.vectors_purged_at IS NULL
+              AND d.deleted_at < now() - make_interval(secs => $2)
+              AND (d.sweep_claimed_at IS NULL
+                   OR d.sweep_claimed_at < now() - make_interval(secs => $3))
+            ORDER BY d.deleted_at
+            LIMIT $1
+            FOR UPDATE OF d SKIP LOCKED
+         )
+         -- Claimed in the same statement, for the same reason as claimStale:
+         -- without it every replica purged the same tombstones and the backlog
+         -- drained at one worker's rate however many were running.
+         UPDATE documents d
+            SET sweep_claimed_at = now()
+           FROM claimed c
+           JOIN organizations o ON TRUE
+          WHERE d.id = c.id AND o.id = d.org_id
+          RETURNING d.id, d.org_id, o.slug,
+                    EXTRACT(EPOCH FROM (now() - d.deleted_at))::text AS age`,
+        [limit, graceSeconds, leaseSeconds],
       )
 
       return rows.map((r) => ({
@@ -617,4 +665,75 @@ export async function tagsForLayer(
     },
     role === undefined ? {} : { role },
   )
+}
+
+/**
+ * Delete refresh tokens that have already expired.
+ *
+ * `0009` promised this in a comment on the index built to make it cheap —
+ * "expired rows are deleted by a sweep rather than kept forever" — and there
+ * was no sweep. Every login and every rotation inserts a row, nothing removed
+ * one, so the table grew at the rate people signed in and fastest on the
+ * deployments rotating most often.
+ *
+ * Only past `expires_at`, which is why this loses nothing. `refresh()` refuses
+ * an expired token and an unknown one identically, at the same place, with the
+ * same `undefined` — so a row deleted after expiry cannot change any answer.
+ * Reuse detection is untouched: a family is revoked while its tokens are still
+ * live, which is the only window in which a replay is worth catching.
+ *
+ * Cross-tenant, under the worker's BYPASSRLS role. It is maintenance rather
+ * than the queue, but it is the same mechanism and the same justification: one
+ * predicate over every tenant's rows, run by the process that has no request in
+ * hand. It names no organization because it selects on expiry alone.
+ *
+ * Bounded by `limit` for the reason every sweep here is: a table nobody has
+ * pruned since the feature shipped should drain over many small transactions,
+ * not one that holds locks while it scans a year.
+ */
+export async function pruneExpiredTokens(pool: Pool, limit: number): Promise<number> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rowCount } = await client.query(
+      // By ctid over a bounded, ordered subquery: refresh_tokens_expiry exists
+      // precisely so the oldest are found without a scan, and ordering by it
+      // makes repeated calls converge instead of revisiting the same window.
+      `WITH doomed AS (
+         SELECT ctid
+           FROM refresh_tokens
+          WHERE expires_at < now()
+          ORDER BY expires_at
+          LIMIT $1
+       )
+       DELETE FROM refresh_tokens t USING doomed d WHERE t.ctid = d.ctid`,
+      [limit],
+    )
+    return rowCount ?? 0
+  })
+}
+
+/**
+ * Expire audit events past the retention horizon.
+ *
+ * Through `prune_audit_events`, never a DELETE: the grant is revoked from every
+ * application role and stays revoked. See `0012` for why that is compatible
+ * with the append-only guarantee rather than a hole in it — the short version
+ * is that the function takes a number of days and cannot be handed a predicate,
+ * so it can expire a window and can never erase an event.
+ *
+ * Errors are the caller's to log. A retention below the function's floor raises
+ * rather than pruning less than asked, which is the right way round: an
+ * operator who set 7 days should find out, not get 30 silently.
+ */
+export async function pruneAuditEvents(
+  pool: Pool,
+  retentionDays: number,
+  limit: number,
+): Promise<number> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{ pruned: number }>(
+      'SELECT prune_audit_events($1, $2) AS pruned',
+      [retentionDays, limit],
+    )
+    return Number(rows[0]?.pruned ?? 0)
+  })
 }

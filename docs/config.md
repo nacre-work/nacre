@@ -67,10 +67,13 @@ NACRE_INDEX_MAX_ATTEMPTS=5             # then the document is failed, not requeu
 NACRE_RATE_SEARCH_PER_MIN=60
 NACRE_RATE_INGEST_PER_HOUR=600
 NACRE_RATE_LOGIN_PER_15MIN=10          # per email address, not per organization
+NACRE_RATE_LOGIN_SOURCE_PER_15MIN=60   # per client; what bounds a spray across addresses
+NACRE_TRUST_PROXY=0                    # proxies in front of this process; 0 ignores X-Forwarded-For
 NACRE_MAX_DOCUMENT_BYTES=52428800
+NACRE_METRICS_TOKEN=                   # unset leaves /metrics open; >= 16 chars if set
 
 # ─── audit ───
-NACRE_AUDIT_RETENTION_DAYS=400
+NACRE_AUDIT_RETENTION_DAYS=400         # >= 30; the floor is not a tunable
 NACRE_AUDIT_QUERY_TEXT=false           # true stores query text verbatim
 NACRE_AUDIT_SIEM_WEBHOOK=
 ```
@@ -145,15 +148,90 @@ should know that setting one changes nothing today:
 | Variable | What it would do |
 |---|---|
 | `NACRE_LOG_LEVEL`, `NACRE_LOG_FORMAT` | all logging is structured JSON at one level |
-| `NACRE_AUDIT_RETENTION_DAYS` | nothing prunes `audit_events`; see [audit.md](./audit.md) |
 | `NACRE_AUDIT_QUERY_TEXT` | query text is never written, with or without it |
 | `NACRE_ACL_CACHE_TTL` | the resolver cache is written and not wired in, so every search recomputes the group closure. Safe — it errs towards recomputing — and slower than it should be |
 | `NACRE_S3_*`, `NACRE_PRESIGN_TTL` | object storage is not wired; document bodies live in Postgres |
 | `NACRE_OAUTH_*`, `NACRE_EMA_*` | OAuth discovery, DCR and EMA are not built |
 | `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
 
-Two are **refused** rather than ignored, because ignoring them would silently
-overrule a decision about isolation:
+### The limits apply to MCP too
+
+`NACRE_RATE_SEARCH_PER_MIN` and `NACRE_RATE_INGEST_PER_HOUR` used to apply to
+REST only, so the MCP transport was unlimited: a client that had spent its
+search budget could point at the MCP port and carry on. Two doors into one
+authorization service, one of them with a lock.
+
+They share buckets rather than counting per surface, deliberately — separate
+counters would hand a caller twice the documented allowance for holding two
+clients, which is the same hole one level up. `search` spends the search budget;
+`ingest_document` and `delete_document` spend the ingest one. `list_layers` is
+unlimited: it is one indexed query, and refusing it breaks discovery for a
+client that is otherwise behaving.
+
+A refusal is JSON-RPC error `-32003` with HTTP `429` and the RFC 9331
+`RateLimit-*` headers, checked after the catalog lookup so that an unknown tool
+stays indistinguishable from one the caller may not see.
+
+### The login endpoint is limited twice
+
+Once per email address and once per client, because either alone leaves a hole.
+The address limit bounds guessing at one account and does nothing about the
+attack that is actually run — one password against ten thousand addresses never
+repeats a key. The client limit bounds that, and is looser because a whole
+office behind one NAT is one client here.
+
+`NACRE_TRUST_PROXY` is how the client is identified, and **neither default is
+safe**, which is why it is configuration:
+
+- Trusting `X-Forwarded-For` unconditionally keys the limit on a string the
+  attacker picks. A fresh value per request is worse than having no limit — it
+  costs a Redis round trip to accomplish nothing.
+- Ignoring it unconditionally means that behind an ingress every request carries
+  the proxy's address, so one bad client rate-limits every user.
+
+So it is the **number of proxies** in front of this process: `0` (the default)
+takes the socket address, `1` takes the last entry of `X-Forwarded-For`, `2` the
+second from last. **Counted from the right**, because each proxy appends — the
+leftmost entries are whatever the client sent, and only the rightmost ones were
+added by infrastructure. Setting it too low over-restricts; setting it too high
+under-restricts; neither is worse than the default.
+
+IPv6 clients are counted per `/64` rather than per address: a single subscriber
+is handed a /64, so counting whole addresses means one allocation is more
+buckets than there are requests.
+
+Separately, and independently of any of this, **the number of passwords being
+verified at once is bounded inside the process**. scrypt runs on libuv's thread
+pool, which is shared with DNS and file I/O, so an unbounded login endpoint
+stops the rest of the API on a name lookup — which reads as a database problem
+on a dashboard at exactly the wrong moment. Past the bound the endpoint answers
+`503` with `Retry-After`, not `401`: nothing was decided about those
+credentials, and saying "not valid" to a request that was never checked is a lie
+the client will act on.
+
+### Retention
+
+Two tables are swept by the worker, hourly, in bounded batches:
+
+- **`refresh_tokens`**, past `expires_at`. Nothing is lost — an expired token
+  and an unknown one are refused identically and at the same place — and reuse
+  detection is untouched, because a family is revoked while its tokens are still
+  live. This is the sweep migration `0009` described and did not have; until it
+  existed the table grew at the rate people signed in.
+- **`audit_events`**, past `NACRE_AUDIT_RETENTION_DAYS`, through a
+  `SECURITY DEFINER` function rather than a `DELETE`. The application role's
+  `DELETE` grant stays revoked. The function takes a number of days and never a
+  predicate, so it can expire a window and cannot erase a chosen event — which
+  is what the append-only guarantee is actually protecting. **The 30-day floor
+  is refused at startup**, not clamped: a deployment configured for a week of
+  audit history should not come up believing it has one.
+
+Neither is urgent and neither blocks anything, so a pass that fails is logged
+and retried an hour later. They fail independently: a refused audit prune does
+not stop token expiry.
+
+Two variables are **refused** rather than ignored, because ignoring them would
+silently overrule a decision about isolation:
 
 - `NACRE_VECTOR_TENANCY=shared` — every collection is named per organization and
   no code path shares one. Accepting it would give you a single-collection
@@ -202,7 +280,34 @@ packaging one — see [licensing.md](./licensing.md).
   endpoint you supply, a search fails loudly without it, and making readiness
   depend on somebody else's uptime turns their outage into a rollout that never
   completes.
-- `/metrics` — Prometheus.
+- `/metrics` — Prometheus. Unauthenticated by default, and carrying nothing
+  that is not already a count: no document ids, no query text, no organization
+  ids — organizations appear by slug, which is in the URL of every request that
+  tenant makes anyway.
+
+  **`NACRE_METRICS_TOKEN`** requires a bearer token on this path. Unset is the
+  default, because requiring one would break every existing scrape config and
+  because the default is right for the deployment this is designed around — the
+  port is on an internal network. It stops being right the moment the API goes
+  behind a public ingress without carving `/metrics` out, which is the situation
+  the variable exists for. A wrong or absent token gets `404`, not `401`: a
+  deployment hiding its metrics endpoint should not confirm it has one, and
+  there is nothing to authenticate *into*, so a challenge would only say "keep
+  guessing". Minimum 16 characters, or unset — a short token reads as protection
+  and is a moment's guessing.
+
+  **Collected values are reused for ten seconds.** The gauges below are database
+  queries, one per organization, so without a bound whoever can reach the port
+  decides how often the API queries every tenant's `documents` table, on the
+  same pool the request path uses — a scrape loop is a denial of service that
+  looks like monitoring. Ten seconds is shorter than any sensible scrape
+  interval, so a real Prometheus never sees a cached value; it only collapses
+  the excess. Concurrent scrapes share one collection rather than each starting
+  their own.
+
+  One query per organization, not three. It was three — counts, tombstones, lag
+  — each in its own `withOrg`, which on eighteen organizations measured 271
+  statements per scrape against 91 now, and 1355 for five scrapes against zero.
 
 Required metrics:
 
@@ -223,6 +328,23 @@ so zero permitted results is the denial, under `reason="search_empty"`.
 
 Specified and not registered at all, both tied to reindexing, which is not
 built: `nacre_reindex_progress_ratio{layer}`, `nacre_vectors_total{org}`.
+
+**The MCP server has its own `/metrics`**, on its own port, with its own
+registry:
+
+```
+nacre_mcp_tool_duration_seconds{tool}
+nacre_mcp_tool_calls_total{tool,result}
+nacre_acl_denials_total{reason}           # the same name and reasons as REST
+```
+
+Not the database gauges: those are one process's job, and a second exporter
+publishing the same series would be two answers to one question. It honours
+`NACRE_METRICS_TOKEN` on the same terms as the API's endpoint.
+
+It recorded nothing at all before — no registry, no endpoint — so everything
+above was true of REST and silent on the transport the product is actually for.
+An agent's search was not slow or failing; it was absent.
 
 The worker emits no metrics of any kind — it serves no port. Its only external
 signal is the propagation gauge above, which the API exports.

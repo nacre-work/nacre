@@ -26,6 +26,12 @@ const when = url ? describe : describe.skip
 
 const ORG = 'org-limits-1'
 const ALICE = { orgId: ORG, type: 'user', id: 'alice' }
+
+/** Mirrors the module's key derivation, so the test can look the key up. */
+const digestOf = async (value: string): Promise<string> => {
+  const { createHash } = await import('node:crypto')
+  return createHash('sha256').update(value).digest('base64url').slice(0, 32)
+}
 const BOB = { orgId: ORG, type: 'user', id: 'bob' }
 const OTHER = 'org-limits-2'
 const OTHER_ORG_ALICE = { orgId: OTHER, type: 'user', id: 'alice' }
@@ -48,6 +54,7 @@ when('rate limiting', () => {
         search: { limit, windowSeconds: 60 },
         ingest: { limit, windowSeconds: 3600 },
         login: { limit, windowSeconds: 900 },
+        login_source: { limit, windowSeconds: 900 },
       },
     })
 
@@ -117,6 +124,7 @@ when('rate limiting', () => {
         search: { limit: 1, windowSeconds: 60 },
         ingest: { limit: 1, windowSeconds: 3600 },
         login: { limit: 1, windowSeconds: 900 },
+        login_source: { limit: 1, windowSeconds: 900 },
       },
       onDegraded: (_r, e) => degraded.push(e),
     })
@@ -230,6 +238,19 @@ when('idempotency', () => {
     // old answer, and giving it to them silently is the worst of the options.
     const changed = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 2 })
     expect(isConflict(changed)).toBe(true)
+  })
+
+  it('a crashed attempt frees its key in a minute, not a day', async () => {
+    const k = key()
+    const first = await idem().begin(k, ALICE, 'POST', '/v1/grants', { a: 1 })
+    expect(isReplay(first) || isConflict(first)).toBe(false)
+
+    // The reservation and the stored response used to share the 24-hour TTL, so
+    // a process killed between `begin` and `store` left `pending: true` for a
+    // full day and every retry got 409 — the one situation this feature exists
+    // to serve, made impossible by the feature.
+    const ttl = await redis.command('TTL', `nacre:idem:${ALICE.orgId}:${ALICE.type}:${ALICE.id}:${await digestOf(k)}`)
+    expect(typeof ttl === 'number' && ttl > 0 && ttl <= 60, `reservation ttl was ${String(ttl)}`).toBe(true)
   })
 
   it('a second attempt while the first is still running is a conflict', async () => {

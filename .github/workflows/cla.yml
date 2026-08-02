@@ -1,0 +1,41 @@
+name: cla
+
+# Pull requests only. There is nothing to check on a push to main: whatever is
+# there merged through a pull request, and a direct push by someone who can push
+# directly is not a contribution this gate is for.
+#
+# `pull_request` and deliberately not `pull_request_target`. The latter is what
+# a CLA bot normally needs, because commenting on a fork's pull request needs
+# write permissions — and it runs with the repository's secrets in the context
+# of untrusted code, which is a large hole to open for a courtesy comment. This
+# job needs no write access and no secrets: it reads the signature list from the
+# base branch and writes its instructions to the job summary, which renders on
+# the checks page where a first-time contributor is already looking.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cla:
+    name: cla
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history of both sides. The default shallow clone has no
+          # merge base, so `git log base..head` returns every commit ever made
+          # and every past contributor reads as unsigned.
+          fetch-depth: 0
+
+      - name: Everyone who wrote this has signed
+        run: |
+          node .github/scripts/check-cla.mjs \
+            "origin/${{ github.base_ref }}" \
+            "${{ github.event.pull_request.head.sha }}"

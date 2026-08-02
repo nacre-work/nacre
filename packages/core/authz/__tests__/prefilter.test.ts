@@ -104,3 +104,69 @@ describe('baseline · the tenant is re-checked on the way out', () => {
     expect(VectorStore.assertTenant(ORG, hits)).toBe(hits)
   })
 })
+
+/**
+ * Narrowing, which is the caller's own restriction rather than a permission.
+ *
+ * `layers` was declared in the contract and in the MCP tool schema from the
+ * beginning and read by nothing, so a client scoping a search to one layer
+ * silently searched all of them. For a product whose whole claim is that a
+ * search returns only what you may see, a scoping parameter that does nothing
+ * is the worst kind of no-op: the caller believes they narrowed it.
+ *
+ * These are about the one property that matters — it can only ever remove.
+ */
+describe('narrowing', () => {
+  it('adds a must, leaving the permission constraint alone', () => {
+    // 'contracts' is the layer the fixture grants, so this is the ordinary
+    // case: a caller narrowing to something they can actually read.
+    const filter = buildFilter(ORG, scopedPlan(), { layers: ['contracts'] })
+
+    // A `must`, so it intersects. Not a replacement for the permission
+    // `should`, which is still there and still decides what is reachable.
+    expect(filter.must).toContainEqual({ key: 'layer_id', match: { any: ['contracts'] } })
+    expect(filter.should).toBeDefined()
+    expect(filter.should?.length).toBeGreaterThan(0)
+  })
+
+  it('cannot reach a layer the plan does not permit', () => {
+    // The whole safety property. A caller naming a layer they have no grant on
+    // gets a filter where `must` demands that layer and `should` demands one
+    // they may read — no point satisfies both, so nothing comes back. The
+    // permission constraint is never widened by what the caller asked for.
+    const filter = buildFilter(ORG, scopedPlan(), { layers: ['some-other-layer'] })
+
+    expect(filter.must).toContainEqual({ key: 'layer_id', match: { any: ['some-other-layer'] } })
+    const permitted = filter.should?.find((c) => c.key === 'layer_id')
+    expect(permitted).toBeDefined()
+    expect(permitted).not.toEqual({ key: 'layer_id', match: { any: ['some-other-layer'] } })
+  })
+
+  it('narrows an unrestricted plan too', () => {
+    // `kind: 'all'` returns early with no `should` at all, so the narrowing has
+    // to be in place before that return or an admin's search ignores it.
+    const filter = buildFilter(ORG, { kind: 'all' }, { layers: ['contracts'] })
+    expect(filter.must).toContainEqual({ key: 'layer_id', match: { any: ['contracts'] } })
+    expect(filter.should).toBeUndefined()
+  })
+
+  it('keeps org_id and deleted regardless', () => {
+    // Invariants I1 and I5 are not negotiable by a query parameter.
+    const filter = buildFilter(ORG, scopedPlan(), { layers: ['contracts'] })
+    expect(filter.must).toContainEqual({ key: 'org_id', match: { value: ORG } })
+    expect(filter.must).toContainEqual({ key: 'deleted', match: { value: false } })
+  })
+
+  it('refuses an empty narrowing rather than encoding it', () => {
+    // "You asked for layers you cannot read" is an empty result the caller
+    // returns without querying, so that it stays indistinguishable from "no
+    // permitted matches". Encoding it here would put that distinction in the
+    // query builder, one refactor away from being dropped.
+    expect(() => buildFilter(ORG, scopedPlan(), { layers: [] })).toThrow(/narrowed to no layers/)
+  })
+
+  it('is absent when the caller asked for nothing', () => {
+    const filter = buildFilter(ORG, scopedPlan())
+    expect(filter.must.filter((c) => c.key === 'layer_id')).toEqual([])
+  })
+})

@@ -1,14 +1,17 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 // Imported rather than taken from the global scope: `lib` is ES2023 with no
 // DOM, so the global URL is not typed here.
 import { URL } from 'node:url'
 
+import { TooBusy } from '@nacre.work/core'
+
 import { authenticate, rejectTenantOverride, type AuthContext, type VerifyOptions } from './auth.js'
 import { badRequest, internal, notFound, Problem } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
-import { limitHeaders, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
+import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
 import type { Login, Tokens } from './login.js'
+import { clientSource } from './source.js'
 import { readPage, type Page, type PageResult } from './pagination.js'
 export type { Page, PageResult }
 
@@ -97,6 +100,20 @@ export interface SearchHit {
  */
 export interface SearchOptions {
   readonly rerank?: boolean
+  /**
+   * Layer slugs to restrict the search to. Narrowing only — a layer the caller
+   * cannot read contributes nothing whether or not they name it, and naming one
+   * that does not exist is the same answer as naming one they cannot see.
+   */
+  readonly layers?: readonly string[]
+  /**
+   * `false` omits the chunk text from every hit.
+   *
+   * For a client that wants ids and scores — a reranking front end, a citation
+   * index — and does not want to pay for the bodies. Applied after reranking,
+   * because a reranker scores the query against the text.
+   */
+  readonly includeContent?: boolean
 }
 
 export interface SearchService {
@@ -337,6 +354,17 @@ export interface ApiOptions {
    */
   readonly limits?: RateLimiter
   readonly limitPolicies?: Readonly<Record<Resource, LimitPolicy>>
+  /**
+   * How many proxies sit in front of this process, for the per-client login
+   * limit. Absent or 0 means `X-Forwarded-For` is ignored and the socket
+   * address is the client — see `source.ts` for why neither default is safe.
+   */
+  readonly trustProxy?: number
+  /**
+   * A bearer token required on `/metrics`. Absent leaves the endpoint open,
+   * which is the default and is right for an internal port — see the handler.
+   */
+  readonly metricsToken?: string
   /** `Idempotency-Key` on unsafe methods. Absent means the header is ignored. */
   readonly idempotency?: IdempotencyStore
   /** Email and password sign-in. Absent means `/v1/auth/*` is 404. */
@@ -379,6 +407,9 @@ class BodyTooLarge extends Error {}
  * with the maximum — the same thing every paginated endpoint here does.
  */
 const MAX_TOP_K = 50
+const isStringArray = (value: unknown): value is readonly string[] =>
+  Array.isArray(value) && value.every((v) => typeof v === 'string')
+
 const boundedTopK = (value: unknown): number => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 10
   return Math.min(MAX_TOP_K, Math.max(1, Math.floor(value)))
@@ -658,14 +689,35 @@ async function handleAuth(
     }
 
     if (options.limits !== undefined && options.limitPolicies?.login !== undefined) {
+      // Two limits, on two different things, because either alone leaves a
+      // hole. The address limit stops one account being ground down; on its own
+      // it does nothing about the attack that is actually run, which is one
+      // password against a directory — that never repeats an address and never
+      // meets the limit. The source limit bounds that; on its own it would
+      // over-trust topology, because an office behind one NAT is one source.
+      //
+      // Checked in that order and reported as one 429 with the address limit's
+      // headers, which is the tighter of the two: the alternative is a response
+      // whose RateLimit-Remaining depends on which limit fired, and that is a
+      // signal about other people's traffic.
       const subject = createHash('sha256').update(email.trim().toLowerCase()).digest('hex').slice(0, 32)
-      const decision = await options.limits.check(subject, 'login')
-      if (!decision.allowed) {
+      const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 })
+
+      const decisions = [await options.limits.check(subject, 'login')]
+      // `undefined` means the transport gave no address to key on. Skipped
+      // rather than folded into a shared bucket — one bucket for every client
+      // that cannot be identified is a denial of service with extra steps.
+      if (source !== undefined && options.limitPolicies.login_source !== undefined) {
+        decisions.push(await options.limits.check(`src:${source}`, 'login_source'))
+      }
+
+      const refused = decisions.find((d) => !d.allowed)
+      if (refused !== undefined) {
         const problem = new Problem({
           type: 'https://nacre.work/errors/rate-limited',
           title: 'Too many requests',
           status: 429,
-          detail: `Too many sign-in attempts. Try again in ${decision.reset} seconds.`,
+          detail: `Too many sign-in attempts. Try again in ${refused.reset} seconds.`,
           instance,
           requestId,
         })
@@ -674,17 +726,45 @@ async function handleAuth(
           problem.status,
           problem.toJSON(),
           requestId,
-          limitHeaders(decision, options.limitPolicies.login, 'login'),
+          limitHeaders(decisions[0] as LimitDecision, options.limitPolicies.login, 'login'),
         )
         return
       }
     }
 
-    const tokens = await options.login.login({
-      email,
-      password,
-      ...(typeof organization === 'string' ? { organization } : {}),
-    })
+    let tokens: Tokens | undefined
+    try {
+      tokens = await options.login.login({
+        email,
+        password,
+        ...(typeof organization === 'string' ? { organization } : {}),
+      })
+    } catch (error) {
+      // The process is already verifying as many passwords as it will. scrypt
+      // runs on libuv's thread pool, which is shared with DNS and file I/O, so
+      // an unbounded login endpoint stops the *rest* of the API on a name
+      // lookup — see the gate in core/passwords.ts.
+      //
+      // 503 and not 401: nothing was decided about these credentials, and
+      // answering "not valid" to a request that was never checked is a lie the
+      // client will act on. 503 with Retry-After is the honest one.
+      //
+      // Not an oracle either. It depends on how loaded the process is and not
+      // at all on whether the account exists.
+      if (error instanceof TooBusy) {
+        const problem = new Problem({
+          type: 'https://nacre.work/errors/unavailable',
+          title: 'Service unavailable',
+          status: 503,
+          detail: 'Too many sign-in attempts are being processed. Try again shortly.',
+          instance,
+          requestId,
+        })
+        send(res, problem.status, problem.toJSON(), requestId, { 'retry-after': '2' })
+        return
+      }
+      throw error
+    }
 
     if (tokens === undefined) {
       // Logged rather than audited, and the difference is not laziness. The
@@ -774,14 +854,40 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   const instance = url.pathname
 
   if (req.method === 'GET' && instance === '/metrics') {
-    // Unauthenticated, like every Prometheus endpoint, and therefore carrying
-    // nothing that is not already a count. No document ids, no query text, no
-    // organization ids — organizations appear by slug, which is in the URL of
-    // every request that tenant makes anyway.
+    // Unauthenticated by default, like every Prometheus endpoint, and therefore
+    // carrying nothing that is not already a count. No document ids, no query
+    // text, no organization ids — organizations appear by slug, which is in the
+    // URL of every request that tenant makes anyway.
+    //
+    // A token is available and off unless configured. Requiring one would break
+    // every existing scrape config for a product people self-host, and the
+    // default is right for the deployment this is designed around: the port is
+    // on an internal network. It stops being right the moment somebody puts the
+    // API behind a public ingress without carving this path out, which is a
+    // thing that happens — so `NACRE_METRICS_TOKEN` exists for the operator who
+    // knows they are in that situation. See docs/config.md.
     if (options.metrics === undefined) {
       const problem = notFound(instance, requestId)
       send(res, problem.status, problem.toJSON(), requestId)
       return
+    }
+
+    if (options.metricsToken !== undefined) {
+      const header = req.headers.authorization
+      const presented = header?.startsWith('Bearer ') === true ? header.slice(7) : undefined
+      // Constant time, and length-checked first because timingSafeEqual throws
+      // on a mismatch. A scrape token is a credential like any other.
+      const expected = Buffer.from(options.metricsToken, 'utf8')
+      const given = Buffer.from(presented ?? '', 'utf8')
+      if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+        // 404 rather than 401, for the same reason invariant 4 gives: a
+        // deployment that hides its metrics endpoint should not confirm it has
+        // one. There is nothing to authenticate *into* here, so a challenge
+        // would only say "keep guessing".
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
     }
     const body = await options.metrics.render()
     res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' })
@@ -981,24 +1087,58 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
   try {
     if (req.method === 'POST' && instance === '/v1/search') {
-      const query = (body as { query?: unknown } | undefined)?.query
-      const topK = (body as { top_k?: unknown } | undefined)?.top_k
-      const rerank = (body as { rerank?: unknown } | undefined)?.rerank
+      const request = (body ?? {}) as {
+        query?: unknown
+        top_k?: unknown
+        rerank?: unknown
+        layers?: unknown
+        filters?: unknown
+        include_content?: unknown
+      }
+      const query = request.query
       if (typeof query !== 'string' || query.length === 0) {
         const problem = badRequest(instance, requestId, "'query' is required.")
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
 
+      if (request.layers !== undefined && !isStringArray(request.layers)) {
+        const problem = badRequest(instance, requestId, "'layers' must be an array of layer slugs.")
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      // Refused, not ignored, and that is the point.
+      //
+      // `filters` has been in the contract since before there was a server and
+      // read by nothing. Silently accepting it is the worst available
+      // behaviour for this product in particular: a caller who filters a search
+      // and gets everything back believes they scoped it. Filtering on document
+      // metadata needs the metadata in the vector payload, which the worker
+      // does not write yet — so until it does, this says so.
+      if (request.filters !== undefined) {
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'filters' is not implemented. Document metadata is not written to the " +
+            'vector payload yet, so a filter on it cannot be applied — and applying ' +
+            'nothing while accepting the parameter would let a search look narrower ' +
+            'than it was. Use \'layers\' to restrict a search today.',
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
       const started = process.hrtime.bigint()
-      const results = await options.search.search(
-        auth,
-        query,
-        boundedTopK(topK),
+      const results = await options.search.search(auth, query, boundedTopK(request.top_k), {
         // Only ever a way to turn it off; a deployment with no reranker
         // configured does not acquire one because a client asked.
-        rerank === false ? { rerank: false } : {},
-      )
+        ...(request.rerank === false ? { rerank: false } : {}),
+        ...(isStringArray(request.layers) && request.layers.length > 0
+          ? { layers: request.layers }
+          : {}),
+        ...(request.include_content === false ? { includeContent: false } : {}),
+      })
       // Measured around the whole thing — resolve, embed, traverse, hydrate,
       // rerank — because that is what a caller waits for and what the p95
       // target in docs/config.md is about. It was never observed at all, so the
@@ -1024,7 +1164,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         target: {
           returned_docs: [...new Set(results.map((r) => r.doc_id))],
           layers: [...new Set(results.map((r) => r.layer))],
-          top_k: boundedTopK(topK),
+          top_k: boundedTopK(request.top_k),
         },
         detail: { returned: results.length },
         requestId,

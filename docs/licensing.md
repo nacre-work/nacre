@@ -26,7 +26,23 @@ must build and test with no access to the private one.
 
 ## Contributions
 
-DCO, not a CLA. Sign off your commits with `git commit -s`. See CONTRIBUTING.md.
+**A CLA, not a DCO** — [CLA.md](../CLA.md), enforced by the `cla` job.
+Contributors keep their copyright; the agreement adds a sublicence right on top
+of the Apache 2.0 grant.
+
+That right is the reason it is a CLA. Nothing in the plan above needs it: the
+core stays Apache 2.0 and the money is in the private repository, which the
+core's licence does not touch. It is there for the one move that cannot be made
+retroactively — changing the core's licence, the usual trigger being someone
+reselling it as a managed service. Under a DCO that decision needs permission
+from every past contributor whose code is still in the tree; every company that
+has actually made the move had a CLA, which is why they could.
+
+It costs something real. Some people will not sign, and the drive-by fixes they
+would have sent do not arrive. That is the trade being made deliberately.
+
+Already-released versions are unaffected in any scenario: the Apache 2.0 grant
+is irrevocable, so a licence change reaches future releases only.
 
 ## Third-party components
 

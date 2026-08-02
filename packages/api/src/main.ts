@@ -111,6 +111,10 @@ async function main(): Promise<void> {
     // Per address rather than per organization — there is no organization until
     // the sign-in succeeds, and what this defends is one account's password.
     login: { limit: config.rateLoginPer15Min, windowSeconds: 900 },
+    // And per client, which is what the address limit does not do: a spray
+    // across ten thousand addresses never repeats a key. Looser on purpose,
+    // because a whole office behind one NAT is one source here.
+    login_source: { limit: config.rateLoginSourcePer15Min, windowSeconds: 900 },
   }
 
   const limits = new RateLimiter({
@@ -192,6 +196,8 @@ async function main(): Promise<void> {
     maxBodyBytes: config.maxDocumentBytes,
     limits,
     limitPolicies,
+    trustProxy: config.trustProxy,
+    ...(config.metricsToken === undefined ? {} : { metricsToken: config.metricsToken }),
     idempotency,
     login,
     documents: new PostgresDocuments(pool, APP_ROLE),

@@ -51,6 +51,23 @@ import type { Redis } from '@nacre.work/core'
 
 const TTL_SECONDS = 24 * 60 * 60
 
+/**
+ * How long a reservation lives before the key frees itself.
+ *
+ * The reservation and the stored response used to share the 24-hour TTL, which
+ * made a crash permanent: `begin` reserves with `SET NX EX 86400` and only
+ * `store` overwrites it, so a process that was OOM-killed or SIGKILLed between
+ * the two left `pending: true` sitting there for a full day — and every retry
+ * of that exact request got `409 "the first attempt has not finished"`. The one
+ * situation the feature exists to serve, made impossible by the feature, with
+ * `redis-cli DEL` as the only way out.
+ *
+ * Sixty seconds is longer than any request this API serves and short enough
+ * that a crash costs a minute. The response TTL is untouched: once there is a
+ * result to replay, it is worth keeping for the full day.
+ */
+const RESERVATION_SECONDS = 60
+
 /** Long enough that a collision is not a thing, short enough to read in a log. */
 const digest = (value: string): string =>
   createHash('sha256').update(value).digest('base64url').slice(0, 32)
@@ -175,7 +192,8 @@ export class Idempotency implements IdempotencyStore {
         JSON.stringify({ fingerprint, pending: true }),
         'NX',
         'EX',
-        String(TTL_SECONDS),
+        // The reservation, not the answer. See RESERVATION_SECONDS.
+        String(RESERVATION_SECONDS),
       )
 
       // Somebody else reserved it between the GET and the SET.

@@ -49,6 +49,103 @@ const SALT_BYTES = 32
  */
 const MAX_MEM = 256 * 1024 * 1024
 
+/* ─────────────────────── the gate, and why there is one ───────────────────────
+ *
+ * `crypto.scrypt` is asynchronous in the sense that it does not block the event
+ * loop — it runs on libuv's thread pool. That pool has four threads by default,
+ * and it is not the crypto pool: `dns.lookup`, `fs`, and zlib are on it too.
+ *
+ * So four concurrent sign-in attempts occupy the whole pool for the duration of
+ * a deliberately expensive hash, and the fifth thing to want a thread waits.
+ * When that thing is `getaddrinfo` for Postgres, the request path stops on a
+ * name lookup — which looks like a database problem, on a dashboard, at the
+ * exact moment somebody is spraying the login endpoint. Each call also holds
+ * 134 MB while it runs, so the unbounded version is 134 MB times however many
+ * requests arrive at once.
+ *
+ * The rate limiter does not cover this. It counts per email address, and an
+ * attacker rotating addresses never repeats one; it counts in Redis, so it
+ * fails open by design; and it runs per request while this is about how many
+ * run *at the same time*, which is a different quantity. A limit of ten per
+ * fifteen minutes still permits every attempt to arrive in the same second.
+ *
+ * ─── the numbers ───
+ *
+ * Two concurrent hashes, so half the default pool stays free for the DNS and
+ * file I/O the rest of the process needs. Read from UV_THREADPOOL_SIZE where an
+ * operator has raised it, because the point is a fraction of the pool rather
+ * than the number two.
+ *
+ * The queue is bounded as well, and that bound is the load-shedding one: a
+ * queue is cheap in memory — a waiting request holds no scrypt buffer — but an
+ * unbounded one converts a flood into unbounded latency for the legitimate
+ * user, who ends up behind ten thousand guesses. Past the bound the call is
+ * refused immediately and the caller answers 503, which is the honest response
+ * to "this process cannot verify a password right now".
+ *
+ * Refusing is not an oracle. It depends on how loaded the process is and not at
+ * all on whether the account exists, and it is returned identically to the
+ * caller whether the address matched a user or not.
+ */
+
+const poolSize = Number(process.env.UV_THREADPOOL_SIZE ?? 4)
+const MAX_CONCURRENT = Math.max(1, Math.floor((Number.isFinite(poolSize) ? poolSize : 4) / 2))
+const MAX_QUEUED = 64
+
+/** Raised when the process is already verifying as many passwords as it will. */
+export class TooBusy extends Error {
+  constructor() {
+    super('too many passwords are being verified at once')
+    this.name = 'TooBusy'
+  }
+}
+
+let active = 0
+const waiting: (() => void)[] = []
+
+async function gated<T>(work: () => Promise<T>): Promise<T> {
+  if (active >= MAX_CONCURRENT) {
+    if (waiting.length >= MAX_QUEUED) throw new TooBusy()
+    // Waits to be *handed* a permit, and does not increment on waking.
+    //
+    // The obvious version releases the permit, wakes a waiter, and lets it take
+    // a slot on its own — which leaves a window between the release and the
+    // waiter's turn where an arriving call sees a free slot and takes it too.
+    // As it happens that window is not reachable from a single Node event loop:
+    // the waiter's continuation is queued as a microtask at the moment of the
+    // release, so it runs before anything that could have arrived afterwards.
+    // Tried to reproduce it and could not.
+    //
+    // Handing the permit over regardless, because "correct, given the current
+    // microtask ordering of the runtime" is a bad thing for a bound to depend
+    // on, and this version does not depend on it at all: the count never
+    // changes when a permit changes owner, so there is no window to reason
+    // about. It is also shorter.
+    await new Promise<void>((resolve) => waiting.push(resolve))
+  } else {
+    active++
+  }
+
+  try {
+    return await work()
+  } finally {
+    // Hand the permit over rather than release it. `active` is unchanged when
+    // there is a waiter, because the slot never becomes free — it changes
+    // owner. One waiter per completion, so a queue drains at the rate work
+    // finishes and never all at once.
+    const next = waiting.shift()
+    if (next === undefined) active--
+    else next()
+  }
+}
+
+/** For a metric and for tests. Not a decision anything makes. */
+export const hashingLoad = (): { active: number; queued: number; limit: number } => ({
+  active,
+  queued: waiting.length,
+  limit: MAX_CONCURRENT,
+})
+
 /**
  * `scrypt$N$r$p$salt$hash`, base64url, parameters first.
  *
@@ -59,12 +156,14 @@ const MAX_MEM = 256 * 1024 * 1024
  */
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(SALT_BYTES)
-  const key = await scrypt(password.normalize('NFKC'), salt, KEY_BYTES, {
-    N,
-    r: R,
-    p: P,
-    maxmem: MAX_MEM,
-  })
+  const key = await gated(() =>
+    scrypt(password.normalize('NFKC'), salt, KEY_BYTES, {
+      N,
+      r: R,
+      p: P,
+      maxmem: MAX_MEM,
+    }),
+  )
   return `scrypt$${N}$${R}$${P}$${salt.toString('base64url')}$${key.toString('base64url')}`
 }
 
@@ -112,12 +211,14 @@ export async function verifyPassword(password: string, encoded: string): Promise
   const parsed = parse(encoded)
   if (parsed === undefined) return false
 
-  const key = await scrypt(password.normalize('NFKC'), parsed.salt, parsed.key.length, {
-    N: parsed.n,
-    r: parsed.r,
-    p: parsed.p,
-    maxmem: MAX_MEM,
-  })
+  const key = await gated(() =>
+    scrypt(password.normalize('NFKC'), parsed.salt, parsed.key.length, {
+      N: parsed.n,
+      r: parsed.r,
+      p: parsed.p,
+      maxmem: MAX_MEM,
+    }),
+  )
 
   if (key.length !== parsed.key.length) return false
   return timingSafeEqual(key, parsed.key)

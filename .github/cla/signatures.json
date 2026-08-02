@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "Who has signed the Contributor License Agreement in CLA.md.",
+    "",
+    "This file is the record. Signing is a pull request that adds an entry here",
+    "and changes nothing else; merging it is what records the agreement, and the",
+    "git history of this file is the audit trail. See the 'How to sign' section",
+    "of CLA.md.",
+    "",
+    "The CLA check reads this file from the BASE branch, never from the pull",
+    "request under test, so a contribution cannot add itself and pass.",
+    "",
+    "'owners' hold the copyright and are therefore not signing an agreement with",
+    "themselves. 'machines' are non-human commit identities: tooling that commits",
+    "on behalf of a human who is already covered above. Neither list is a way to",
+    "skip the agreement — adding to either is a change to this file, reviewed",
+    "like any other."
+  ],
+
+  "claVersion": "1.0",
+
+  "owners": [
+    {
+      "github": "siarheidudko",
+      "name": "Siarhei Dudko",
+      "emails": ["siarhei@dudko.dev", "slavianich@gmail.com"]
+    }
+  ],
+
+  "machines": [
+    {
+      "email": "noreply@anthropic.com",
+      "why": "Claude, committing on behalf of whoever ran it — an owner today."
+    },
+    {
+      "email": "noreply@github.com",
+      "why": "GitHub's committer identity on squash merges and web edits."
+    },
+    {
+      "email": "bootstrap@nacre.work",
+      "why": "The initial repository scaffolding commit."
+    }
+  ],
+
+  "signatures": []
+}

@@ -1,7 +1,17 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 
-import { authenticate, findTenantOverride, Problem, type AuthContext, type VerifyOptions } from '@nacre.work/api'
+import {
+  authenticate,
+  findTenantOverride,
+  limitHeaders,
+  Problem,
+  type AuthContext,
+  type LimitPolicy,
+  type RateLimiter,
+  type Resource,
+  type VerifyOptions,
+} from '@nacre.work/api'
 
 import { catalog, type Layer, type ToolDefinition } from './tools.js'
 
@@ -49,6 +59,58 @@ export interface McpOptions {
   readonly tools: ToolRunner
   /** Where a 401 points the client for discovery, per RFC 9728. */
   readonly resourceMetadataUrl: string
+
+  /**
+   * The same limiter and the same policies the REST surface uses.
+   *
+   * Absent means unlimited, which is what this transport was: `NACRE_RATE_*`
+   * applied to REST only, so a client that had run out of search budget could
+   * point at port 8081 and carry on. Two doors into one authorization service,
+   * one of them with a lock on it.
+   *
+   * Counted per organization on the same keys, deliberately — a shared bucket
+   * rather than one bucket per surface. Splitting them would give a caller
+   * twice the documented allowance for holding two clients, which is the same
+   * hole one level up.
+   */
+  readonly limits?: RateLimiter
+  readonly limitPolicies?: Readonly<Record<Resource, LimitPolicy>>
+
+  /** Rendered at `/metrics`. Absent means the endpoint answers 404. */
+  readonly metrics?: { render(): Promise<string> }
+  /** A bearer token required on `/metrics`. Absent leaves it open. */
+  readonly metricsToken?: string
+  /** Where the tool path writes what it measured. */
+  readonly observe?: McpMetrics
+}
+
+/**
+ * What this transport records.
+ *
+ * It recorded nothing. The MCP server built no registry and served no
+ * `/metrics`, so every claim in `docs/config.md` about search latency and
+ * denials was true of REST and silent here — and this is the transport the
+ * product is *for*. An agent's search was invisible: not slow, not failing,
+ * absent.
+ */
+export interface McpMetrics {
+  toolDuration: { observe(seconds: number, labels?: Record<string, string>): void }
+  toolCalls: { inc(labels?: Record<string, string>, by?: number): void }
+  aclDenials: { inc(labels?: Record<string, string>, by?: number): void }
+}
+
+/**
+ * Which budget a tool spends from.
+ *
+ * By what the tool *does*, not by its name: `search` is a read against the
+ * index and the ingest tools queue work. A tool with no mapping is unlimited,
+ * which is right for `list_layers` — it is one indexed query and refusing it
+ * would break discovery for a client that is otherwise behaving.
+ */
+function resourceForTool(tool: string): Resource | undefined {
+  if (tool === 'search') return 'search'
+  if (tool === 'ingest_document' || tool === 'delete_document') return 'ingest'
+  return undefined
 }
 
 interface JsonRpcRequest {
@@ -101,7 +163,33 @@ export function createMcpServer(options: McpOptions): Server {
 async function handle(req: IncomingMessage, res: ServerResponse, options: McpOptions): Promise<void> {
   const requestId = randomUUID()
 
-  if (req.method !== 'POST' || (req.url ?? '').split('?')[0] !== '/mcp') {
+  const path = (req.url ?? '').split('?')[0]
+
+  // Prometheus, on the same terms as the API's: unauthenticated unless a token
+  // is configured, and a wrong token gets 404 rather than 401 so a deployment
+  // hiding the endpoint does not confirm it has one.
+  if (req.method === 'GET' && path === '/metrics') {
+    if (options.metrics === undefined) {
+      send(res, 404, rpcError(null, -32601, 'Not found'))
+      return
+    }
+    if (options.metricsToken !== undefined) {
+      const header = req.headers.authorization
+      const presented = header?.startsWith('Bearer ') === true ? header.slice(7) : ''
+      const expected = Buffer.from(options.metricsToken, 'utf8')
+      const given = Buffer.from(presented, 'utf8')
+      if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+        send(res, 404, rpcError(null, -32601, 'Not found'))
+        return
+      }
+    }
+    const body = await options.metrics.render()
+    res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' })
+    res.end(body)
+    return
+  }
+
+  if (req.method !== 'POST' || path !== '/mcp') {
     send(res, 404, rpcError(null, -32601, 'Not found'))
     return
   }
@@ -184,6 +272,25 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
         return
       }
 
+      // Same limiter, same policies, same keys as REST. Checked after the
+      // catalog lookup so an unknown tool is still indistinguishable from one
+      // this caller may not see — a 429 on a tool that does not exist would
+      // confirm it does.
+      const resource = resourceForTool(definition.name)
+      if (resource !== undefined && options.limits !== undefined && options.limitPolicies !== undefined) {
+        const decision = await options.limits.check(auth.orgId, resource)
+        if (!decision.allowed) {
+          send(
+            res,
+            429,
+            rpcError(id, -32003, `Rate limit exceeded. Try again in ${decision.reset} seconds.`),
+            limitHeaders(decision, options.limitPolicies[resource], resource),
+          )
+          return
+        }
+      }
+
+      const started = process.hrtime.bigint()
       try {
         const result = await options.tools.call(
           definition.name,
@@ -191,6 +298,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
           auth,
           requestId,
         )
+
+        const seconds = Number(process.hrtime.bigint() - started) / 1e9
+        options.observe?.toolDuration.observe(seconds, { tool: definition.name })
+        options.observe?.toolCalls.inc({ tool: definition.name, result: 'ok' })
+
+        // Zero results on a search is what a denial looks like here: invariant 4
+        // makes an invisible layer indistinguishable from an absent one, so
+        // there is no 403 to count. Same reason and same reason string as the
+        // REST surface, or the two do not add up on one dashboard.
+        if (definition.name === 'search' && Array.isArray(result) && result.length === 0) {
+          options.observe?.aclDenials.inc({ reason: 'search_empty' })
+        }
 
         // A CallToolResult, not the bare value. The protocol requires
         // `content` to be a list of content blocks, and a client that follows
@@ -207,6 +326,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
           },
         })
       } catch (error) {
+        options.observe?.toolDuration.observe(
+          Number(process.hrtime.bigint() - started) / 1e9,
+          { tool: definition.name },
+        )
+        options.observe?.toolCalls.inc({ tool: definition.name, result: 'error' })
+
         // Nothing about what failed reaches the caller. A tool error that names
         // a layer tells them the layer exists, which is the leak invariant I4
         // is about, and an unknown tool must answer the same way.

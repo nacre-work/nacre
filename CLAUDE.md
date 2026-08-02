@@ -119,9 +119,35 @@ exchanged it and there is no way to tell which of the two holders is genuine.
 Passwords use scrypt at OWASP's minimum, with the parameters carried in the
 stored record so the cost can be raised later without invalidating every one.
 
-Not built: OAuth discovery and dynamic client registration, and multipart
-upload on ingest. `docker compose up`
-has still not been run from a clean checkout; four separate things that made it
+Both surfaces are limited by the same buckets: `NACRE_RATE_*` used to apply to
+REST only, so a client out of search budget could point at the MCP port and
+carry on. MCP has its own `/metrics` now too — it had none, which made every
+latency and denial claim in `docs/config.md` true of REST and silent on the
+transport the product is for.
+
+Sign-in is bounded three ways, because the per-address limit alone bounds
+nothing an attacker actually does: per address, per client (`NACRE_TRUST_PROXY`
+decides what a client is, and neither default is safe), and by a cap on
+concurrent scrypt calls — that one holds whoever is calling and whatever Redis
+is doing, because scrypt runs on libuv's four-thread pool alongside DNS, so an
+unbounded login endpoint stops the rest of the API on a name lookup.
+
+`refresh_tokens` and `audit_events` are pruned. Both were documented as swept
+and neither was; `NACRE_AUDIT_RETENTION_DAYS` had been validated at startup and
+read by nothing since it was added. Retention goes through a `SECURITY DEFINER`
+function that takes a number of days and never a predicate, so it can expire a
+window past a 30-day floor and can never erase a chosen event — which is what
+the append-only grant was protecting.
+
+Search finally honours `layers` and `include_content`, and **refuses** `filters`
+rather than ignoring it. All three were in the contract from before there was a
+server and read by nothing: a client scoping a search to one layer searched all
+of them and believed otherwise.
+
+Not built: OAuth discovery and dynamic client registration, multipart upload on
+ingest, and filtering on document metadata — the worker writes no metadata to
+the vector payload, which is why `filters` answers `400` rather than being a
+silent no-op. `docker compose up` has still not been run from a clean checkout; four separate things that made it
 impossible are fixed, and the path is validated by `lint:compose` and by
 reading, not by a machine that has done it.
 
@@ -154,12 +180,23 @@ superuser — service account keys answered 500 and the worker indexed nothing
 the moment an operator followed the rule in `docs/config.md` about not doing
 that.
 
+Two more, found by reading rather than by running, and both invisible to a green
+suite for the same reason: they are about *scale*, and the suite runs one of
+everything. Both background sweeps selected the same rows on every replica, so
+scaling the worker out — the documented response to a climbing propagation alert
+— did nothing at all. And a `/metrics` scrape cost three queries per tenant with
+no cache and no authentication, so a scrape loop was a denial of service that
+looked like monitoring.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.
-- DCO, not a CLA: sign off with `git commit -s`.
+- **CLA, not a DCO.** [CLA.md](./CLA.md), signed by a pull request adding you to
+  `.github/cla/signatures.json`. Enforced by the `cla` job, which compares commit
+  author and committer emails against that list — read from the *base* branch, so
+  a pull request cannot sign itself. List every address you commit from.
 - Changes under `packages/core/authz` need **two maintainer approvals** and
   tests.
 - Don't optimize `authz/reference.ts` when it exists. Its whole value is being

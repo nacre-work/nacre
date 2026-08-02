@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { hashPassword, needsRehash, verifyPassword } from '../passwords.js'
+import { hashingLoad, hashPassword, needsRehash, TooBusy, verifyPassword } from '../passwords.js'
 
 /**
  * Password hashing.
@@ -74,4 +74,56 @@ describe('needsRehash', () => {
     expect(needsRehash('scrypt$16384$8$1$YWJj$YWJj')).toBe(true)
     expect(needsRehash('nonsense')).toBe(true)
   })
+})
+
+/**
+ * The concurrency gate.
+ *
+ * scrypt runs on libuv's thread pool, which has four threads by default and is
+ * shared with `dns.lookup` and file I/O. Unbounded, a handful of simultaneous
+ * sign-in attempts occupy all of it — so a login flood stops the request path
+ * on a DNS resolution, which reads as a database problem on a dashboard.
+ *
+ * These assert the two properties that make the gate a gate: it never lets more
+ * than the limit run at once, and it sheds load rather than queueing forever.
+ */
+describe('the hashing gate', () => {
+  it('never runs more hashes at once than its limit', async () => {
+    const { limit } = hashingLoad()
+    let peak = 0
+
+    // Deliberately more than the limit, started in the same tick, which is
+    // what a spray looks like from the process's side.
+    await Promise.all(
+      Array.from({ length: limit * 4 }, async () => {
+        await hashPassword('gate')
+        peak = Math.max(peak, hashingLoad().active)
+      }),
+    )
+
+    expect(peak).toBeLessThanOrEqual(limit)
+    // And the gate is empty afterwards, so nothing leaked a permit.
+    expect(hashingLoad()).toEqual({ active: 0, queued: 0, limit })
+  })
+
+  it('sheds load instead of queueing without bound', async () => {
+    // 64 is the queue bound; ask for well past it in one tick. The refusals
+    // must be immediate, and they must be refusals rather than a process that
+    // accepts everything and answers nothing.
+    const attempts = Array.from({ length: 200 }, () =>
+      hashPassword('flood').then(
+        () => 'ok' as const,
+        (e: unknown) => (e instanceof TooBusy ? ('busy' as const) : ('other' as const)),
+      ),
+    )
+    const results = await Promise.all(attempts)
+
+    expect(results.filter((r) => r === 'busy').length).toBeGreaterThan(0)
+    expect(results.filter((r) => r === 'other')).toEqual([])
+    // The ones that were not refused still completed. Shedding is not failing.
+    expect(results.filter((r) => r === 'ok').length).toBeGreaterThan(0)
+    expect(hashingLoad().queued).toBe(0)
+    // Long, and legitimately: 66 real scrypt calls two at a time is the point.
+    // Faking the work would test the queue and not the thing it protects.
+  }, 120_000)
 })
