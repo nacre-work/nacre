@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * What the release workflow is about to push to npm has to be installable.
+ * What the release is about to push to npm has to be installable.
  *
- * Three ways it was not, none of which a build or a test would notice, because
+ * Four ways it was not, none of which a build or a test would notice, because
  * every consumer in this repository resolves workspace packages from source:
  *
  * 1. A published package depending on a private one. `@nacre.work/mcp` is
@@ -13,58 +13,40 @@
  * 2. A `bin` with no shebang. npm marks it executable; the kernel still needs
  *    the interpreter line, and without it the command fails with a syntax
  *    error from the shell.
- * 3. Version 0.0.0. The release workflow fires on a `v*` tag and publishes
- *    whatever is in the manifests, so every tag published 0.0.0 — the first
- *    succeeding and every one after it failing on "cannot publish over an
- *    existing version", which reads as a registry problem rather than as the
- *    tag never having been applied to anything.
+ * 3. Version 0.0.0, published by a tag that was never applied to anything. The
+ *    release no longer fires on a tag — it fires on the version in these
+ *    manifests naming something the registry does not have — so the check that
+ *    used to compare a tag to a manifest is now the one below.
+ * 4. Packages disagreeing about the version. They ship together and reference
+ *    each other by exact version, so one left behind publishes a tree that
+ *    resolves to two different cores.
  *
- * Run with a tag to check 3 as well: `node scripts/check-publish.mjs v0.2.0`.
- * Run with `--list` to print the publishable names and nothing else.
+ * `--list` prints the publishable names and nothing else, `--version` prints
+ * the version they agree on. Diagnostics go to stderr either way, so stdout
+ * stays consumable.
  */
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
-const PACKAGES = 'packages'
-const args = process.argv.slice(2)
+import { PACKAGES, agreedVersion, manifests, publishable } from './publishable.mjs'
 
-/**
- * Print the publishable package names, one per line, for the release workflow
- * to iterate over.
- *
- * The list belongs here rather than in the workflow because "publishable" is a
- * rule — `private !== true` — and every check below is written against that
- * same rule. Two copies of it disagree the moment a package changes side, and
- * the way they disagree is that the release publishes a package none of the
- * checks ever looked at.
- *
- * Diagnostics go to stderr, so stdout stays consumable.
- */
+const args = process.argv.slice(2)
 const listOnly = args.includes('--list')
-const tag = args.find((arg) => !arg.startsWith('-'))
+const versionOnly = args.includes('--version')
 
 let failed = false
-const manifests = new Map()
 
-for (const name of readdirSync(PACKAGES)) {
-  const path = join(PACKAGES, name, 'package.json')
-  if (!existsSync(path)) continue
-  manifests.set(name, { path, json: JSON.parse(readFileSync(path, 'utf8')) })
-}
+const all = manifests()
+const packages = publishable(all)
+const names = new Set(packages.map((p) => p.name))
 
-const published = new Set(
-  [...manifests.values()].filter(({ json }) => json.private !== true).map(({ json }) => json.name),
-)
-
-for (const [dir, { path, json }] of manifests) {
-  if (json.private === true) continue
-
+for (const { dir, path, name, json } of packages) {
   for (const [dependency, range] of Object.entries(json.dependencies ?? {})) {
     if (!dependency.startsWith('@nacre.work/')) continue
-    if (published.has(dependency)) continue
+    if (names.has(dependency)) continue
     console.error(
-      `::error file=${path}::${json.name} is published and depends on ${dependency} ` +
-        `(${range}), which is not. \`npm i ${json.name}\` fails on resolution.`,
+      `::error file=${path}::${name} is published and depends on ${dependency} ` +
+        `(${range}), which is not. \`npm i ${name}\` fails on resolution.`,
     )
     failed = true
   }
@@ -84,28 +66,19 @@ for (const [dir, { path, json }] of manifests) {
       failed = true
     }
   }
+}
 
-  if (tag !== undefined) {
-    const expected = tag.replace(/^v/, '')
-    if (json.version !== expected) {
-      console.error(
-        `::error file=${path}::${json.name} is at ${json.version} and the tag says ${expected}. ` +
-          'The workflow publishes what the manifest holds, so this tag would publish the wrong ' +
-          'version — or republish one that already exists and fail as though the registry were down.',
-      )
-      failed = true
-    }
-  }
+const agreed = agreedVersion(packages)
+if (agreed.errors !== undefined) {
+  for (const error of agreed.errors) console.error(`::error::${error}`)
+  failed = true
 }
 
 if (!failed) {
-  const names = [...published].sort()
-  console.log(
-    listOnly
-      ? names.join('\n')
-      : `publishable: ${names.join(', ')}` +
-          `${tag === undefined ? '' : ` — all at ${tag.replace(/^v/, '')}`}`,
-  )
+  const sorted = packages.map((p) => p.name)
+  if (listOnly) console.log(sorted.join('\n'))
+  else if (versionOnly) console.log(agreed.version)
+  else console.log(`publishable: ${sorted.join(', ')} — all at ${agreed.version}`)
 }
 
 process.exit(failed ? 1 : 0)

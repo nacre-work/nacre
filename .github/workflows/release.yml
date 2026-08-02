@@ -1,19 +1,64 @@
 name: release
 
+# No tag trigger, and no step that waits for a person.
+#
+# This fired on `v*` until a tag was pushed at a commit whose publish step could
+# not authenticate. Every gate passed, the publish failed, and the only way
+# forward was someone moving the tag by hand — a release blocked on a human
+# doing the right git incantation at the right commit. Shipping is a
+# consequence of what is on main, so main is what decides.
+#
+# The version in `packages/*` names something the registry does not have, or it
+# does not. When it does, this runs every gate against that tree, publishes, and
+# only then writes the tag and the GitHub release. In that order, because a tag
+# written first is a tag that outlives a failed publish, which is exactly the
+# state this replaced.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  # Not the normal path — a merge to main is. This exists so a registry blip
+  # can be retried without an empty commit, the same reason build has it.
+  workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write        # the OIDC token npm exchanges for publish rights
+
+# Never two releases at once, and never cancel one in flight: publishing is not
+# an operation that can be interrupted and retried from the top without leaving
+# some packages on the registry and some not.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  npm:
+  # Cheap, and runs on every push to main. No services, no install, no build —
+  # it reads the manifests and asks the registry, so the expensive job below
+  # only starts when there is something to publish.
+  decide:
+    name: decide
     runs-on: ubuntu-latest
-    # The unit tests below include the database gauges, which are SQL and refuse
-    # to skip when CI is set. A release that ran a smaller suite than a pull
-    # request would be the one artifact nobody can take back, tested least.
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - id: plan
+        run: node scripts/release-plan.mjs
+
+  npm:
+    name: publish ${{ needs.decide.outputs.version }}
+    needs: decide
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the tag and the release, written after publishing
+      id-token: write # the OIDC token npm exchanges for publish rights
+    # The unit and ACL suites below are SQL and HTTP against real services, and
+    # they refuse to skip when CI is set. A release that ran a smaller suite
+    # than a pull request would be the one artifact nobody can take back, tested
+    # least.
     services:
       postgres:
         image: postgres:17
@@ -22,9 +67,6 @@ jobs:
           --health-cmd pg_isready --health-interval 5s
           --health-timeout 5s --health-retries 10
         ports: ["5432:5432"]
-      # Both here for the same reason as postgres: the suites below refuse to
-      # skip when CI is set, and a release that quietly ran fewer of them than a
-      # pull request is the one artifact nobody can take back.
       redis:
         image: redis:7-alpine
         options: >-
@@ -47,34 +89,19 @@ jobs:
       # `_authToken=${NODE_AUTH_TOKEN}` and then set NODE_AUTH_TOKEN to its own
       # placeholder, XXXXX-XXXXX-XXXXX-XXXXX, when no token is passed. A
       # placeholder is a credential as far as the registry is concerned: it
-      # rejects the write and, because npm masks an unauthorized write on a
+      # rejects the write and, because npm masks an unauthorized write to a
       # scoped package as a missing one, the rejection arrives as
-      # `404 Not Found - PUT .../@nacre.work%2fcore`. Publishing here is by
-      # OIDC and there is no token, so there should be nothing that looks like
-      # one.
+      # `404 Not Found - PUT .../@nacre.work%2fcore`. Publishing here is by OIDC
+      # and there is no token, so there should be nothing that looks like one.
       - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
+        with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
-      # Nothing stood between a tag and the registry. Every `v*` tag published
-      # whatever the manifests held, which was 0.0.0 — the first tag succeeding
-      # and every one after it failing with "cannot publish over an existing
-      # version", a message that reads like a registry problem rather than like
-      # the tag never having been applied to anything.
-      #
-      # This also catches a published package depending on a private one, and a
-      # bin with no shebang. Both were true, and both fail at `npm install`
-      # rather than anywhere a test could see.
-      - name: the tag and the manifests agree, and the result is installable
-        run: pnpm lint:publish "${{ github.ref_name }}"
-
-      # A release is the one artifact nobody can take back. The gates that run
-      # on every pull request run here too, against the tagged tree, because a
-      # tag can be pushed to any commit — including one that never had a green
-      # build.
+      # The gates that run on every pull request run here too. main is protected
+      # and every commit on it arrived green, but a release is the one artifact
+      # nobody can take back and the cost of proving it again is minutes.
+      - run: pnpm lint:publish
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm lint:openapi
@@ -84,21 +111,20 @@ jobs:
       - run: pnpm migrate
       - run: pnpm test:unit
 
-      # The gate that matters, and it was not here.
+      # The gate that matters, and for a long time it was not here.
       #
       # `test:unit` excludes packages/core/authz by design — the leak suite has
-      # its own job because it needs a real Qdrant. So a tag could be pushed at
-      # any commit and publish to the registry without T1-T15, the property test
-      # against the reference resolver, or the round trip ever having run
-      # against the tagged tree. Breaking one of those is, by this project's own
-      # rule, a security incident; publishing without checking is worse than a
-      # pull request that skips it, because the artifact cannot be withdrawn.
+      # its own job because it needs a real Qdrant. Without this, a release
+      # could reach the registry without T1-T15, the property test against the
+      # reference resolver, or the round trip ever having run against the tree
+      # being published. Breaking one of those is, by this project's own rule, a
+      # security incident.
       - run: pnpm lint:acl-groups
       - run: pnpm test:acl
 
-      # The open/commercial boundary, for the same reason: the packages being
-      # published here are the ones a customer installs, and a core that
-      # references the private repository does not build for them at all.
+      # The open/commercial boundary, for the same reason: these packages are
+      # what a customer installs, and a core referencing the private repository
+      # does not build for them at all.
       - name: core must not reference private packages
         run: |
           set -euo pipefail
@@ -112,26 +138,23 @@ jobs:
 
       # Trusted publishing, no token. Each package is configured on npmjs.com
       # under Settings -> Trusted Publisher against this repository and this
-      # workflow file; the registry exchanges the OIDC token above for a
-      # short-lived credential. There is no NPM_TOKEN secret, so there is none
-      # to leak or rotate.
+      # workflow file; the registry exchanges the OIDC token for a short-lived
+      # credential. There is no NPM_TOKEN secret, so there is none to leak or
+      # rotate — and nothing here to configure per run.
       #
       # `npm publish` rather than `pnpm publish`, and this is not a preference.
-      # pnpm 10 implements no part of trusted publishing: its bundle contains
-      # no token exchange, no ACTIONS_ID_TOKEN_REQUEST_URL, no OIDC code at
-      # all. It sent the only credential it could see — the placeholder above —
-      # and the tag died on a 404 that named the package. pnpm 11 does
-      # implement the exchange, and moving the workspace onto it folds these
-      # two commands back into one.
+      # pnpm 10 implements no part of trusted publishing: its bundle carries no
+      # token exchange, no ACTIONS_ID_TOKEN_REQUEST_URL, no OIDC code at all.
+      # It sent the only credential it could see and the release died on a 404
+      # naming the package. pnpm 11 does implement the exchange, and moving the
+      # workspace onto it folds these two commands back into one.
       #
       # `pnpm pack` still packs, because it is what rewrites `workspace:*` into
       # a concrete version. npm publishes the manifest as written, protocol and
       # all, and every install then fails on resolution.
       #
       # publishConfig carries `access` but deliberately not `provenance`: npm
-      # turns provenance on itself once the exchange succeeds, and the flag
-      # breaks the one manual publish that has to bootstrap each package before
-      # a trusted publisher can be configured for it at all.
+      # turns provenance on itself once the exchange succeeds.
       - name: publish
         run: |
           set -euo pipefail
@@ -152,10 +175,13 @@ jobs:
           tarballs="$RUNNER_TEMP/tarballs"
           mkdir -p "$tarballs"
 
-          # From the same rule the checks above use, rather than a second list.
-          packages="$(node scripts/check-publish.mjs --list)"
+          # Only what the registry is still missing, so a run that published
+          # some packages and then failed can be re-run without tripping over
+          # the ones that made it.
+          pending="$(node scripts/release-plan.mjs --pending)"
+          [ -n "$pending" ] || { echo "::error::nothing pending, but decide said there was"; exit 1; }
 
-          for package in $packages; do
+          for package in $pending; do
             rm -f "$tarballs"/*.tgz
             pnpm --filter "$package" pack --pack-destination "$tarballs"
             tarball="$(ls "$tarballs"/*.tgz)"
@@ -166,3 +192,28 @@ jobs:
             # then surfaces as a 404 claiming the package does not exist.
             npm publish --loglevel verbose "$tarball"
           done
+
+      # After the publish, never before. Both are idempotent so a re-run over a
+      # release that half succeeded finishes it rather than failing on what is
+      # already there.
+      - name: tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --tags origin "v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION is already tagged"
+          else
+            git tag -a "v$VERSION" -m "v$VERSION"
+            git push origin "v$VERSION"
+          fi
+
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION already has a release"
+          else
+            gh release create "v$VERSION" --title "v$VERSION" --generate-notes
+          fi
