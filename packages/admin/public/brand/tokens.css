@@ -1,0 +1,102 @@
+/* Nacre — design tokens
+   The source of truth for UI. Never hardcode hex values in components. */
+
+:root {
+  /* ─── Color: shell in shadow ─── */
+  --n-ink-900:#0A1017;   /* dark theme background, primary text on light */
+  --n-ink-800:#111A24;
+  --n-ink-700:#1B2733;   /* borders on dark */
+  --n-ink-500:#3A4A59;   /* secondary text */
+  --n-ink-300:#7A8C9A;   /* muted text, captions */
+
+  /* ─── Color: nacre ─── */
+  /* The top of the pearl scale, and the only pure white in the system. It
+     exists because it was needed and was therefore being written as a literal
+     `#FFFFFF` — here in the light theme, and again in nacre.work's stylesheet,
+     whose own header says it invents no hex values. A colour used in two places
+     and named in neither is the drift this file exists to prevent. */
+  --n-pearl-000:#FFFFFF;  /* raised surfaces on light: cards, the header */
+  --n-pearl-050:#FAFCFC;
+  --n-pearl-100:#F1F5F6; /* light theme background */
+  --n-pearl-200:#E4EBED; /* borders on light */
+  --n-pearl-300:#CFDADE;
+
+  /* ─── Abalone: the mark's strata, top to bottom ─────────────
+     Do not reorder: the progression mirrors how the layer grows.
+     Primary row — large surfaces.
+     Dense row — UI and small sizes; every stratum clears 3:1. */
+  --n-strata-1:#0E3B3A;  --n-strata-1-dense:#0E3B3A;
+  --n-strata-2:#17706B;  --n-strata-2-dense:#17706B;
+  --n-strata-3:#2FA391;  --n-strata-3-dense:#1E8C7D;
+  --n-strata-4:#4FB8C4;  --n-strata-4-dense:#2A8FA0;
+  --n-strata-5:#7FA8D8;  --n-strata-5-dense:#4A78B8;
+  --n-strata-6:#A88FD0;  --n-strata-6-dense:#7A5FAE;
+
+  /* on ink the whole ramp shifts lighter */
+  --n-strata-1-on-dark:#1B7C76; --n-strata-2-on-dark:#26A396; --n-strata-3-on-dark:#4FB8C4;
+  --n-strata-4-on-dark:#7FA8D8; --n-strata-5-on-dark:#A88FD0; --n-strata-6-on-dark:#CBBDEC;
+
+  /* iridescence: only as the boundary of the visible, or as progress — never decoration */
+  --n-sheen:linear-gradient(100deg,#17706B 0%,#2FA391 28%,#4FB8C4 52%,#7FA8D8 76%,#A88FD0 100%);
+
+  /* ─── Permission semantics. Color carries information, not mood ─── */
+  --n-read:#1E8C7D;      /* read   — teal    */
+  --n-write:#4A78B8;     /* write  — blue    */
+  --n-admin:#7A5FAE;     /* admin  — violet  */
+  --n-deny:#C8455F;      /* deny   — deliberately outside the mark palette */
+
+  /* ─── States ─── */
+  --n-ok:#2FA391;
+  --n-warn:#C08A2E;
+  --n-error:#C8455F;
+
+  /* ─── Typography ─── */
+  --n-font-display:"Bricolage Grotesque",system-ui,sans-serif;
+  --n-font-body:"Instrument Sans",system-ui,sans-serif;
+  --n-font-mono:"IBM Plex Mono",ui-monospace,monospace;
+
+  --n-text-2xs:11px;  --n-text-xs:12.5px; --n-text-sm:14px;
+  --n-text-md:15.5px; --n-text-lg:18px;   --n-text-xl:23px;
+  --n-text-2xl:30px;  --n-text-3xl:40px;  --n-text-4xl:54px;
+
+  --n-track-display:-.03em;  /* display always uses negative tracking */
+  --n-track-label:.14em;     /* mono labels are always letterspaced */
+  --n-leading-tight:1.05;
+  --n-leading-body:1.55;
+
+  /* ─── Grid and shape ─── */
+  --n-space-1:4px;  --n-space-2:8px;  --n-space-3:12px; --n-space-4:16px;
+  --n-space-5:24px; --n-space-6:32px; --n-space-7:48px; --n-space-8:72px;
+
+  --n-radius:3px;        /* technical, nearly square */
+  --n-radius-pill:999px; /* permission chips only */
+  --n-border:1px;
+  --n-lamella:2px;       /* stratum thickness in the signature element */
+
+  --n-shadow-sm:0 1px 2px rgba(10,16,23,.06);
+  --n-shadow-md:0 4px 16px rgba(10,16,23,.08);
+
+  --n-motion-fast:120ms;
+  --n-motion-base:220ms;
+  --n-ease:cubic-bezier(.2,.6,.3,1);
+}
+
+[data-theme="dark"] {
+  --n-bg:var(--n-ink-900);
+  --n-surface:var(--n-ink-800);
+  --n-border-color:var(--n-ink-700);
+  --n-text:var(--n-pearl-100);
+  --n-text-muted:var(--n-ink-300);
+}
+
+[data-theme="light"] {
+  --n-bg:var(--n-pearl-100);
+  --n-surface:var(--n-pearl-000);
+  --n-border-color:var(--n-pearl-200);
+  --n-text:var(--n-ink-900);
+  --n-text-muted:var(--n-ink-500);
+}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}

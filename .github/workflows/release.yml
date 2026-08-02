@@ -11,6 +11,19 @@ permissions:
 jobs:
   npm:
     runs-on: ubuntu-latest
+    # The unit tests below include the database gauges, which are SQL and refuse
+    # to skip when CI is set. A release that ran a smaller suite than a pull
+    # request would be the one artifact nobody can take back, tested least.
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_PASSWORD: test, POSTGRES_DB: nacre_test }
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+        ports: ["5432:5432"]
+    env:
+      NACRE_PG_URL: postgres://postgres:test@localhost:5432/nacre_test
     steps:
       - uses: actions/checkout@v4
       # The version comes from packageManager in package.json — passing it here
@@ -26,6 +39,29 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+
+      # Nothing stood between a tag and the registry. Every `v*` tag published
+      # whatever the manifests held, which was 0.0.0 — the first tag succeeding
+      # and every one after it failing with "cannot publish over an existing
+      # version", a message that reads like a registry problem rather than like
+      # the tag never having been applied to anything.
+      #
+      # This also catches a published package depending on a private one, and a
+      # bin with no shebang. Both were true, and both fail at `npm install`
+      # rather than anywhere a test could see.
+      - name: the tag and the manifests agree, and the result is installable
+        run: pnpm lint:publish "${{ github.ref_name }}"
+
+      # A release is the one artifact nobody can take back. The gates that run
+      # on every pull request run here too, against the tagged tree, because a
+      # tag can be pushed to any commit — including one that never had a green
+      # build.
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm lint:openapi
+      - run: pnpm lint:entrypoints
+      - run: pnpm migrate
+      - run: pnpm test:unit
 
       # Trusted publishing, no token. Each package is configured on npmjs.com
       # under Settings -> Trusted Publisher against this repository and this

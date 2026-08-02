@@ -225,11 +225,32 @@ when('pipeline round trip · the worker and the search path agree', () => {
     }
   })
 
-  it('a permitted layer comes back', async () => {
+  it('a permitted layer comes back, with text a caller can read', async () => {
     const hits = await search.search(as(ids.alice), 'repository access', 10)
     expect(hits.length).toBeGreaterThan(0)
     for (const hit of hits) {
-      expect(hit.payload.layer_id).toBe(ids.open)
+      expect(hit.layer).toBe('open')
+      // The result is the contract's shape, not the vector store's. A hit that
+      // carried only identifiers and a score sent every caller back for N more
+      // requests to find out what it had matched.
+      expect(hit.text.length).toBeGreaterThan(0)
+      expect(hit.doc_id).toMatch(/^[0-9a-f-]{36}$/i)
+    }
+  })
+
+  it('the response carries no permission internals', async () => {
+    const hits = await search.search(as(ids.alice), 'repository access', 10)
+    expect(hits.length).toBeGreaterThan(0)
+
+    // An acl tag is a hash over the grant set reaching a document, so shipping
+    // it lets a client group documents by which permissions they share — the
+    // shape of the organization's access structure, handed to anyone who can
+    // search. The payload used to be the response.
+    for (const hit of hits) {
+      const keys = Object.keys(hit)
+      for (const internal of ['payload', 'acl_tags', 'acl_version', 'org_id', 'layer_id']) {
+        expect(keys, `${internal} must not reach the client`).not.toContain(internal)
+      }
     }
   })
 
@@ -240,8 +261,8 @@ when('pipeline round trip · the worker and the search path agree', () => {
     // from `shut` is the product's entire claim; getting that result because
     // the vectors happened to rank badly would prove nothing, which is why the
     // embedder gives every chunk the same vector.
-    expect(hits.every((h) => h.payload.layer_id === ids.open)).toBe(true)
-    expect(hits.some((h) => h.payload.layer_id === ids.shut)).toBe(false)
+    expect(hits.every((h) => h.layer === 'open')).toBe(true)
+    expect(hits.some((h) => h.layer === 'shut')).toBe(false)
   })
 
   it('a caller with no grants at all gets nothing', async () => {

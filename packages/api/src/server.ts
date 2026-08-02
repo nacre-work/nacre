@@ -33,11 +33,56 @@ export interface Documents {
    * organization to anyone holding any token for it — including a caller whose
    * grant had been revoked, and a service account with `write` and no `read`.
    */
-  read(auth: AuthContext, documentId: string): Promise<{ id: string; title: string } | undefined>
+  read(auth: AuthContext, documentId: string): Promise<DocumentView | undefined>
+}
+
+/**
+ * A document, as a caller sees it.
+ *
+ * It was `{ id, title }`, which is not enough to do anything with: no layer, no
+ * status, no size. A client that got a `202` from ingest and then wanted to
+ * know whether the document had indexed had to go to `/v1/jobs/{id}` and knew
+ * to only because the two ids happen to be the same value.
+ *
+ * Nothing here is permission data — the caller has already been resolved
+ * against this document, so every field describes something they may see. The
+ * text is not included: chunks are what search returns, and a whole-document
+ * body on this endpoint would be a second, unpaginated way to read everything.
+ */
+export interface DocumentView {
+  readonly document_id: string
+  readonly layer: string
+  readonly title: string | null
+  readonly status: string
+  readonly chunk_count: number
+  readonly updated_at: string
+}
+
+/**
+ * One result, as the contract describes it.
+ *
+ * Not the vector store's hit. That carried the raw payload — `acl_tags`,
+ * `acl_version`, `org_id`, `layer_id` — straight to the client, and carried no
+ * text at all, so the product's central operation answered with identifiers and
+ * a score and nothing a caller could read. `docs/openapi.yaml` had said
+ * otherwise since before there was a server.
+ *
+ * The tags are the part worth naming: an acl tag is a hash over the grant set
+ * reaching a document, so publishing it lets a client group documents by which
+ * permissions they share. Not a cross-tenant leak, and still the shape of the
+ * organization's access structure handed to anyone who can search.
+ */
+export interface SearchHit {
+  readonly chunk_id: string
+  readonly doc_id: string
+  readonly layer: string
+  readonly title: string | null
+  readonly score: number
+  readonly text: string
 }
 
 export interface SearchService {
-  search(auth: AuthContext, query: string, topK: number): Promise<readonly unknown[]>
+  search(auth: AuthContext, query: string, topK: number): Promise<readonly SearchHit[]>
 }
 
 export interface IngestRequest {
@@ -91,6 +136,17 @@ export interface Layer {
   readonly slug: string
   readonly name: string
   readonly workspaceId: string
+  readonly description: string
+  /**
+   * Live documents in the layer.
+   *
+   * Not "documents this caller may read": layer-scoped grants are all this
+   * build has, so anyone who can see the layer reaches everything in it. When
+   * document-level grants exist this stops being true, and the number has to be
+   * computed per caller or removed — a count is a small disclosure and still a
+   * disclosure.
+   */
+  readonly documentCount: number
 }
 
 /**
@@ -141,6 +197,16 @@ export interface Grants {
   list(auth: AuthContext): Promise<readonly GrantRecord[]>
   /** `undefined` when the caller may not administer the scope, or it does not exist. */
   issue(auth: AuthContext, input: GrantInput): Promise<GrantRecord | undefined>
+  /**
+   * Withdraw a grant. `false` when it is absent, in another organization, or on
+   * a scope this caller may not administer — one answer for all three.
+   *
+   * This is the operation `nacre_acl_propagation_lag_seconds` measures and the
+   * one docs/authz.md builds its SLA around, and there was no way to perform it
+   * through the API at all. Three documents described revocation; the only
+   * implementation was a DELETE against the table by hand.
+   */
+  revoke(auth: AuthContext, grantId: string): Promise<boolean>
 }
 
 export interface ServiceAccountView {
@@ -154,7 +220,11 @@ export interface ServiceAccountView {
 
 export interface ServiceAccountPort {
   list(auth: AuthContext): Promise<readonly ServiceAccountView[]>
-  create(auth: AuthContext, name: string): Promise<{ account: ServiceAccountView; key: string }>
+  /** `undefined` when the name is already taken in this organization. */
+  create(
+    auth: AuthContext,
+    name: string,
+  ): Promise<{ account: ServiceAccountView; key: string } | undefined>
   revoke(auth: AuthContext, id: string): Promise<boolean>
 }
 
@@ -544,6 +614,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             slug: l.slug,
             name: l.name,
             workspace_id: l.workspaceId,
+            description: l.description,
+            document_count: l.documentCount,
           })),
         },
         requestId,
@@ -603,7 +675,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       send(
         res,
         201,
-        { id: created.id, slug: created.slug, name: created.name, workspace_id: created.workspaceId },
+        {
+          id: created.id,
+          slug: created.slug,
+          name: created.name,
+          workspace_id: created.workspaceId,
+          description: created.description,
+          document_count: created.documentCount,
+        },
         requestId,
       )
       return
@@ -650,6 +729,36 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       return
     }
 
+    const grantMatch = /^\/v1\/grants\/([^/]+)$/.exec(instance)
+    if (req.method === 'DELETE' && grantMatch && options.grants !== undefined) {
+      const id = decodeURIComponent(grantMatch[1] as string)
+      const revoked = await options.grants.revoke(auth, id)
+
+      // Written before the response either way. A revocation nobody can prove
+      // happened is not a revocation an auditor will accept, and a *refused*
+      // one is what an attempt to revoke someone else's grant looks like.
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'revoke_grant',
+        result: revoked ? 'allow' : 'deny',
+        detail: { grant_id: id },
+        requestId,
+      })
+
+      if (!revoked) {
+        // 404 for absent, for another organization's, and for one whose scope
+        // this caller cannot administer. Distinguishing them would let an
+        // administrator of one layer enumerate grants across the organization.
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      send(res, 204, null, requestId)
+      return
+    }
+
     if (instance === '/v1/service-accounts' && options.serviceAccounts !== undefined) {
       // org_admin, not "admin on some scope". A service account is a principal
       // in the organization rather than an object inside a workspace, and there
@@ -674,7 +783,33 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           return
         }
 
-        const { account, key } = await options.serviceAccounts.create(auth, name.trim())
+        const created = await options.serviceAccounts.create(auth, name.trim())
+
+        if (created === undefined) {
+          // 409, not 500. The name is unique per organization and a duplicate
+          // is something the caller typed — it surfaced as an internal error
+          // with the constraint name in the log and nothing on screen.
+          await options.audit.write({
+            orgId: auth.orgId,
+            actor: `${auth.principal.type}:${auth.principal.id}`,
+            action: 'create_service_account',
+            result: 'deny',
+            detail: { name: name.trim(), reason: 'name taken' },
+            requestId,
+          })
+          const problem = new Problem({
+            type: 'https://nacre.work/errors/conflict',
+            title: 'Conflict',
+            status: 409,
+            detail: `A service account named '${name.trim()}' already exists in this organization.`,
+            instance,
+            requestId,
+          })
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        const { account, key } = created
 
         await options.audit.write({
           orgId: auth.orgId,
@@ -726,17 +861,47 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
     const problem = notFound(instance, requestId)
     send(res, problem.status, problem.toJSON(), requestId)
-  } catch {
+  } catch (error) {
+    // The 500 body says "whatever went wrong is in the journal under this
+    // request_id", and until this line nothing wrote it there: the error was
+    // discarded by a bare `catch`, and the audit row carried an empty detail.
+    // A caller reporting a 500 with a request id had nothing to be joined to.
+    //
+    // The message, not the request. A handler failure can carry a query string
+    // or a document body in its cause, and neither belongs in a log — see the
+    // list in CLAUDE.md. `String(error)` is the class and the message; the
+    // stack goes with it because that is what names the line.
+    console.error(
+      JSON.stringify({
+        msg: 'request failed',
+        request_id: requestId,
+        method: req.method,
+        instance,
+        org_id: auth.orgId,
+        error: String(error).slice(0, 500),
+        stack: error instanceof Error ? error.stack?.split('\n').slice(0, 6).join('\n') : undefined,
+      }),
+    )
+
     await options.audit
       .write({
         orgId: auth.orgId,
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: instance,
         result: 'error',
-        detail: {},
+        // The class alone. An audit row is read by more people than a log line
+        // and is retained far longer, so it says what kind of failure it was
+        // and points at the log for the rest.
+        detail: { error: error instanceof Error ? error.name : 'unknown' },
         requestId,
       })
-      .catch(() => {})
+      .catch((cause: unknown) => {
+        // Losing the audit row of a failed request is itself worth a line.
+        console.error(
+          JSON.stringify({ msg: 'audit write failed', request_id: requestId, error: String(cause) }),
+        )
+      })
+
     const problem = internal(instance, requestId)
     send(res, problem.status, problem.toJSON(), requestId)
   }

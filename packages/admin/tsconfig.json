@@ -1,6 +1,17 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "rootDir": "src", "outDir": "dist" },
+  "compilerOptions": {
+    "rootDir": "src",
+    // Typechecked, not emitted: esbuild produces the bundle, and a parallel
+    // dist/ of loose modules would be a second output nobody serves.
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    // A browser and nothing else. Naming the Node types here would let a
+    // Node-only global compile and then fail in the bundle.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
+  },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../core" }]
+  "references": []
 }

@@ -2,12 +2,21 @@
   "name": "@nacre.work/api",
   "version": "0.0.0",
   "description": "REST API and authorization service",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nacre-work/nacre.git",
+    "directory": "packages/api"
+  },
+  "homepage": "https://nacre.work",
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "build": "tsc -b",
     "dev": "tsx watch src/index.ts"
   },
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -16,6 +25,9 @@
       "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist"
+  ],
   "dependencies": {
     "@nacre.work/core": "workspace:*",
     "jose": "^6.2.7",

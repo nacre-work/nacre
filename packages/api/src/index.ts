@@ -3,6 +3,7 @@ export type {
   ApiOptions,
   AuditEvent,
   AuditSink,
+  DocumentView,
   Documents,
   GrantInput,
   GrantRecord,
@@ -15,6 +16,7 @@ export type {
   Layer,
   LayerOutcome,
   Layers,
+  SearchHit,
   SearchService,
   ServiceAccountPort,
   ServiceAccountView,
@@ -32,7 +34,7 @@ export {
   PostgresJobs,
   PostgresLayers,
 } from './adapters.js'
-export type { Embedder, SearchDeps } from './adapters.js'
+export type { DocumentTombstone, Embedder, IngestDeps, SearchDeps } from './adapters.js'
 export {
   generateKey,
   hashOf,

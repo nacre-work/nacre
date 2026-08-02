@@ -1,7 +1,7 @@
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 
-import { createApi, type AuditEvent, type AuthContext } from '@nacre.work/api'
+import { createApi, type AuditEvent, type AuthContext, type DocumentView } from '@nacre.work/api'
 import { SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -52,9 +52,18 @@ async function answerOnly(r: Response): Promise<Omit<ProblemBody, 'instance' | '
 }
 
 /** Documents keyed by organization. Undefined for absent and for foreign alike. */
-const STORE: Record<string, Record<string, { id: string; title: string }>> = {
-  [ORG_A]: { [DOC_A]: { id: DOC_A, title: 'Contract A' } },
-  [ORG_B]: { [DOC_B]: { id: DOC_B, title: 'Contract B' } },
+const document = (id: string, title: string): DocumentView => ({
+  document_id: id,
+  layer: 'contracts',
+  title,
+  status: 'indexed',
+  chunk_count: 3,
+  updated_at: '2026-01-01T00:00:00.000Z',
+})
+
+const STORE: Record<string, Record<string, DocumentView>> = {
+  [ORG_A]: { [DOC_A]: document(DOC_A, 'Contract A') },
+  [ORG_B]: { [DOC_B]: document(DOC_B, 'Contract B') },
 }
 
 const audited: AuditEvent[] = []
@@ -80,7 +89,20 @@ describe('baseline · the HTTP surface', () => {
         read: async (a, id) => STORE[a.orgId]?.[id],
       },
       search: {
-        search: async (auth: AuthContext) => [{ org: auth.orgId }],
+        // A result in the contract's shape. The organization goes in `title`
+        // only so the assertions below can still see which token reached this
+        // stub — it is not a field the real response carries, and the real one
+        // deliberately carries no acl_tags, acl_version, or org_id either.
+        search: async (auth: AuthContext) => [
+          {
+            chunk_id: '00000000-0000-4000-8000-00000000c001',
+            doc_id: DOC_A,
+            layer: 'writable',
+            title: auth.orgId,
+            score: 0.5,
+            text: 'layers',
+          },
+        ],
       },
       ingest: {
         // `undefined` for "may not write" and for "no such layer" alike: ingest
@@ -177,7 +199,7 @@ describe('baseline · the HTTP surface', () => {
       headers: { authorization: `Bearer ${await token(ORG_A)}` },
     })
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { id: string }).id).toBe(DOC_A)
+    expect(((await res.json()) as { document_id: string }).document_id).toBe(DOC_A)
   })
 
   it('a token for another organization does not reach this one’s document', async () => {

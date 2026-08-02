@@ -1,0 +1,120 @@
+/**
+ * The wire types, in the SDK's naming.
+ *
+ * The API speaks snake_case and this speaks camelCase; the mapping happens in
+ * one place, in `client.ts`, so a rename on the wire is one edit rather than a
+ * search. Nothing here carries an organization — see the note on ClientOptions.
+ */
+
+export type Permission = 'read' | 'write' | 'admin'
+export type PrincipalType = 'user' | 'group' | 'service_account'
+export type ScopeType = 'workspace' | 'layer' | 'document'
+export type Effect = 'allow' | 'deny'
+export type JobStatus = 'pending' | 'parsing' | 'indexing' | 'indexed' | 'failed'
+
+export interface SearchHit {
+  readonly documentId: string
+  readonly chunkId: string
+  readonly score: number
+  readonly text: string
+  readonly layer: string
+  readonly title: string | null
+}
+
+export interface SearchOptions {
+  /**
+   * How many results to return. Passed through uncorrected — the filter runs
+   * inside the index traversal, so this many *permitted* results come back.
+   * There is no over-fetch to compensate for, and asking for one would be the
+   * post-filter invariant I2 is written against.
+   */
+  readonly topK?: number
+  readonly signal?: AbortSignal
+}
+
+export interface IngestRequest {
+  readonly layer: string
+  /**
+   * The caller's own identifier for the document. Ingest is idempotent on
+   * `(layer, externalId)` plus the content hash, so re-sending unchanged bytes
+   * costs nothing and does not create a version.
+   */
+  readonly externalId: string
+  readonly title?: string
+  readonly content?: string
+  readonly url?: string
+}
+
+export interface IngestOutcome {
+  readonly documentId: string
+  readonly jobId: string
+  /** `true` when the content was already indexed and nothing was queued. */
+  readonly unchanged: boolean
+}
+
+export interface Document {
+  readonly documentId: string
+  readonly layer: string
+  readonly title: string | null
+  readonly status: JobStatus
+  readonly chunkCount: number
+  readonly updatedAt: string
+}
+
+export interface Job {
+  readonly jobId: string
+  readonly documentId: string
+  readonly status: JobStatus
+  readonly error: string | null
+}
+
+export interface Layer {
+  readonly id: string
+  readonly slug: string
+  readonly name: string
+  readonly description: string
+  readonly documentCount: number
+}
+
+export interface LayerInput {
+  readonly workspaceId: string
+  readonly slug: string
+  readonly name: string
+  readonly description?: string
+}
+
+export interface Grant {
+  readonly id: string
+  readonly principalType: PrincipalType
+  readonly principalId: string
+  readonly scopeType: ScopeType
+  readonly scopeId: string
+  readonly permission: Permission
+  readonly effect: Effect
+  readonly source: string
+}
+
+export interface GrantInput {
+  readonly principalType: PrincipalType
+  readonly principalId: string
+  readonly scopeType: ScopeType
+  readonly scopeId: string
+  readonly permission: Permission
+}
+
+export interface ServiceAccount {
+  readonly id: string
+  readonly name: string
+  readonly keyPrefix: string
+  readonly createdAt: string
+  readonly lastUsedAt: string | null
+  readonly revokedAt: string | null
+}
+
+export interface CreatedServiceAccount extends ServiceAccount {
+  /**
+   * The key, in this response and nowhere else, ever again. It is stored
+   * hashed, so it cannot be recovered from the database or from a backup.
+   */
+  readonly key: string
+}

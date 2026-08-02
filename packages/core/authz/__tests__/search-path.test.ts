@@ -179,7 +179,11 @@ when('baseline · the search path', () => {
   it('T8 · a document read is scoped by the token, twice over', async () => {
     const documents = new PostgresDocuments(pool, AS_APP)
 
-    expect(await documents.read(as(A), ids.docA)).toEqual({ id: ids.docA, title: '' })
+    expect(await documents.read(as(A), ids.docA)).toMatchObject({
+      document_id: ids.docA,
+      layer: 'open',
+      title: null,
+    })
     // Same call, other organization's token: absent, not forbidden.
     expect(await documents.read(as(B), ids.docA)).toBeUndefined()
   })

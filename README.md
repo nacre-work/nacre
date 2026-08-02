@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/assets/nacre-mark.svg" width="72" alt="Nacre">
+  <img src="docs/assets/nacre-mark-dense.svg" width="72" alt="Nacre">
   <h1>Nacre</h1>
   <p><strong>Your index. Your access rules. Your perimeter.<br>
   Agents see exactly what they're allowed to see.</strong></p>

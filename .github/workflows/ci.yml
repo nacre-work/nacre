@@ -3,6 +3,11 @@ name: build
 on:
   push:    { branches: [main] }
   pull_request:
+  # Manual, because `pull_request` was the only way to ask for a run and that
+  # left no recourse when Actions stopped scheduling them — no failed run to
+  # re-run, nothing queued to wait for, and an empty commit as the only lever.
+  # A required check needs a way to be asked for by hand.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -50,8 +55,32 @@ jobs:
       # The entry points are what docker-compose runs. Until they existed it ran
       # a library barrel that exited zero without doing anything.
       - run: pnpm lint:entrypoints
+      # lint:acl-groups is not here: it lists the acl project, which collects by
+      # importing, and those tests refuse to load when CI is set without a
+      # Qdrant to point at. It runs as the first step of acl-invariants, which
+      # has both services — the job it protects.
+      #
+      # This one is here rather than only in release, where it is a gate: an
+      # unpublishable manifest should fail on the pull request that wrote it,
+      # not months later on the tag that was supposed to ship it.
+      - run: pnpm lint:publish
       - run: pnpm migrate
       - run: pnpm test:unit
+
+  # The one Python component, and it had no job at all — no tests, no lint, and
+  # nothing checking that it still imports. It is also the only component that
+  # fetches a URL a tenant chose, which makes it the one place in the system
+  # where an authenticated caller picks the destination of an outbound request.
+  parser:
+    name: parser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      # Standard library only, deliberately: this process runs hostile input
+      # through whatever it depends on, so it depends on as little as possible.
+      - run: python -m unittest discover -s services/parser -t . -v
 
   # The public repo must build and test without access to nacre-enterprise.
   # If this job fails, the open/commercial boundary has leaked.

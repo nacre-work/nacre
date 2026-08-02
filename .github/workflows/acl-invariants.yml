@@ -22,6 +22,11 @@ name: acl-invariants
 on:
   push:    { branches: [main] }
   pull_request:
+  # Manual, because `pull_request` was the only way to ask for a run and that
+  # left no recourse when Actions stopped scheduling them — no failed run to
+  # re-run, nothing queued to wait for, and an empty commit as the only lever.
+  # A required check needs a way to be asked for by hand.
+  workflow_dispatch:
   schedule:
     - cron: "0 3 * * *"   # nightly: the exhaustive property-based run
 
@@ -66,6 +71,14 @@ jobs:
       # selector matches nothing. `vitest -t` skips what does not match and
       # exits 0, so a renamed describe block would otherwise turn a leak-test
       # step green while checking nothing.
+      # First, because it is the step that keeps the rest honest. The
+      # selectors below are literal, so a test whose describe block matches
+      # none of them does not run here — and the job goes green, because every
+      # step it did run passed. That had already happened to the coverage test
+      # and to the rule 6 test.
+      - name: every acl test is reachable by a selector
+        run: pnpm lint:acl-groups
+
       - name: T1-T8 · baseline
         run: pnpm test:acl:group "baseline"
       - name: T9-T10 · result saturation
@@ -82,6 +95,21 @@ jobs:
       # else does — every other test in the suite holds one end still.
       - name: round trip · the worker and the search path agree
         run: pnpm test:acl:group "pipeline round trip"
+
+      # Both of these existed and neither ran here until the reachability check
+      # above was added. The first asserts that every case docs/authz.md names
+      # has a test behind it, which makes it the one that notices when the rest
+      # stop being enough. The second guards rule 6 — write does not imply read
+      # — the invariant a reader is most likely to mistake for a bug and fix.
+      - name: coverage · every case in docs/authz.md has a test
+        run: pnpm test:acl:group "test plan coverage"
+      - name: rule 6 · write does not imply read
+        run: pnpm test:acl:group "permission implication"
+
+      # I5 holds only if a delete reaches the index. The Postgres tombstone
+      # changes nothing a query looks at.
+      - name: I5 · a deleted document leaves the index
+        run: pnpm test:acl:group "I5 · the delete path"
 
       # Fast on a pull request, exhaustive at night. The nightly run is where a
       # rare interaction between deny and inheritance actually gets found.

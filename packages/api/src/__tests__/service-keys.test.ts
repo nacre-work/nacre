@@ -99,7 +99,7 @@ when('service accounts, against the database', () => {
   })
 
   it('a new key authenticates as its own organization, as a member', async () => {
-    const { key, account } = await accounts.create(admin, 'agent')
+    const { key, account } = (await accounts.create(admin, 'agent'))!
 
     const resolved = await keys.resolve(key)
     expect(resolved?.orgId).toBe(ORG)
@@ -111,7 +111,7 @@ when('service accounts, against the database', () => {
   })
 
   it('the key is never readable again', async () => {
-    const { key, account } = await accounts.create(admin, 'agent-2')
+    const { key, account } = (await accounts.create(admin, 'agent-2'))!
 
     const listed = (await accounts.list(admin)).find((a) => a.id === account.id)
     expect(listed).toBeDefined()
@@ -121,7 +121,7 @@ when('service accounts, against the database', () => {
   })
 
   it('a revoked key stops working immediately', async () => {
-    const { key, account } = await accounts.create(admin, 'agent-3')
+    const { key, account } = (await accounts.create(admin, 'agent-3'))!
     expect(await keys.resolve(key)).toBeDefined()
 
     expect(await accounts.revoke(admin, account.id)).toBe(true)
@@ -133,13 +133,13 @@ when('service accounts, against the database', () => {
   })
 
   it('revoking twice is not an error the second time, it is a no', async () => {
-    const { account } = await accounts.create(admin, 'agent-4')
+    const { account } = (await accounts.create(admin, 'agent-4'))!
     expect(await accounts.revoke(admin, account.id)).toBe(true)
     expect(await accounts.revoke(admin, account.id)).toBe(false)
   })
 
   it('a revoked key is still listed, and says when', async () => {
-    const { account } = await accounts.create(admin, 'agent-5')
+    const { account } = (await accounts.create(admin, 'agent-5'))!
     await accounts.revoke(admin, account.id)
 
     const listed = (await accounts.list(admin)).find((a) => a.id === account.id)
@@ -150,21 +150,51 @@ when('service accounts, against the database', () => {
   })
 
   it('another organization cannot revoke this one’s key', async () => {
-    const { key, account } = await accounts.create(admin, 'agent-6')
+    const { key, account } = (await accounts.create(admin, 'agent-6'))!
     const intruder = { ...admin, orgId: OTHER }
 
     expect(await accounts.revoke(intruder, account.id)).toBe(false)
     expect(await keys.resolve(key), 'the key must still work').toBeDefined()
   })
 
+  it('a name already taken is a refusal, not an internal error', async () => {
+    const first = (await accounts.create(admin, 'duplicate-name'))!
+    expect(first.key).toBeDefined()
+
+    // The name is unique per organization. It used to raise the constraint
+    // violation out of the handler, which answered 500 — an error page for a
+    // form validation, with the constraint name in the log and nothing on
+    // screen. Found by driving the UI, not by a test.
+    expect(await accounts.create(admin, 'duplicate-name')).toBeUndefined()
+  })
+
+  it('the same name in another organization is fine', async () => {
+    await accounts.create(admin, 'shared-name')
+    // Unique per organization, not globally. A tenant must not be able to
+    // discover another's account names by watching which ones are refused.
+    expect(await accounts.create({ ...admin, orgId: OTHER }, 'shared-name')).toBeDefined()
+  })
+
+  it('a refused name creates nothing', async () => {
+    await accounts.create(admin, 'once-only')
+    const before = (await accounts.list(admin)).filter((a) => a.name === 'once-only').length
+    await accounts.create(admin, 'once-only')
+    const after = (await accounts.list(admin)).filter((a) => a.name === 'once-only').length
+
+    // ON CONFLICT DO NOTHING rather than a caught exception: the insert is
+    // inside the transaction withOrg opens, and a raised constraint error
+    // would abort everything after it.
+    expect(after).toBe(before)
+  })
+
   it('another organization does not see this one’s keys', async () => {
-    await accounts.create(admin, 'agent-7')
+    (await accounts.create(admin, 'agent-7'))!
     const theirs = await accounts.list({ ...admin, orgId: OTHER })
     expect(theirs.every((a) => a.name !== 'agent-7')).toBe(true)
   })
 
   it('a key that does not exist, and a mangled one, resolve to nothing', async () => {
-    const { key } = await accounts.create(admin, 'agent-8')
+    const { key } = (await accounts.create(admin, 'agent-8'))!
 
     for (const bad of [
       generateKey(),
@@ -179,7 +209,7 @@ when('service accounts, against the database', () => {
   })
 
   it('a key with the right prefix and the wrong secret is refused', async () => {
-    const { key } = await accounts.create(admin, 'agent-9')
+    const { key } = (await accounts.create(admin, 'agent-9'))!
 
     // The prefix is the indexed lookup, not the credential. If the hash
     // comparison were ever dropped, every one of these would authenticate as
@@ -210,7 +240,7 @@ when('service accounts, against the database', () => {
   })
 
   it('authenticate() accepts a real key and carries its organization', async () => {
-    const { key, account } = await accounts.create(admin, 'agent-10')
+    const { key, account } = (await accounts.create(admin, 'agent-10'))!
     const resolved = await authenticate(
       `Bearer ${key}`,
       {
@@ -233,7 +263,7 @@ when('service accounts, against the database', () => {
   })
 
   it('a surface with no resolver refuses keys rather than ignoring the prefix', async () => {
-    const { key } = await accounts.create(admin, 'agent-11')
+    const { key } = (await accounts.create(admin, 'agent-11'))!
     const result = await authenticate(
       `Bearer ${key}`,
       {
@@ -252,7 +282,7 @@ when('service accounts, against the database', () => {
   })
 
   it('using a key records when, without touching the decision', async () => {
-    const { key, account } = await accounts.create(admin, 'agent-12')
+    const { key, account } = (await accounts.create(admin, 'agent-12'))!
     expect((await accounts.list(admin)).find((a) => a.id === account.id)?.lastUsedAt).toBeNull()
 
     expect(await keys.resolve(key)).toBeDefined()

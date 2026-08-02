@@ -13,17 +13,99 @@ just be a dependency to keep patched.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import socket
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 MAX_BYTES = 50 * 1024 * 1024
 FETCH_TIMEOUT_SECONDS = 30
+MAX_REDIRECTS = 5
+
+# Off by default. A deployment that genuinely indexes an internal wiki sets it,
+# and does so knowing that any tenant who can call POST /v1/documents can then
+# reach anything this container can.
+ALLOW_PRIVATE = os.environ.get("NACRE_PARSER_ALLOW_PRIVATE_URLS", "").strip().lower() == "true"
 
 
 class ParseError(Exception):
     """Something about the input, not about us."""
+
+
+def _is_public(address: str) -> bool:
+    """Whether an address is somewhere a tenant may point this service."""
+    ip = ipaddress.ip_address(address)
+    # `is_global` is false for loopback, link-local (169.254.169.254 — the cloud
+    # metadata endpoint), private ranges, multicast, and the reserved blocks.
+    # Checking one property rather than a list of CIDRs is deliberate: the list
+    # is the thing that gets an entry missed, and IPv6 doubles it.
+    return ip.is_global
+
+
+def _check_reachable(url: str) -> None:
+    """
+    Refuse a URL that resolves anywhere private.
+
+    The service fetches whatever `POST /v1/documents` was given, so without this
+    an authenticated tenant can make it read the cloud metadata endpoint, the
+    API next to it, or the vector store — which has no per-tenant authorization
+    of its own — and get the response back as document text, indexed and
+    searchable. That is an exfiltration channel with a UI.
+
+    Every hop is checked, not only the first: a public URL that answers with a
+    302 to 169.254.169.254 is the same attack with one more step.
+
+    Not covered: DNS rebinding. This resolves, checks, and then lets urllib
+    resolve again to connect, so a name that answers differently twice can still
+    get through. Closing that means connecting to a validated address and
+    carrying the hostname in the Host header, which breaks TLS verification —
+    the trade is documented rather than made silently.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        # A file:// or gopher:// URL here would read the container's disk.
+        raise ParseError("url must be http or https")
+
+    host = parts.hostname
+    if not host:
+        raise ParseError("url has no host")
+
+    if ALLOW_PRIVATE:
+        return
+
+    try:
+        resolved = socket.getaddrinfo(host, parts.port or (443 if parts.scheme == "https" else 80))
+    except socket.gaierror as error:
+        raise ParseError("url does not resolve") from error
+
+    for family, _type, _proto, _canon, sockaddr in resolved:
+        if family not in (socket.AF_INET, socket.AF_INET6):
+            continue
+        # Every address the name answers with, not the first: a name resolving
+        # to one public address and one private one is the whole trick.
+        if not _is_public(sockaddr[0]):
+            raise ParseError("url resolves to an address this service will not fetch")
+
+
+class _GuardedRedirects(urllib.request.HTTPRedirectHandler):
+    """Re-check the destination of every redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        _check_reachable(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def fetch(url: str) -> bytes:
+    _check_reachable(url)
+    opener = urllib.request.build_opener(_GuardedRedirects)
+    # No cookies, no proxy handler, no auth: this service holds no credentials
+    # and must not start borrowing the environment's.
+    with opener.open(url, timeout=FETCH_TIMEOUT_SECONDS) as response:
+        return response.read(MAX_BYTES + 1)
 
 
 def parse_source(source: dict) -> dict:
@@ -38,12 +120,15 @@ def parse_source(source: dict) -> dict:
             raise ParseError("content must be a string")
         text = content
     else:
-        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-            # A file:// or gopher:// URL here would read the container's disk.
-            # The allowlist is the check; urllib will happily do the rest.
-            raise ParseError("url must be http or https")
-        with urllib.request.urlopen(url, timeout=FETCH_TIMEOUT_SECONDS) as response:  # noqa: S310
-            raw = response.read(MAX_BYTES + 1)
+        if not isinstance(url, str):
+            raise ParseError("url must be a string")
+        try:
+            raw = fetch(url)
+        except urllib.error.URLError as error:
+            # The reason, not the exception: a URLError's string can carry the
+            # target it failed to reach, and this is the one place a caller
+            # could use the failure to probe what is reachable from here.
+            raise ParseError("the url could not be fetched") from error
         if len(raw) > MAX_BYTES:
             raise ParseError("document exceeds the size limit")
         text = raw.decode("utf-8", errors="replace")
