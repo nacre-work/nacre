@@ -92,9 +92,44 @@ the application runs as `nacre_app`.
 
 | Role | Used by | Row-level security |
 |---|---|---|
-| the owner | migrations only | applies (tables are `FORCE`d) |
+| the owner | migrations only | **bypassed** — see below |
 | `nacre_app` | the API and the MCP server | applies |
 | `nacre_worker` | the worker's queue only | **bypassed** |
+
+**The owning role needs `BYPASSRLS`, and this table said the opposite until it
+was run.** Every tenant table is `FORCE`d, which is precisely what makes the
+policy apply to the owner — and four migrations read a tenant table: `0006`
+checks for duplicate layer slugs, `0007` backfills a lease column, `0017`
+rewrites a role, `0018` dedupes group members. Each evaluates
+`current_setting('app.current_org')`, which is unset during a migration, so
+each fails with `unrecognized configuration parameter "app.current_org"` — the
+same error, and the same root cause, as the two subsystems below.
+
+Verified by provisioning a plain owner and running the migrator: `0001`–`0005`
+applied and `0006` failed. With `BYPASSRLS` on the same role, all eighteen
+applied and `nacre_app` remained unable to create a table, unable to bypass a
+policy, and holding only `INSERT, SELECT` on `audit_events`.
+
+Provisioning, run once as a superuser:
+
+```sql
+CREATE ROLE nacre_owner LOGIN PASSWORD '…' BYPASSRLS;
+CREATE ROLE nacre_app   LOGIN PASSWORD '…';   -- no BYPASSRLS, no CREATE
+CREATE ROLE nacre_worker NOLOGIN BYPASSRLS;
+GRANT nacre_worker TO nacre_owner WITH ADMIN OPTION;
+CREATE DATABASE nacre OWNER nacre_owner;
+```
+
+`WITH ADMIN OPTION` is required and plain membership is not: `0008` grants
+`nacre_worker` onward to `nacre_app`, and only a member holding `ADMIN` may do
+that. `0008`'s own hint says to grant membership, which does not fix it — that
+migration has been applied everywhere and its text is checksummed, so it cannot
+be corrected in place. The migrator refuses up front instead, with the block
+above, before it applies anything.
+
+**Do not grant the owner's rights to `nacre_app` to save a credential.** The
+owner bypasses every policy in the schema; that is the whole reason it is a
+separate role.
 
 `nacre_app` sets `app.current_org` for every query through `withOrg`, so the
 policies scope it to one tenant. Two paths legitimately cannot be scoped that
