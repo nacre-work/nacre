@@ -1115,7 +1115,7 @@ export class PostgresLayers implements Layers {
 
   async create(
     auth: AuthContext,
-    input: { workspaceId: string; slug: string; name: string },
+    input: { workspaceId: string; slug: string; name: string; providerId?: string },
   ): Promise<LayerOutcome> {
     if (!/^[0-9a-f-]{36}$/i.test(input.workspaceId)) return { kind: 'denied' }
 
@@ -1142,16 +1142,47 @@ export class PostgresLayers implements Layers {
         )
         if (workspaces[0] === undefined) return { kind: 'denied' }
 
+        // The caller's choice, or the organization's if there is no ambiguity.
+        //
+        // `ORDER BY org_id NULLS LAST LIMIT 1` was the whole of this, which is
+        // fine while an organization has one provider and arbitrary the moment
+        // it has two — two rows with the same non-null `org_id` come back in
+        // whatever order the database felt like, so the model a layer was
+        // created against was a coin toss with no way for the caller to call
+        // it. Now they can, and where they do not, an ambiguous choice is
+        // refused rather than guessed.
         const { rows: providers } = await client.query<{
           id: string
           model: string
           dimensions: number
+          own: boolean
         }>(
-          `SELECT id, model, dimensions FROM embedding_providers
-            WHERE org_id = $1 OR org_id IS NULL ORDER BY org_id NULLS LAST LIMIT 1`,
-          [auth.orgId],
+          `SELECT id, model, dimensions, (org_id IS NOT NULL) AS own
+             FROM embedding_providers
+            WHERE (org_id = $1 OR org_id IS NULL)
+              AND ($2::uuid IS NULL OR id = $2::uuid)
+            ORDER BY org_id NULLS LAST, id`,
+          [auth.orgId, input.providerId ?? null],
         )
-        const provider = providers[0]
+
+        if (input.providerId !== undefined && providers[0] === undefined) {
+          return {
+            kind: 'provider',
+            detail: 'No embedding provider with that id is available to this organization.',
+          }
+        }
+
+        const own = providers.filter((p) => p.own)
+        if (input.providerId === undefined && own.length > 1) {
+          return {
+            kind: 'provider',
+            detail:
+              `This organization has ${own.length} embedding providers, so which one a layer ` +
+              "is indexed with is not implied. Name it with 'provider_id'.",
+          }
+        }
+
+        const provider = own[0] ?? providers[0]
         if (provider === undefined) {
           throw new Error('no embedding provider is configured; a layer cannot be created without one')
         }

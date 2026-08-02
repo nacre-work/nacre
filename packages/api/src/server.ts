@@ -217,6 +217,16 @@ export type LayerOutcome =
   | { readonly kind: 'created'; readonly layer: Layer }
   | { readonly kind: 'denied' }
   | { readonly kind: 'conflict' }
+  /**
+   * The named provider is not one this organization may use, or the
+   * organization runs more than one and the caller named none.
+   *
+   * 400 rather than 404: the caller has already proved admin on the workspace,
+   * so this is a statement about their request. Same reasoning as the reindex
+   * path's `unknown_provider`, and a provider is installation configuration
+   * rather than a tenant object with visibility rules of its own.
+   */
+  | { readonly kind: 'provider'; readonly detail: string }
 
 export interface Layers {
   /**
@@ -230,7 +240,7 @@ export interface Layers {
   list(auth: AuthContext, page?: Page): Promise<PageResult<Layer>>
   create(
     auth: AuthContext,
-    input: { workspaceId: string; slug: string; name: string },
+    input: { workspaceId: string; slug: string; name: string; providerId?: string },
   ): Promise<LayerOutcome>
 }
 
@@ -1524,7 +1534,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
-      const outcome = await options.layers.create(auth, { workspaceId, slug, name })
+      const providerId = body_.provider_id
+      if (providerId !== undefined && (typeof providerId !== 'string' || !/^[0-9a-f-]{36}$/i.test(providerId))) {
+        const problem = badRequest(instance, requestId, "'provider_id' must be a uuid.")
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const outcome = await options.layers.create(auth, {
+        workspaceId,
+        slug,
+        name,
+        ...(providerId === undefined ? {} : { providerId }),
+      })
 
       await options.audit.write({
         orgId: auth.orgId,
@@ -1539,6 +1561,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         // 404, not 403. A caller who may not administer a workspace must not be
         // able to tell it apart from one that does not exist.
         const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      if (outcome.kind === 'provider') {
+        const problem = badRequest(instance, requestId, outcome.detail)
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }

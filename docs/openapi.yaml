@@ -68,6 +68,15 @@ components:
       properties:
         layer_id: { type: string, format: uuid }
         status:   { type: string, enum: [running, complete, failed] }
+        phase:
+          type: string
+          enum: [copying, embedding]
+          description: >
+            `copying` is the organization's collection being rebuilt with room
+            for the new model — no embeddings are computed and `progress` reads
+            0 throughout. `embedding` is the per-layer work `progress` measures.
+            The two are separate because the first is org-wide and happens once
+            however many layers are migrated.
         current_vector:
           type: string
           description: 'What search is using right now.'
@@ -539,6 +548,24 @@ paths:
                 slug:         { type: string, description: Unique within the organization }
                 name:         { type: string }
                 description:  { type: string }
+                provider_id:
+                  type: string
+                  format: uuid
+                  description: >
+                    Which embedding model this layer is indexed with. An
+                    embedding provider belonging to this organization, or the
+                    installation-wide one. Omitted, the organization's own is
+                    used if it has exactly one and the installation default
+                    otherwise — so a organization running two models has to say
+                    which, rather than getting whichever the database returned
+                    first.
+
+                    A provider whose named vector the organization's collection
+                    has no room for is accepted: the collection is rebuilt with
+                    room for it, and the layer holds its documents at `pending`
+                    until that finishes. Qdrant cannot add a named vector to a
+                    live collection, which is why this is a rebuild and not an
+                    alteration.
       responses:
         '201':
           description: Created
