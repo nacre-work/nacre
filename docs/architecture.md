@@ -241,8 +241,19 @@ not perform.
 
 ## Backups
 
-A consistent set is three parts: a PostgreSQL dump, a snapshot of the Qdrant
-collections, and the S3 bucket. Restore in the order Postgres → S3 → Qdrant.
-When they disagree, **vectors are rebuilt from Postgres and S3** — the reverse
-does not hold, because the vector store carries no authoritative content.
+A consistent set is two parts today: a PostgreSQL dump and a snapshot of the
+Qdrant collections. Restore Postgres first and rebuild Qdrant from it — the
+reverse does not hold, because the payload of a point carries identifiers and
+flags and not one line of text. A Qdrant snapshot saves recomputing embeddings
+and never substitutes for a Postgres one.
+
+**S3 is not in that chain, and is not merely unimplemented: `NACRE_S3_*` is not
+read anywhere and is not validated at startup either.** `loadConfig` does not
+mention it, so a deployment can set those variables to anything or omit them
+and no process will say a word — while the `full` Compose profile starts a
+MinIO with those credentials that nothing talks to. Document bytes live in
+`documents.source_ref`, which is what makes the Postgres dump larger than it
+looks. When object storage lands, this becomes three parts and the order
+becomes Postgres → S3 → Qdrant.
+
 Rehearse the restore quarterly, at real volume.

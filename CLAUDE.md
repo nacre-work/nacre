@@ -197,9 +197,33 @@ does; the difference is what a bulk retagging pass costs. It answers `204` and
 never the document, because rule 6 means a caller may hold `write` without
 `read`.
 
+`GET`/`POST /v1/workspaces` and `PATCH /v1/layers/{id}` close the last two paths
+the contract described and the server answered `404` for. The workspace listing
+is the one that mattered: creating a layer takes a `workspace_id` and the only
+way to have one was the line `init` printed, so a second administrator had no
+route that did not go through the database. Its first implementation reproduced
+exactly the deadlock it was added to break — `resolve` flattens a grant set to
+the layers it reaches, so an administrator of an *empty* workspace resolves to
+`none`, and an early return on that left them seeing nothing. Found by running
+it.
+
+`/.well-known/oauth-protected-resource` is served, by both the API and the MCP
+transport, from one document built once. Every `401` from MCP had named that
+path in `WWW-Authenticate` since the transport existed and nothing served it.
+`authorization_servers` is absent unless a deployment names one and is
+deliberately never pointed at Nacre: this is a resource server, and a client
+sent here for a token endpoint would find nothing.
+
 Not built: OAuth dynamic client registration and CIMD, multipart upload on
 ingest, the recall check against a reference query set on a reindex, and
 dropping the old vector after a rollback window.
+
+**Object storage is not wired, and `NACRE_S3_*` is not even validated** —
+`loadConfig` does not mention it, so a wrong endpoint or a missing credential is
+silent while the `full` Compose profile starts a MinIO nothing talks to.
+Document bytes live in `documents.source_ref`, which is why the backup chain is
+Postgres → Qdrant and not the three parts `docs/architecture.md` used to
+describe.
 
 **`docker compose --profile minimal up` has now been run from a clean clone**,
 and the whole loop driven through it: init, layer, ingest, indexed, search,

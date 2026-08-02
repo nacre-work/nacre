@@ -152,7 +152,7 @@ should know that setting one changes nothing today:
 | `NACRE_LOG_LEVEL`, `NACRE_LOG_FORMAT` | all logging is structured JSON at one level |
 | `NACRE_AUDIT_QUERY_TEXT` | query text is never written, with or without it |
 | `NACRE_ACL_CACHE_TTL` | the resolver cache is written and not wired in, so every search recomputes the group closure. Safe — it errs towards recomputing — and slower than it should be |
-| `NACRE_S3_*`, `NACRE_PRESIGN_TTL` | object storage is not wired; document bodies live in Postgres |
+| `NACRE_S3_*`, `NACRE_PRESIGN_TTL` | object storage is not wired; document bodies live in Postgres. **Not validated either** — `loadConfig` does not mention them, so a wrong endpoint or a missing credential is silent |
 | `NACRE_OAUTH_CIMD_ENABLED`, `NACRE_OAUTH_DCR_ENABLED`, `NACRE_EMA_*` | client registration and EMA are not built |
 | `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
 
@@ -461,7 +461,12 @@ are rebuilt **from Postgres**, never the other way round — the payload of a
 point carries identifiers and flags and not one line of text, so a Qdrant backup
 saves recomputing embeddings and never substitutes for a Postgres one.
 
-S3 is not in that chain today. `NACRE_S3_*` is validated at startup and read by
-nothing, and document bytes live in `documents.source_ref`, which is what makes
-the Postgres backup larger than it looks and means there is no separate object
-store to restore.
+S3 is not in that chain today, and the gap is wider than "unimplemented":
+`NACRE_S3_*` is **not read anywhere, and not even validated at startup**.
+`loadConfig` does not mention it. So a deployment can set these to anything, or
+to nothing, and no process will say a word — while the `full` profile starts a
+MinIO with those credentials that nothing ever talks to.
+
+Document bytes live in `documents.source_ref`, which is what makes the Postgres
+backup larger than it looks and means there is no separate object store to
+restore.

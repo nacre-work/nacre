@@ -41,16 +41,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The version comes from packageManager in package.json — passing it here
-      # as well makes pnpm/action-setup refuse to run. Keep that field on pnpm
-      # 10: it forwards the OIDC token to the registry, and pnpm 11.0.8 broke
-      # exactly that path, failing publishes with a 404 (pnpm/pnpm#11513).
-      # Check that issue before bumping the major.
+      # as well makes pnpm/action-setup refuse to run.
       - uses: pnpm/action-setup@v4
+      # No registry-url on purpose. It makes setup-node write an .npmrc holding
+      # `_authToken=${NODE_AUTH_TOKEN}` and then set NODE_AUTH_TOKEN to its own
+      # placeholder, XXXXX-XXXXX-XXXXX-XXXXX, when no token is passed. A
+      # placeholder is a credential as far as the registry is concerned: it
+      # rejects the write and, because npm masks an unauthorized write on a
+      # scoped package as a missing one, the rejection arrives as
+      # `404 Not Found - PUT .../@nacre.work%2fcore`. Publishing here is by
+      # OIDC and there is no token, so there should be nothing that looks like
+      # one.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
@@ -107,11 +112,57 @@ jobs:
 
       # Trusted publishing, no token. Each package is configured on npmjs.com
       # under Settings -> Trusted Publisher against this repository and this
-      # workflow file; the registry then accepts the OIDC token above. There is
-      # no NPM_TOKEN secret, so there is none to leak or rotate.
+      # workflow file; the registry exchanges the OIDC token above for a
+      # short-lived credential. There is no NPM_TOKEN secret, so there is none
+      # to leak or rotate.
       #
-      # publishConfig carries `access` but deliberately not `provenance`:
-      # trusted publishing attaches provenance on its own, and the flag breaks
-      # the one manual publish that has to bootstrap each package before a
-      # trusted publisher can be configured for it at all.
-      - run: pnpm -r --filter "./packages/*" publish --no-git-checks
+      # `npm publish` rather than `pnpm publish`, and this is not a preference.
+      # pnpm 10 implements no part of trusted publishing: its bundle contains
+      # no token exchange, no ACTIONS_ID_TOKEN_REQUEST_URL, no OIDC code at
+      # all. It sent the only credential it could see — the placeholder above —
+      # and the tag died on a 404 that named the package. pnpm 11 does
+      # implement the exchange, and moving the workspace onto it folds these
+      # two commands back into one.
+      #
+      # `pnpm pack` still packs, because it is what rewrites `workspace:*` into
+      # a concrete version. npm publishes the manifest as written, protocol and
+      # all, and every install then fails on resolution.
+      #
+      # publishConfig carries `access` but deliberately not `provenance`: npm
+      # turns provenance on itself once the exchange succeeds, and the flag
+      # breaks the one manual publish that has to bootstrap each package before
+      # a trusted publisher can be configured for it at all.
+      - name: publish
+        run: |
+          set -euo pipefail
+
+          # Checked here because npm will not. Without id-token: write it logs
+          # one line at silly level, which nothing prints, and then publishes
+          # with whatever credential it already had.
+          [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || {
+            echo "::error::no OIDC token to exchange — this job needs permissions.id-token: write"
+            exit 1
+          }
+
+          # OIDC publishing landed in npm 11.5.0. The npm bundled with Node 22
+          # predates it and fails the same silent way pnpm 10 did.
+          npm install -g npm@11.19.0
+          npm --version
+
+          tarballs="$RUNNER_TEMP/tarballs"
+          mkdir -p "$tarballs"
+
+          # From the same rule the checks above use, rather than a second list.
+          packages="$(node scripts/check-publish.mjs --list)"
+
+          for package in $packages; do
+            rm -f "$tarballs"/*.tgz
+            pnpm --filter "$package" pack --pack-destination "$tarballs"
+            tarball="$(ls "$tarballs"/*.tgz)"
+
+            # Verbose because the exchange failing is logged at that level and
+            # nowhere else: npm falls through to publishing unauthenticated,
+            # and a trusted publisher that was never configured for a package
+            # then surfaces as a 404 claiming the package does not exist.
+            npm publish --loglevel verbose "$tarball"
+          done
