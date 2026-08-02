@@ -16,7 +16,17 @@ export default tseslint.config(
       '.github/scripts/**/*.{js,mjs,cjs}',
     ],
     languageOptions: {
-      globals: { console: 'readonly', process: 'readonly', URL: 'readonly' },
+      // Listed rather than pulled from a `globals` package: the list being
+      // short is the point. A script here reaching for something not on it is
+      // worth noticing, and `fetch` and `setTimeout` earned their place by the
+      // release plan asking the registry what it already holds.
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        URL: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+      },
     },
   },
   {
