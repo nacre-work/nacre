@@ -192,6 +192,16 @@ The old collection is left in place. Rolling the whole organization back is
 pointing `vector_collection` at it again; rolling one layer back is a reindex
 onto the provider it came from.
 
+Two consequences an operator meets and neither is a bug. **A reindex that fails
+still moves the pointer**, because steps 1–3 are what moved it and only step 4
+failed — the new collection holds exactly the old one's data plus an empty slot,
+so it is live and correct, and the layer stays on the model it was already on.
+And **nothing reclaims an abandoned collection.** Each reindex leaves one
+behind, holding a full copy of the organization's vectors; that is what makes
+the rollback above a pointer change rather than a rebuild, and it is disk that
+grows per migration until an operator drops it by hand. There is no retention
+job for them yet.
+
 **What is not built:** the recall check against a reference query set (step 4 of
 the original sequence), and dropping the old vector after a rollback window.
 Both are additions to a migration that completes without them — the first is a
