@@ -647,6 +647,7 @@ describe('the administrative surface', () => {
         searchResults: { inc: record('searchResults') },
         aclDenials: { inc: record('aclDenials') },
         ingestDuration: { observe: record('ingestDuration') },
+        authFailures: { inc: record('authFailures') },
       },
       documents: { read: async () => undefined },
       search: {
@@ -670,7 +671,23 @@ describe('the administrative surface', () => {
       headers: await auth(),
       body: JSON.stringify({ layer: 'nope', external_id: 'e', content: 'c' }),
     })
+    // Three rejected credentials, one of each kind. Nothing logs requests, so
+    // this counter is the only way an operator sees a key rotation drain.
+    await fetch(`${at}/v1/layers`)
+    await fetch(`${at}/v1/layers`, { headers: { authorization: 'Bearer not-a-jwt' } })
+    await fetch(`${at}/v1/layers`, { headers: { authorization: 'Bearer nacre_sk_nope' } })
+
     await new Promise<void>((resolve) => probe.close(() => resolve()))
+
+    expect(seen).toContain('authFailures:{"kind":"missing"}:undefined')
+    expect(seen).toContain('authFailures:{"kind":"jwt"}:undefined')
+    expect(seen).toContain('authFailures:{"kind":"service_key"}:undefined')
+    // Never the reason. The 401 answers one message for every cause on purpose,
+    // and a label carrying the cause would put that distinction back on an
+    // endpoint that is unauthenticated by default.
+    expect(seen.filter((s) => s.startsWith('authFailures')).every((s) => !s.includes('reason'))).toBe(
+      true,
+    )
 
     expect(seen.filter((s) => s.startsWith('searchDuration')).length).toBe(1)
     expect(seen).toContain('searchResults:{}:1')

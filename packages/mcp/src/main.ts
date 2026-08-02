@@ -9,6 +9,7 @@ import {
   Registry,
 } from '@nacre.work/core'
 import { RateLimiter, type LimitPolicy, type Resource } from '@nacre.work/api'
+import { createHash } from 'node:crypto'
 
 import { createMcpServer } from './server.js'
 import { buildServices, jwtKey } from './services.js'
@@ -86,6 +87,12 @@ async function main(): Promise<void> {
     aclDenials: registry.register(
       new Counter('nacre_acl_denials_total', 'Access denials, by reason'),
     ),
+    authFailures: registry.register(
+      new Counter(
+        'nacre_auth_failures_total',
+        'Rejected credentials, by the kind presented: missing, jwt, service_key. Never by reason — the 401 is deliberately one answer',
+      ),
+    ),
   }
 
   const server = createMcpServer({
@@ -109,7 +116,23 @@ async function main(): Promise<void> {
 
   const port = Number(process.env.PORT ?? 8081)
   server.listen(port, () => {
-    console.log(JSON.stringify({ msg: 'mcp listening', port, env: config.env }))
+    // The fingerprint, never the secret, and for a sharper reason here than on
+    // the API. This process and the API verify tokens with the *same* symmetric
+    // secret, and there is no dual-key window — so a rotation that reaches one
+    // of them and not the other produces 401s on part of the traffic and not
+    // the rest, which is the hardest failure of the set to read from the
+    // outside. Comparing two printed fingerprints is how an operator sees it in
+    // one line. The API has printed its own since it existed; this one did not,
+    // which made the comparison impossible from the half that needed it.
+    const fingerprint = createHash('sha256').update(key).digest('hex').slice(0, 12)
+    console.log(
+      JSON.stringify({
+        msg: 'mcp listening',
+        port,
+        env: config.env,
+        jwt_key: `sha256:${fingerprint}`,
+      }),
+    )
   })
 
   onListenError(server, 'mcp', port)

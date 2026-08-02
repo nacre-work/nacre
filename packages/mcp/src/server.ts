@@ -97,6 +97,7 @@ export interface McpMetrics {
   toolDuration: { observe(seconds: number, labels?: Record<string, string>): void }
   toolCalls: { inc(labels?: Record<string, string>, by?: number): void }
   aclDenials: { inc(labels?: Record<string, string>, by?: number): void }
+  authFailures: { inc(labels?: Record<string, string>, by?: number): void }
 }
 
 /**
@@ -203,6 +204,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
 
   const auth = await authenticate(req.headers.authorization, options.verify, '/mcp', requestId)
   if (auth instanceof Problem) {
+    // By the kind presented, never by the reason. Same series and same labels
+    // as the REST surface, or a key rotation shows up on one dashboard as two
+    // unrelated shapes. `kind="service_key"` is the one that matters here:
+    // this transport exists for agents, and an agent presents a service account
+    // key, which no JWT rotation should ever touch.
+    const presented = req.headers.authorization
+    options.observe?.authFailures.inc({
+      kind:
+        presented === undefined || !presented.startsWith('Bearer ')
+          ? 'missing'
+          : presented.slice(7).startsWith('nacre_sk_')
+            ? 'service_key'
+            : 'jwt',
+    })
     // RFC 9728: every 401 points at the protected-resource metadata, which is
     // how a client discovers where to get a token. It lives on the API host,
     // never on the apex — static hosting there intercepts /.well-known/*.
