@@ -42,4 +42,5 @@ export type {
   SearchHit,
   SearchOptions,
   ServiceAccount,
+  Workspace,
 } from './types.js'

@@ -27,6 +27,7 @@ import {
   PostgresJobs,
   PostgresLayers,
   PostgresReindex,
+  PostgresWorkspaces,
 } from './adapters.js'
 import { Idempotency } from './idempotency.js'
 import { Login } from './login.js'
@@ -195,6 +196,7 @@ async function main(): Promise<void> {
     audit: new PostgresAudit(pool, APP_ROLE),
     jobs: new PostgresJobs(pool, APP_ROLE),
     layers: new PostgresLayers(pool, vectors, APP_ROLE),
+    workspaces: new PostgresWorkspaces(pool, APP_ROLE),
     grants: new PostgresGrants(pool, APP_ROLE),
     serviceAccounts: new PostgresServiceAccounts(pool, APP_ROLE),
   })

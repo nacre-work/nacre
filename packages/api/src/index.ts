@@ -41,6 +41,7 @@ export {
   PostgresGrants,
   PostgresJobs,
   PostgresLayers,
+  PostgresWorkspaces,
   PostgresReindex,
 } from './adapters.js'
 export type { DocumentTombstone, Embedder, IngestDeps, SearchDeps } from './adapters.js'

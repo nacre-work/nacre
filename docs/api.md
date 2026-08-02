@@ -13,7 +13,8 @@ GET    /v1/documents/{id}
 PATCH  /v1/documents/{id}            metadata only; no re-embed
 DELETE /v1/documents/{id}            tombstone
 POST   /v1/search
-GET    /v1/layers        POST /v1/layers
+GET    /v1/workspaces    POST /v1/workspaces
+GET    /v1/layers        POST /v1/layers        PATCH /v1/layers/{id}
 GET    /v1/grants        POST /v1/grants        DELETE /v1/grants/{id}
 GET    /v1/service-accounts  POST  /v1/service-accounts  DELETE /v1/service-accounts/{id}
 GET    /v1/jobs/{id}
@@ -22,13 +23,8 @@ GET    /.well-known/oauth-protected-resource        RFC 9728, unauthenticated
 POST   /v1/auth/login    /v1/auth/refresh        /v1/auth/logout
 ```
 
-Specified and **not** implemented. These answer `404` like any unknown path;
-they are listed because this is the contract they will be built to:
-
-```
-PATCH  /v1/layers/{id}
-GET    /v1/workspaces    POST /v1/workspaces
-```
+Everything the contract describes is implemented. Multipart upload on
+`POST /v1/documents` is the one exception, and it is marked where it applies.
 
 ## Errors — RFC 9457 (`application/problem+json`)
 
@@ -299,7 +295,8 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 | `POST /v1/documents` | `202` with a job id, `200` for an unchanged repeat |
 | `DELETE /v1/documents/{id}` | tombstones the index and the row, in that order |
 | `GET /v1/documents/{id}`, `GET /v1/jobs/{id}` | resolved per caller |
-| `GET`/`POST /v1/layers` | `provider_id` optional; required where the organization runs more than one model |
+| `GET`/`POST /v1/workspaces` | a layer needs a workspace id, and until this existed the only way to have one was the line `init` printed |
+| `GET`/`POST /v1/layers`, `PATCH /v1/layers/{id}` | `provider_id` optional on create; PATCH takes name and description and nothing that decides how the vectors were built |
 | `GET`/`POST /v1/layers/{id}/reindex` | `202` and a path to poll; `copying` then `embedding` |
 | `GET /v1/audit` | newest first, cursor-paged, JSON/JSONL/CSV by content negotiation |
 | `GET`/`POST /v1/grants`, `DELETE /v1/grants/{id}` | |

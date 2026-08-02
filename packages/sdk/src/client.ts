@@ -9,6 +9,7 @@ import type {
   Job,
   Layer,
   LayerInput,
+  Workspace,
   SearchHit,
   SearchOptions,
   ServiceAccount,
@@ -379,6 +380,48 @@ export class NacreClient {
   }
 
   // ─── layers ──────────────────────────────────────────────────────────────
+
+  /**
+   * Workspaces. A layer needs one, and until this endpoint existed the only
+   * way to have its id was the line `init` printed.
+   */
+  readonly workspaces = {
+    /** Only the workspaces this token can reach. The catalog is permission data. */
+    list: async (): Promise<readonly Workspace[]> => {
+      const body = (await this.#request({
+        method: 'GET',
+        path: '/v1/workspaces',
+        retryable: true,
+      })) as { items?: unknown[] }
+
+      return (body.items ?? []).map((w) => {
+        const ws = w as Record<string, unknown>
+        return {
+          id: String(ws.id),
+          slug: String(ws.slug),
+          name: String(ws.name ?? ''),
+          layerCount: Number(ws.layer_count ?? 0),
+        }
+      })
+    },
+
+    /** `org_admin` only — there is no scope above a workspace to hold a grant on. */
+    create: async (input: { slug: string; name: string }): Promise<Workspace | undefined> => {
+      const body = await this.#maybe<Record<string, unknown>>({
+        method: 'POST',
+        path: '/v1/workspaces',
+        body: { slug: input.slug, name: input.name },
+      })
+      if (body === undefined) return undefined
+
+      return {
+        id: String(body.id),
+        slug: String(body.slug),
+        name: String(body.name ?? ''),
+        layerCount: Number(body.layer_count ?? 0),
+      }
+    },
+  }
 
   readonly layers = {
     /** Only the layers this token may read. The catalog is permission data. */

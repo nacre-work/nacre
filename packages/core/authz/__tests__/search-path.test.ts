@@ -1,7 +1,12 @@
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { HttpEmbedder, NacreSearchService, PostgresDocuments } from '@nacre.work/api'
+import {
+  HttpEmbedder,
+  NacreSearchService,
+  PostgresDocuments,
+  PostgresWorkspaces,
+} from '@nacre.work/api'
 import type { AuthContext } from '@nacre.work/api'
 
 import { createPool } from '../../db/client.js'
@@ -35,6 +40,9 @@ const ids = {
   docA: '00000000-0000-0000-0000-0000000000a5',
   // `write` on the open layer and no `read`, which is rule 6's whole point.
   carol: '00000000-0000-0000-0000-0000000000a6',
+  // admin on the workspace and nothing else; erin has nothing at all.
+  dave: '00000000-0000-0000-0000-0000000000a7',
+  erin: '00000000-0000-0000-0000-0000000000a8',
   provider: '00000000-0000-0000-0000-0000000000e2',
 }
 
@@ -135,6 +143,17 @@ when('baseline · the search path', () => {
          VALUES ($1,'user',$2,'layer',$3,'write','allow')
          ON CONFLICT DO NOTHING`,
         [A, ids.carol, ids.openA],
+      )
+      await c.query(
+        `INSERT INTO users (id, org_id, email) VALUES ($1,$3,'d@sp.test'), ($2,$3,'e@sp.test')
+         ON CONFLICT DO NOTHING`,
+        [ids.dave, ids.erin, A],
+      )
+      await c.query(
+        `INSERT INTO grants (org_id, principal_type, principal_id, scope_type, scope_id, permission, effect)
+         VALUES ($1,'user',$2,'workspace',$3,'admin','allow')
+         ON CONFLICT DO NOTHING`,
+        [A, ids.dave, ids.wsA],
       )
       await c.query('COMMIT')
     } catch (e) {
@@ -259,6 +278,55 @@ when('baseline · the search path', () => {
     )
     expect(await documents.updateMetadata(as(B), ids.docA, { source: 'x' })).toBe(false)
     expect(wrote).toEqual([])
+  })
+
+  it('an admin of an empty workspace can see it, which is what unblocks them', async () => {
+    // `resolve` flattens a grant set to the layers it reaches, so a principal
+    // whose only grant is on a workspace with nothing in it yet resolves to
+    // `none`. Listing had an early return on that, so the one caller who needs
+    // this endpoint — an administrator who has just been granted a workspace
+    // and cannot create the first layer without its id — saw nothing. Caught by
+    // running it, not by this test, which is here so it stays caught.
+    const workspaces = new PostgresWorkspaces(pool, AS_APP)
+
+    // dave administers wsA and holds nothing else. wsA has layers in this
+    // fixture, so the empty case is the *grant* being the only route: the
+    // assertion that matters is that a workspace grant alone is enough.
+    const listed = await workspaces.list(as(A, ids.dave))
+    expect(listed.items.map((w) => w.id)).toEqual([ids.wsA])
+
+    // And a principal with no grants at all still sees nothing. Without this
+    // the fix above could have been "show everyone every workspace".
+    expect((await workspaces.list(as(A, ids.erin))).items).toEqual([])
+  })
+
+  it('creating a workspace is org_admin, and nobody else', async () => {
+    const workspaces = new PostgresWorkspaces(pool, AS_APP)
+
+    // A workspace admin is not an organization admin: there is no scope above a
+    // workspace, so the role is the only thing that answers here.
+    expect(await workspaces.create(as(A, ids.dave), { slug: 'nope', name: 'Nope' })).toEqual({
+      kind: 'denied',
+    })
+
+    const admin = { orgId: A, principal: { type: 'user' as const, id: ids.dave }, role: 'org_admin' as const }
+    const made = await workspaces.create(admin, { slug: 'made-by-admin', name: 'Made' })
+    expect(made.kind).toBe('created')
+
+    // Removed again, because the slug is unique per organization and this suite
+    // runs against a database that outlives it — a second run would get
+    // `conflict` and fail for a reason that has nothing to do with the rule.
+    const c = await pool.connect()
+    try {
+      await c.query('DELETE FROM workspaces WHERE org_id = $1 AND slug = $2', [A, 'made-by-admin'])
+    } finally {
+      c.release()
+    }
+
+    // platform_admin administers organizations and reads no documents (rule 2),
+    // and a workspace is where documents live.
+    const platform = { orgId: A, principal: { type: 'user' as const, id: ids.dave }, role: 'platform_admin' as const }
+    expect(await workspaces.create(platform, { slug: 'p', name: 'P' })).toEqual({ kind: 'denied' })
   })
 
   it('a malformed document id is absent, not an error', async () => {

@@ -246,6 +246,33 @@ export interface Layer {
  * discloses exactly one bit, that the slug is taken somewhere in their own
  * organization, and slugs are organization-unique by design (migration 0006).
  */
+/** A workspace, as a caller sees it. */
+export interface Workspace {
+  readonly id: string
+  readonly slug: string
+  readonly name: string
+  /**
+   * Live layers in it — not "layers this caller may read".
+   *
+   * The same choice the layer listing makes for its document count: a count
+   * that varied by who asked would leak the shape of somebody else's grants,
+   * and a caller comparing two of them could infer what they cannot see.
+   */
+  readonly layerCount: number
+  readonly createdAt: string
+}
+
+export type WorkspaceOutcome =
+  | { readonly kind: 'created'; readonly workspace: Workspace }
+  | { readonly kind: 'denied' }
+  | { readonly kind: 'conflict' }
+
+export interface Workspaces {
+  /** Only the workspaces this caller can reach. The plan decides, not the caller. */
+  list(auth: AuthContext, page?: Page): Promise<PageResult<Workspace>>
+  create(auth: AuthContext, input: { slug: string; name: string }): Promise<WorkspaceOutcome>
+}
+
 export type LayerOutcome =
   | { readonly kind: 'created'; readonly layer: Layer }
   | { readonly kind: 'denied' }
@@ -275,6 +302,27 @@ export interface Layers {
     auth: AuthContext,
     input: { workspaceId: string; slug: string; name: string; providerId?: string },
   ): Promise<LayerOutcome>
+  /**
+   * Rename a layer, or change its description.
+   *
+   * Deliberately not the slug: clients address a layer by slug — `layers` on
+   * search, `layer` on ingest — so renaming one silently breaks every caller
+   * that stored it, and there is no redirect to soften it.
+   *
+   * Deliberately not the provider or the chunk configuration either. Both
+   * decide how the layer's vectors were built, so changing one without
+   * rebuilding them leaves the column disagreeing with the index — which is
+   * what `POST /v1/layers/{id}/reindex` is, and it is not something to get by
+   * accident from a PATCH.
+   *
+   * `false` for absent, for another organization's, and for one this caller may
+   * not administer. One answer for all three.
+   */
+  update?(
+    auth: AuthContext,
+    layerId: string,
+    input: { name?: string; description?: string },
+  ): Promise<boolean>
 }
 
 export interface GrantInput {
@@ -533,6 +581,8 @@ export interface ApiOptions {
    * neither agreed on.
    */
   readonly resourceMetadata?: ProtectedResourceMetadata
+  /** Absent means the workspace paths answer 404, like any capability a surface lacks. */
+  readonly workspaces?: Workspaces
   /** Layer reindex. Absent means the reindex paths answer 404. */
   readonly reindex?: Reindex
   /** Reads the access log back. Absent means `/v1/audit` answers 404. */
@@ -1653,6 +1703,97 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       return
     }
 
+    if (instance === '/v1/workspaces' && options.workspaces !== undefined) {
+      if (req.method === 'GET') {
+        const page = readPage(url.searchParams, instance, requestId)
+        if (page instanceof Problem) {
+          send(res, page.status, page.toJSON(), requestId)
+          return
+        }
+
+        const { items, nextCursor } = await options.workspaces.list(auth, page)
+
+        // No audit event, for the same reason the layer listing has none: this
+        // returns what the caller may already reach, and one event per listing
+        // buries the ones that matter.
+        send(
+          res,
+          200,
+          {
+            items: items.map((w) => ({
+              id: w.id,
+              slug: w.slug,
+              name: w.name,
+              layer_count: w.layerCount,
+              created_at: w.createdAt,
+            })),
+            next_cursor: nextCursor,
+          },
+          requestId,
+        )
+        return
+      }
+
+      if (req.method === 'POST') {
+        const body_ = (body ?? {}) as Record<string, unknown>
+        const slug = body_.slug
+        const name = body_.name
+
+        if (typeof slug !== 'string' || typeof name !== 'string') {
+          const problem = badRequest(instance, requestId, "'slug' and 'name' are required.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        const outcome = await options.workspaces.create(auth, { slug, name })
+
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `${auth.principal.type}:${auth.principal.id}`,
+          action: 'create_workspace',
+          result: outcome.kind === 'created' ? 'allow' : 'deny',
+          detail: { slug, outcome: outcome.kind },
+          requestId,
+        })
+
+        if (outcome.kind === 'denied') {
+          // 404, not 403. Whether an organization has workspaces a caller
+          // cannot administer is not something they are told.
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        if (outcome.kind === 'conflict') {
+          const problem = new Problem({
+            type: 'https://nacre.work/errors/conflict',
+            title: 'Conflict',
+            status: 409,
+            detail: `A workspace with the slug '${slug}' already exists in this organization.`,
+            instance,
+            requestId,
+          })
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        const created = outcome.workspace
+        send(
+          res,
+          201,
+          {
+            id: created.id,
+            slug: created.slug,
+            name: created.name,
+            layer_count: created.layerCount,
+            created_at: created.createdAt,
+          },
+          requestId,
+        )
+        return
+      }
+    }
+
     if (req.method === 'GET' && instance === '/v1/layers' && options.layers !== undefined) {
       const page = readPage(url.searchParams, instance, requestId)
       if (page instanceof Problem) {
@@ -1834,6 +1975,67 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         // 404 for absent, for another organization's, and for one whose scope
         // this caller cannot administer. Distinguishing them would let an
         // administrator of one layer enumerate grants across the organization.
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      send(res, 204, null, requestId)
+      return
+    }
+
+    const layerMatch = /^\/v1\/layers\/([0-9a-f-]{36})$/i.exec(instance)
+    if (req.method === 'PATCH' && layerMatch !== null) {
+      const layerId = layerMatch[1] as string
+
+      if (options.layers?.update === undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const body_ = (body ?? {}) as Record<string, unknown>
+      const name = body_.name
+      const description = body_.description
+
+      if (name !== undefined && typeof name !== 'string') {
+        const problem = badRequest(instance, requestId, "'name' must be a string.")
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      if (description !== undefined && typeof description !== 'string') {
+        const problem = badRequest(instance, requestId, "'description' must be a string.")
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      if (name === undefined && description === undefined) {
+        const problem = badRequest(
+          instance,
+          requestId,
+          "One of 'name' or 'description' is required. The slug is not editable — " +
+            'clients address a layer by it — and the embedding model changes through ' +
+            'POST /v1/layers/{id}/reindex, which rebuilds the vectors.',
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const updated = await options.layers.update(auth, layerId, {
+        ...(typeof name === 'string' ? { name } : {}),
+        ...(typeof description === 'string' ? { description } : {}),
+      })
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'update_layer',
+        result: updated ? 'allow' : 'deny',
+        target: { layer_id: layerId },
+        detail: { layer_id: layerId, fields: Object.keys(body_).sort() },
+        requestId,
+      })
+
+      if (!updated) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
