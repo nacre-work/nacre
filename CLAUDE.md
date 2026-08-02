@@ -244,8 +244,42 @@ live slot is unaffected, and a point missing the queried vector does not error �
 it simply does not match, which is why the selection refuses the slot the layer
 is searching now.
 
-Not built: OAuth dynamic client registration and CIMD, and the recall check
-against a reference query set on a reindex.
+Not built: OAuth dynamic client registration and CIMD.
+
+A reindex is gated on recall now, which was step 4 of the migration sequence in
+`docs/architecture.md` and had been listed as not built since before there was a
+reindex. Every other step checks that a write happened; this is the only one
+that asks whether the new model can still answer — and a migration onto a
+misconfigured provider succeeds at every mechanical step, so the wrong model
+name behind the right endpoint moves `vector_name` and collapses retrieval with
+no error anywhere.
+
+Recall@10 against documents the deployment picked, averaged per reference query.
+**Not agreement with the old model**, which would have needed nothing from
+anyone and would have been the wrong measurement: a better model disagrees with
+the worse one it replaces, so a gate on agreement blocks the migrations worth
+making and passes a new model that reproduces the old one's mistakes. The set
+lives in `reference_queries` and is written whole through
+`PUT /v1/layers/{id}/reference-queries`; a layer without one has no gate, which
+is the arrangement rather than an omission.
+
+The gate is a predicate inside the switch statement, not a check in front of it
+— the same reason the completeness predicate is there, so a reference set
+written while the score was being computed blocks the switch rather than being
+outrun by it. A stale set **fails without being scored**, because counting a
+document that is not there as a miss would report a bad reference set as a bad
+model. An unreachable embedder writes no verdict and is retried, since it says
+nothing about recall either way.
+
+Its retrieval carries `org_id`, `layer_id` and `deleted = false` and no ACL
+filter, which anywhere else here would be the leak every other rule exists to
+prevent. The reason it is allowed is structural rather than judged: there is no
+principal, nothing calls it for a caller, and a ratio is what leaves it. The
+port takes a layer and a vector and never a filter, so there is no argument
+through which a caller-shaped query could reach the index.
+
+Writing it turned up that `finishCopy` carried the same completeness predicate
+three times, in three copies that had to agree and nothing made them.
 
 A document can be uploaded as a form. `multipart/form-data` was in
 `docs/openapi.yaml` from before there was a server and listed as not built for

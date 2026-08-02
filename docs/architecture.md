@@ -178,15 +178,55 @@ what happens afterwards:
 4. Re-embed **one layer at a time** into the new slot, adding a named vector to
    points that already exist. `updateVectors`, never `upsert`: an upsert would
    rewrite the payload from a call that knows nothing about acl tags.
-5. Switch that layer's `vector_name` and `provider_id` together, once no live
-   document in it lacks the new vector. One statement, so a document ingested
-   in between is part of the set rather than a hole.
+5. Score the layer's reference query set against the new slot, where it has one.
+6. Switch that layer's `vector_name` and `provider_id` together, once no live
+   document in it lacks the new vector **and** the score cleared the floor. One
+   statement, so a document ingested in between is part of the set rather than
+   a hole, and so is a reference set written a moment ago.
 
 Steps 1–3 are org-wide and happen once however many layers are migrated; steps
-4–5 are per layer and are what `POST /v1/layers/{id}/reindex` starts.
+4–6 are per layer and are what `POST /v1/layers/{id}/reindex` starts.
 `reindex_state.phase` distinguishes them: `copying` for the first, `embedding`
 for the second, and `progress` measures only the second because the first
 computes nothing.
+
+### The gate at step 5
+
+Every other step in this sequence checks that a write happened. This is the only
+one that asks whether the new model can still answer — and the distinction
+matters because a migration onto a misconfigured provider succeeds at every
+mechanical step. The wrong model name behind the right endpoint, a truncated
+dimension, an embedder returning near-constant vectors: each produces a shadow
+vector for every document, a count that reaches zero, a `vector_name` that
+moves, and retrieval that has quietly collapsed with no error anywhere.
+
+Recall@10 against documents the deployment picked, per reference query,
+averaged over the set. **Not agreement with the old model**, which would need
+nothing from anyone and would be the wrong measurement: a better model disagrees
+with the worse one it replaces, so a gate on agreement blocks the migrations
+worth making and passes a new model that reproduces the old one's mistakes.
+
+The set lives in `reference_queries` and is written through
+`PUT /v1/layers/{id}/reference-queries`. **A layer without one has no gate.**
+That is the arrangement rather than an omission — the check needs documents
+someone chose, and failing every migration in a deployment that has not chosen
+any would make the feature a way to break reindexing.
+
+Three outcomes, and the third is the one worth naming. A score below
+`NACRE_REINDEX_MIN_RECALL` ends the reindex at `failed` with the pointer
+unmoved. A score at or above it lets step 6 run. And a reference set that names
+a document which is not there **fails without being scored**: a stale set and a
+model that lost recall are different problems, and counting a missing document
+as a miss reports the first as the second. A check that cannot run at all,
+because the embedder is unreachable, writes no verdict and is retried.
+
+The retrieval it performs carries `org_id`, `layer_id` and `deleted = false` and
+**no ACL filter**, which anywhere else here would be the leak every other rule
+exists to prevent. It is allowed for a structural reason rather than a judged
+one: there is no principal. Nothing calls it on behalf of a caller, and what
+leaves it is a ratio. The port takes a layer and a vector and never a filter, so
+there is no argument through which a caller-shaped query could reach the index
+— which is what stops it being reused from the request path later.
 
 **Search stays available throughout, and stays one query.** During a migration
 the organization holds layers on two models, so the query carries one dense
@@ -239,9 +279,9 @@ the live slot is unaffected, and a point missing the queried vector does not
 error — it simply does not match, which is exactly why that refusal is not
 optional.
 
-**What is not built:** the recall check against a reference query set (step 4 of
-the original sequence). It is an addition to a migration that completes without
-it, and it is a gate nobody can run without a query set.
+Every step of the sequence above is built. What a deployment still has to
+supply is the reference query set the gate at step 5 scores against, and until
+it does that layer migrates without one.
 
 The alternative was a collection per layer, which keeps a reindex local but
 turns an unscoped search into one Qdrant query per layer — ten to twenty in the

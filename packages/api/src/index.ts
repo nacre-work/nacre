@@ -8,6 +8,9 @@ export type {
   Reindex,
   ReindexOutcome,
   ReindexStatus,
+  ReferenceQueries,
+  ReferenceQuery,
+  RecallCheck,
   AuditSink,
   DocumentView,
   Documents,
@@ -42,6 +45,7 @@ export {
   PostgresJobs,
   PostgresLayers,
   PostgresWorkspaces,
+  PostgresReferenceQueries,
   PostgresReindex,
 } from './adapters.js'
 export type {

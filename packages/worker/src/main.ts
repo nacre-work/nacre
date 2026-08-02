@@ -18,6 +18,7 @@ import {
   claimCopyable,
   claimPurgeable,
   claimReindexable,
+  dueChecks,
   claimStale,
   claimStranded,
   dueCollections,
@@ -34,6 +35,7 @@ import {
   pruneAuditEvents,
   pruneExpiredTokens,
   QdrantVectorWriter,
+  recordCheck,
   recordReindexPass,
   tagsForLayer,
 } from './adapters.js'
@@ -42,6 +44,7 @@ import { collectOnce } from './collect.js'
 import { pruneOnce } from './prune.js'
 import { reapOnce } from './reap.js'
 import { reindexOnce } from './reindex.js'
+import { recallOnce, type RecallPorts } from './recall.js'
 import { retagOnce } from './retag.js'
 import { retireOnce, retireVectorsOnce } from './retire.js'
 
@@ -121,6 +124,11 @@ const REINDEX_EVERY_MS = 5000
 // watching a number that will never move. Reset by any document succeeding —
 // see recordReindexPass.
 const REINDEX_FAILURE_BOUND = 20
+
+// Layers scored per pass. One migration finishes at a time in any deployment
+// anyone runs, and the cost of a batch is a set of embedding calls plus a query
+// each — so this is small on purpose rather than tuned.
+const RECALL_BATCH = 4
 
 interface Claim {
   readonly orgId: string
@@ -531,6 +539,50 @@ async function main(): Promise<void> {
     },
   }
 
+  const recallPorts: RecallPorts = {
+    due: (limit: number) => dueChecks(pool, limit),
+    embed: async (providerId: string, texts: readonly string[]) =>
+      (await embedderFor(providerId))(texts),
+    retrieve: (target, vector, k) =>
+      vectors.retrieveDocuments({
+        collection: target.collection,
+        orgId: target.orgId,
+        layerId: target.layerId,
+        // The shadow slot, which is the whole point: the live one is the model
+        // being migrated away from and would score the question that is not
+        // being asked.
+        vectorName: target.shadowVector,
+        vector,
+        limit: k,
+      }),
+    record: (target, verdict) =>
+      recordCheck(pool, target.orgId, target.layerId, target.shadowVector, verdict, APP_ROLE),
+    finishIfDone: (orgId: string, layerId: string, shadow: string) =>
+      finishReindexIfDone(pool, orgId, layerId, shadow, APP_ROLE),
+    fail: (target, reason) =>
+      failReindex(pool, target.orgId, target.layerId, reason, APP_ROLE),
+    onChecked: (target, verdict) => {
+      // The numbers and never the queries. A reference query is the operator's
+      // own text rather than a caller's, so this is not the rule about query
+      // text — but a log line is the wrong place for either, and the ids join
+      // to the set through the endpoint that lists it.
+      logger.info('reindex recall check', {
+        layer_id: target.layerId,
+        recall: Number(verdict.recall.toFixed(4)),
+        floor: verdict.floor,
+        passed: verdict.passed,
+        queries: verdict.queries,
+        ...(verdict.unresolved === undefined ? {} : { unresolved: verdict.unresolved.length }),
+      })
+    },
+    onError: (target, error) => {
+      logger.error('recall check failed to run', {
+        layer_id: target.layerId,
+        error: String(error),
+      })
+    },
+  }
+
   // Not zero: a sweep on the first idle tick would run before the process has
   // done anything, which is a destructive operation racing a cold start.
   let lastCollect = Date.now()
@@ -700,6 +752,25 @@ async function main(): Promise<void> {
           const pass = await reindexOnce(reindexPorts, REINDEX_BATCH)
           if (pass.reindexed > 0 || pass.failed > 0 || pass.switched > 0) {
             logger.info('reindexed', { ...pass })
+          }
+
+          // After the embedding pass and before the next one, on the same
+          // clock. `dueChecks` selects only layers with nothing outstanding, so
+          // this is a no-op for every pass of a migration except the last —
+          // and running it here rather than on the retention clock means an
+          // operator watching a reindex is not told it finished an hour after
+          // it did.
+          //
+          // Its own try/catch: a check that cannot run is not a migration that
+          // failed, and an unreachable embedder must not stop the batches
+          // above from continuing on the next tick.
+          try {
+            const checked = await recallOnce(recallPorts, config.reindexMinRecall, RECALL_BATCH)
+            if (checked.passed > 0 || checked.failed > 0 || checked.errored > 0 || checked.switched > 0) {
+              logger.info('recall checked', { ...checked })
+            }
+          } catch (error) {
+            logger.error('recall pass failed', { error: String(error) })
           }
           // A full batch means there is more, so come back now rather than in
           // five seconds. A migration of a large layer should not be paced by
