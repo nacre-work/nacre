@@ -188,8 +188,16 @@ it is stored hashed, so it cannot be read back from the API, the database, or a
 backup. Lose it and you mint another. Then:
 
 ```bash
+set -a && . ./.env && set +a          # local mode is the server, in-process
 NACRE_SERVICE_KEY=nacre_sk_… npx @nacre.work/mcp
 ```
+
+The first line is not optional. Local mode has no HTTP hop — it connects to
+Postgres, Qdrant, Redis, the parser and the embedder itself — so it needs the
+same configuration the server has. Started without it, the process refuses and
+lists what is missing rather than half-working. It also means the agent holds
+your database credentials, which is the trade for no network hop, and why
+anything that is not a laptop should use the Streamable HTTP transport instead.
 
 A new service account can reach nothing at all until you grant it something —
 it is a principal like any other, so give it `read` on a layer exactly as you

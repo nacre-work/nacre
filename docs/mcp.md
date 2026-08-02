@@ -53,6 +53,23 @@ STDIO, for developer agents on a laptop. Authentication is a service account
 key from `NACRE_SERVICE_KEY`. **Permissions are exactly the service account's**
 — local mode gets no relaxation of any kind.
 
+**It needs the server's configuration, because it is the server.** There is no
+HTTP hop: the process connects to Postgres, Qdrant, Redis, the parser and the
+embedder itself and runs the same search path in-process. `NACRE_SERVICE_KEY`
+alone is not enough to start it, and the refusal at startup lists every variable
+that is missing. In practice that means running it with the same environment the
+server has:
+
+```bash
+set -a && . ./.env && set +a
+NACRE_SERVICE_KEY=nacre_sk_… npx @nacre.work/mcp
+```
+
+A consequence worth knowing before you plan a deployment: an agent running local
+mode holds your database credentials. That is the trade for no network hop, and
+it is why the Streamable HTTP transport exists for anything that is not a
+laptop.
+
 The key is opaque, prefixed `nacre_sk_`, and stored only as a SHA-256 hash
 beside a non-secret prefix used for the lookup. It is returned once, when the
 account is created, and is not recoverable afterwards from the API, the
