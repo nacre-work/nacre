@@ -212,7 +212,14 @@ export function loadConfig(env: Env = process.env): Config {
     rateLoginPer15Min: r.number('NACRE_RATE_LOGIN_PER_15MIN', 10, { min: 1, max: 1000 }),
     maxDocumentBytes: r.number('NACRE_MAX_DOCUMENT_BYTES', 52_428_800, { min: 1024 }),
 
-    auditRetentionDays: r.number('NACRE_AUDIT_RETENTION_DAYS', 400, { min: 1 }),
+    // The floor is 30 and it is not a tunable. Retention is now enforced —
+    // `prune_audit_events` deletes past this horizon — and the database refuses
+    // anything shorter, because below a month "retention" stops meaning
+    // retention and becomes a way to make recent events go away, which is the
+    // thing the append-only grant exists to prevent. Refused here rather than
+    // raised hourly by the worker: a value the deployment can never act on
+    // should stop the deployment, not fill a log.
+    auditRetentionDays: r.number('NACRE_AUDIT_RETENTION_DAYS', 400, { min: 30 }),
     auditQueryText: r.boolean('NACRE_AUDIT_QUERY_TEXT', false),
   }
 

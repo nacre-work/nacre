@@ -666,3 +666,74 @@ export async function tagsForLayer(
     role === undefined ? {} : { role },
   )
 }
+
+/**
+ * Delete refresh tokens that have already expired.
+ *
+ * `0009` promised this in a comment on the index built to make it cheap —
+ * "expired rows are deleted by a sweep rather than kept forever" — and there
+ * was no sweep. Every login and every rotation inserts a row, nothing removed
+ * one, so the table grew at the rate people signed in and fastest on the
+ * deployments rotating most often.
+ *
+ * Only past `expires_at`, which is why this loses nothing. `refresh()` refuses
+ * an expired token and an unknown one identically, at the same place, with the
+ * same `undefined` — so a row deleted after expiry cannot change any answer.
+ * Reuse detection is untouched: a family is revoked while its tokens are still
+ * live, which is the only window in which a replay is worth catching.
+ *
+ * Cross-tenant, under the worker's BYPASSRLS role. It is maintenance rather
+ * than the queue, but it is the same mechanism and the same justification: one
+ * predicate over every tenant's rows, run by the process that has no request in
+ * hand. It names no organization because it selects on expiry alone.
+ *
+ * Bounded by `limit` for the reason every sweep here is: a table nobody has
+ * pruned since the feature shipped should drain over many small transactions,
+ * not one that holds locks while it scans a year.
+ */
+export async function pruneExpiredTokens(pool: Pool, limit: number): Promise<number> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rowCount } = await client.query(
+      // By ctid over a bounded, ordered subquery: refresh_tokens_expiry exists
+      // precisely so the oldest are found without a scan, and ordering by it
+      // makes repeated calls converge instead of revisiting the same window.
+      `WITH doomed AS (
+         SELECT ctid
+           FROM refresh_tokens
+          WHERE expires_at < now()
+          ORDER BY expires_at
+          LIMIT $1
+       )
+       DELETE FROM refresh_tokens t USING doomed d WHERE t.ctid = d.ctid`,
+      [limit],
+    )
+    return rowCount ?? 0
+  })
+}
+
+/**
+ * Expire audit events past the retention horizon.
+ *
+ * Through `prune_audit_events`, never a DELETE: the grant is revoked from every
+ * application role and stays revoked. See `0012` for why that is compatible
+ * with the append-only guarantee rather than a hole in it — the short version
+ * is that the function takes a number of days and cannot be handed a predicate,
+ * so it can expire a window and can never erase an event.
+ *
+ * Errors are the caller's to log. A retention below the function's floor raises
+ * rather than pruning less than asked, which is the right way round: an
+ * operator who set 7 days should find out, not get 30 silently.
+ */
+export async function pruneAuditEvents(
+  pool: Pool,
+  retentionDays: number,
+  limit: number,
+): Promise<number> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{ pruned: number }>(
+      'SELECT prune_audit_events($1, $2) AS pruned',
+      [retentionDays, limit],
+    )
+    return Number(rows[0]?.pruned ?? 0)
+  })
+}

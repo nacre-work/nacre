@@ -63,11 +63,32 @@ Both were literals in the insert statement until recently: `'api'` and an empty
 object, which meant every MCP call was logged as REST and the `gin (target)`
 index built for this indexed nothing.
 
-**Retention is not enforced.** `NACRE_AUDIT_RETENTION_DAYS` is validated at
-startup and read by nothing, and it cannot be implemented by the application
-role: migration `0002` revokes `DELETE` on `audit_events` from `nacre_app`
-deliberately, so a pruning job has to run as the owner. That is a decision
-still to be made rather than a line still to be written.
+**Retention is enforced**, and the decision that was open is made. The worker
+prunes hourly in bounded batches, and `NACRE_AUDIT_RETENTION_DAYS` is what it
+prunes against.
+
+`DELETE` on `audit_events` stays revoked from `nacre_app` and from
+`nacre_worker` — migration `0002` did that deliberately and `0012` does not
+undo it. Pruning goes through a `SECURITY DEFINER` function instead, and the
+reason that is compatible with append-only rather than a hole in it is worth
+stating, because it is the whole argument:
+
+**Append-only protects against history being rewritten** — a specific
+inconvenient event erased, a `deny` flipped to an `allow`. Expiring everything
+older than a published horizon is the opposite operation. It is indiscriminate
+by construction, it is declared in the configuration, and an auditor can compute
+exactly which window survives.
+
+So the function is built so that indiscriminate expiry is the *only* thing it
+can do. It takes a number of days and never a predicate, so no caller can name a
+row, an actor, an organization or a result. It refuses a retention under 30
+days, which the startup check refuses too, so it cannot become "delete this
+morning". It deletes at most `max_rows` per call and returns the count.
+
+Those properties hold whoever calls it, which matters: `nacre_app` inherits
+`nacre_worker` and can therefore reach the function. The `EXECUTE` grant states
+intent and keeps third parties out; it is not what makes this safe. The shape of
+the function is.
 
 `GET /v1/audit` is not implemented — events are written and there is no way to
 read them back over the API yet.

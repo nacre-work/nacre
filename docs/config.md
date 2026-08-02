@@ -70,7 +70,7 @@ NACRE_RATE_LOGIN_PER_15MIN=10          # per email address, not per organization
 NACRE_MAX_DOCUMENT_BYTES=52428800
 
 # ─── audit ───
-NACRE_AUDIT_RETENTION_DAYS=400
+NACRE_AUDIT_RETENTION_DAYS=400         # >= 30; the floor is not a tunable
 NACRE_AUDIT_QUERY_TEXT=false           # true stores query text verbatim
 NACRE_AUDIT_SIEM_WEBHOOK=
 ```
@@ -145,15 +145,35 @@ should know that setting one changes nothing today:
 | Variable | What it would do |
 |---|---|
 | `NACRE_LOG_LEVEL`, `NACRE_LOG_FORMAT` | all logging is structured JSON at one level |
-| `NACRE_AUDIT_RETENTION_DAYS` | nothing prunes `audit_events`; see [audit.md](./audit.md) |
 | `NACRE_AUDIT_QUERY_TEXT` | query text is never written, with or without it |
 | `NACRE_ACL_CACHE_TTL` | the resolver cache is written and not wired in, so every search recomputes the group closure. Safe — it errs towards recomputing — and slower than it should be |
 | `NACRE_S3_*`, `NACRE_PRESIGN_TTL` | object storage is not wired; document bodies live in Postgres |
 | `NACRE_OAUTH_*`, `NACRE_EMA_*` | OAuth discovery, DCR and EMA are not built |
 | `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
 
-Two are **refused** rather than ignored, because ignoring them would silently
-overrule a decision about isolation:
+### Retention
+
+Two tables are swept by the worker, hourly, in bounded batches:
+
+- **`refresh_tokens`**, past `expires_at`. Nothing is lost — an expired token
+  and an unknown one are refused identically and at the same place — and reuse
+  detection is untouched, because a family is revoked while its tokens are still
+  live. This is the sweep migration `0009` described and did not have; until it
+  existed the table grew at the rate people signed in.
+- **`audit_events`**, past `NACRE_AUDIT_RETENTION_DAYS`, through a
+  `SECURITY DEFINER` function rather than a `DELETE`. The application role's
+  `DELETE` grant stays revoked. The function takes a number of days and never a
+  predicate, so it can expire a window and cannot erase a chosen event — which
+  is what the append-only guarantee is actually protecting. **The 30-day floor
+  is refused at startup**, not clamped: a deployment configured for a week of
+  audit history should not come up believing it has one.
+
+Neither is urgent and neither blocks anything, so a pass that fails is logged
+and retried an hour later. They fail independently: a refused audit prune does
+not stop token expiry.
+
+Two variables are **refused** rather than ignored, because ignoring them would
+silently overrule a decision about isolation:
 
 - `NACRE_VECTOR_TENANCY=shared` — every collection is named per organization and
   no code path shares one. Accepting it would give you a single-collection

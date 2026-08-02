@@ -16,11 +16,14 @@ import {
   claimStranded,
   HttpParser,
   PostgresDocumentStore,
+  pruneAuditEvents,
+  pruneExpiredTokens,
   QdrantVectorWriter,
   tagsForLayer,
 } from './adapters.js'
 import { ingest } from './ingest.js'
 import { collectOnce } from './collect.js'
+import { pruneOnce } from './prune.js'
 import { reapOnce } from './reap.js'
 import { retagOnce } from './retag.js'
 
@@ -69,6 +72,15 @@ const GC_EVERY_MS = 60_000
 // document never indexed.
 const REAP_BATCH = 20
 const REAP_EVERY_MS = 60_000
+
+// Retention. Hourly, because neither table is urgent and both are large: an
+// expired refresh token is inert and an audit event a day past a 400-day
+// horizon harms nobody. The batch is bigger than the others' because these are
+// plain row deletes with no round trip to anything, and a deployment that has
+// never pruned has a backlog measured in months — 2000 an hour drains a million
+// rows in three weeks without ever holding a lock long enough to be noticed.
+const PRUNE_BATCH = 2000
+const PRUNE_EVERY_MS = 3_600_000
 
 interface Claim {
   readonly orgId: string
@@ -235,9 +247,24 @@ async function main(): Promise<void> {
     },
   }
 
+  const prunePorts = {
+    tokens: (limit: number) => pruneExpiredTokens(pool, limit),
+    audit: (days: number, limit: number) => pruneAuditEvents(pool, days, limit),
+    onError: (what: string, error: unknown) => {
+      // Warn rather than error: nothing is broken by a prune that did not run,
+      // and the one failure an operator must act on — a retention below the
+      // function's floor — carries its own message from the database.
+      console.warn(JSON.stringify({ msg: 'prune failed', what, error: String(error) }))
+    },
+  }
+
   // Not zero: a sweep on the first idle tick would run before the process has
   // done anything, which is a destructive operation racing a cold start.
   let lastCollect = Date.now()
+
+  // Same reasoning, and more of it. This one deletes rows outright, so a worker
+  // that crash-loops must not get a prune attempt per restart.
+  let lastPrune = Date.now()
 
   // Zero, unlike collection. A worker starting up is very often a worker
   // replacing one that died, and the documents that one abandoned are the first
@@ -378,6 +405,19 @@ async function main(): Promise<void> {
           }
         } catch (error) {
           console.error(JSON.stringify({ msg: 'collect pass failed', error: String(error) }))
+        }
+      }
+
+      // Last, and on the longest clock. Retention competes with nothing: no
+      // request waits on it, no metric moves when it runs, and the tables it
+      // touches are read on the login path and nowhere else. Its own try/catch
+      // is inside pruneOnce, which is why there is none here — the two tables
+      // fail separately and a refused audit prune must not stop token expiry.
+      if (Date.now() - lastPrune >= PRUNE_EVERY_MS) {
+        lastPrune = Date.now()
+        const pruned = await pruneOnce(prunePorts, PRUNE_BATCH, config.auditRetentionDays)
+        if (pruned.tokens > 0 || pruned.audit > 0) {
+          console.log(JSON.stringify({ msg: 'pruned', ...pruned }))
         }
       }
 
