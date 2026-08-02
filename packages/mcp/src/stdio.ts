@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline'
 
 import { authenticate, Problem, type AuthContext, type VerifyOptions } from '@nacre.work/api'
+import { logger } from '@nacre.work/core'
 
 import { catalog } from './tools.js'
 import { PROTOCOL_VERSION } from './server.js'
@@ -34,8 +35,14 @@ function write(message: unknown): void {
   process.stdout.write(`${JSON.stringify(message)}\n`)
 }
 
+/**
+ * Through the process logger, which `stdio-main` has pointed at stderr for the
+ * reason stated above. Writing here directly worked and ignored
+ * `NACRE_LOG_LEVEL` and `NACRE_LOG_FORMAT` — a local client run with `text` got
+ * JSON from this one file.
+ */
 const log = (msg: string, extra: Record<string, unknown> = {}): void => {
-  process.stderr.write(`${JSON.stringify({ msg, ...extra })}\n`)
+  logger.info(msg, extra)
 }
 
 function rpcError(id: unknown, code: number, message: string): Record<string, unknown> {

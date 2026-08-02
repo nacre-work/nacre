@@ -295,6 +295,20 @@ every one) and pinned by two tests that ask the *adapter* rather than the module
 The TTL bounds memory, which is why the refusal of a TTL above the propagation
 SLA now says so instead of claiming it delays a revocation.
 
+`NACRE_LOG_LEVEL` and `NACRE_LOG_FORMAT` are honoured. Both were validated at
+startup and read by nothing, so every process wrote JSON at one level whatever
+the deployment asked for — and they are among the first variables anyone sets.
+Configuration errors and the output of `init` and `migrate` deliberately stay
+outside it: the first happens before there is a level to consult, and the second
+is program output a person ran the command to read.
+
+The one that would have been a bug: the MCP STDIO transport now points the
+logger at stderr, because the default writer sends `info` to stdout and stdout
+there carries JSON-RPC frames. A log line in the middle of the stream is a frame
+the client cannot parse — checked by running it and confirming stdout stayed at
+zero bytes. `installGuards` also stopped reporting a clean shutdown as an error,
+which is what turned every deploy into a line a dashboard counts.
+
 **Test what you write by running it, not only by testing it.** Twelve of the
 worst defects found so far were each invisible to a green suite and obvious
 within a minute of starting the processes: the worker indexing nothing at all,

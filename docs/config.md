@@ -152,11 +152,36 @@ should know that setting one changes nothing today:
 
 | Variable | What it would do |
 |---|---|
-| `NACRE_LOG_LEVEL`, `NACRE_LOG_FORMAT` | all logging is structured JSON at one level |
 | `NACRE_AUDIT_QUERY_TEXT` | query text is never written, with or without it |
 | `NACRE_PRESIGN_TTL` | nothing hands out a presigned URL yet; `GET /v1/documents/{id}` returns metadata, never a link to the bytes |
 | `NACRE_OAUTH_CIMD_ENABLED`, `NACRE_OAUTH_DCR_ENABLED`, `NACRE_EMA_*` | client registration and EMA are not built |
 | `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
+
+### Logging
+
+`NACRE_LOG_LEVEL` is one of `debug`, `info`, `warn`, `error`, and
+`NACRE_LOG_FORMAT` is `json` or `text`.
+
+`json` carries `level`, `ts` and `msg` plus the line's own fields — `msg` keeps
+its name because every line in this system had it before there were levels, and
+anything already grepping for it still works. `text` is `key=value` for a person
+at a terminal, with any value containing a space or a quote quoted, so
+`error="connection refused"` cannot read as two fields.
+
+`warn` and `error` go to stderr and the rest to stdout. A container that ships
+stdout to a log service and leaves stderr on the console is a real deployment,
+and a failure written to stdout with everything else is one nobody saw.
+
+Three things deliberately do not go through it:
+
+- **Configuration errors.** They happen before there is a configuration to ask,
+  and a process that cannot start must say why whatever the level says.
+- **`init` and `migrate` output.** That is program output a person runs and
+  reads, like `--help`. Behind a level, `NACRE_LOG_LEVEL=warn` would swallow the
+  organization id `init` exists to print.
+- **The MCP STDIO transport writes every line to stderr**, including the ones
+  that are `info` elsewhere. stdout carries JSON-RPC frames and nothing else; a
+  log line in the middle of the stream is a frame the client cannot parse.
 
 ### Discovery
 

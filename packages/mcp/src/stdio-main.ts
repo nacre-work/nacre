@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { ConfigError, loadConfig, loadJwtKeys } from '@nacre.work/core'
+import { configureLogging, ConfigError, loadConfig, loadJwtKeys, logger } from '@nacre.work/core'
 
 import { buildServices } from './services.js'
 import { serveStdio } from './stdio.js'
@@ -16,6 +16,20 @@ import { serveStdio } from './stdio.js'
 
 async function main(): Promise<void> {
   const config = loadConfig()
+
+  // Every line to stderr, including the ones that are `info` everywhere else.
+  //
+  // stdout carries the protocol and nothing else. The default writer sends
+  // info and debug to stdout, which is correct for a server whose stdout is a
+  // log stream and would put a log line in the middle of a JSON-RPC frame
+  // here — the client then fails to parse a message it never asked for. This
+  // is the same rule `stdio.ts` states for its own diagnostics, applied to the
+  // logger that arrived after it.
+  configureLogging({
+    level: config.logLevel,
+    format: config.logFormat,
+    write: (_level, line) => process.stderr.write(`${line}\n`),
+  })
   const { key, alsoAccept } = loadJwtKeys()
 
   const serviceKey = process.env.NACRE_SERVICE_KEY
@@ -57,6 +71,9 @@ main().catch((error: unknown) => {
     process.stderr.write(`${error.message}\n`)
     process.exit(2)
   }
-  process.stderr.write(`${JSON.stringify({ msg: 'failed to start', error: String(error) })}\n`)
+  // Through the logger, which is already pointed at stderr — and still stderr
+  // if the failure happened before it was configured, because `error` goes
+  // there by default.
+  logger.error('failed to start', { error: String(error) })
   process.exit(1)
 })

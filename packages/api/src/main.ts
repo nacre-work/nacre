@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto'
 
 import {
+  configureLogging,
   collectDatabaseGauges,
   createMetrics,
   createPool,
   loadConfig,
+  logger,
   loadJwtKeys,
   protectedResourceMetadata,
   Redis,
@@ -50,6 +52,11 @@ const APP_ROLE = 'nacre_app'
 
 async function main(): Promise<void> {
   const config = loadConfig()
+
+  // Before anything else logs. `NACRE_LOG_LEVEL` and `NACRE_LOG_FORMAT` had been
+  // validated here and read by nothing, so every process wrote JSON at one level
+  // whatever the deployment asked for.
+  configureLogging({ level: config.logLevel, format: config.logFormat })
   const { key, alsoAccept } = loadJwtKeys()
 
   const pool = createPool({ connectionString: config.pgUrl, max: config.pgPoolMax })
@@ -105,13 +112,8 @@ async function main(): Promise<void> {
       // rather than an authorization control, so failing closed here would
       // trade a rare over-serve for a certain outage — the opposite of the
       // rule for permissions, and deliberately so.
-      console.warn(
-        JSON.stringify({
-          msg: 'rate limit check unavailable; request allowed',
-          resource,
-          error: String(error).slice(0, 200),
-        }),
-      )
+      logger.warn('rate limit check unavailable; request allowed', { resource,
+          error: String(error).slice(0, 200) })
     },
   })
 
@@ -122,12 +124,7 @@ async function main(): Promise<void> {
   const idempotency = new Idempotency({
     redis,
     onDegraded: (error) => {
-      console.warn(
-        JSON.stringify({
-          msg: 'idempotency cache unavailable; request processed uncached',
-          error: String(error).slice(0, 200),
-        }),
-      )
+      logger.warn('idempotency cache unavailable; request processed uncached', { error: String(error).slice(0, 200) })
     },
   })
 
@@ -216,12 +213,7 @@ async function main(): Promise<void> {
         // ordering over candidates the index already filtered by permission,
         // so this is a quality degradation and not a permissions one — and an
         // operator who turned it on is entitled to know it is not running.
-        console.warn(
-          JSON.stringify({
-            msg: 'reranking failed; results are in fusion order',
-            error: String(error).slice(0, 200),
-          }),
-        )
+        logger.warn('reranking failed; results are in fusion order', { error: String(error).slice(0, 200) })
       },
     }),
     ingest: new NacreIngest({
@@ -244,19 +236,14 @@ async function main(): Promise<void> {
     // The fingerprint, never the secret. An operator needs to know which key is
     // in use when two environments disagree; nobody needs the key in a log.
     const print = (k: Uint8Array) => `sha256:${createHash('sha256').update(k).digest('hex').slice(0, 12)}`
-    console.log(
-      JSON.stringify({
-        msg: 'api listening',
-        port,
+    logger.info('api listening', { port,
         env: config.env,
         issuer: config.jwtIssuer,
         jwt_key: print(key),
         // Present only during a rotation, which is exactly when an operator is
         // reading this line. Its absence is how they know the rotation is
         // finished and the old key is out.
-        ...(alsoAccept.length === 0 ? {} : { jwt_key_previous: alsoAccept.map(print) }),
-      }),
-    )
+        ...(alsoAccept.length === 0 ? {} : { jwt_key_previous: alsoAccept.map(print) }) })
   })
 
   onListenError(server, 'api', port)
@@ -282,6 +269,6 @@ main().catch((error: unknown) => {
     console.error(error.message)
     process.exit(2)
   }
-  console.error(JSON.stringify({ msg: 'failed to start', error: String(error) }))
+  logger.error('failed to start', { error: String(error) })
   process.exit(1)
 })

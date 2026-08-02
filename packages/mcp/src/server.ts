@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 
 import {
+  logger,
   MetadataError,
   PROTECTED_RESOURCE_PATH,
   type ProtectedResourceMetadata,
@@ -375,14 +376,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
         // exactly like a tool that does not exist, from both ends at once —
         // the caller is told nothing, by design, and the operator was told
         // nothing either.
-        console.error(
-          JSON.stringify({
-            msg: 'tool call failed',
-            tool: definition.name,
+        logger.error('tool call failed', { tool: definition.name,
             request_id: requestId,
-            error: String(error),
-          }),
-        )
+            error: String(error) })
 
         // One carve-out, and it is about the caller's own arguments rather than
         // about anything stored. A `MetadataError` says a key is not a legal

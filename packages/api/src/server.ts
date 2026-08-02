@@ -5,6 +5,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { URL } from 'node:url'
 
 import {
+  logger,
   MetadataError,
   parseFilters,
   parseMetadata,
@@ -1021,9 +1022,7 @@ async function handleAuth(
       // The address, never the password, and never how far the attempt got —
       // "no such user" and "wrong password" must not be tellable apart from a
       // log any more than from a response.
-      console.warn(
-        JSON.stringify({ msg: 'sign-in refused', email: email.trim().toLowerCase(), request_id: requestId }),
-      )
+      logger.warn('sign-in refused', { email: email.trim().toLowerCase(), request_id: requestId })
       refuse()
       return
     }
@@ -2376,17 +2375,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     // or a document body in its cause, and neither belongs in a log — see the
     // list in CLAUDE.md. `String(error)` is the class and the message; the
     // stack goes with it because that is what names the line.
-    console.error(
-      JSON.stringify({
-        msg: 'request failed',
-        request_id: requestId,
+    logger.error('request failed', { request_id: requestId,
         method: req.method,
         instance,
         org_id: auth.orgId,
         error: String(error).slice(0, 500),
-        stack: error instanceof Error ? error.stack?.split('\n').slice(0, 6).join('\n') : undefined,
-      }),
-    )
+        stack: error instanceof Error ? error.stack?.split('\n').slice(0, 6).join('\n') : undefined })
 
     await options.audit
       .write({
@@ -2402,9 +2396,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       })
       .catch((cause: unknown) => {
         // Losing the audit row of a failed request is itself worth a line.
-        console.error(
-          JSON.stringify({ msg: 'audit write failed', request_id: requestId, error: String(cause) }),
-        )
+        logger.error('audit write failed', { request_id: requestId, error: String(cause) })
       })
 
     const problem = internal(instance, requestId)

@@ -29,7 +29,10 @@ export interface Config {
    * ourselves would be worse than leaving it out.
    */
   readonly oauthAuthorizationServer: string
-  readonly logLevel: string
+  // The union rather than `string`. `oneOf` already refuses anything else at
+  // startup, and typing it loosely meant the one consumer had to re-narrow a
+  // value that was never wider than this.
+  readonly logLevel: 'debug' | 'info' | 'warn' | 'error'
   readonly logFormat: 'json' | 'text'
 
   readonly pgUrl: string

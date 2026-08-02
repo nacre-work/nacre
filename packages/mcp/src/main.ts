@@ -1,4 +1,5 @@
 import {
+  configureLogging,
   Counter,
   Histogram,
   ConfigError,
@@ -8,6 +9,7 @@ import {
   onListenError,
   protectedResourceMetadata,
   PROTECTED_RESOURCE_PATH,
+  logger,
   Redis,
   RedisCache,
   Registry,
@@ -32,6 +34,11 @@ import { buildServices } from './services.js'
 
 async function main(): Promise<void> {
   const config = loadConfig()
+
+  // Before anything else logs. `NACRE_LOG_LEVEL` and `NACRE_LOG_FORMAT` had been
+  // validated here and read by nothing, so every process wrote JSON at one level
+  // whatever the deployment asked for.
+  configureLogging({ level: config.logLevel, format: config.logFormat })
   const { key, alsoAccept } = loadJwtKeys()
   // The one Redis this process opens, shared by the rate limiter and the
   // effective-principals cache. Two connections for two uses of the same server
@@ -65,13 +72,8 @@ async function main(): Promise<void> {
       // Allowed through and said so, exactly as on REST. A rate limit is
       // availability protection rather than an authorization control, so
       // failing closed would trade a rare over-serve for a certain outage.
-      console.warn(
-        JSON.stringify({
-          msg: 'rate limit check unavailable; request allowed',
-          resource,
-          error: String(error).slice(0, 200),
-        }),
-      )
+      logger.warn('rate limit check unavailable; request allowed', { resource,
+          error: String(error).slice(0, 200) })
     },
   })
 
@@ -148,15 +150,10 @@ async function main(): Promise<void> {
     // one line. The API has printed its own since it existed; this one did not,
     // which made the comparison impossible from the half that needed it.
     const print = (k: Uint8Array) => `sha256:${createHash('sha256').update(k).digest('hex').slice(0, 12)}`
-    console.log(
-      JSON.stringify({
-        msg: 'mcp listening',
-        port,
+    logger.info('mcp listening', { port,
         env: config.env,
         jwt_key: print(key),
-        ...(alsoAccept.length === 0 ? {} : { jwt_key_previous: alsoAccept.map(print) }),
-      }),
-    )
+        ...(alsoAccept.length === 0 ? {} : { jwt_key_previous: alsoAccept.map(print) }) })
   })
 
   onListenError(server, 'mcp', port)
@@ -176,6 +173,6 @@ main().catch((error: unknown) => {
     console.error(error.message)
     process.exit(2)
   }
-  console.error(JSON.stringify({ msg: 'failed to start', error: String(error) }))
+  logger.error('failed to start', { error: String(error) })
   process.exit(1)
 })

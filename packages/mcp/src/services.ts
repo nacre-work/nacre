@@ -21,6 +21,7 @@ import {
   resolve,
   cachedEffectivePrincipals,
   loadGroupsVersion,
+  logger,
   S3,
   VectorStore,
   withOrg,
@@ -77,12 +78,7 @@ export function buildServices(
     ...(reranker === undefined ? {} : { reranker }),
     rerankCandidates: config.rerankCandidates,
     onRerankFailed: (error) => {
-      console.warn(
-        JSON.stringify({
-          msg: 'reranking failed; results are in fusion order',
-          error: String(error).slice(0, 200),
-        }),
-      )
+      logger.warn('reranking failed; results are in fusion order', { error: String(error).slice(0, 200) })
     },
   })
   // The same adapter the REST surface uses, so the two cannot drift on what a
