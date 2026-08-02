@@ -7,12 +7,16 @@ import { URL } from 'node:url'
 import {
   logger,
   MetadataError,
+  MultipartError,
+  multipartBoundary,
+  parseMultipart,
   queryAudit,
   parseFilters,
   parseMetadata,
   PROTECTED_RESOURCE_PATH,
   TooBusy,
   type Metadata,
+  type MultipartPart,
   type ProtectedResourceMetadata,
 } from '@nacre.work/core'
 
@@ -733,7 +737,7 @@ function parseGrant(body: Record<string, unknown>): GrantInput | string {
   }
 }
 
-async function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<unknown> {
+async function readRaw(req: IncomingMessage, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
@@ -741,8 +745,61 @@ async function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<u
     if (size > limit) throw new BodyTooLarge('body too large')
     chunks.push(chunk as Buffer)
   }
-  if (chunks.length === 0) return undefined
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  return Buffer.concat(chunks)
+}
+
+async function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<unknown> {
+  const raw = await readRaw(req, limit)
+  if (raw.length === 0) return undefined
+  return JSON.parse(raw.toString('utf8'))
+}
+
+/**
+ * A multipart body, reduced to the same shape a JSON one has.
+ *
+ * Two things depend on this being a plain object of fields rather than a
+ * special case threaded through the handler.
+ *
+ * The first is T2. `rejectTenantOverride` scans the body for an organization
+ * named at any depth, before routing and before validation, and it runs on
+ * whatever `body` is. A multipart request whose fields never became `body`
+ * would be a second door into the ingest endpoint with that check on the other
+ * side of it — which is exactly the shape of hole the rate limiter and the
+ * metrics each had when MCP was a second surface.
+ *
+ * The second is that everything downstream stays one code path: the same
+ * required-field checks, the same metadata parsing, the same audit event.
+ *
+ * The file is kept out of it. Its bytes are not a field, and putting a
+ * document body into an object that gets scanned, logged and error-messaged is
+ * how content ends up somewhere it should not be.
+ */
+function multipartBody(parts: readonly MultipartPart[]): {
+  fields: Record<string, unknown>
+  file?: MultipartPart
+} {
+  const fields: Record<string, unknown> = {}
+  let file: MultipartPart | undefined
+
+  for (const part of parts) {
+    // The file is the part with a filename, or the one called `file` — which
+    // is what openapi.yaml names it and what every form sends.
+    if (part.filename !== undefined || part.name === 'file') {
+      if (file !== undefined) {
+        throw new MultipartError('more than one file part; a document is one file')
+      }
+      file = part
+      continue
+    }
+    if (part.name in fields) {
+      // Refused rather than last-wins. A repeated field is a caller who
+      // believes something different from what would be stored.
+      throw new MultipartError(`the field ${part.name} appears more than once`)
+    }
+    fields[part.name] = Buffer.from(part.bytes).toString('utf8')
+  }
+
+  return { fields, ...(file === undefined ? {} : { file }) }
 }
 
 /** The wire shape of a reindex, snake case like every other response here. */
@@ -1245,8 +1302,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   }
 
   let body: unknown
+  // Held aside from `body` on purpose — see multipartBody.
+  let uploaded: MultipartPart | undefined
+  let wasMultipart = false
   try {
-    body = await readBody(req, options.maxBodyBytes ?? MAX_BODY_BYTES)
+    const limit = options.maxBodyBytes ?? MAX_BODY_BYTES
+    const boundary = multipartBoundary(req.headers['content-type'])
+    if (boundary === undefined) {
+      body = await readBody(req, limit)
+    } else {
+      const reduced = multipartBody(parseMultipart(await readRaw(req, limit), boundary))
+      body = reduced.fields
+      uploaded = reduced.file
+      wasMultipart = true
+    }
   } catch (error) {
     // 413 for size and 400 for anything else. They were one answer, and the
     // message said neither — a caller over the limit was told their body could
@@ -1261,7 +1330,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             instance,
             requestId,
           })
-        : badRequest(instance, requestId, 'The request body could not be read.')
+        : error instanceof MultipartError
+          ? // Named, because every one of them is a caller mistake with a fix,
+            // and "the request body could not be read" sends them looking at
+            // their bytes rather than at their boundary.
+            badRequest(instance, requestId, `${error.message}.`)
+          : badRequest(instance, requestId, 'The request body could not be read.')
     send(res, problem.status, problem.toJSON(), requestId)
     return
   }
@@ -1488,8 +1562,57 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     if (req.method === 'POST' && instance === '/v1/documents') {
       const body_ = (body ?? {}) as Record<string, unknown>
       const layer = body_.layer
-      const externalId = body_.external_id
-      const content = body_.content
+
+      // A file part is content. The external id defaults to its filename,
+      // because a form that uploads `q3-plan.md` has already said what the
+      // document is called and asking for the same string twice is how a
+      // client ends up with two names for one document.
+      //
+      // The filename is used for that and for nothing else. It never reaches a
+      // path, and never an object key — `documentKey` hashes the external id,
+      // so a caller cannot choose the shape of anything in the bucket.
+      const externalId =
+        typeof body_.external_id === 'string'
+          ? body_.external_id
+          : (uploaded?.filename ?? undefined)
+
+      let content = body_.content
+      if (uploaded !== undefined) {
+        if (typeof content === 'string' || typeof body_.url === 'string') {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "A multipart upload carries the document; 'content' and 'url' are for the JSON body.",
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        // Decoded here, and refused here, rather than queued and failed later.
+        //
+        // The parser this feeds extracts no binary formats — it is stdlib-only
+        // on purpose, since it runs hostile input through whatever it depends
+        // on. Until this check existed the sidecar decoded with
+        // `errors="replace"`, so a PDF became a string of replacement
+        // characters that was chunked, embedded, stored as the document body
+        // and reported as indexed.
+        //
+        // At the edge the caller learns immediately and nothing is queued. Deep
+        // in the worker they would have learned from a `failed` row minutes
+        // later, if they looked.
+        const decoder = new TextDecoder('utf-8', { fatal: true })
+        try {
+          content = decoder.decode(uploaded.bytes)
+        } catch {
+          const problem = badRequest(
+            instance,
+            requestId,
+            'The uploaded file is not UTF-8 text. This installation extracts no binary formats — ' +
+              'a PDF, a Word file or an image needs an extractor the parser deliberately does not carry.',
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+      }
       const url_ = body_.url
 
       if (typeof layer !== 'string' || typeof externalId !== 'string') {
@@ -1510,9 +1633,32 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // a document, got 202, and the tag existed nowhere. Refused rather than
       // trimmed when it is malformed — a dropped key is a document the caller
       // believes is tagged and a filter that will never match it.
+      // Every multipart field is a string, so `metadata` arrives as JSON text
+      // where the JSON body carries an object. Parsed here rather than taught
+      // to parseMetadata, which is shared with `PATCH` and with MCP and should
+      // keep meaning one thing.
+      //
+      // Found by running it: the first version of this branch answered 400 for
+      // a perfectly good `metadata` field, because the string never became an
+      // object.
+      let rawMetadata: unknown = body_.metadata
+      if (wasMultipart && typeof rawMetadata === 'string') {
+        try {
+          rawMetadata = JSON.parse(rawMetadata)
+        } catch {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "The 'metadata' field is not JSON. In a multipart upload it carries a JSON object as text.",
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+      }
+
       let metadata
       try {
-        metadata = parseMetadata(body_.metadata)
+        metadata = parseMetadata(rawMetadata)
       } catch (error) {
         const problem = badRequest(
           instance,

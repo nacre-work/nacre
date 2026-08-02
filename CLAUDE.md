@@ -244,17 +244,39 @@ live slot is unaffected, and a point missing the queried vector does not error �
 it simply does not match, which is why the selection refuses the slot the layer
 is searching now.
 
-Not built: OAuth dynamic client registration and CIMD, multipart upload on
-ingest, and the recall check against a reference query set on a reindex.
+Not built: OAuth dynamic client registration and CIMD, and the recall check
+against a reference query set on a reindex.
 
-Multipart is bigger than its one line suggests, and `docs/api.md` now says so.
-**No binary document can be ingested today except by URL:** `Parser.parse` takes
-`{ content?: string, url?: string }` and has no bytes argument, `source_ref` is
-`text`, and `content_hash` is over the parsed text. So it is a change to the
-parser port, the sidecar's contract, the ingest signature and the hash — and it
-implies that binary upload requires `NACRE_S3_*`, because that is the only place
-bytes can live. Deciding that deliberately is cheaper than discovering it
-halfway through the handler.
+A document can be uploaded as a form. `multipart/form-data` was in
+`docs/openapi.yaml` from before there was a server and listed as not built for
+just as long, and it is parsed here rather than by a library: this is
+attacker-supplied bytes on the request path, which is the one place a
+dependency's parser bugs become ours. The obligation that comes with that choice
+is strictness — every bound is a refusal and not a truncation, because a
+truncation is a silent disagreement between what was sent and what got stored.
+
+The fields reduce to the same object a JSON body is, which is what keeps T2
+holding: `rejectTenantOverride` scans the body before routing, so a multipart
+request whose fields never became that body would be a second door into ingest
+with the check on the other side of it — the shape of hole the rate limiter and
+the metrics each had when MCP became a second surface. The file is deliberately
+kept out of that object; a document body does not belong in something that gets
+scanned, logged and put into error messages.
+
+**An uploaded file must be UTF-8 text, and a binary one is refused at the edge.**
+That is the product's limit, not the handler's: `Parser.parse` takes
+`{ content?: string, url?: string }` with no bytes argument, `source_ref` is
+`text` and the S3 path stores UTF-8 and decodes it back, and `content_hash` is
+over the text. Extracting a PDF is a change to the parser port, the sidecar's
+contract, the ingest signature and the hash, and it implies that binary upload
+requires `NACRE_S3_*`, because that is the only place bytes can live.
+
+The sidecar decoded with `errors="replace"` until this went in, so the refusal
+replaced a real corruption rather than a hypothetical one — a 58-byte PDF
+produced six replacement characters that would have been chunked, embedded,
+stored as the document body and reported as `indexed`. It raises now, and the
+edge check means the caller learns on the request instead of from a `failed` row
+minutes later, if they looked.
 
 **Object storage is wired.** `NACRE_S3_*` spent its whole life in
 `docs/config.md` and in the `full` Compose profile while `loadConfig` did not

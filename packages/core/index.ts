@@ -21,6 +21,14 @@ export { migrate, loadMigrations } from './db/migrate.js'
 export { loadGrants, loadGroupsVersion, loadScopeTree, PostgresGroupGraph } from './authz/store.js'
 export { explainQdrant, MetadataIndexer, METADATA_INDEX_LIMIT, VectorStore } from './vector/search.js'
 export { MAX_AUDITED_QUERY, queryAudit } from './audit.js'
+export {
+  MAX_PARTS,
+  MAX_PART_HEADER_BYTES,
+  MultipartError,
+  multipartBoundary,
+  parseMultipart,
+} from './multipart.js'
+export type { MultipartPart } from './multipart.js'
 export type { QueryAudit } from './audit.js'
 export { configureLogging, createLogger, logger } from './logging.js'
 export type { Logger, LoggerOptions, LogFormat, LogLevel } from './logging.js'
