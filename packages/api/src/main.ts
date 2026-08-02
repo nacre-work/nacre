@@ -24,6 +24,7 @@ import {
   PostgresLayers,
 } from './adapters.js'
 import { Idempotency } from './idempotency.js'
+import { rerankerFor } from './rerank.js'
 import { RateLimiter, type LimitPolicy, type Resource } from './limits.js'
 import { PostgresServiceAccounts, PostgresServiceKeys } from './service-keys.js'
 import { createApi } from './server.js'
@@ -124,6 +125,10 @@ async function main(): Promise<void> {
     },
   })
 
+  // Undefined unless the deployment configured one — `minimal` has no
+  // reranker by definition, which is what keeps it runnable without a GPU.
+  const reranker = rerankerFor(config)
+
   const idempotency = new Idempotency({
     redis,
     onDegraded: (error) => {
@@ -155,6 +160,20 @@ async function main(): Promise<void> {
       orgSlug,
       vectorName: vectorName(config.embeddingModel, config.embeddingDim),
       role: APP_ROLE,
+      ...(reranker === undefined ? {} : { reranker }),
+      rerankCandidates: config.rerankCandidates,
+      onRerankFailed: (error) => {
+        // Answered in fusion order rather than not at all. Reranking decides
+        // ordering over candidates the index already filtered by permission,
+        // so this is a quality degradation and not a permissions one — and an
+        // operator who turned it on is entitled to know it is not running.
+        console.warn(
+          JSON.stringify({
+            msg: 'reranking failed; results are in fusion order',
+            error: String(error).slice(0, 200),
+          }),
+        )
+      },
     }),
     ingest: new NacreIngest({ pool, tombstone: vectors, orgSlug, role: APP_ROLE }),
     audit: new PostgresAudit(pool, APP_ROLE),

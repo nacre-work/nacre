@@ -34,6 +34,7 @@ export interface Config {
   readonly parserEndpoint: string
   readonly rerankerEndpoint: string | undefined
   readonly rerankerEnabled: boolean
+  readonly rerankCandidates: number
 
   readonly jwtIssuer: string
   readonly jwtAudience: string
@@ -173,9 +174,14 @@ export function loadConfig(env: Env = process.env): Config {
     // False, and it was true. `minimal` has no reranker by definition — the
     // profile exists to run on a laptop without a GPU — so a default of true
     // meant the documented starting profile refused to boot until the operator
-    // turned off a feature they had not asked for. It is also not implemented
-    // on the search path yet, so the refusal bought nothing at all.
+    // turned off a feature they had not asked for.
     rerankerEnabled: r.boolean('NACRE_RERANKER_ENABLED', false),
+    // The candidate set a cross-encoder reorders. 50 is what
+    // docs/architecture.md specifies. The maximum is bounded because every
+    // candidate is a row hydrated from Postgres and a text sent to the model:
+    // this is the one tunable here that trades latency for quality directly,
+    // and there is a value at which a search stops answering in time.
+    rerankCandidates: r.number('NACRE_RERANK_CANDIDATES', 50, { min: 1, max: 500 }),
 
     jwtIssuer: r.required('NACRE_JWT_ISSUER'),
     jwtAudience: r.required('NACRE_JWT_AUDIENCE'),

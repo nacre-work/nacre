@@ -17,6 +17,7 @@ export type {
   LayerOutcome,
   Layers,
   SearchHit,
+  SearchOptions,
   SearchService,
   ServiceAccountPort,
   ServiceAccountView,
@@ -35,6 +36,8 @@ export {
   PostgresLayers,
 } from './adapters.js'
 export type { DocumentTombstone, Embedder, IngestDeps, SearchDeps } from './adapters.js'
+export { applyRanking, HttpReranker, rerankerFor } from './rerank.js'
+export type { Reranker } from './rerank.js'
 export {
   generateKey,
   hashOf,

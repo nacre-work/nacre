@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto'
 import type { Pool } from 'pg'
 
 import { encodeCursor, pageOf } from './pagination.js'
+import { applyRanking, type Reranker } from './rerank.js'
 
 import type {
   AuditEvent,
@@ -37,6 +38,7 @@ import type {
   Page,
   PageResult,
   SearchHit,
+  SearchOptions,
   SearchService,
 } from './server.js'
 import type { AuthContext } from './auth.js'
@@ -133,12 +135,26 @@ export interface SearchDeps {
   readonly orgSlug: (orgId: string) => Promise<string | undefined>
   readonly vectorName: string
   readonly role?: string
+  /** Absent means reranking is off, which is what the `minimal` profile is. */
+  readonly reranker?: Reranker
+  /** Candidates to rerank. docs/architecture.md says 50. */
+  readonly rerankCandidates?: number
+  /**
+   * Reranking stopped working, with the search still answering in fusion order.
+   * An operator who turned reranking on is entitled to know it is not running.
+   */
+  readonly onRerankFailed?: (error: unknown) => void
 }
 
 export class NacreSearchService implements SearchService {
   constructor(private readonly deps: SearchDeps) {}
 
-  async search(auth: AuthContext, query: string, topK: number): Promise<readonly SearchHit[]> {
+  async search(
+    auth: AuthContext,
+    query: string,
+    topK: number,
+    options: SearchOptions = {},
+  ): Promise<readonly SearchHit[]> {
     const slug = await this.deps.orgSlug(auth.orgId)
     if (slug === undefined) {
       // The token names an organization that is not there. Rule I3: a
@@ -172,14 +188,23 @@ export class NacreSearchService implements SearchService {
     const [vector] = await this.deps.embedder.embed([query])
     if (vector === undefined) throw new Error('the embedder returned no vector for the query')
 
+    // Off unless the deployment configured a reranker and the caller left it on.
+    const reranking = this.deps.reranker !== undefined && options.rerank !== false
+
     const hits = await this.deps.vectors.search({
       orgId: auth.orgId,
       orgSlug: slug,
       plan,
       branches: [{ kind: 'dense', using: this.deps.vectorName, vector }],
-      // Passed through. Asking for more and trimming is a post-filter that also
-      // costs more.
-      topK,
+      // Without a reranker this is passed through uncorrected: asking for more
+      // and trimming would be a post-filter that also costs more.
+      //
+      // With one it is widened, and that is not the same thing. The trim a
+      // reranker performs is on relevance over a set the index has already
+      // filtered by permission, so it changes *which* permitted results come
+      // back and never how many. See rerank.ts — the distinction is the whole
+      // argument for this being allowed at all.
+      topK: reranking ? Math.max(topK, this.deps.rerankCandidates ?? 50) : topK,
     })
 
     // Invariant I1, checked again on the way out. Raises rather than filtering:
@@ -187,7 +212,46 @@ export class NacreSearchService implements SearchService {
     const checked = VectorStore.assertTenant(auth.orgId, hits)
     if (checked.length === 0) return []
 
-    return this.hydrate(auth.orgId, checked)
+    const candidates = await this.hydrate(auth.orgId, checked)
+    if (!reranking) return candidates
+
+    return this.rerank(query, candidates, topK)
+  }
+
+  /**
+   * Reorder by cross-encoder score, or answer in fusion order and say so.
+   *
+   * The text comes from the hydration that had to happen anyway. A reranker
+   * scores query against text, and the vector store holds no text — so the
+   * order here is search, hydrate the candidates, rerank, cut. Hydrating fifty
+   * rows rather than ten is one query with a wider `ANY($2)`, which is the cost
+   * of the quality this buys.
+   *
+   * Failure answers with what fusion produced rather than raising. Reranking
+   * decides ordering over candidates that were all permitted before it saw
+   * them, so a reranker being down is a quality degradation and not a
+   * permissions one — and making the product's central operation depend on an
+   * optional model server would be the worse trade. It is reported, never
+   * silent.
+   */
+  private async rerank(
+    query: string,
+    candidates: readonly SearchHit[],
+    topK: number,
+  ): Promise<readonly SearchHit[]> {
+    const reranker = this.deps.reranker
+    if (reranker === undefined) return candidates.slice(0, topK)
+
+    try {
+      const scores = await reranker.rank(
+        query,
+        candidates.map((c) => c.text),
+      )
+      return applyRanking(candidates, scores, topK)
+    } catch (error) {
+      this.deps.onRerankFailed?.(error)
+      return candidates.slice(0, topK)
+    }
   }
 
   /**

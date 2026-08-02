@@ -31,7 +31,10 @@ negotiable in a PR.
 - Accept `org_id` from a request body, path, or header.
 - Return `403` where the object is invisible.
 - Log document contents or full query text.
-- Ask for a larger `top_k` and trim — that is a post-filter that also costs more.
+- Ask for a larger `top_k` and trim **on permission** — that is a post-filter
+  that also costs more. Trimming on relevance over an already-permitted
+  candidate set is what reranking is, and it is allowed; the test is whether
+  the answer can end up smaller than the number of permitted matches.
 - Skip the ACL filter in one branch of a hybrid query. Every prefetch branch
   carries it; one omission is a leak.
 
@@ -96,8 +99,16 @@ connected to it. Both fail **open**, deliberately and against the grain of
 invariant 3: neither is an authorization control, and failing closed would turn
 a cache restart into an outage.
 
+Reranking is on the search path, off unless a deployment configures a reranker.
+It fetches `NACRE_RERANK_CANDIDATES` from the index and returns the best
+`top_k`, which is **not** the over-fetch invariant 2 forbids: every candidate
+has already passed the permission filter inside the index traversal, so the trim
+is on relevance and changes which permitted results come back, never how many.
+See `packages/api/src/rerank.ts` — the argument is in the code because the next
+person to read the search path will see the widening and reach for the rule.
+
 Not built: no login (tokens come from `init`, service accounts from
-`/v1/service-accounts`) and no reranking on the search path. `docker compose up`
+`/v1/service-accounts`). `docker compose up`
 has still not been run from a clean checkout; four separate things that made it
 impossible are fixed, and the path is validated by `lint:compose` and by
 reading, not by a machine that has done it.

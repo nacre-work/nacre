@@ -90,7 +90,9 @@ acl_tags   keyword, kept in memory — it participates in every single query
 
 Dense vector plus sparse BM25, fused with Reciprocal Rank Fusion, then a
 cross-encoder rerank of the top 50 down to top-k. Reranking buys more quality
-than any amount of chunking tuning and is on by default.
+than any amount of chunking tuning. It is off unless a deployment configures a
+reranker, because `minimal` has none — that is what keeps it runnable on a
+laptop without a GPU — and a client may turn it off per request but never on.
 
 ```jsonc
 POST /collections/{c}/points/query
@@ -114,6 +116,18 @@ Forbidden, all three for the same reason:
 - asking for a larger `top_k` and trimming — that is a post-filter that also
   costs more;
 - assuming a user has one layer so "the filter will surely match".
+
+**Reranking is not the second of those, and the distinction is worth being
+precise about, because it looks like it.** The rule is about what the trim
+decides. A post-filter trims on *permission*: it fetches k, drops what the
+caller may not see, and returns fewer than k permitted results — so the size of
+the answer measures what exists but is invisible, and the index ranked
+documents it then threw away. Reranking trims on *relevance*, over a candidate
+set the index has already filtered by permission, so it changes which permitted
+results come back and never how many.
+
+The test that separates them: **can the answer ever be smaller than the number
+of permitted matches, up to k?** For a post-filter, yes. For reranking, no.
 
 Qdrant applies payload filters *inside* the HNSW traversal, which is what makes
 `top_k` return k permitted results rather than k results with some removed.
