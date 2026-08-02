@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
-import { withOrg } from '@nacre.work/core'
+import { whileAuthenticating, withOrg } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
 import type { AuthContext } from './auth.js'
@@ -71,50 +71,70 @@ export class PostgresServiceKeys implements ServiceKeyResolver {
   async resolve(key: string): Promise<AuthContext | undefined> {
     if (!looksLikeServiceKey(key)) return undefined
 
-    const client = await this.pool.connect()
-    try {
-      // Across organizations: the key is what says which one, so there is no
-      // org to scope to yet. This is why the lookup runs here rather than
-      // inside withOrg, and why every column it reads is on service_accounts
-      // rather than joined from tenant data.
-      const { rows } = await client.query<{
-        id: string
-        org_id: string
-        key_hash: string
-      }>(
-        `SELECT id, org_id, key_hash FROM service_accounts
-          WHERE key_prefix = $1 AND revoked_at IS NULL`,
-        [prefixOf(key)],
-      )
+    // Across organizations: the key is what says which one, so there is no org
+    // to scope to yet. `whileAuthenticating` opens the one policy that permits
+    // that, for the length of this transaction — without it the query raises
+    // `unrecognized configuration parameter` on any connection subject to
+    // row-level security, which is every connection a deployment following
+    // docs/config.md will make. It worked in development because development
+    // connects as a superuser, which is the configuration that document
+    // forbids.
+    //
+    // Every column read here is on service_accounts. Joining tenant data into
+    // this query is a cross-tenant read with the guard rail switched off.
+    const matched = await whileAuthenticating(
+      this.pool,
+      async (client) => {
+        const { rows } = await client.query<{
+          id: string
+          org_id: string
+          key_hash: string
+        }>(
+          `SELECT id, org_id, key_hash FROM service_accounts
+            WHERE key_prefix = $1 AND revoked_at IS NULL`,
+          [prefixOf(key)],
+        )
 
-      const expected = Buffer.from(hashOf(key), 'utf8')
-      for (const row of rows) {
-        const stored = Buffer.from(row.key_hash, 'utf8')
-        // Constant-time, and length-checked first because timingSafeEqual
-        // throws on a mismatch rather than returning false.
-        if (stored.length !== expected.length) continue
-        if (!timingSafeEqual(stored, expected)) continue
-
-        // Best-effort. A failure to record when a key was last used must not
-        // fail the request it authenticated — the column is for an operator
-        // pruning dead keys, not for the decision.
-        void client
-          .query('UPDATE service_accounts SET last_used_at = now() WHERE id = $1', [row.id])
-          .catch(() => undefined)
-
-        // 'member', always. A service account holds nothing by virtue of being
-        // one; every permission it has comes from a grant, which is what
-        // docs/mcp.md means by "permissions are exactly the service account's".
-        return {
-          orgId: row.org_id,
-          principal: { type: 'service_account', id: row.id },
-          role: 'member',
+        const expected = Buffer.from(hashOf(key), 'utf8')
+        for (const row of rows) {
+          const stored = Buffer.from(row.key_hash, 'utf8')
+          // Constant-time, and length-checked first because timingSafeEqual
+          // throws on a mismatch rather than returning false.
+          if (stored.length !== expected.length) continue
+          if (!timingSafeEqual(stored, expected)) continue
+          return { id: row.id, orgId: row.org_id }
         }
-      }
 
-      return undefined
-    } finally {
-      client.release()
+        return undefined
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+
+    if (matched === undefined) return undefined
+
+    // Outside the authenticating transaction, and scoped to the organization
+    // the key just identified. The policy that let the lookup happen is
+    // SELECT-only on purpose — a write here would have been filtered and the
+    // column would have quietly stopped moving, which is the failure mode this
+    // whole migration exists to remove rather than to relocate.
+    //
+    // Best-effort: a failure to record when a key was last used must not fail
+    // the request it authenticated. The column is for an operator pruning dead
+    // keys, not for the decision.
+    await withOrg(
+      this.pool,
+      matched.orgId,
+      (client) => client.query('UPDATE service_accounts SET last_used_at = now() WHERE id = $1', [matched.id]),
+      this.role === undefined ? {} : { role: this.role },
+    ).catch(() => undefined)
+
+    // 'member', always. A service account holds nothing by virtue of being one;
+    // every permission it has comes from a grant, which is what docs/mcp.md
+    // means by "permissions are exactly the service account's".
+    return {
+      orgId: matched.orgId,
+      principal: { type: 'service_account', id: matched.id },
+      role: 'member',
     }
   }
 }

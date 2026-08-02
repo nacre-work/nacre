@@ -37,6 +37,12 @@ negotiable in a PR.
   the answer can end up smaller than the number of permitted matches.
 - Skip the ACL filter in one branch of a hybrid query. Every prefetch branch
   carries it; one omission is a leak.
+- Query outside `withOrg` without saying which mechanism permits it. There are
+  two, and only two: `whileAuthenticating` for resolving a credential, and
+  `acrossOrganizations` for the worker's queue. A raw `pool.connect()` that
+  reads a tenant table is a query that works in development and raises in
+  production, because development connects as a superuser and the policies do
+  not apply to one.
 
 ## Commands
 
@@ -135,8 +141,12 @@ no text at all — because every test asserted on the payload, which *was* the
 response — a duplicate service account name answering 500, the worker erasing a
 document's title, which was visible only in a screenshot, a service account key
 sitting in the idempotency cache in plaintext for 24 hours, found with
-`redis-cli GET`, and re-indexing leaving every previous point in the index,
-found by noticing that a search for five results returned four.
+`redis-cli GET`, re-indexing leaving every previous point in the index, found
+by noticing that a search for five results returned four, and two whole
+subsystems that only ever worked because development connects to Postgres as a
+superuser — service account keys answered 500 and the worker indexed nothing
+the moment an operator followed the rule in `docs/config.md` about not doing
+that.
 
 ## Conventions
 

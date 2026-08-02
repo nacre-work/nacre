@@ -80,6 +80,40 @@ applies to the owner only where the table is forced. Connecting as either turns
 the tenant-isolation policies into decoration. Migrations run as the owner;
 the application runs as `nacre_app`.
 
+### Three roles, and what each is for
+
+| Role | Used by | Row-level security |
+|---|---|---|
+| the owner | migrations only | applies (tables are `FORCE`d) |
+| `nacre_app` | the API and the MCP server | applies |
+| `nacre_worker` | the worker's queue only | **bypassed** |
+
+`nacre_app` sets `app.current_org` for every query through `withOrg`, so the
+policies scope it to one tenant. Two paths legitimately cannot be scoped that
+way, and each has exactly one mechanism:
+
+- **Resolving a credential.** A service account key is what says which
+  organization it belongs to, so the lookup precedes knowing one. A second
+  policy admits it while `app.authenticating` is set, `FOR SELECT` only, on
+  `service_accounts` alone. It reads the credential columns and nothing joined
+  from tenant data.
+- **Claiming work.** The worker's queue looks at every tenant's documents,
+  because that is what a queue is. It runs under `nacre_worker`, which has
+  `BYPASSRLS` — the one place the second line of defence is off, which is why
+  every query the worker makes names `org_id` explicitly.
+
+Migration `0008` creates `nacre_worker` and grants it to `nacre_app`. Creating
+a role with `BYPASSRLS` needs a superuser; where the migrating role is not one,
+the migration fails with the statement to run by hand rather than leaving a
+worker that starts, claims nothing, and reports itself healthy.
+
+Until that migration, **neither path worked on a deployment that followed the
+rule above.** Both raised `unrecognized configuration parameter
+"app.current_org"` — service account keys answered `500`, and the worker
+indexed nothing. It went unnoticed because development, CI and the Compose
+stack all connect as a superuser, which is the one configuration this section
+tells you not to use.
+
 **The application validates the whole configuration at startup and exits if
 anything required is missing or contradictory**, reporting every problem at
 once rather than the first — one restart per missing variable is how a

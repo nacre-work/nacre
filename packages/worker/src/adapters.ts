@@ -1,5 +1,5 @@
 import { QdrantClient } from '@qdrant/js-client-rest'
-import { aclTags, collectionName, loadGroupsVersion, withOrg } from '@nacre.work/core'
+import { acrossOrganizations, aclTags, collectionName, loadGroupsVersion, withOrg } from '@nacre.work/core'
 import type { PrincipalRef } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
@@ -428,35 +428,32 @@ export class HttpParser implements Parser {
  * in `markTagged` is what keeps concurrent passes from disagreeing.
  */
 export async function claimStale(pool: Pool, limit: number): Promise<readonly StaleDocument[]> {
-  const client = await pool.connect()
-  try {
-    const { rows } = await client.query<{
-      id: string
-      org_id: string
-      slug: string
-      layer_id: string
-    }>(
-      `SELECT d.id, d.org_id, o.slug, d.layer_id
-         FROM documents d
-         JOIN organizations o ON o.id = d.org_id
-        WHERE d.deleted_at IS NULL
-          AND o.deleted_at IS NULL
-          AND d.acl_version < o.groups_version
-          AND d.status = 'indexed'
-        ORDER BY COALESCE(d.acl_tagged_at, d.created_at)
-        LIMIT $1`,
-      [limit],
-    )
+  return acrossOrganizations(pool, async (client) => {
+      const { rows } = await client.query<{
+        id: string
+        org_id: string
+        slug: string
+        layer_id: string
+      }>(
+        `SELECT d.id, d.org_id, o.slug, d.layer_id
+           FROM documents d
+           JOIN organizations o ON o.id = d.org_id
+          WHERE d.deleted_at IS NULL
+            AND o.deleted_at IS NULL
+            AND d.acl_version < o.groups_version
+            AND d.status = 'indexed'
+          ORDER BY COALESCE(d.acl_tagged_at, d.created_at)
+          LIMIT $1`,
+        [limit],
+      )
 
-    return rows.map((r) => ({
-      orgId: r.org_id,
-      orgSlug: r.slug,
-      documentId: r.id,
-      layerId: r.layer_id,
-    }))
-  } finally {
-    client.release()
-  }
+      return rows.map((r) => ({
+        orgId: r.org_id,
+        orgSlug: r.slug,
+        documentId: r.id,
+        layerId: r.layer_id,
+      }))
+  })
 }
 
 /**
@@ -471,35 +468,32 @@ export async function claimPurgeable(
   limit: number,
   graceSeconds: number,
 ): Promise<readonly PurgeTarget[]> {
-  const client = await pool.connect()
-  try {
-    const { rows } = await client.query<{
-      id: string
-      org_id: string
-      slug: string
-      age: string
-    }>(
-      `SELECT d.id, d.org_id, o.slug,
-              EXTRACT(EPOCH FROM (now() - d.deleted_at))::text AS age
-         FROM documents d
-         JOIN organizations o ON o.id = d.org_id
-        WHERE d.deleted_at IS NOT NULL
-          AND d.vectors_purged_at IS NULL
-          AND d.deleted_at < now() - make_interval(secs => $2)
-        ORDER BY d.deleted_at
-        LIMIT $1`,
-      [limit, graceSeconds],
-    )
+  return acrossOrganizations(pool, async (client) => {
+      const { rows } = await client.query<{
+        id: string
+        org_id: string
+        slug: string
+        age: string
+      }>(
+        `SELECT d.id, d.org_id, o.slug,
+                EXTRACT(EPOCH FROM (now() - d.deleted_at))::text AS age
+           FROM documents d
+           JOIN organizations o ON o.id = d.org_id
+          WHERE d.deleted_at IS NOT NULL
+            AND d.vectors_purged_at IS NULL
+            AND d.deleted_at < now() - make_interval(secs => $2)
+          ORDER BY d.deleted_at
+          LIMIT $1`,
+        [limit, graceSeconds],
+      )
 
-    return rows.map((r) => ({
-      orgId: r.org_id,
-      orgSlug: r.slug,
-      documentId: r.id,
-      deletedAgeSeconds: Number(r.age),
-    }))
-  } finally {
-    client.release()
-  }
+      return rows.map((r) => ({
+        orgId: r.org_id,
+        orgSlug: r.slug,
+        documentId: r.id,
+        deletedAgeSeconds: Number(r.age),
+      }))
+  })
 }
 
 /**
@@ -522,54 +516,51 @@ export async function claimStranded(
   leaseSeconds: number,
   maxAttempts: number,
 ): Promise<readonly StrandedDocument[]> {
-  const client = await pool.connect()
-  try {
-    const { rows } = await client.query<{
-      id: string
-      org_id: string
-      held: string
-      attempts: number
-    }>(
-      `WITH expired AS (
-         SELECT id, claimed_at
-           FROM documents
-          WHERE status IN ('parsing', 'indexing')
-            AND claimed_at IS NOT NULL
-            AND claimed_at < now() - make_interval(secs => $2)
-          ORDER BY claimed_at
-          LIMIT $1
-          FOR UPDATE SKIP LOCKED
-       )
-       UPDATE documents d
-          SET attempts   = d.attempts + 1,
-              status     = CASE WHEN d.attempts + 1 >= $3 THEN 'failed' ELSE 'pending' END,
-              -- The lease is released either way. A failed row keeps no claim,
-              -- and a requeued one is claimed again by whoever picks it up.
-              claimed_at = NULL,
-              error      = CASE WHEN d.attempts + 1 >= $3
-                                THEN 'Indexing was abandoned ' || $3::text ||
-                                     ' times without completing. The worker did not report a failure, ' ||
-                                     'which means it stopped between claiming this document and finishing it.'
-                                ELSE d.error END,
-              updated_at = now()
-         FROM expired e
-        WHERE d.id = e.id
-        -- e.claimed_at, not d.claimed_at: RETURNING sees the new row, and the
-        -- new row's claim was just cleared. The CTE still holds the old value.
-        RETURNING d.id, d.org_id, d.attempts,
-                  EXTRACT(EPOCH FROM (now() - e.claimed_at))::text AS held`,
-      [limit, leaseSeconds, maxAttempts],
-    )
+  return acrossOrganizations(pool, async (client) => {
+      const { rows } = await client.query<{
+        id: string
+        org_id: string
+        held: string
+        attempts: number
+      }>(
+        `WITH expired AS (
+           SELECT id, claimed_at
+             FROM documents
+            WHERE status IN ('parsing', 'indexing')
+              AND claimed_at IS NOT NULL
+              AND claimed_at < now() - make_interval(secs => $2)
+            ORDER BY claimed_at
+            LIMIT $1
+            FOR UPDATE SKIP LOCKED
+         )
+         UPDATE documents d
+            SET attempts   = d.attempts + 1,
+                status     = CASE WHEN d.attempts + 1 >= $3 THEN 'failed' ELSE 'pending' END,
+                -- The lease is released either way. A failed row keeps no claim,
+                -- and a requeued one is claimed again by whoever picks it up.
+                claimed_at = NULL,
+                error      = CASE WHEN d.attempts + 1 >= $3
+                                  THEN 'Indexing was abandoned ' || $3::text ||
+                                       ' times without completing. The worker did not report a failure, ' ||
+                                       'which means it stopped between claiming this document and finishing it.'
+                                  ELSE d.error END,
+                updated_at = now()
+           FROM expired e
+          WHERE d.id = e.id
+          -- e.claimed_at, not d.claimed_at: RETURNING sees the new row, and the
+          -- new row's claim was just cleared. The CTE still holds the old value.
+          RETURNING d.id, d.org_id, d.attempts,
+                    EXTRACT(EPOCH FROM (now() - e.claimed_at))::text AS held`,
+        [limit, leaseSeconds, maxAttempts],
+      )
 
-    return rows.map((r) => ({
-      orgId: r.org_id,
-      documentId: r.id,
-      heldSeconds: Number(r.held),
-      attempts: r.attempts,
-    }))
-  } finally {
-    client.release()
-  }
+      return rows.map((r) => ({
+        orgId: r.org_id,
+        documentId: r.id,
+        heldSeconds: Number(r.held),
+        attempts: r.attempts,
+      }))
+  })
 }
 
 export async function tagsForLayer(
