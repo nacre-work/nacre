@@ -40,6 +40,94 @@ export interface WithOrgOptions {
   readonly role?: string
 }
 
+/**
+ * Run a lookup that resolves a credential, which cannot be scoped to an
+ * organization because the credential is what says which organization it is.
+ *
+ * `app.authenticating` opens a second row-level security policy on
+ * `service_accounts` for the length of the transaction — see migration 0008.
+ * Without it the query raises `unrecognized configuration parameter` on any
+ * connection that is subject to row-level security, which is every connection
+ * a deployment following `docs/config.md` will make.
+ *
+ * **This is the one path in the system that reads across tenants, and it must
+ * stay the only one.** Two things keep it narrow, and both are load-bearing:
+ * the flag is `SET LOCAL`, so it cannot outlive the transaction or come back
+ * on a pooled connection, and the policy it opens is `FOR SELECT`, so this
+ * cannot write a row into an organization it has not identified yet.
+ *
+ * Read the credential and nothing else. Anything joined from tenant data here
+ * is a cross-tenant read with the guard rail switched off.
+ */
+export async function whileAuthenticating<T>(
+  pool: Pool,
+  fn: (client: PoolClient) => Promise<T>,
+  options: WithOrgOptions = {},
+): Promise<T> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    if (options.role !== undefined) {
+      if (!/^[a-z_][a-z0-9_]*$/i.test(options.role)) {
+        throw new Error(`refusing to set an unrecognizable role name: ${options.role}`)
+      }
+      await client.query(`SET LOCAL ROLE ${options.role}`)
+    }
+    // `true` is the local flag: it goes away with the transaction, so a pooled
+    // connection cannot hand it to the next caller.
+    await client.query('SELECT set_config($1, $2, true)', ['app.authenticating', 'on'])
+    const result = await fn(client)
+    await client.query('COMMIT')
+    return result
+  } catch (cause) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw cause
+  } finally {
+    client.release()
+  }
+}
+
+/**
+ * Run a query that legitimately spans every tenant, under the role the schema
+ * gives BYPASSRLS.
+ *
+ * The worker's queue is the only thing that needs this: claiming the next
+ * document to index means looking at all of them, which is what a queue is.
+ * `0001_init.sql` has said "background worker jobs run under a separate role
+ * with BYPASSRLS" since the beginning and no migration created that role until
+ * 0008, so these queries ran with no organization set and raised
+ * `unrecognized configuration parameter` on any connection subject to
+ * row-level security — every connection a deployment following
+ * `docs/config.md` makes. Indexing stopped entirely, and the Compose stack
+ * never showed it because `POSTGRES_USER` connects as a superuser.
+ *
+ * **This turns the second line of defence off.** Every query run inside it
+ * names `org_id` explicitly, because with row-level security bypassed that is
+ * the only line left.
+ */
+export async function acrossOrganizations<T>(
+  pool: Pool,
+  fn: (client: PoolClient) => Promise<T>,
+  role = 'nacre_worker',
+): Promise<T> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    if (!/^[a-z_][a-z0-9_]*$/i.test(role)) {
+      throw new Error(`refusing to set an unrecognizable role name: ${role}`)
+    }
+    await client.query(`SET LOCAL ROLE ${role}`)
+    const result = await fn(client)
+    await client.query('COMMIT')
+    return result
+  } catch (cause) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw cause
+  } finally {
+    client.release()
+  }
+}
+
 export async function withOrg<T>(
   pool: Pool,
   orgId: string,

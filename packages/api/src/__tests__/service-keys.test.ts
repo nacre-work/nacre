@@ -1,4 +1,4 @@
-import { createPool } from '@nacre.work/core'
+import { createPool, withOrg } from '@nacre.work/core'
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -118,6 +118,34 @@ when('service accounts, against the database', () => {
     expect(JSON.stringify(listed)).not.toContain(key.slice(KEY_PREFIX.length))
     // The prefix is shown so two keys can be told apart when revoking one.
     expect(listed?.keyPrefix).toBe(prefixOf(key))
+  })
+
+  it('resolves under a role that row-level security actually applies to', async () => {
+    // The test that was missing, and the reason the bug survived: `resolve`
+    // accepted a role and never set it, so every test of it ran as whoever the
+    // pool connects as — a superuser in development and in CI, where policies
+    // do not apply at all. On any deployment following docs/config.md the same
+    // call answered `unrecognized configuration parameter "app.current_org"`,
+    // which the API turned into a 500. Every service account key in the
+    // product was dead and nothing said so.
+    const scoped = new PostgresServiceKeys(pool, 'nacre_app')
+    const { key, account } = (await accounts.create(admin, 'agent-rls'))!
+
+    const resolved = await scoped.resolve(key)
+    expect(resolved?.orgId).toBe(ORG)
+    expect(resolved?.principal).toEqual({ type: 'service_account', id: account.id })
+
+    // And the policy that permits it stays shut otherwise: the same role
+    // reading the same table outside the authenticating transaction is refused,
+    // loudly, rather than quietly returning nothing.
+    await expect(
+      withOrg(
+        pool,
+        ORG,
+        (c) => c.query('SELECT id FROM service_accounts WHERE org_id <> $1', [ORG]),
+        { role: 'nacre_app' },
+      ).then((r) => r.rows.length),
+    ).resolves.toBe(0)
   })
 
   it('a revoked key stops working immediately', async () => {

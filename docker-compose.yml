@@ -105,6 +105,16 @@ services:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
+      # A superuser, and therefore the one configuration docs/config.md tells
+      # operators not to use: row-level security does not apply to a superuser
+      # at all, so the tenant-isolation policies are enabled and inert here.
+      #
+      # Deliberate for a development and pilot distribution, where one role is
+      # one less thing to get wrong — and stated rather than left to be
+      # discovered, because it is exactly what hid two bugs for months. The
+      # application worked only because of this. Anything past a pilot should
+      # point NACRE_PG_URL at `nacre_app` (created by migration 0002, given a
+      # password by the operator) and leave this role to the migrate service.
       POSTGRES_USER: nacre
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nacre}
       POSTGRES_DB: nacre

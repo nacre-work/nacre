@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { QdrantClient } from '@qdrant/js-client-rest'
-import { ConfigError, createPool, loadConfig, withOrg } from '@nacre.work/core'
+import { acrossOrganizations, ConfigError, createPool, loadConfig, withOrg } from '@nacre.work/core'
 
 import {
   claimPurgeable,
@@ -72,13 +72,17 @@ interface Claim {
 }
 
 async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | undefined> {
-  const client = await pool.connect()
-  try {
-    await client.query('BEGIN')
-    // No org scope here on purpose: this runs under the worker role, which the
-    // schema gives BYPASSRLS, because it has to see every tenant. That is the
-    // one place the second line of defense is off, which is why org_id is named
-    // explicitly in every query the worker makes afterwards.
+  // No org scope here on purpose: this runs under the worker role, which the
+  // schema gives BYPASSRLS, because it has to see every tenant. That is the one
+  // place the second line of defense is off, which is why org_id is named
+  // explicitly in every query the worker makes afterwards.
+  //
+  // The role has to actually be set, and for a long time it was not — 0001 said
+  // the role existed and no migration created it, so this ran as whoever
+  // connected. On a superuser that is invisible; on the unprivileged role
+  // docs/config.md requires, it raised on every poll and the worker indexed
+  // nothing.
+  return acrossOrganizations(pool, async (client) => {
     const { rows } = await client.query<{
       id: string
       org_id: string
@@ -100,11 +104,11 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
         FOR UPDATE OF d SKIP LOCKED`,
     )
 
+    // `acrossOrganizations` owns the transaction, so there is no COMMIT here.
+    // The row lock taken by FOR UPDATE is held until it commits, which is what
+    // makes SKIP LOCKED mean anything with several workers running.
     const row = rows[0]
-    if (row === undefined) {
-      await client.query('COMMIT')
-      return undefined
-    }
+    if (row === undefined) return undefined
 
     // claimed_at starts the lease. Without it a worker that stops existing
     // between here and the finish leaves this row in `parsing`, and nothing
@@ -115,7 +119,6 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
         WHERE id = $1`,
       [row.id],
     )
-    await client.query('COMMIT')
 
     return {
       orgId: row.org_id,
@@ -127,12 +130,7 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
       sourceRef: row.source_ref,
       sourceType: row.source_type,
     }
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {})
-    throw error
-  } finally {
-    client.release()
-  }
+  })
 }
 
 async function markFailed(
