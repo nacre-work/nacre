@@ -98,6 +98,21 @@ rather than leaving the document stuck in `parsing` forever.
 admin UI; both are written, and the admin UI has been driven in a browser
 against the running API.
 
+The SDK reaches **every** operation in `docs/openapi.yaml` now, and
+`packages/sdk/src/__tests__/coverage.test.ts` is what keeps that true — it had
+fallen nine operations behind with nothing comparing the two, which is the same
+shape as a variable accepted and never read. Adding a path to the contract and
+not to the client fails, and the fix is a method or a written reason; the two
+`/.well-known` documents are the written reasons.
+
+The admin UI signs in with an email and a password. It said "there is no login
+yet" in three places and asked an operator to paste a JWT that expires in an
+hour — months after sign-in landed. A session renews itself through the SDK's
+`fetch` seam rather than a wrapper around fourteen call sites, so no view knows
+it can be renewed, and signing out revokes the refresh token instead of only
+forgetting it. Pasting a token is still offered, because signing in as a service
+account is how an administrator checks what an agent can actually see.
+
 Rate limiting, `Idempotency-Key` and cursor pagination are in, which is also
 what Redis is finally for — it had been required configuration, and in every
 Compose profile with the API waiting on its healthcheck, since before anything

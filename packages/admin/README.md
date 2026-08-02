@@ -29,11 +29,28 @@ browser cannot resolve a bare `@nacre.work/sdk` specifier.
 commercial — see `docs/licensing.md`. This screen is scoped to the organization
 in the token and has no way to express another one.
 
-**A login.** There is none in the product yet, so the sign-in screen takes a
-token or a service account key directly and says where each comes from. It is
-kept in `sessionStorage` and gone when the tab closes: a bearer credential with
-no server-side session behind it cannot be invalidated from anywhere, so that is
-the only sign-out this build can honestly offer.
+## Signing in
+
+Two ways, and the order on the screen is the recommendation.
+
+**Email and password** — what `init` prints, and what a person has. The session
+renews itself: the access token lasts fifteen minutes, and when one expires the
+next call is retried with a fresh pair. That happens in `api.ts`, through the
+SDK's `fetch` option rather than a wrapper around every call site, so no view
+knows a session can be renewed. Signing out revokes the refresh token on the
+server, which is the part that was not possible when the only credential was a
+JWT with nothing behind it.
+
+**A pasted token** — `init`'s JWT, which lasts an hour, or a service account
+key, which lasts until it is revoked. Neither has a refresh token, so such a
+session ends when the credential does. Kept rather than replaced by the above:
+signing in *as* a service account is how an administrator checks what an agent
+can actually see.
+
+Both live in `sessionStorage` and are gone when the tab closes. That choice got
+stronger rather than weaker with a refresh token in the picture — it is the
+longer-lived of the two credentials, so leaving it on the machine until
+something explicitly removed it is the direction not to go.
 
 ## Deployment notes
 
