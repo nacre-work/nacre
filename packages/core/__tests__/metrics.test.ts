@@ -95,7 +95,6 @@ describe('metrics', () => {
     for (const name of [
       'nacre_search_duration_seconds',
       'nacre_search_results_total',
-      'nacre_acl_propagation_lag_seconds',
       'nacre_acl_denials_total',
       'nacre_ingest_duration_seconds',
       'nacre_documents_total',
@@ -105,15 +104,6 @@ describe('metrics', () => {
     }
   })
 
-  it('the propagation lag is exported from the first scrape', async () => {
-    const registry = new Registry()
-    createMetrics(registry)
-
-    // The one with an alert on it. A gauge that only appears once something has
-    // gone wrong cannot be alerted on, because the alert rule has nothing to
-    // evaluate until it is too late.
-    expect(await registry.render()).toContain('nacre_acl_propagation_lag_seconds 0')
-  })
 })
 
 /**

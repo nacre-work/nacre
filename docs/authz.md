@@ -138,8 +138,12 @@ or after ranking. A user with access to 1 layer of 20 asking for `top_k=10` gets
 compute it, let it through" path — not in the resolver, not in the cache, not in
 a degraded mode.
 
-**I4.** A revoked grant is reflected in results within `ACL_PROPAGATION_SLA`
-(default 60s). The lag is exported as a metric.
+**I4.** A revoked grant is reflected in the next search. Not eventually and not
+within a window: the permitted set is computed per request from `grants`, and
+the one cache in front of it is keyed on the organization's permission epoch,
+which every write to `grants` moves. This was a 60-second SLA with a metric
+attached; the metric measured a cache no query read, and the guarantee is
+stronger without it. See "The vector payload carries no permission cache".
 
 **I5.** A deleted document is never returned, including in the window before
 vector garbage collection runs.
@@ -212,51 +216,57 @@ Two details decide whether it works at all:
 There is an integration test for each of those, and a test that no table is
 left enabled-but-not-forced.
 
-## Denormalization into the vector payload
+## The vector payload carries no permission cache
 
-Each chunk's payload carries `acl_tags`: hashes of the principals allowed to
-`read` it. This speeds up filtering and creates a desynchronization risk.
+`org_id`, `layer_id`, `doc_id`, `deleted` and the caller's `meta.*` fields, and
+nothing else the filter reads. There is no `acl_tags`, and that is a decision
+rather than an omission.
 
-- `acl_tags` is a **cache, not the source of truth**. The source is the `grants`
-  table.
-- A grant change enqueues a background recomputation of the affected documents,
-  with bounded concurrency.
-- Until that finishes, queries are additionally constrained by `plan.layers`
-  from Postgres — both the layer filter and the tag filter apply.
-- `nacre_acl_propagation_lag_seconds` is mandatory, with an alert above the SLA.
+**What was specified.** Each chunk was to carry hashes of the principals allowed
+to `read` it, as a second constraint alongside the layer bound: "both the layer
+filter and the tag filter apply", with a background sweep recomputing them and
+`nacre_acl_propagation_lag_seconds` alerting when it fell behind.
 
-Tags are truncated to 8 bytes. A collision produces a false tag match, but the
-query is also bounded by the allowed `layer_id` list, so a single collision
-cannot leak.
+**What was built.** The tags, the sweep, its lease, `documents.acl_version`, the
+8-byte hashing and the gauge — all of it, and no clause. `buildFilter` is the
+only filter builder in the codebase and it never emitted one. So the subsystem
+kept a payload field fresh that no query read, and the one alert an operator was
+paged by measured the freshness of something unused.
 
-> **This section describes something the tree does not do, and the tree is not
-> the one that is wrong yet.**
->
-> `buildFilter` is the only filter builder in the codebase, and it emits
-> `org_id`, `deleted`, the caller's `layers`/`extraDocs` as a `should`, a
-> `must_not` on `deniedDocs`, and whatever `filters` narrowed. **There is no
-> `acl_tags` clause anywhere.** So the whole tag subsystem — the worker's retag
-> sweep, its lease, `documents.acl_version`, the 8-byte hashing, and
-> `nacre_acl_propagation_lag_seconds` with its alert — keeps a payload field
-> fresh that no query reads.
->
-> It is **not a leak**, and the reason is worth stating rather than assumed. The
-> tag filter would be an *additional* narrowing, and the `should` it would sit
-> beside is computed per request from `grants` — which is strictly fresher than
-> a cache of `grants`. Anything the tags would exclude, the live plan already
-> excludes. Revocation is reflected immediately, by the plan, not within the SLA
-> by the sweep.
->
-> What that costs is the second line of defence this section is describing, and
-> what it makes misleading is the SLA: the gauge measures how far behind a cache
-> is, and the runbook offers it as "the only external evidence that revocation
-> still propagates". Revocation propagates by a different mechanism, and the
-> gauge is silent about that one.
->
-> Deciding between building the clause and deleting the subsystem is a change to
-> the permission model: it needs the two approvals this path requires, a new row
-> in the truth table, and T-cases. Until then this paragraph says which of the
-> two disagrees with the other, which is the rule this document is held to.
+**Why it was removed rather than finished** (migration 0016):
+
+- **It saves nothing.** The justification was avoiding "a join back to
+  Postgres". Nothing joins back — the resolver computes the caller's whole
+  permitted set from `grants` on every request, so the expensive part has
+  already happened by the time a filter is built. A tag clause is a second
+  constraint from the same table, one request staler.
+- **It cannot express what the product sells.** The tags were computed per
+  *layer*, from `effect = 'allow'` grants on the layer and its workspace.
+  Document-scoped grants were invisible to them. Applied as the `must` the
+  specification asks for, a caller reaching a document through a document-scoped
+  grant is filtered *out* — their principal is not in that layer's tag set.
+  Document-scoped grants are issuable now, so the specified design and a shipped
+  feature could not both hold.
+- **It is stale in the wrong direction.** Making the tags per-document would fix
+  the point above and leave this one: the intersection of a live plan and a
+  cached tag set delays *grants* by up to the sweep interval while doing nothing
+  for *revocations*, which the live plan already reflects immediately.
+- **The 8-byte truncation conceded the point.** Its safety argument was "the
+  query is also bounded by the allowed `layer_id` list" — the layer bound was
+  always the thing doing the work.
+
+**Invariant I4 is unchanged, and its evidence moved rather than disappearing.**
+It is structural now instead of temporal: there is no cache between a grant
+change and the next request. The permitted set is computed per request, and the
+one cache in front of it — effective principals — is keyed on
+`organizations.groups_version`, which triggers bump on every write to `groups`,
+`group_members` and `grants`. A revoked grant is not served stale because the
+next request composes a different key, not because something expired.
+
+The T11 cases in `authz/__tests__/propagation.test.ts` assert exactly that,
+against a real database and through the adapter rather than the module. That is
+a stronger claim than a gauge reading zero, and it is checked on every run
+rather than watched.
 
 ### `workspace_admin` is in the schema and in nothing else
 
@@ -291,35 +301,21 @@ Nothing in the plan is outstanding. That makes `acl-invariants` a gate on what
 this document specifies — and only on that. A case nobody has thought to write
 down is still unguarded, and adding one here is how that changes.
 
-**T11 is satisfied more strongly than it asks.** The specification allows a
-revoked grant to be served for up to `ACL_PROPAGATION_SLA`; the effective
-principals cache is keyed on `organizations.groups_version`, which database
-triggers increment on every change to `groups`, `group_members` and `grants`,
-so a revoked grant cannot be served at all. The stale entry is not invalidated —
-it is simply never asked for again, because the next request composes a
-different key. The TTL is a memory bound, not the correctness mechanism.
+**T11 holds by construction.** The effective-principals cache is keyed on
+`organizations.groups_version`, which database triggers increment on every
+change to `groups`, `group_members` and `grants`, so a revoked grant cannot be
+served at all. The stale entry is not invalidated — it is never asked for again,
+because the next request composes a different key. The TTL is a memory bound,
+not the correctness mechanism.
 
 The column is the permission epoch rather than a group counter; the name is
-narrower than the meaning. `grants` was added to the list in migration 0005,
-and until then a revocation moved nothing — which left
-`nacre_acl_propagation_lag_seconds` reporting zero through the one event it is
-offered as evidence about.
+narrower than the meaning. `grants` was added to the list in migration 0005, and
+until then a revocation moved nothing.
 
-`acl_tags` remains a cache the SLA does bound, which is why the layer filter
-and the tag filter both apply until a recomputation finishes.
-
-The recomputation runs in the indexing worker, in the gaps between documents:
-`claimStale` returns documents whose `acl_version` is behind their
-organization's, oldest first, and each is retagged with `setPayload` rather than
-re-embedded. Indexing has priority — a document nobody can find yet is a worse
-outage than a permission cache a few seconds behind, and the SLA has room for
-the wait.
-
-A document that fails to retag is left behind rather than marked. It keeps its
-old `acl_version`, stays in the next claim, and keeps contributing to the lag.
-The alternative is a document that quietly stops being retried while the gauge
-reports everything is fine, which is the failure this subsystem exists to make
-impossible.
+Nothing else sits between a grant change and a query. The payload holds no
+permission cache, so there is no second thing to wait for and nothing to
+measure a lag against — that whole subsystem is gone, and the reasoning is two
+sections up.
 
 **T9 and T10 were the ones to weigh, and they now run.** They are what catches
 a post-filter: an implementation that fetches k results and removes the ones the

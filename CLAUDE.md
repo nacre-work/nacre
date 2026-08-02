@@ -84,9 +84,8 @@ real Qdrant: `init` creates an organization, `/v1/layers` and `/v1/grants` set
 up access, ingest goes through the worker to the index, and search returns what
 the caller is permitted to see and nothing else — over REST, over MCP Streamable
 HTTP, and over MCP STDIO alike. Revoking a grant drops the document from results
-while its vectors are still in the index, and the recomputation that refreshes
-the payload tags runs in the worker with `nacre_acl_propagation_lag_seconds`
-measuring how far behind it is.
+on the next search while its vectors are still in the index — the permitted set
+is computed per request, so there is nothing to wait for.
 
 Deleting a document takes it out of results immediately — the points are
 flagged before the row is written, in that order, because the reverse fails
@@ -216,7 +215,7 @@ collection and allowed to fail: a filter on an unindexed field returns exactly
 the points an indexed one would, so this is latency and never an answer.
 
 The namespace is the security property and it is structural, not a check: a
-caller key can never collide with `org_id`, `deleted` or `acl_tags`, because
+caller key can never collide with `org_id`, `deleted` or `doc_id`, because
 `meta.deleted` is a different field. And a filter is a **narrowing**, the same
 mechanism `layers` uses — every entry becomes a `must` beside the permission
 constraint, so there is still no path by which a caller-assembled filter reaches
@@ -225,9 +224,9 @@ widen if composed wrongly, and none is needed to answer "only documents from
 this source".
 
 `PATCH /v1/documents/{id}` changes a document's tags without re-embedding it —
-one `setPayload` over its points, the same call the ACL retag sweep makes. Going
-through ingest instead re-parses and re-embeds, because that is what ingest
-does; the difference is what a bulk retagging pass costs. It answers `204` and
+one `setPayload` over its points. Going through ingest instead re-parses and
+re-embeds, because that is what ingest does; the difference is what a bulk
+retagging pass costs. It answers `204` and
 never the document, because rule 6 means a caller may hold `write` without
 `read`.
 
@@ -370,25 +369,36 @@ with no credential parses and fails later. Writing that check is what turned up
 and the whole loop driven through it: init, layer, ingest, indexed, search,
 grant, revoke. It found four more things, one of them a regression from the
 sweep lease two commits earlier — `sweep_claimed_at` was set on claim and never
-released, so after one retag a document was locked out of the loop for the full
-`NACRE_INDEX_LEASE`. Fifteen minutes against a documented sixty-second SLA, with
-the alerted gauge climbing the whole time and the worker log silent after one
+released, so after one pass a document was locked out of the loop for the full
+`NACRE_INDEX_LEASE`. Fifteen minutes, with the worker log silent after one
 success. Every test passed throughout.
+
+**The ACL tag cache is gone** (migration 0016). `docs/authz.md` specified
+`acl_tags` in the vector payload as a second filter beside the layer bound, and
+the whole subsystem was built — the retag sweep, its lease, `acl_version`, the
+8-byte hashes, `nacre_acl_propagation_lag_seconds` and its alert — while
+`buildFilter`, the only filter builder, never emitted the clause. It kept a
+payload field fresh that no query read, and paged an operator about it.
+
+Removed rather than finished, on two grounds. It saved nothing: the resolver
+computes the whole permitted set from `grants` per request, so the join it was
+avoiding does not happen. And it could not express what the product now sells —
+the tags were per *layer*, from allow-only grants, so applied as the specified
+`must` a caller reaching a document through a document-scoped grant would have
+been filtered out. Making them per-document would fix that and leave the
+remaining cost: intersecting a live plan with a cached tag set delays *grants*
+while doing nothing for *revocations*.
+
+Invariant I4 is unchanged and stronger. It is structural now rather than
+temporal — nothing sits between a grant change and the next request — and the
+T11 cases assert it against a real database on every run, which is a better
+guarantee than a gauge reading zero.
 
 The docs are still normative rather than descriptive, and in places still ahead
 of the code. Where one disagrees with the tree, that is a bug in one of them —
-say which. Three are said and not yet resolved, each written into the document
+say which. Two are said and not yet resolved, each written into the document
 that claims otherwise:
 
-- **The `acl_tags` pre-filter is not built.** `buildFilter` is the only filter
-  builder and emits no tag clause, so the whole tag subsystem — the retag sweep,
-  its lease, `acl_version`, the 8-byte hashes, and
-  `nacre_acl_propagation_lag_seconds` with its alert — keeps a payload field
-  fresh that no query reads. It is not a leak: the `should` the tags would sit
-  beside is computed per request from `grants`, which is strictly fresher than a
-  cache of `grants`, so revocation is immediate by a mechanism the SLA is not
-  measuring. Building the clause or deleting the subsystem is a change to the
-  permission model and needs the two approvals, a truth-table row and T-cases.
 - **`workspace_admin` is in `users.role`'s CHECK and in nothing else.** A row
   carrying it behaves as `member` — safe, and still a role the schema offers
   that nothing implements and nothing refuses.
@@ -420,8 +430,8 @@ served stale — the next request composes a different key and the old entry is
 never asked for again. Verified against a running database (create a group, add
 a member, remove one, grant, revoke, delete the group: the version moved for
 every one) and pinned by two tests that ask the *adapter* rather than the module.
-The TTL bounds memory, which is why the refusal of a TTL above the propagation
-SLA now says so instead of claiming it delays a revocation.
+The TTL bounds memory and nothing else, which is why the refusal that compared
+it against a propagation SLA went away with the SLA.
 
 `NACRE_LOG_LEVEL` and `NACRE_LOG_FORMAT` are honoured. Both were validated at
 startup and read by nothing, so every process wrote JSON at one level whatever

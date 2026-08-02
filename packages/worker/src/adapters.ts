@@ -1,19 +1,15 @@
 import { QdrantClient } from '@qdrant/js-client-rest'
 import {
   acrossOrganizations,
-  aclTags,
   explainQdrant as explain,
-  loadGroupsVersion,
   METADATA_PREFIX,
   MetadataIndexer,
   toCheckJson,
   withOrg,
 } from '@nacre.work/core'
-import type { PrincipalRef } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
 import type { DocumentStore, Parser, ParsedDocument, StoredDocument, VectorWriter } from './ingest.js'
-import type { StaleDocument } from './retag.js'
 import type { PurgeTarget } from './collect.js'
 import type { StrandedDocument } from './reap.js'
 import type { ReindexTarget } from './reindex.js'
@@ -66,52 +62,6 @@ export class PostgresDocumentStore implements DocumentStore {
     )
   }
 
-  /**
-   * Monotone on purpose: `<=` lets an equal version refresh the timestamp and
-   * refuses an older one outright. Two ingests of the same document can finish
-   * out of order, and without the guard the loser would walk `acl_version`
-   * backwards and invent lag that nothing is actually behind on.
-   *
-   * `version` and `updated_at` are left alone. This records a fact about
-   * tagging, not a change to the document, and bumping them would make every
-   * retag look like an edit to anything watching for one.
-   */
-  async markTagged(orgId: string, documentId: string, aclVersion: number): Promise<void> {
-    await withOrg(
-      this.pool,
-      orgId,
-      async (client) => {
-        // `sweep_claimed_at = NULL` releases the lease, and leaving it out was
-        // a real stall rather than an untidiness.
-        //
-        // The claim exists so two replicas do not retag the same row at once.
-        // Held past the work, it stops *this* replica coming back: the next
-        // revocation makes the document stale again, `claimStale` refuses it
-        // because the claim has not expired, and the row waits out the whole
-        // NACRE_INDEX_LEASE — fifteen minutes by default, against a documented
-        // sixty-second propagation SLA.
-        //
-        // Observed exactly that way, from a running Compose stack: one
-        // "retagged" line in the worker log and then nothing, while
-        // nacre_acl_propagation_lag_seconds climbed by ten every ten seconds.
-        // The gauge was right and the loop could not act on it, which is the
-        // stuck-alert shape the predicate in observability.ts is commented
-        // against — it just went wrong through a column instead of a predicate.
-        //
-        // Released here rather than in the claim's own transaction because the
-        // work happens outside it; this is the only place that knows the sweep
-        // finished. `claimed_at` on the indexing path is cleared the same way
-        // for the same reason.
-        await client.query(
-          `UPDATE documents
-              SET acl_version = $3, acl_tagged_at = now(), sweep_claimed_at = NULL
-            WHERE org_id = $1 AND id = $2 AND acl_version <= $3`,
-          [orgId, documentId, aclVersion],
-        )
-      },
-      this.scope,
-    )
-  }
 
   /**
    * Record that the vectors are physically gone.
@@ -126,7 +76,7 @@ export class PostgresDocumentStore implements DocumentStore {
       this.pool,
       orgId,
       async (client) => {
-        // The lease goes with the completion, as on the retag path. It matters
+        // The lease goes with the completion. It matters
         // less here — `vectors_purged_at IS NULL` already keeps a purged
         // document out of the queue for good — but a claim left set on a row
         // nothing will claim again is a lie in the table, and the next person
@@ -266,8 +216,6 @@ export class QdrantVectorWriter implements VectorWriter {
     vectorName: string
     metadata: Record<string, unknown>
     points: readonly { pointId: string; ordinal: number; vector: readonly number[]; docId: string }[]
-    aclTags: readonly string[]
-    aclVersion: number
   }): Promise<void> {
     try {
       if (input.points.length > 0) await this.upsertPoints(input)
@@ -359,8 +307,6 @@ export class QdrantVectorWriter implements VectorWriter {
     vectorName: string
     metadata: Record<string, unknown>
     points: readonly { pointId: string; ordinal: number; vector: readonly number[]; docId: string }[]
-    aclTags: readonly string[]
-    aclVersion: number
   }): Promise<void> {
     await this.client.upsert(input.collection, {
       wait: true,
@@ -377,8 +323,6 @@ export class QdrantVectorWriter implements VectorWriter {
           // every query to filter on it, and a point without the field does not
           // match `deleted = false`.
           deleted: false,
-          acl_tags: [...input.aclTags],
-          acl_version: input.aclVersion,
           // Every caller key under one reserved object, so `meta.org_id` is a
           // different field from `org_id` and there is no key a caller can
           // choose that reaches a permission field. Structural rather than a
@@ -391,32 +335,6 @@ export class QdrantVectorWriter implements VectorWriter {
     })
   }
 
-  /**
-   * Replace the ACL tags on every point of a document.
-   *
-   * `setPayload` with a filter rather than a re-upsert: the vectors are
-   * unchanged and re-embedding a document because its permissions moved would
-   * make a revocation cost as much as an ingest, which is how a recomputation
-   * job ends up disabled in production.
-   *
-   * The filter carries `doc_id` alone and not `deleted`. A tombstoned document
-   * still has points until garbage collection takes them, and leaving stale
-   * tags on them would matter the moment a purge is late — I5 keeps them out of
-   * answers, but this job should not be the reason that is the only thing
-   * standing in the way.
-   */
-  async retag(input: {
-    collection: string
-    documentId: string
-    aclTags: readonly string[]
-    aclVersion: number
-  }): Promise<void> {
-    await this.client.setPayload(input.collection, {
-      wait: true,
-      payload: { acl_tags: [...input.aclTags], acl_version: input.aclVersion },
-      filter: { must: [{ key: 'doc_id', match: { value: input.documentId } }] },
-    } as never)
-  }
 
   /**
    * Physically remove every point of a document.
@@ -589,7 +507,7 @@ export class HttpParser implements Parser {
  *
  * Read from `grants` every time rather than cached: these go into the payload
  * and become the thing a query trusts, so a stale set written at index time is
- * a stale set until the next reindex. `acl_tags` is a cache of a cache
+ * a stale set until the next reindex. The payload is a cache
  * otherwise.
  *
  * The version is read inside the same transaction as the grants, and that is
@@ -598,155 +516,6 @@ export class HttpParser implements Parser {
  * would then be recorded as tagged at a version whose grants it never saw —
  * a claim of freshness that is false in the direction nobody checks.
  */
-/**
- * Documents whose ACL tags are behind their organization's permission version.
- *
- * Across tenants, so it runs under the worker role rather than `withOrg`. The
- * oldest first: the lag gauge reports the worst laggard, so clearing the oldest
- * is what actually moves the number an alert fires on.
- *
- * Claimed under a lease, in the same statement that selects. Retagging is
- * idempotent — two replicas writing the same tags to the same points produce
- * the same payload — so the claim is an optimisation and not a correctness
- * mechanism; `markTagged`'s version guard remains what keeps concurrent passes
- * from disagreeing.
- *
- * It is still necessary. Without it every replica selected the same oldest
- * batch and did the same work, so throughput stayed at one worker's rate
- * however many ran while the load on Qdrant multiplied by the replica count —
- * and scaling the worker out, the documented response to a climbing
- * propagation alert, did nothing at all.
- *
- * Leased rather than owned, so a worker that dies mid-sweep does not park rows
- * forever: the claim expires and the next pass picks them up.
- */
-export async function claimStale(
-  pool: Pool,
-  limit: number,
-  leaseSeconds = 900,
-): Promise<readonly StaleDocument[]> {
-  return acrossOrganizations(pool, async (client) => {
-      const { rows } = await client.query<{
-        id: string
-        org_id: string
-        collection: string
-        layer_id: string
-      }>(
-        `WITH claimed AS (
-           SELECT d.id
-             FROM documents d
-             JOIN organizations o ON o.id = d.org_id
-            WHERE d.deleted_at IS NULL
-              AND o.deleted_at IS NULL
-              AND d.acl_version < o.groups_version
-            -- "Has points", not "is currently indexed". A document that
-            -- indexed once and failed on a later pass still has the earlier
-            -- pass's points in the index, still carries their tags, and is the
-            -- one case where a revoked grant can actually leak — and
-            -- a status filter skipped precisely those. It also left them
-            -- counted by nacre_acl_propagation_lag_seconds with nothing able to
-            -- drain them, pinning the one alerted metric permanently.
-            --
-            -- observability.ts uses the same predicate. The two must agree: a
-            -- gauge that counts what the loop cannot claim is a stuck alert.
-            AND d.chunk_count > 0
-              -- Unclaimed, or claimed long enough ago that the worker holding
-              -- it is gone. The lease is what keeps a crashed sweep from
-              -- parking rows forever.
-              AND (d.sweep_claimed_at IS NULL
-                   OR d.sweep_claimed_at < now() - make_interval(secs => $2))
-            ORDER BY COALESCE(d.acl_tagged_at, d.created_at)
-            LIMIT $1
-            FOR UPDATE OF d SKIP LOCKED
-         )
-         -- The claim is written in the same statement as the selection, which
-         -- is what makes it a claim. SKIP LOCKED on its own does not: the lock
-         -- ends when this transaction commits, and the actual work — a Qdrant
-         -- round trip — happens afterwards, so two replicas polling a second
-         -- apart still collided. Throughput stayed at one worker's rate however
-         -- many ran, and scaling out, the documented response to a climbing
-         -- propagation alert, did nothing.
-         UPDATE documents d
-            SET sweep_claimed_at = now()
-           FROM claimed c
-           JOIN organizations o ON TRUE
-          WHERE d.id = c.id AND o.id = d.org_id
-          RETURNING d.id, d.org_id, o.vector_collection AS collection, d.layer_id`,
-        [limit, leaseSeconds],
-      )
-
-      return rows.map((r) => ({
-        orgId: r.org_id,
-        collection: r.collection,
-        documentId: r.id,
-        layerId: r.layer_id,
-      }))
-  })
-}
-
-/**
- * Documents whose vectors are still in the index after the grace period.
- *
- * Cross-tenant like `claimStale`, and oldest first. The grace period is a
- * courtesy rather than a safeguard — nothing depends on the delay, and setting
- * it to zero is a valid choice for an operator who wants the space back.
- */
-export async function claimPurgeable(
-  pool: Pool,
-  limit: number,
-  graceSeconds: number,
-  leaseSeconds = 900,
-): Promise<readonly PurgeTarget[]> {
-  return acrossOrganizations(pool, async (client) => {
-      const { rows } = await client.query<{
-        id: string
-        org_id: string
-        collection: string
-        age: string
-        source_type: string
-        source_ref: string | null
-      }>(
-        `WITH claimed AS (
-           SELECT d.id
-             FROM documents d
-            WHERE d.deleted_at IS NOT NULL
-              AND d.vectors_purged_at IS NULL
-              AND d.deleted_at < now() - make_interval(secs => $2)
-              AND (d.sweep_claimed_at IS NULL
-                   OR d.sweep_claimed_at < now() - make_interval(secs => $3))
-            ORDER BY d.deleted_at
-            LIMIT $1
-            FOR UPDATE OF d SKIP LOCKED
-         )
-         -- Claimed in the same statement, for the same reason as claimStale:
-         -- without it every replica purged the same tombstones and the backlog
-         -- drained at one worker's rate however many were running.
-         UPDATE documents d
-            SET sweep_claimed_at = now()
-           FROM claimed c
-           JOIN organizations o ON TRUE
-          WHERE d.id = c.id AND o.id = d.org_id
-          RETURNING d.id, d.org_id, o.vector_collection AS collection,
-                    d.source_type, d.source_ref,
-                    EXTRACT(EPOCH FROM (now() - d.deleted_at))::text AS age`,
-        [limit, graceSeconds, leaseSeconds],
-      )
-
-      return rows.map((r) => ({
-        orgId: r.org_id,
-        collection: r.collection,
-        documentId: r.id,
-        deletedAgeSeconds: Number(r.age),
-        // Only an `s3` document has bytes outside Postgres. An `inline` one
-        // carries them in the row that is about to be marked purged, and a
-        // `url` one never had a copy here at all — removing that key would be
-        // this system deleting somebody else's object.
-        ...(r.source_type === 's3' && r.source_ref !== null
-          ? { objectKey: r.source_ref }
-          : {}),
-      }))
-  })
-}
 
 /**
  * Reclaim documents whose lease expired, in one statement.
@@ -815,37 +584,70 @@ export async function claimStranded(
   })
 }
 
-export async function tagsForLayer(
+/**
+ * Documents whose vectors are still in the index after the grace period.
+ *
+ * Cross-tenant, and oldest first. The grace period is a
+ * courtesy rather than a safeguard — nothing depends on the delay, and setting
+ * it to zero is a valid choice for an operator who wants the space back.
+ */
+export async function claimPurgeable(
   pool: Pool,
-  orgId: string,
-  layerId: string,
-  role?: string,
-): Promise<{ tags: readonly string[]; version: number }> {
-  return withOrg(
-    pool,
-    orgId,
-    async (client) => {
-      const version = await loadGroupsVersion(client, orgId)
-      const { rows } = await client.query<{ principal_type: string; principal_id: string }>(
-        `SELECT DISTINCT principal_type, principal_id
-           FROM grants
-          WHERE org_id = $1
-            AND effect = 'allow'
-            AND permission IN ('read','admin')
-            AND (
-              (scope_type = 'layer'     AND scope_id = $2)
-              OR (scope_type = 'workspace' AND scope_id = (SELECT workspace_id FROM layers WHERE id = $2))
-            )`,
-        [orgId, layerId],
+  limit: number,
+  graceSeconds: number,
+  leaseSeconds = 900,
+): Promise<readonly PurgeTarget[]> {
+  return acrossOrganizations(pool, async (client) => {
+      const { rows } = await client.query<{
+        id: string
+        org_id: string
+        collection: string
+        age: string
+        source_type: string
+        source_ref: string | null
+      }>(
+        `WITH claimed AS (
+           SELECT d.id
+             FROM documents d
+            WHERE d.deleted_at IS NOT NULL
+              AND d.vectors_purged_at IS NULL
+              AND d.deleted_at < now() - make_interval(secs => $2)
+              AND (d.sweep_claimed_at IS NULL
+                   OR d.sweep_claimed_at < now() - make_interval(secs => $3))
+            ORDER BY d.deleted_at
+            LIMIT $1
+            FOR UPDATE OF d SKIP LOCKED
+         )
+         -- Claimed in the same statement:
+         -- without it every replica purged the same tombstones and the backlog
+         -- drained at one worker's rate however many were running.
+         UPDATE documents d
+            SET sweep_claimed_at = now()
+           FROM claimed c
+           JOIN organizations o ON TRUE
+          WHERE d.id = c.id AND o.id = d.org_id
+          RETURNING d.id, d.org_id, o.vector_collection AS collection,
+                    d.source_type, d.source_ref,
+                    EXTRACT(EPOCH FROM (now() - d.deleted_at))::text AS age`,
+        [limit, graceSeconds, leaseSeconds],
       )
-      return {
-        tags: aclTags(rows.map((r) => `${r.principal_type}:${r.principal_id}` as PrincipalRef)),
-        version,
-      }
-    },
-    role === undefined ? {} : { role },
-  )
+
+      return rows.map((r) => ({
+        orgId: r.org_id,
+        collection: r.collection,
+        documentId: r.id,
+        deletedAgeSeconds: Number(r.age),
+        // Only an `s3` document has bytes outside Postgres. An `inline` one
+        // carries them in the row that is about to be marked purged, and a
+        // `url` one never had a copy here at all — removing that key would be
+        // this system deleting somebody else's object.
+        ...(r.source_type === 's3' && r.source_ref !== null
+          ? { objectKey: r.source_ref }
+          : {}),
+      }))
+  })
 }
+
 
 /**
  * Delete refresh tokens that have already expired.

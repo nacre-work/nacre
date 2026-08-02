@@ -69,8 +69,6 @@ export interface Config {
   readonly refreshTokenTtl: number
 
   readonly aclCacheTtl: number
-  readonly aclPropagationSla: number
-  readonly aclTagHashBytes: number
 
   /**
    * How long a tombstoned document keeps its vectors before the sweep removes
@@ -622,7 +620,6 @@ export function loadConfig(env: Env = process.env): Config {
     refreshTokenTtl: r.number('NACRE_REFRESH_TOKEN_TTL', 2_592_000, { min: 300, max: 31_536_000 }),
 
     aclCacheTtl: r.number('NACRE_ACL_CACHE_TTL', 60, { min: 0, max: 3600 }),
-    aclPropagationSla: r.number('NACRE_ACL_PROPAGATION_SLA', 60, { min: 1, max: 3600 }),
     gcGrace: r.number('NACRE_GC_GRACE', 3600, { min: 0, max: 2_592_000 }),
     // 15 minutes: long enough for a large PDF through parse, chunk, embed, and
     // upsert, short enough that a drained node's documents are not stuck for an
@@ -630,7 +627,6 @@ export function loadConfig(env: Env = process.env): Config {
     // document the instant it is claimed, which is a loop, not a setting.
     indexLease: r.number('NACRE_INDEX_LEASE', 900, { min: 60, max: 86_400 }),
     indexMaxAttempts: r.number('NACRE_INDEX_MAX_ATTEMPTS', 5, { min: 1, max: 100 }),
-    aclTagHashBytes: r.number('NACRE_ACL_TAG_HASH_BYTES', 8, { min: 4, max: 32 }),
 
     rateSearchPerMin: r.number('NACRE_RATE_SEARCH_PER_MIN', 60, { min: 1 }),
     rateIngestPerHour: r.number('NACRE_RATE_INGEST_PER_HOUR', 600, { min: 1 }),
@@ -758,41 +754,11 @@ export function loadConfig(env: Env = process.env): Config {
     )
   }
 
-  if (config.aclTagHashBytes !== 8) {
-    r.problems.push(
-      'NACRE_ACL_TAG_HASH_BYTES is not implemented: the tag width is fixed at 8 ' +
-        'bytes in the code that writes and matches tags. Setting it changes the ' +
-        'collision probability you think you have and nothing else. Leave it at 8.',
-    )
-  }
-
   if (config.refreshTokenTtl <= config.accessTokenTtl) {
     r.problems.push(
       'NACRE_REFRESH_TOKEN_TTL is not longer than NACRE_ACCESS_TOKEN_TTL. A refresh ' +
         'token that expires no later than the access token it renews cannot renew ' +
         'anything, so every session would end at the first refresh.',
-    )
-  }
-
-  if (config.aclCacheTtl > config.aclPropagationSla) {
-    // Kept, and the reason it is kept has changed.
-    //
-    // It used to say a longer TTL would serve a revoked grant past the SLA.
-    // That is not true of the cache that now runs: the key carries
-    // `organizations.groups_version`, which triggers bump on every change to
-    // groups, group_members and grants, so a revoked grant is never served —
-    // the next request composes a different key. The TTL bounds memory.
-    //
-    // What it still catches is an operator who believes otherwise. Setting this
-    // above the SLA is what someone does when they have read it as "how long a
-    // stale permission may live", and a deployment configured on that belief
-    // has a misunderstanding worth interrupting at boot rather than a setting
-    // worth honouring.
-    r.problems.push(
-      `NACRE_ACL_CACHE_TTL (${config.aclCacheTtl}) is longer than ` +
-        `NACRE_ACL_PROPAGATION_SLA (${config.aclPropagationSla}). The cache is keyed ` +
-        'on the permission epoch, so this does not delay a revocation — but a value ' +
-        'above the SLA usually means it was read as though it did.',
     )
   }
 

@@ -67,8 +67,6 @@ on disk for rescoring.
   "chunk_id":    "uuid",
   "ordinal":     3,
   "deleted":     false,    // tombstone until garbage collection
-  "acl_tags":    ["h:a3f1…", "h:9c02…"],   // hashes of principals with read
-  "acl_version": 42,
   "created_at":  1754006400,
   "meta":        { }       // user fields, filterable
 }
@@ -83,8 +81,15 @@ layer_id   uuid
 doc_id     uuid
 org_id     uuid
 deleted    bool
-acl_tags   keyword, kept in memory — it participates in every single query
 ```
+
+`acl_tags` and `acl_version` were in this payload and in this list until
+migration 0016, as a second filter alongside the layer bound. The filter was
+never built — `buildFilter` emits no tag clause — and building it would have
+broken document-scoped grants, because the tags were computed per layer and a
+document-scoped grant is not a layer grant. Two bytes of payload per principal
+per point, and an index kept in memory, for a field no query read. The whole
+argument is in `docs/authz.md` and in the migration.
 
 Fixed, because the permission filter uses exactly these fields. The fields a
 `filters` narrowing reaches are not: they are `meta.<key>` for keys the caller

@@ -151,8 +151,7 @@ reach a field the caller did not name.
 ingest does — the row and the payload would otherwise disagree and the document
 would carry a tag it does not answer to. `PATCH /v1/documents/{id}` changes the
 tags and nothing else: one `setPayload` over the document's points, the same
-call the ACL retag sweep makes, and not a single embedding computed. A bulk
-retagging pass goes through `PATCH`.
+call a bulk retagging pass makes, and not a single embedding computed.
 
 `PATCH` needs `write`, and rule 6 means that is not the same set as `read`. It
 answers `204` and never the document, for exactly that reason: a caller who may

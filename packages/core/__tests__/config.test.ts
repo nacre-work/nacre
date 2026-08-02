@@ -67,7 +67,6 @@ describe('configuration', () => {
   it('tunables keep their defaults', () => {
     const config = loadConfig(COMPLETE)
     expect(config.aclCacheTtl).toBe(60)
-    expect(config.aclPropagationSla).toBe(60)
     expect(config.maxDocumentBytes).toBe(52_428_800)
     expect(config.auditQueryText, 'query text is off by default').toBe(false)
   })
@@ -86,18 +85,14 @@ describe('configuration', () => {
     expect(loadConfig({ ...COMPLETE, NACRE_AUDIT_QUERY_TEXT: 'false' }).auditQueryText).toBe(false)
   })
 
-  it('a cache that outlives the propagation SLA is refused', () => {
-    // Both values parse. Together they promise a 60-second revocation and serve
-    // a stale grant for 120, while the metric reports compliance.
-    const found = problems({
-      ...COMPLETE,
-      NACRE_ACL_CACHE_TTL: '120',
-      NACRE_ACL_PROPAGATION_SLA: '60',
-    })
-    // The refusal stands; its reason changed when the cache was wired in. It is
-    // keyed on the permission epoch, so it cannot delay a revocation — what a
-    // value above the SLA reveals is that it was read as though it could.
-    expect(found.join('\n')).toContain('does not delay a revocation')
+  // `NACRE_ACL_CACHE_TTL` no longer has an SLA to be compared against, and the
+  // comparison was the last thing keeping `NACRE_ACL_PROPAGATION_SLA` alive.
+  // Both the SLA and `NACRE_ACL_TAG_HASH_BYTES` went with the tag cache in
+  // migration 0016 — there is no propagation to bound, because the plan is
+  // computed per request and the cache that remains is keyed on the permission
+  // epoch rather than expiring.
+  it('accepts a cache TTL that would once have been refused against the SLA', () => {
+    expect(problems({ ...COMPLETE, NACRE_ACL_CACHE_TTL: '120' })).toEqual([])
   })
 
   it('refuses a setting that would silently do nothing', () => {
@@ -108,13 +103,9 @@ describe('configuration', () => {
     expect(problems({ ...COMPLETE, NACRE_VECTOR_TENANCY: 'shared' }).join(' ')).toMatch(
       /not implemented/,
     )
-    expect(problems({ ...COMPLETE, NACRE_ACL_TAG_HASH_BYTES: '16' }).join(' ')).toMatch(
-      /fixed at 8 bytes/,
-    )
 
     // The defaults still boot, which is the whole point of refusing only these.
     expect(problems({ ...COMPLETE, NACRE_VECTOR_TENANCY: 'collection' })).toEqual([])
-    expect(problems({ ...COMPLETE, NACRE_ACL_TAG_HASH_BYTES: '8' })).toEqual([])
   })
 
   it('reranking on without an endpoint is refused', () => {

@@ -3,7 +3,7 @@ import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { NacreSearchService, type AuthContext } from '@nacre.work/api'
-import { ingest, PostgresDocumentStore, QdrantVectorWriter, tagsForLayer } from '@nacre.work/worker'
+import { ingest, PostgresDocumentStore, QdrantVectorWriter } from '@nacre.work/worker'
 
 import { createPool, withOrg } from '../../db/client.js'
 import { collectionConfig, collectionName, PAYLOAD_INDEXES, vectorName } from '../../vector/query.js'
@@ -86,7 +86,6 @@ let counter = 0
 const newId = (): string => `00000000-0000-4000-8000-${String(++counter).padStart(12, '0')}`
 
 async function index(layerId: string, externalId: string, content: string): Promise<void> {
-  const acl = await tagsForLayer(pool, ORG, layerId, 'nacre_app')
   await ingest(
     {
       orgId: ORG,
@@ -96,8 +95,6 @@ async function index(layerId: string, externalId: string, content: string): Prom
       vectorName: VECTOR,
       externalId,
       content,
-      aclTags: acl.tags,
-      aclVersion: acl.version,
     },
     {
       parser,
@@ -224,7 +221,13 @@ when('pipeline round trip · the worker and the search path agree', () => {
       expect(payload.deleted).toBe(false)
       expect(typeof payload.layer_id).toBe('string')
       expect(typeof payload.doc_id).toBe('string')
-      expect(Array.isArray(payload.acl_tags)).toBe(true)
+
+      // And nothing the filter does not look for. `acl_tags` and `acl_version`
+      // were written here and read by no query; migration 0016 removed them,
+      // and this is what keeps them from coming back — a payload field nobody
+      // filters on is bytes per point per tenant, forever.
+      expect(payload).not.toHaveProperty('acl_tags')
+      expect(payload).not.toHaveProperty('acl_version')
     }
   })
 
@@ -251,7 +254,7 @@ when('pipeline round trip · the worker and the search path agree', () => {
     // search. The payload used to be the response.
     for (const hit of hits) {
       const keys = Object.keys(hit)
-      for (const internal of ['payload', 'acl_tags', 'acl_version', 'org_id', 'layer_id']) {
+      for (const internal of ['payload', 'org_id', 'layer_id']) {
         expect(keys, `${internal} must not reach the client`).not.toContain(internal)
       }
     }

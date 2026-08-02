@@ -1,5 +1,4 @@
 import {
-  aclTags,
   buildFilter,
   cachedEffectivePrincipals,
   documentKey,
@@ -862,7 +861,7 @@ export class HttpEmbedder implements Embedder {
   }
 }
 
-export { aclTags }
+
 
 
 /**
