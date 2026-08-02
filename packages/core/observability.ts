@@ -1,6 +1,7 @@
 import type { Pool } from 'pg'
 
 import { withOrg } from './db/client.js'
+import { fromStateJson, reindexProgress } from './reindex.js'
 import type { Metrics } from './metrics.js'
 
 /**
@@ -26,6 +27,34 @@ export function collectDatabaseGauges(pool: Pool, metrics: Metrics, role?: strin
       metrics.documents.reset()
       metrics.tombstonesPending.reset()
       metrics.aclPropagationLag.reset()
+      metrics.reindexProgress.reset()
+
+      // One series per layer that has ever been reindexed, labelled by slug
+      // like every other per-tenant gauge here. Layers with no reindex produce
+      // no row and therefore no series: inventing a zero for them would mean
+      // every layer in the installation permanently reading "reindex started,
+      // gone nowhere".
+      //
+      // Across organizations in one query rather than per tenant, because this
+      // reads `layers` and not `documents` — a handful of rows per tenant at
+      // most, and the whole point of the collapse in this collector was that a
+      // scrape must not cost a query per organization.
+      const { rows: reindexing } = await client.query<{
+        slug: string
+        layer: string
+        state: unknown
+      }>(
+        `SELECT o.slug, l.slug AS layer, l.reindex_state AS state
+           FROM layers l
+           JOIN organizations o ON o.id = l.org_id
+          WHERE l.reindex_state IS NOT NULL
+            AND l.deleted_at IS NULL AND o.deleted_at IS NULL`,
+      )
+      for (const row of reindexing) {
+        const state = fromStateJson(row.state)
+        if (state === undefined) continue
+        metrics.reindexProgress.set(reindexProgress(state), { org: row.slug, layer: row.layer })
+      }
 
       for (const org of orgs) {
         // One query per organization, not three.

@@ -128,7 +128,7 @@ when('adversarial · reindexing under active search', () => {
     ] as const) {
       const hits = await store.search({
         orgId: ORG,
-        orgSlug: SLUG,
+        collection: collectionName(SLUG),
         plan: plan([OPEN]),
         branches: [branch(using, size)],
         topK: 20,
@@ -147,7 +147,7 @@ when('adversarial · reindexing under active search', () => {
     const visible = async (using: string, size: number) => {
       const hits = await store.search({
         orgId: ORG,
-        orgSlug: SLUG,
+        collection: collectionName(SLUG),
         plan: plan([OPEN]),
         branches: [branch(using, size)],
         topK: 50,
@@ -167,7 +167,7 @@ when('adversarial · reindexing under active search', () => {
     ] as const) {
       const hits = await store.search({
         orgId: ORG,
-        orgSlug: SLUG,
+        collection: collectionName(SLUG),
         plan: plan([OPEN]),
         branches: [branch(using, size)],
         topK: 50,
@@ -187,7 +187,7 @@ when('adversarial · reindexing under active search', () => {
       ].map(async ([using, size]) => {
         const hits = await store.search({
           orgId: ORG,
-          orgSlug: SLUG,
+          collection: collectionName(SLUG),
           plan: plan([SHUT]),
           branches: [branch(using as string, size as number)],
           topK: 50,

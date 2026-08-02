@@ -62,6 +62,43 @@ components:
             and applying nothing would let a search look narrower than it was,
             which for this product is the worst available failure. It stays in
             the contract because it will be built to it.
+    ReindexStatus:
+      type: object
+      required: [layer_id, status, current_vector, shadow_vector, progress]
+      properties:
+        layer_id: { type: string, format: uuid }
+        status:   { type: string, enum: [running, complete, failed] }
+        phase:
+          type: string
+          enum: [copying, embedding]
+          description: >
+            `copying` is the organization's collection being rebuilt with room
+            for the new model — no embeddings are computed and `progress` reads
+            0 throughout. `embedding` is the per-layer work `progress` measures.
+            The two are separate because the first is org-wide and happens once
+            however many layers are migrated.
+        current_vector:
+          type: string
+          description: 'What search is using right now.'
+        shadow_vector:
+          type: string
+          description: 'What is being built. They differ until the switch.'
+        provider_id: { type: string, format: uuid }
+        started_at:  { type: string, format: date-time }
+        finished_at: { type: [string, 'null'], format: date-time }
+        total:
+          type: integer
+          description: >
+            Documents outstanding when the reindex began. A starting figure and
+            not a bound — documents ingested during the run are picked up by the
+            same pass, so `done` can exceed it.
+        done:     { type: integer }
+        failed:   { type: integer }
+        progress:
+          type: number
+          description: '0 to 1, clamped. An empty layer reads 1, because it is finished.'
+        error:    { type: [string, 'null'] }
+
     AuditEvent:
       type: object
       description: >
@@ -511,6 +548,24 @@ paths:
                 slug:         { type: string, description: Unique within the organization }
                 name:         { type: string }
                 description:  { type: string }
+                provider_id:
+                  type: string
+                  format: uuid
+                  description: >
+                    Which embedding model this layer is indexed with. An
+                    embedding provider belonging to this organization, or the
+                    installation-wide one. Omitted, the organization's own is
+                    used if it has exactly one and the installation default
+                    otherwise — so a organization running two models has to say
+                    which, rather than getting whichever the database returned
+                    first.
+
+                    A provider whose named vector the organization's collection
+                    has no room for is accepted: the collection is rebuilt with
+                    room for it, and the layer holds its documents at `pending`
+                    until that finishes. Qdrant cannot add a named vector to a
+                    live collection, which is why this is a rebuild and not an
+                    alteration.
       responses:
         '201':
           description: Created
@@ -526,18 +581,91 @@ paths:
             name collision from having no permission.
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /layers/{id}/reindex:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     post:
-      summary: 'Reindex onto a different model. NOT IMPLEMENTED.'
+      summary: Reindex the layer onto a different embedding model
       description: >
-        Specified and not built. There is no route: a request to this path is
-        answered 404 like any other unknown path. It is documented because this
-        is the contract it will be built to — search staying available
-        throughout is the requirement, not a description of current behaviour.
-        See docs/architecture.md for the intended sequence.
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        Adds a second named vector to the points that already exist, built with
+        the new model, and switches `vector_name` when every live document in the
+        layer carries it. **Search keeps using the old vector until that
+        moment**, so the layer stays answerable throughout and the switch is one
+        statement.
+
+
+        Requires `admin` on the layer — not `read`, and not `write`. A reindex
+        changes which model answers every future query.
+
+
+        Two of the six steps in docs/architecture.md are not built and are named
+        there rather than skipped quietly: the Recall@10 gate before switching,
+        which needs a reference query set that does not exist anywhere in this
+        product, and dropping the old vector after a rollback window. The old
+        vector stays, which is what makes a rollback one statement.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider_id]
+              properties:
+                provider_id:
+                  type: string
+                  format: uuid
+                  description: >
+                    An embedding provider belonging to this organization, or the
+                    installation-wide default. Its model and dimensions decide
+                    the name of the shadow vector.
       responses:
-        '202': { description: Started }
+        '202':
+          description: >
+            Started. The work happens in the worker; GET this same path to watch
+            it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReindexStatus' }
+        '400':
+          description: >
+            No such provider available to this organization, or one naming the
+            model the layer already uses.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: >
+            No such layer, or one the caller may not administer. The usual rule
+            — the two must not be separable.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: >
+            A reindex is already running on this layer. Two at once would race
+            to switch `vector_name`. There is no cancel: a half-written shadow
+            vector is inert because nothing reads it until the switch, and
+            starting a reindex back onto the current model is how one is undone.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+    get:
+      summary: How far a reindex has got
+      description: >
+        Requires `read` and not `admin`: that the layer you can search is being
+        migrated explains why a result set moved, and hiding it from someone who
+        can already read the layer buys nothing. `404` when the layer has never
+        been reindexed.
+      responses:
+        '200':
+          description: The state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReindexStatus' }
+        '404':
+          description: No such layer, none the caller may read, or no reindex has run.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
   /grants:
     get:
       summary: Grants in the organization

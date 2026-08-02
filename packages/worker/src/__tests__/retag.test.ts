@@ -15,7 +15,7 @@ import { retagOnce, type RetagPorts, type StaleDocument } from '../retag.js'
 
 const doc = (n: number): StaleDocument => ({
   orgId: 'org-1',
-  orgSlug: 'acme',
+  collection: 'org_acme',
   documentId: `doc-${n}`,
   layerId: 'layer-1',
 })

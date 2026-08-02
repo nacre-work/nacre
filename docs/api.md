@@ -26,9 +26,7 @@ they are listed because this is the contract they will be built to:
 ```
 PATCH  /v1/documents/{id}            metadata
 PATCH  /v1/layers/{id}
-POST   /v1/layers/{id}/reindex
 GET    /v1/workspaces    POST /v1/workspaces
-GET    /v1/audit
 ```
 
 ## Errors — RFC 9457 (`application/problem+json`)
@@ -268,7 +266,9 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 | `POST /v1/documents` | `202` with a job id, `200` for an unchanged repeat |
 | `DELETE /v1/documents/{id}` | tombstones the index and the row, in that order |
 | `GET /v1/documents/{id}`, `GET /v1/jobs/{id}` | resolved per caller |
-| `GET`/`POST /v1/layers` | |
+| `GET`/`POST /v1/layers` | `provider_id` optional; required where the organization runs more than one model |
+| `GET`/`POST /v1/layers/{id}/reindex` | `202` and a path to poll; `copying` then `embedding` |
+| `GET /v1/audit` | newest first, cursor-paged, JSON/JSONL/CSV by content negotiation |
 | `GET`/`POST /v1/grants`, `DELETE /v1/grants/{id}` | |
 | `GET`/`POST /v1/service-accounts`, `DELETE /v1/service-accounts/{id}` | |
 | `GET /v1/health`, `GET /v1/ready`, `GET /metrics` | |

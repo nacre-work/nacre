@@ -319,6 +319,7 @@ nacre_search_duration_seconds              # target p95 < 200ms at 10M vectors
 nacre_search_results_total
 nacre_acl_denials_total{reason}
 nacre_ingest_duration_seconds{stage}       # the accept stage; the worker has no registry
+nacre_reindex_progress_ratio{layer}        # 0 to 1; absent for a layer never reindexed
 ```
 
 `nacre_acl_denials_total` counts what a denial looks like on each surface. On
@@ -326,8 +327,13 @@ ingest that is a refused layer. On search there is no `403` to count, by design
 — invariant 4 makes an invisible layer indistinguishable from an absent one —
 so zero permitted results is the denial, under `reason="search_empty"`.
 
-Specified and not registered at all, both tied to reindexing, which is not
-built: `nacre_reindex_progress_ratio{layer}`, `nacre_vectors_total{org}`.
+`nacre_reindex_progress_ratio` carries one series per layer that has ever been
+reindexed and none for the rest — a layer nobody has migrated has no progress to
+report, and inventing a zero for it would make every layer in the installation
+read "reindex started, gone nowhere". It reads 0 for the whole `copying` phase,
+which computes no embeddings, and only moves during `embedding`.
+
+Specified and not registered: `nacre_vectors_total{org}`.
 
 **The MCP server has its own `/metrics`**, on its own port, with its own
 registry:

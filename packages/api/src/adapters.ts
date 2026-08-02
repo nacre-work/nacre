@@ -2,24 +2,32 @@ import {
   aclTags,
   buildFilter,
   effectivePrincipals,
+  fromStateJson,
   loadGrants,
   loadScopeTree,
   PostgresGroupGraph,
   referenceAllows,
+  reindexProgress,
   resolve,
+  toStateJson,
   VectorStore,
   vectorName,
   withOrg,
   type Hit,
+  type QueryablePlan,
+  type ReindexState,
 } from '@nacre.work/core'
 import { createHash } from 'node:crypto'
 
-import type { Pool } from 'pg'
+import type { Pool, PoolClient } from 'pg'
 
 import { encodeCursor, pageOf } from './pagination.js'
 import { applyRanking, type Reranker } from './rerank.js'
 
 import type {
+  Reindex,
+  ReindexOutcome,
+  ReindexStatus,
   AuditEvent,
   AuditQuery,
   AuditReader,
@@ -133,10 +141,19 @@ export class PostgresDocuments implements Documents {
 export interface SearchDeps {
   readonly pool: Pool
   readonly vectors: VectorStore
-  readonly embedder: Embedder
-  /** Resolved per organization; the collection name is derived from it. */
-  readonly orgSlug: (orgId: string) => Promise<string | undefined>
-  readonly vectorName: string
+  /**
+   * The query embedder for a given provider.
+   *
+   * Per provider and not one for the whole process. `NACRE_EMBEDDING_MODEL`
+   * used to decide both the named vector a search looked in and the model the
+   * query was embedded with, for every layer in every organization — so a layer
+   * created against a second provider was silently unsearchable: its points
+   * carry `v_small_v2_768` and the query went to `v_bge_m3_1024`, which matches
+   * nothing and raises nothing. `embedding_providers` has had an `org_id`
+   * column and a documented "NULL = global default" since the first migration;
+   * the search path was the half that never honoured it.
+   */
+  readonly embedderFor: (provider: EmbeddingProvider) => Embedder
   readonly role?: string
   /** Absent means reranking is off, which is what the `minimal` profile is. */
   readonly reranker?: Reranker
@@ -149,6 +166,21 @@ export interface SearchDeps {
   readonly onRerankFailed?: (error: unknown) => void
 }
 
+/** What a layer needs embedded with, and where. */
+export interface EmbeddingProvider {
+  readonly id: string
+  readonly endpoint: string
+  readonly model: string
+  readonly dimensions: number
+}
+
+/** One dense branch's worth of the organization: a model and the layers on it. */
+interface ModelGroup {
+  readonly vectorName: string
+  readonly provider: EmbeddingProvider
+  readonly layerIds: readonly string[]
+}
+
 export class NacreSearchService implements SearchService {
   constructor(private readonly deps: SearchDeps) {}
 
@@ -158,17 +190,23 @@ export class NacreSearchService implements SearchService {
     topK: number,
     options: SearchOptions = {},
   ): Promise<readonly SearchHit[]> {
-    const slug = await this.deps.orgSlug(auth.orgId)
-    if (slug === undefined) {
-      // The token names an organization that is not there. Rule I3: a
-      // permission that cannot be evaluated denies.
-      return []
-    }
-
-    const plan = await withOrg(
+    const context = await withOrg(
       this.deps.pool,
       auth.orgId,
       async (client) => {
+        // The collection, from the column that owns it. Read in the transaction
+        // the plan needs anyway rather than through a cache: a reindex moves
+        // this pointer, and a cached one means the API keeps searching the
+        // collection the worker has stopped writing to. That failure returns
+        // results, just increasingly stale ones, which is the kind nobody
+        // notices.
+        const { rows: orgs } = await client.query<{ vector_collection: string }>(
+          'SELECT vector_collection FROM organizations WHERE id = $1 AND deleted_at IS NULL',
+          [auth.orgId],
+        )
+        const collection = orgs[0]?.vector_collection
+        if (collection === undefined) return undefined
+
         const graph = await PostgresGroupGraph.load(client, auth.orgId)
         const principals = effectivePrincipals(auth.principal, graph)
         const grants = await loadGrants(client, auth.orgId, principals)
@@ -177,10 +215,41 @@ export class NacreSearchService implements SearchService {
           auth.orgId,
           grants.filter((g) => g.scope.type === 'document').map((g) => g.scope.id),
         )
-        return resolve({ orgId: auth.orgId, role: auth.role, principals, grants, tree }, 'read')
+        const plan = resolve(
+          { orgId: auth.orgId, role: auth.role, principals, grants, tree },
+          'read',
+        )
+
+        // Every live layer with the model it is on. Small — an installation
+        // runs tens of layers per organization, not thousands — and it is what
+        // decides how many branches the query has.
+        const { rows: layers } = await client.query<{
+          id: string
+          vector_name: string
+          provider_id: string
+          endpoint: string
+          model: string
+          dimensions: number
+        }>(
+          `SELECT l.id, l.vector_name, p.id AS provider_id, p.endpoint, p.model, p.dimensions
+             FROM layers l
+             JOIN embedding_providers p ON p.id = l.provider_id
+            WHERE l.org_id = $1 AND l.deleted_at IS NULL`,
+          [auth.orgId],
+        )
+
+        return { collection, plan, layers }
       },
       this.deps.role === undefined ? {} : { role: this.deps.role },
     )
+
+    if (context === undefined) {
+      // The token names an organization that is not there. Rule I3: a
+      // permission that cannot be evaluated denies.
+      return []
+    }
+
+    const { collection, plan } = context
 
     // No access at all. Returning early rather than querying is not an
     // optimization — buildFilter refuses this plan, and it refuses it because
@@ -229,17 +298,47 @@ export class NacreSearchService implements SearchService {
       narrow = { layers: permitted }
     }
 
-    const [vector] = await this.deps.embedder.embed([query])
-    if (vector === undefined) throw new Error('the embedder returned no vector for the query')
+    // One branch per model actually in scope.
+    //
+    // Almost always exactly one: an organization runs a single embedding model
+    // and every layer is on it. Two while a reindex is part-way through, and
+    // two for as long as an operator keeps layers on different providers.
+    // Zero means the organization has no layers, or none the caller can reach,
+    // and there is nothing to ask the index.
+    const groups = this.groupsInScope(context.layers, plan, narrow)
+    if (groups.length === 0) return []
+
+    const branches = await Promise.all(
+      groups.map(async (group) => {
+        const [vector] = await this.deps.embedderFor(group.provider).embed([query])
+        if (vector === undefined) {
+          throw new Error(`the embedder for ${group.provider.model} returned no vector for the query`)
+        }
+        return {
+          kind: 'dense' as const,
+          using: group.vectorName,
+          vector,
+          // Confined to the layers on this model. A reindexed layer keeps its
+          // old vector until the collection is rebuilt without it, so without
+          // this it would match the other model's branch too and fusion would
+          // rank it above everything for no reason but having been migrated.
+          //
+          // Only when there is more than one group: with a single model this
+          // clause is every layer in the organization, which is a longer filter
+          // that removes nothing.
+          ...(groups.length > 1 ? { onlyLayers: group.layerIds } : {}),
+        }
+      }),
+    )
 
     // Off unless the deployment configured a reranker and the caller left it on.
     const reranking = this.deps.reranker !== undefined && options.rerank !== false
 
     const hits = await this.deps.vectors.search({
       orgId: auth.orgId,
-      orgSlug: slug,
+      collection,
       plan,
-      branches: [{ kind: 'dense', using: this.deps.vectorName, vector }],
+      branches,
       // Without a reranker this is passed through uncorrected: asking for more
       // and trimming would be a post-filter that also costs more.
       //
@@ -266,6 +365,78 @@ export class NacreSearchService implements SearchService {
     // Last, because reranking scores the query against the text. Dropping it
     // earlier would rerank against nothing.
     return options.includeContent === false ? ranked.map((hit) => ({ ...hit, text: '' })) : ranked
+  }
+
+  /**
+   * The organization's layers, grouped by the model they are indexed with.
+   *
+   * Restricted first to what this search can actually reach — the permission
+   * plan, then the caller's own `layers` narrowing — so a query never embeds
+   * against a provider whose layers contribute nothing. That is not only a
+   * saving: an embedding endpoint that is down would otherwise fail a search
+   * over layers that have no connection to it.
+   *
+   * A plan carrying `extraDocs` keeps every group. Documents granted
+   * individually can sit in any layer, including one the caller reaches no
+   * other way, so dropping a group here would answer empty where the correct
+   * answer is "the documents you were granted".
+   */
+  private groupsInScope(
+    layers: readonly {
+      id: string
+      vector_name: string
+      provider_id: string
+      endpoint: string
+      model: string
+      dimensions: number
+    }[],
+    plan: QueryablePlan,
+    narrow: { layers: readonly string[] } | undefined,
+  ): readonly ModelGroup[] {
+    const reachable = layers.filter((l) => {
+      if (narrow !== undefined && !narrow.layers.includes(l.id)) return false
+      if (plan.kind === 'all') return true
+      if (plan.extraDocs.length > 0) return true
+      return plan.layers.includes(l.id)
+    })
+
+    const byVector = new Map<string, { provider: EmbeddingProvider; layerIds: string[] }>()
+    for (const layer of reachable) {
+      // `vector_name` and `provider_id` have to agree, because the first says
+      // which slot to search and the second says which model to embed the query
+      // with. They disagreed once already — a reindex switched the vector and
+      // left the provider behind — and the symptom was Qdrant refusing the
+      // whole query on a dimension mismatch, which takes every *other* layer in
+      // the organization down with it. Named here rather than left to arrive as
+      // `Bad Request`, and raised rather than skipped: dropping the layer from
+      // the branch set would answer a search with a silently smaller corpus.
+      const expected = vectorName(layer.model, layer.dimensions)
+      if (expected !== layer.vector_name) {
+        throw new Error(
+          `layer ${layer.id} names vector ${layer.vector_name} but its provider is ` +
+            `${layer.model}/${layer.dimensions}, which is ${expected}. A reindex left the two ` +
+            'out of step; the layer cannot be searched until they agree.',
+        )
+      }
+
+      const group = byVector.get(layer.vector_name) ?? {
+        provider: {
+          id: layer.provider_id,
+          endpoint: layer.endpoint,
+          model: layer.model,
+          dimensions: layer.dimensions,
+        },
+        layerIds: [],
+      }
+      group.layerIds.push(layer.id)
+      byVector.set(layer.vector_name, group)
+    }
+
+    return [...byVector].map(([vectorName, group]) => ({
+      vectorName,
+      provider: group.provider,
+      layerIds: group.layerIds,
+    }))
   }
 
   /**
@@ -482,6 +653,30 @@ export class HttpEmbedder implements Embedder {
     private readonly timeoutMs = 15_000,
   ) {}
 
+  /**
+   * One embedder per provider, built once and reused.
+   *
+   * Keyed on the provider's id, so an operator who edits an endpoint has to
+   * restart — which is true of every other piece of configuration here, and the
+   * alternative is a cache that has to be invalidated from a table nothing
+   * watches.
+   */
+  static pool(timeoutMs?: number): (provider: EmbeddingProvider) => Embedder {
+    const embedders = new Map<string, HttpEmbedder>()
+    return (provider) => {
+      const cached = embedders.get(provider.id)
+      if (cached !== undefined) return cached
+      const embedder = new HttpEmbedder(
+        provider.endpoint,
+        provider.model,
+        provider.dimensions,
+        ...(timeoutMs === undefined ? [] : ([timeoutMs] as const)),
+      )
+      embedders.set(provider.id, embedder)
+      return embedder
+    }
+  }
+
   async embed(texts: readonly string[]): Promise<readonly (readonly number[])[]> {
     if (texts.length === 0) return []
 
@@ -541,13 +736,11 @@ export interface IngestDeps {
    * would let a later change reach the index without a plan.
    */
   readonly tombstone: DocumentTombstone
-  /** Resolved per organization; the collection name is derived from it. */
-  readonly orgSlug: (orgId: string) => Promise<string | undefined>
   readonly role?: string
 }
 
 export interface DocumentTombstone {
-  tombstone(orgSlug: string, documentId: string): Promise<void>
+  tombstone(collection: string, documentId: string): Promise<void>
 }
 
 export class NacreIngest implements Ingest {
@@ -647,16 +840,21 @@ export class NacreIngest implements Ingest {
   async remove(auth: AuthContext, documentId: string): Promise<boolean> {
     if (!/^[0-9a-f-]{36}$/i.test(documentId)) return false
 
-    const slug = await this.deps.orgSlug(auth.orgId)
-    // The token names an organization that is not there. Refusing rather than
-    // deleting only in Postgres: a tombstone we cannot mirror into the index is
-    // a document that stays searchable while the API reports it gone.
-    if (slug === undefined) return false
-
     return withOrg(
       this.pool,
       auth.orgId,
       async (client) => {
+        // The collection, from the column that owns it, inside the same
+        // transaction as the permission check. Refusing rather than deleting
+        // only in Postgres: a tombstone we cannot mirror into the index is a
+        // document that stays searchable while the API reports it gone.
+        const { rows: orgs } = await client.query<{ vector_collection: string }>(
+          'SELECT vector_collection FROM organizations WHERE id = $1 AND deleted_at IS NULL',
+          [auth.orgId],
+        )
+        const collection = orgs[0]?.vector_collection
+        if (collection === undefined) return false
+
         const graph = await PostgresGroupGraph.load(client, auth.orgId)
         const principals = effectivePrincipals(auth.principal, graph)
         const grants = await loadGrants(client, auth.orgId, principals)
@@ -697,7 +895,7 @@ export class NacreIngest implements Ingest {
         // which purges rather than repairs. Index-first fails the other way: the
         // points are marked, the row is not, the caller sees an error and
         // retries, and in the meantime the document is already invisible.
-        await this.deps.tombstone.tombstone(slug, documentId)
+        await this.deps.tombstone.tombstone(collection, documentId)
 
         // A tombstone, not a delete, on this side too. Physical removal of the
         // points is the collector's job, and `deleted_at` is what puts the
@@ -824,6 +1022,18 @@ interface LayerRow {
 export class PostgresLayers implements Layers {
   constructor(
     private readonly pool: Pool,
+    /**
+     * Only to ask which named vectors the organization's collection has.
+     *
+     * A layer is created against a provider, and the provider decides which
+     * named vector the layer's points go into. Qdrant fixes that set when the
+     * collection is created and has no way to extend it, so a layer on a
+     * provider the collection has no slot for is a layer whose every document
+     * fails in the worker with `Not existing vector name` — after the API has
+     * answered 202 and the row says `pending`. Checking here is what turns that
+     * into a collection rebuild instead.
+     */
+    private readonly vectors: { vectorsOf(collection: string): Promise<Record<string, number>> },
     private readonly role?: string,
   ) {}
 
@@ -905,7 +1115,7 @@ export class PostgresLayers implements Layers {
 
   async create(
     auth: AuthContext,
-    input: { workspaceId: string; slug: string; name: string },
+    input: { workspaceId: string; slug: string; name: string; providerId?: string },
   ): Promise<LayerOutcome> {
     if (!/^[0-9a-f-]{36}$/i.test(input.workspaceId)) return { kind: 'denied' }
 
@@ -932,16 +1142,47 @@ export class PostgresLayers implements Layers {
         )
         if (workspaces[0] === undefined) return { kind: 'denied' }
 
+        // The caller's choice, or the organization's if there is no ambiguity.
+        //
+        // `ORDER BY org_id NULLS LAST LIMIT 1` was the whole of this, which is
+        // fine while an organization has one provider and arbitrary the moment
+        // it has two — two rows with the same non-null `org_id` come back in
+        // whatever order the database felt like, so the model a layer was
+        // created against was a coin toss with no way for the caller to call
+        // it. Now they can, and where they do not, an ambiguous choice is
+        // refused rather than guessed.
         const { rows: providers } = await client.query<{
           id: string
           model: string
           dimensions: number
+          own: boolean
         }>(
-          `SELECT id, model, dimensions FROM embedding_providers
-            WHERE org_id = $1 OR org_id IS NULL ORDER BY org_id NULLS LAST LIMIT 1`,
-          [auth.orgId],
+          `SELECT id, model, dimensions, (org_id IS NOT NULL) AS own
+             FROM embedding_providers
+            WHERE (org_id = $1 OR org_id IS NULL)
+              AND ($2::uuid IS NULL OR id = $2::uuid)
+            ORDER BY org_id NULLS LAST, id`,
+          [auth.orgId, input.providerId ?? null],
         )
-        const provider = providers[0]
+
+        if (input.providerId !== undefined && providers[0] === undefined) {
+          return {
+            kind: 'provider',
+            detail: 'No embedding provider with that id is available to this organization.',
+          }
+        }
+
+        const own = providers.filter((p) => p.own)
+        if (input.providerId === undefined && own.length > 1) {
+          return {
+            kind: 'provider',
+            detail:
+              `This organization has ${own.length} embedding providers, so which one a layer ` +
+              "is indexed with is not implied. Name it with 'provider_id'.",
+          }
+        }
+
+        const provider = own[0] ?? providers[0]
         if (provider === undefined) {
           throw new Error('no embedding provider is configured; a layer cannot be created without one')
         }
@@ -953,6 +1194,47 @@ export class PostgresLayers implements Layers {
         // Request` and would return nothing even if it did not.
         const vector = vectorName(provider.model, provider.dimensions)
 
+        // Does the collection have room for this model?
+        //
+        // Usually yes: `init` creates the collection and the global provider
+        // from the same configuration, so every layer lands on the slot that is
+        // already there. An operator who adds a second provider is the case
+        // this exists for — `embedding_providers` has carried an `org_id` and a
+        // documented "NULL = global default" since the first migration, and a
+        // layer created against an organization's own provider used to accept
+        // documents and fail every one of them, forever, with the API reporting
+        // `queued` throughout.
+        const { rows: orgs } = await client.query<{ vector_collection: string }>(
+          'SELECT vector_collection FROM organizations WHERE id = $1 AND deleted_at IS NULL',
+          [auth.orgId],
+        )
+        const collection = orgs[0]?.vector_collection
+        if (collection === undefined) return { kind: 'denied' }
+
+        const present = await this.vectors.vectorsOf(collection)
+        // A copy in flight if the slot is missing. The layer is created either
+        // way — it is a real layer with a real provider — and the worker holds
+        // its documents at `pending` until the collection that can hold them
+        // exists. See `claimNext`.
+        //
+        // Reusing the reindex's own state rather than inventing a second
+        // mechanism: this *is* the copy phase of a reindex, with no documents
+        // to re-embed afterwards, so `finishCopy` and `finishReindexIfDone`
+        // close it out with nothing added.
+        const state =
+          vector in present
+            ? null
+            : toStateJson({
+                status: 'running',
+                phase: 'copying',
+                shadowVector: vector,
+                providerId: provider.id,
+                startedAt: new Date().toISOString(),
+                total: 0,
+                done: 0,
+                failed: 0,
+              })
+
         const { rows } = await client.query<{
           id: string
           slug: string
@@ -961,11 +1243,11 @@ export class PostgresLayers implements Layers {
           description: string | null
           created_at: Date
         }>(
-          `INSERT INTO layers (org_id, workspace_id, slug, name, provider_id, vector_name)
-           VALUES ($1,$2,$3,$4,$5,$6)
+          `INSERT INTO layers (org_id, workspace_id, slug, name, provider_id, vector_name, reindex_state)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
            ON CONFLICT DO NOTHING
            RETURNING id, slug, name, workspace_id, description, created_at`,
-          [auth.orgId, input.workspaceId, input.slug, input.name, provider.id, vector],
+          [auth.orgId, input.workspaceId, input.slug, input.name, provider.id, vector, state],
         )
 
         const row = rows[0]
@@ -1335,4 +1617,273 @@ interface AuditRow {
   readonly result: string
   readonly detail: Record<string, unknown> | null
   readonly request_id: string | null
+}
+
+/**
+ * Starting a reindex, and reporting on one.
+ *
+ * The work is the worker's. This writes the intent — `layers.reindex_state` —
+ * counts what there is to do, and declares the new named vector on the
+ * collection.
+ *
+ * That last part belongs here and an earlier version of this comment said the
+ * opposite: that Qdrant creates a named vector when a point is first written
+ * with it, so the worker's first batch would bring it into existence. It does
+ * not. `updateVectors` against an undeclared name answers
+ * `Not existing vector name error`, and the reindex that assumed otherwise
+ * started cleanly, reported `running`, and failed every document forever with
+ * the progress gauge sitting at zero — which is step 1 of the sequence in
+ * docs/architecture.md being skipped, and the document has it first for a
+ * reason.
+ *
+ * Doing it here rather than in the worker also puts the failure where somebody
+ * is looking: an operator who cannot create the vector finds out from the
+ * response to their own request, not by watching a counter not move.
+ */
+export class PostgresReindex implements Reindex {
+  constructor(
+    private readonly pool: Pool,
+    private readonly vectors: { vectorsOf(collection: string): Promise<Record<string, number>> },
+    private readonly role?: string,
+  ) {}
+
+  private get scope(): { role?: string } {
+    return this.role === undefined ? {} : { role: this.role }
+  }
+
+  async start(
+    auth: AuthContext,
+    layerId: string,
+    providerId: string,
+  ): Promise<ReindexOutcome | undefined> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client): Promise<ReindexOutcome | undefined> => {
+        // Administering a layer, not reading it. A reindex rewrites every
+        // vector in the layer and changes which model answers every future
+        // query — `read` is nowhere near enough, and `write` is about putting
+        // documents in rather than about the layer itself.
+        const plan = resolve(await contextFor(client, auth), 'admin')
+        if (plan.kind === 'none') return undefined
+
+        // Locked for the whole decision. Two starts arriving together would
+        // both read "no reindex running" and both write a state, and the loser
+        // would leave a shadow vector nothing is filling.
+        const { rows: layers } = await client.query<{
+          id: string
+          vector_name: string
+          reindex_state: unknown
+        }>(
+          `SELECT id, vector_name, reindex_state FROM layers
+            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
+            FOR UPDATE`,
+          [auth.orgId, layerId],
+        )
+        const layer = layers[0]
+        if (layer === undefined) return undefined
+        if (plan.kind === 'scoped' && !plan.layers.includes(layer.id)) return undefined
+
+        const running = fromStateJson(layer.reindex_state)
+        if (running?.status === 'running') {
+          // The live remaining count, not zero. A caller who collides with a
+          // running reindex is asking "how far has it got" as much as "why was
+          // I refused", and the answer they get should be the same one `GET`
+          // gives — not a placeholder that reads as finished.
+          const remaining = await this.remaining(client, auth.orgId, layerId, running.shadowVector)
+          return {
+            kind: 'conflict',
+            status: this.statusOf(layerId, layer.vector_name, running, remaining),
+          }
+        }
+
+        // The provider may be the organization's own or the installation-wide
+        // default, which is the one row with a NULL org_id. Same rule the
+        // policy on that table encodes; repeated here because a caller naming
+        // another tenant's provider must get "no such provider" rather than a
+        // reindex onto a model they cannot reach.
+        const { rows: providers } = await client.query<{ model: string; dimensions: number }>(
+          `SELECT model, dimensions FROM embedding_providers
+            WHERE id = $1 AND (org_id = $2 OR org_id IS NULL)`,
+          [providerId, auth.orgId],
+        )
+        const provider = providers[0]
+        if (provider === undefined) return { kind: 'unknown_provider' }
+
+        const shadow = vectorName(provider.model, provider.dimensions)
+        if (shadow === layer.vector_name) {
+          return { kind: 'already_current', vectorName: shadow }
+        }
+
+        // Counted now, and it is a starting figure rather than a bound.
+        // Documents ingested during the reindex have no shadow vector either,
+        // so the same pass picks them up and `done` can pass `total` — which is
+        // why the progress ratio is clamped rather than trusted.
+        // Which half this layer starts in.
+        //
+        // A named vector cannot be added to a live Qdrant collection, so the
+        // slot has to already exist. If the organization's collection has it —
+        // because an earlier reindex made it — this layer goes straight to
+        // embedding. If not, the collection has to be rebuilt with room for it
+        // first, and that is org-wide work the worker does.
+        const { rows: orgs } = await client.query<{ vector_collection: string }>(
+          'SELECT vector_collection FROM organizations WHERE id = $1',
+          [auth.orgId],
+        )
+        const collection = orgs[0]?.vector_collection
+        if (collection === undefined) return undefined
+
+        const present = await this.vectors.vectorsOf(collection)
+        const width = present[shadow]
+        if (width !== undefined && width !== provider.dimensions) {
+          // Same name, different width. The name is derived from model and
+          // dimensions so this cannot come from the API — it means the vector
+          // was made by hand, and writing 768 values into a 1024-wide slot is
+          // the kind of failure that surfaces months later as bad recall.
+          return { kind: 'unknown_provider' }
+        }
+        const phase = width === undefined ? ('copying' as const) : ('embedding' as const)
+
+        // One copy at a time for an organization. Two layers starting reindexes
+        // onto two different models would otherwise each rebuild the
+        // collection, and the second would throw away the first's work along
+        // with the pointer that made it live.
+        if (phase === 'copying') {
+          const { rows: busy } = await client.query<{ n: string }>(
+            `SELECT count(*)::text AS n FROM layers
+              WHERE org_id = $1 AND deleted_at IS NULL
+                AND reindex_state ->> 'status' = 'running'
+                AND reindex_state ->> 'phase' = 'copying'`,
+            [auth.orgId],
+          )
+          if (Number(busy[0]?.n ?? 0) > 0) {
+            const other = fromStateJson(layer.reindex_state) ?? {
+              status: 'running' as const,
+              phase: 'copying' as const,
+              shadowVector: shadow,
+              providerId,
+              startedAt: new Date().toISOString(),
+              total: 0,
+              done: 0,
+              failed: 0,
+            }
+            return { kind: 'conflict', status: this.statusOf(layerId, layer.vector_name, other, 0) }
+          }
+        }
+
+        const total = await this.remaining(client, auth.orgId, layerId, shadow)
+
+        const state: ReindexState = {
+          status: 'running',
+          phase,
+          shadowVector: shadow,
+          providerId,
+          startedAt: new Date().toISOString(),
+          total,
+          done: 0,
+          failed: 0,
+        }
+
+        await client.query(
+          'UPDATE layers SET reindex_state = $3::jsonb WHERE org_id = $1 AND id = $2',
+          [auth.orgId, layerId, JSON.stringify(toStateJson(state))],
+        )
+
+        // `remaining = total`: nothing has been reindexed yet, so `done` is 0.
+        // Passing 0 here said `done: total, progress: 1` on the 202 — a reindex
+        // reporting itself finished in the same breath as starting.
+        return {
+          kind: 'started',
+          status: this.statusOf(layerId, layer.vector_name, state, total),
+        }
+      },
+      this.scope,
+    )
+  }
+
+  async status(auth: AuthContext, layerId: string): Promise<ReindexStatus | undefined> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client): Promise<ReindexStatus | undefined> => {
+        // `read` here, not `admin`. Knowing that the layer you can search is
+        // being migrated is not an administrative fact — it explains why a
+        // result set moved — and hiding it from someone who can already read
+        // the layer buys nothing.
+        const plan = resolve(await contextFor(client, auth), 'read')
+        if (plan.kind === 'none') return undefined
+
+        const { rows } = await client.query<{
+          id: string
+          vector_name: string
+          reindex_state: unknown
+        }>(
+          `SELECT id, vector_name, reindex_state FROM layers
+            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+          [auth.orgId, layerId],
+        )
+        const layer = rows[0]
+        if (layer === undefined) return undefined
+        if (plan.kind === 'scoped' && !plan.layers.includes(layer.id)) return undefined
+
+        const state = fromStateJson(layer.reindex_state)
+        if (state === undefined) return undefined
+
+        // The live remaining count rather than a stored `done`, because the
+        // worker never writes one — the number is derived, so there is nothing
+        // to go stale between batches.
+        const left = await this.remaining(client, auth.orgId, layerId, state.shadowVector)
+        return this.statusOf(layerId, layer.vector_name, state, left)
+      },
+      this.scope,
+    )
+  }
+
+  /**
+   * Live documents in the layer that do not yet carry this vector.
+   *
+   * The same predicate the worker's claim uses and the same one the switch is
+   * guarded by. Three places, one meaning — and if they ever disagree, the
+   * switch is the one that is right, because it is the only one inside the
+   * statement that performs it.
+   */
+  private async remaining(
+    client: PoolClient,
+    orgId: string,
+    layerId: string,
+    shadowVector: string,
+  ): Promise<number> {
+    const { rows } = await client.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM documents
+        WHERE org_id = $1 AND layer_id = $2 AND deleted_at IS NULL AND chunk_count > 0
+          AND reindexed_vector IS DISTINCT FROM $3`,
+      [orgId, layerId, shadowVector],
+    )
+    return Number(rows[0]?.n ?? 0)
+  }
+
+  private statusOf(
+    layerId: string,
+    currentVector: string,
+    state: ReindexState,
+    remaining: number,
+  ): ReindexStatus {
+    const done = state.status === 'complete' ? state.total : Math.max(0, state.total - remaining)
+    const live: ReindexState = { ...state, done }
+    return {
+      layerId,
+      status: state.status,
+      phase: state.phase,
+      shadowVector: state.shadowVector,
+      currentVector,
+      providerId: state.providerId,
+      startedAt: state.startedAt,
+      finishedAt: state.finishedAt ?? null,
+      total: state.total,
+      done,
+      failed: state.failed,
+      progress: reindexProgress(live),
+      error: state.error ?? null,
+    }
+  }
 }

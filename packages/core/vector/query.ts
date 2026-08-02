@@ -17,14 +17,35 @@ import type { VectorFilter } from '../authz/filter.js'
  * omission unrepresentable rather than merely discouraged.
  */
 
-export interface DenseBranch {
+/**
+ * Layers this branch is restricted to, on top of the shared filter.
+ *
+ * Present because an organization can hold layers on more than one embedding
+ * model at once — during a reindex, or simply because two layers were created
+ * against different providers — and one named vector cannot answer for both. A
+ * query then needs a branch per model, and each branch has to be confined to
+ * the layers actually on that model. Without the confinement a layer that has
+ * been reindexed still carries its old vector, so it matches *both* branches
+ * and reciprocal rank fusion counts it twice.
+ *
+ * **This narrows and never widens.** The clause is appended to the shared
+ * filter's `must`, so it can only remove points from what the permission filter
+ * already allowed. There is deliberately no way to hand a branch a filter of
+ * its own — that is the omission this whole module exists to make
+ * unrepresentable, and a per-branch *restriction* is the opposite of it.
+ */
+type BranchScope = {
+  readonly onlyLayers?: readonly string[]
+}
+
+export type DenseBranch = BranchScope & {
   readonly kind: 'dense'
   /** The named vector in the collection, e.g. `v_bge_m3_1024`. */
   readonly using: string
   readonly vector: readonly number[]
 }
 
-export interface SparseBranch {
+export type SparseBranch = BranchScope & {
   readonly kind: 'sparse'
   /** The sparse vector name, `bm25` by default. */
   readonly using: string
@@ -71,6 +92,17 @@ export function buildHybridQuery(options: HybridQueryOptions): HybridQuery {
     throw new Error('a hybrid query needs at least one branch')
   }
 
+  for (const branch of branches) {
+    if (branch.onlyLayers !== undefined && branch.onlyLayers.length === 0) {
+      // Same refusal as buildFilter's, for the same reason: an empty `any` is
+      // not "match nothing" in Qdrant. A branch that reaches no layer is a
+      // branch the caller should not have asked for, and answering it as if it
+      // were unrestricted is how a per-model branch turns into a query over
+      // every model at once.
+      throw new Error('refusing to build a branch narrowed to no layers')
+    }
+  }
+
   return {
     prefetch: branches.map((branch) => ({
       query:
@@ -78,8 +110,20 @@ export function buildHybridQuery(options: HybridQueryOptions): HybridQuery {
           ? [...branch.vector]
           : { indices: [...branch.vector.indices], values: [...branch.vector.values] },
       using: branch.using,
-      // The single source. Every branch gets it; there is no path that skips one.
-      filter,
+      // The single source. Every branch gets it; there is no path that skips
+      // one. `onlyLayers` is appended to its `must` rather than replacing
+      // anything, so the permission clauses survive intersection by
+      // construction.
+      filter:
+        branch.onlyLayers === undefined
+          ? filter
+          : {
+              ...filter,
+              must: [
+                ...(filter.must ?? []),
+                { key: 'layer_id', match: { any: [...branch.onlyLayers] } },
+              ],
+            },
       limit: prefetchLimit,
     })),
     query: { fusion: 'rrf' },
@@ -114,17 +158,30 @@ export const PAYLOAD_INDEXES = [
  * loss inside one percent, which for corporate search is noise. Originals stay
  * on disk for rescoring.
  */
+/**
+ * The settings one named vector gets.
+ *
+ * Factored out because a reindex creates a collection carrying *several* — the
+ * ones the old collection had, plus the one being migrated to — and they have
+ * to be configured identically. A copy that quietly used different HNSW
+ * parameters would change recall, which shows up as "search got worse after the
+ * migration" and is very hard to attribute.
+ */
+export function vectorParams(size: number) {
+  return {
+    size,
+    distance: 'Cosine' as const,
+    hnsw_config: { m: 32, ef_construct: 256 },
+    quantization_config: {
+      scalar: { type: 'int8' as const, quantile: 0.99, always_ram: true },
+    },
+  }
+}
+
 export function collectionConfig(vectorName: string, size: number) {
   return {
     vectors: {
-      [vectorName]: {
-        size,
-        distance: 'Cosine' as const,
-        hnsw_config: { m: 32, ef_construct: 256 },
-        quantization_config: {
-          scalar: { type: 'int8' as const, quantile: 0.99, always_ram: true },
-        },
-      },
+      [vectorName]: vectorParams(size),
     },
     sparse_vectors: { bm25: {} },
     optimizers_config: { default_segment_number: 4 },

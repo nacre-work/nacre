@@ -176,10 +176,33 @@ describe('NacreSearchService options', () => {
    * other statement (`BEGIN`, `SET LOCAL ROLE`, `set_config`, `COMMIT`) answers
    * empty, because `withOrg` here is the real one.
    */
-  const poolReturning = (layerLookup: readonly string[]) =>
+  const CATALOGUE = [
+    {
+      id: LAYER,
+      vector_name: 'v_test_2',
+      provider_id: 'provider-1',
+      endpoint: 'http://embedder.invalid',
+      model: 'test',
+      dimensions: 2,
+    },
+  ]
+
+  const poolReturning = (
+    layerLookup: readonly string[],
+    catalogue: readonly Record<string, unknown>[] = CATALOGUE,
+  ) =>
     ({
       connect: async () => ({
         query: async (text: string) => {
+          if (text.includes('vector_collection FROM organizations')) {
+            return { rows: [{ vector_collection: 'org_acme' }] }
+          }
+          // The layer catalogue the branch grouping is built from. One layer
+          // on one provider by default, which is the ordinary single-model
+          // shape.
+          if (text.includes('JOIN embedding_providers')) {
+            return { rows: [...catalogue] }
+          }
           if (text.includes('FROM layers WHERE org_id = $1 AND slug = ANY')) {
             return { rows: layerLookup.map((id) => ({ id })) }
           }
@@ -221,12 +244,37 @@ describe('NacreSearchService options', () => {
           return [{ id: 'chunk-1', score: 0.9, payload: { org_id: ORG } }]
         },
       },
-      embedder: { embed: async () => [[0.1, 0.2]] },
-      orgSlug: async () => 'acme',
-      vectorName: 'v_test',
+      embedderFor: () => ({ embed: async () => [[0.1, 0.2]] }),
     } as never)
 
   const context = { orgId: ORG, role: 'member', principal: { type: 'user', id: 'alice' } } as never
+
+  it('refuses a layer whose vector name and provider disagree', async () => {
+    // These two columns say which slot to search and which model to embed the
+    // query with. A reindex switched the first and left the second behind, and
+    // the symptom was Qdrant refusing the whole query on a dimension mismatch
+    // — which takes every other layer in the organization down with it. Named
+    // here, and raised rather than skipped: dropping the layer would answer the
+    // search from a silently smaller corpus.
+    const svc = new NacreSearchService({
+      pool: poolReturning([], [
+        {
+          id: LAYER,
+          // The old model's slot...
+          vector_name: 'v_bge_m3_1024',
+          provider_id: 'provider-1',
+          endpoint: 'http://embedder.invalid',
+          // ...with the new model's provider.
+          model: 'small-v2',
+          dimensions: 768,
+        },
+      ]),
+      vectors: { search: async () => [] },
+      embedderFor: () => ({ embed: async () => [[0.1, 0.2]] }),
+    } as never)
+
+    await expect(svc.search(context, 'q', 5)).rejects.toThrow(/out of step/)
+  })
 
   it('strips the text when include_content is false, and keeps everything else', async () => {
     // One line in the service, which is exactly the kind of thing that breaks

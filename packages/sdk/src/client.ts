@@ -373,6 +373,7 @@ export class NacreClient {
           slug: input.slug,
           name: input.name,
           ...(input.description === undefined ? {} : { description: input.description }),
+          ...(input.providerId === undefined ? {} : { provider_id: input.providerId }),
         },
       })
       if (body === undefined) return undefined

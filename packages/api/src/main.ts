@@ -8,7 +8,6 @@ import {
   Redis,
   Registry,
   VectorStore,
-  vectorName,
   withOrg,
   ConfigError,
   installGuards,
@@ -25,6 +24,7 @@ import {
   PostgresGrants,
   PostgresJobs,
   PostgresLayers,
+  PostgresReindex,
 } from './adapters.js'
 import { Idempotency } from './idempotency.js'
 import { Login } from './login.js'
@@ -70,33 +70,6 @@ async function main(): Promise<void> {
       ? { url: config.qdrantUrl }
       : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
   )
-  const embedder = new HttpEmbedder(config.embeddingEndpoint, config.embeddingModel, config.embeddingDim)
-
-  // Slugs change rarely and are read on every search. A tiny cache keyed on the
-  // organization keeps a search from costing an extra round trip; it is not
-  // permission data, so staleness here cannot widen access.
-  const slugs = new Map<string, string>()
-  const orgSlug = async (orgId: string): Promise<string | undefined> => {
-    const cached = slugs.get(orgId)
-    if (cached !== undefined) return cached
-
-    const found = await withOrg(
-      pool,
-      orgId,
-      async (client) => {
-        const { rows } = await client.query<{ slug: string }>(
-          'SELECT slug FROM organizations WHERE id = $1 AND deleted_at IS NULL',
-          [orgId],
-        )
-        return rows[0]?.slug
-      },
-      { role: APP_ROLE },
-    )
-
-    if (found !== undefined) slugs.set(orgId, found)
-    return found
-  }
-
   const registry = new Registry()
   const metrics = createMetrics(registry)
   registry.collect(collectDatabaseGauges(pool, metrics, APP_ROLE))
@@ -202,13 +175,12 @@ async function main(): Promise<void> {
     idempotency,
     login,
     auditReader: new PostgresAuditReader(pool, APP_ROLE),
+    reindex: new PostgresReindex(pool, vectors, APP_ROLE),
     documents: new PostgresDocuments(pool, APP_ROLE),
     search: new NacreSearchService({
       pool,
       vectors,
-      embedder,
-      orgSlug,
-      vectorName: vectorName(config.embeddingModel, config.embeddingDim),
+      embedderFor: HttpEmbedder.pool(),
       role: APP_ROLE,
       ...(reranker === undefined ? {} : { reranker }),
       rerankCandidates: config.rerankCandidates,
@@ -225,10 +197,10 @@ async function main(): Promise<void> {
         )
       },
     }),
-    ingest: new NacreIngest({ pool, tombstone: vectors, orgSlug, role: APP_ROLE }),
+    ingest: new NacreIngest({ pool, tombstone: vectors, role: APP_ROLE }),
     audit: new PostgresAudit(pool, APP_ROLE),
     jobs: new PostgresJobs(pool, APP_ROLE),
-    layers: new PostgresLayers(pool, APP_ROLE),
+    layers: new PostgresLayers(pool, vectors, APP_ROLE),
     grants: new PostgresGrants(pool, APP_ROLE),
     serviceAccounts: new PostgresServiceAccounts(pool, APP_ROLE),
   })

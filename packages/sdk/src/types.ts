@@ -81,6 +81,14 @@ export interface LayerInput {
   readonly slug: string
   readonly name: string
   readonly description?: string
+  /**
+   * Which embedding model the layer is indexed with.
+   *
+   * Optional, and only needed by an organization running more than one — with
+   * two, the server refuses to guess rather than picking whichever row came
+   * back first.
+   */
+  readonly providerId?: string
 }
 
 export interface Grant {

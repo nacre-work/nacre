@@ -55,11 +55,11 @@ const auth = (userId: string, orgId: string = ORG): AuthContext => ({
 
 /** Records what it was asked to tombstone, and can be told to fail. */
 class RecordingIndex {
-  readonly seen: { orgSlug: string; documentId: string }[] = []
+  readonly seen: { collection: string; documentId: string }[] = []
   fail = false
-  async tombstone(orgSlug: string, documentId: string): Promise<void> {
+  async tombstone(collection: string, documentId: string): Promise<void> {
     if (this.fail) throw new Error('qdrant is unreachable')
-    this.seen.push({ orgSlug, documentId })
+    this.seen.push({ collection, documentId })
   }
 }
 
@@ -148,11 +148,23 @@ when('I5 · the delete path', () => {
     }
   }
 
-  const ingest = (index: RecordingIndex, slug: (orgId: string) => string | undefined = () => 'dp') =>
+  const collectionOf = async () => {
+    const c = await pool.connect()
+    try {
+      const { rows } = await c.query<{ vector_collection: string }>(
+        'SELECT vector_collection FROM organizations WHERE id = $1',
+        [ORG],
+      )
+      return rows[0]?.vector_collection
+    } finally {
+      c.release()
+    }
+  }
+
+  const ingest = (index: RecordingIndex) =>
     new NacreIngest({
       pool,
       tombstone: index,
-      orgSlug: async (orgId) => slug(orgId),
       role: AS_APP,
     })
 
@@ -165,7 +177,12 @@ when('I5 · the delete path', () => {
     // The row alone changes nothing a query looks at. This assertion is the
     // whole finding: it failed before the index write existed, while the
     // endpoint answered 204 and search kept returning the document.
-    expect(index.seen).toEqual([{ orgSlug: 'dp', documentId: id }])
+    // The collection is whatever `organizations.vector_collection` holds —
+    // read rather than assumed, because a reindex moves it and deriving it from
+    // the slug here would repeat the bug this column exists to prevent. The
+    // shared fixture organization means the literal name is not this file's to
+    // know either.
+    expect(index.seen).toEqual([{ collection: await collectionOf(), documentId: id }])
     expect(await deletedAt(id)).not.toBeNull()
   })
 
@@ -195,15 +212,16 @@ when('I5 · the delete path', () => {
     expect(await deletedAt(id)).toBeNull()
   })
 
-  it('an organization with no slug refuses rather than deleting half', async () => {
+  it('an organization that is not there refuses rather than deleting half', async () => {
     const id = await document('de1e7e00-0000-4000-8000-00000000000a')
     const index = new RecordingIndex()
+    const absent = '99999999-9999-4999-8999-999999999999'
 
-    expect(await ingest(index, () => undefined).remove(auth(ids.alice), id)).toBe(false)
+    expect(await ingest(index).remove(auth(ids.alice, absent), id)).toBe(false)
 
-    // The collection name is derived from the slug, so without one there is no
-    // index write to make. Writing the row anyway would report a delete that
-    // only ever happened in Postgres.
+    // No organization row, so no `vector_collection` and no index write to
+    // make. Writing the Postgres row anyway would report a delete that only
+    // ever happened on one side, and the document would stay in every answer.
     expect(index.seen).toEqual([])
     expect(await deletedAt(id)).toBeNull()
   })
@@ -225,7 +243,7 @@ when('I5 · the delete path', () => {
     const index = new RecordingIndex()
     const other = '77777777-7777-7777-7777-777777777777'
 
-    expect(await ingest(index, () => 'other').remove(auth(ids.alice, other), id)).toBe(false)
+    expect(await ingest(index).remove(auth(ids.alice, other), id)).toBe(false)
 
     expect(index.seen).toEqual([])
     expect(await deletedAt(id)).toBeNull()

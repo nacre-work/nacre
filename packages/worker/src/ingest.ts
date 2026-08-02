@@ -77,7 +77,7 @@ export interface VectorWriter {
    */
   write(input: {
     orgId: string
-    orgSlug: string
+    collection: string
     layerId: string
     documentId: string
     vectorName: string
@@ -94,7 +94,8 @@ export interface VectorWriter {
 
 export interface IngestRequest {
   readonly orgId: string
-  readonly orgSlug: string
+  /** The organization's collection, not derived from its slug. */
+  readonly collection: string
   readonly layerId: string
   readonly vectorName: string
   readonly externalId: string
@@ -184,7 +185,7 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
     // worst kind: a document with no text left, still holding places in results.
     await ports.vectors.write({
       orgId: request.orgId,
-      orgSlug: request.orgSlug,
+      collection: request.collection,
       layerId: request.layerId,
       documentId: stored.id,
       vectorName: request.vectorName,
@@ -228,7 +229,7 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
 
   await ports.vectors.write({
     orgId: request.orgId,
-    orgSlug: request.orgSlug,
+    collection: request.collection,
     layerId: request.layerId,
     documentId: stored.id,
     vectorName: request.vectorName,

@@ -6,25 +6,34 @@ import {
   ConfigError,
   createPool,
   installGuards,
+  VectorStore,
   loadConfig,
   withOrg,
 } from '@nacre.work/core'
 
 import {
+  claimCopyable,
   claimPurgeable,
+  claimReindexable,
   claimStale,
   claimStranded,
+  failReindex,
+  finishCopy,
+  finishReindexIfDone,
+  markReindexed,
   HttpParser,
   PostgresDocumentStore,
   pruneAuditEvents,
   pruneExpiredTokens,
   QdrantVectorWriter,
+  recordReindexPass,
   tagsForLayer,
 } from './adapters.js'
 import { ingest } from './ingest.js'
 import { collectOnce } from './collect.js'
 import { pruneOnce } from './prune.js'
 import { reapOnce } from './reap.js'
+import { reindexOnce } from './reindex.js'
 import { retagOnce } from './retag.js'
 
 /**
@@ -82,13 +91,33 @@ const REAP_EVERY_MS = 60_000
 const PRUNE_BATCH = 2000
 const PRUNE_EVERY_MS = 3_600_000
 
+// Reindexing a layer onto a different model. Small batches on a slow clock,
+// because every document in one is an embedding round trip against the model
+// server a deployment sized for its own ingest rate — and a reindex is
+// background work with no deadline. The documented response to it being slow is
+// to leave it running, not to make it compete with the ingest it shares an
+// endpoint with.
+const REINDEX_BATCH = 10
+const REINDEX_EVERY_MS = 5000
+
+// Consecutive passes over one layer that achieved nothing before the reindex is
+// marked failed. Twenty at five seconds apart is a little under two minutes of
+// getting nowhere, which is long enough to ride out a model server restart and
+// short enough that an operator polling the endpoint is told rather than left
+// watching a number that will never move. Reset by any document succeeding —
+// see recordReindexPass.
+const REINDEX_FAILURE_BOUND = 20
+
 interface Claim {
   readonly orgId: string
-  readonly orgSlug: string
+  /** The organization's collection, not derived from its slug. */
+  readonly collection: string
   readonly documentId: string
   readonly layerId: string
   readonly externalId: string
   readonly vectorName: string
+  /** The layer's embedding provider. Never this process's configuration. */
+  readonly providerId: string
   readonly sourceRef: string | null
   readonly sourceType: string
 }
@@ -108,19 +137,40 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
     const { rows } = await client.query<{
       id: string
       org_id: string
-      slug: string
+      collection: string
       layer_id: string
       external_id: string | null
       vector_name: string
+      provider_id: string
       source_ref: string | null
       source_type: string
     }>(
-      `SELECT d.id, d.org_id, o.slug, d.layer_id, d.external_id, l.vector_name,
-              d.source_ref, d.source_type
+      `SELECT d.id, d.org_id, o.vector_collection AS collection, d.layer_id, d.external_id, l.vector_name,
+              l.provider_id, d.source_ref, d.source_type
          FROM documents d
          JOIN organizations o ON o.id = d.org_id
          JOIN layers l        ON l.id = d.layer_id
         WHERE d.status = 'pending' AND d.deleted_at IS NULL
+          -- Not while this organization's collection is being copied.
+          --
+          -- The copy scrolls the old collection and the pointer moves when it
+          -- finishes, so a document indexed in between lands in the collection
+          -- that is about to be abandoned: Postgres says 'indexed', the new
+          -- collection has never heard of it, and nothing queues it again.
+          -- Silent, permanent, and proportional to how long the copy takes.
+          --
+          -- Waiting is the whole fix. The row stays 'pending', which is a
+          -- queue and not an error, and the copy is the only thing it waits
+          -- on. It also covers the case the copy exists for: a layer created
+          -- against a provider the collection has no slot for yet, whose
+          -- documents would otherwise fail every attempt with
+          -- "Not existing vector name".
+          AND NOT EXISTS (
+            SELECT 1 FROM layers c
+             WHERE c.org_id = d.org_id
+               AND c.reindex_state ->> 'status' = 'running'
+               AND c.reindex_state ->> 'phase'  = 'copying'
+          )
         ORDER BY d.created_at
         LIMIT 1
         FOR UPDATE OF d SKIP LOCKED`,
@@ -144,11 +194,12 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
 
     return {
       orgId: row.org_id,
-      orgSlug: row.slug,
+      collection: row.collection,
       documentId: row.id,
       layerId: row.layer_id,
       externalId: row.external_id ?? row.id,
       vectorName: row.vector_name,
+      providerId: row.provider_id,
       sourceRef: row.source_ref,
       sourceType: row.source_type,
     }
@@ -190,54 +241,17 @@ async function main(): Promise<void> {
         : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
     ),
   )
+
+  // The same Qdrant, through the shared client rather than a second
+  // implementation. `copyCollection` lives there because the API needs
+  // `vectorsOf` from the same place, and two copies of "what does a collection
+  // look like" is how the two ends of a migration end up disagreeing.
+  const store = new VectorStore(
+    config.qdrantApiKey === undefined
+      ? { url: config.qdrantUrl }
+      : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
+  )
   const documents = new PostgresDocumentStore(pool, APP_ROLE)
-  const embedder = {
-    embed: async (texts: readonly string[]) => {
-      // Bounded, for the same reason the parser call is: this worker is serial,
-      // so an embedder that accepts connections and never answers stops
-      // indexing for every tenant until undici's 300 s default gives up.
-      // Generous, because a batch on a CPU-only endpoint is genuinely slow.
-      const endpoint = new URL('/embeddings', config.embeddingEndpoint)
-
-      let response: Response
-      try {
-        response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ model: config.embeddingModel, input: texts }),
-          signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
-        })
-      } catch (cause) {
-        // `TypeError: fetch failed` and nothing else is what an operator used to
-        // get here, in the job's `error` column and in the log. It does not say
-        // what was called, or that an embedding endpoint is a thing they have to
-        // supply — and this is the first failure anyone following the quickstart
-        // meets, because the documented `minimal` profile starts no embedder.
-        //
-        // undici puts the real reason in `cause`: ENOTFOUND for a name that does
-        // not resolve, ECONNREFUSED for a port with nothing on it, a timeout for
-        // one that accepts and never answers. Naming the URL matters as much:
-        // the endpoint comes from configuration, so "which one" is the question
-        // the message has to answer.
-        const reason = String((cause as { cause?: unknown })?.cause ?? cause)
-        throw new Error(
-          `the embedding endpoint at ${endpoint.href} could not be reached: ${reason}. ` +
-            'It is set by NACRE_DEFAULT_EMBEDDING_ENDPOINT and this deployment must ' +
-            'supply one — the minimal Compose profile deliberately starts no embedder.',
-          { cause },
-        )
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          `the embedding endpoint at ${endpoint.href} answered ${response.status}`,
-        )
-      }
-      const body = (await response.json()) as { data?: { embedding?: number[] }[] }
-      return (body.data ?? []).map((d) => d.embedding ?? [])
-    },
-  }
-
   const retagPorts = {
     claim: (limit: number) => claimStale(pool, limit),
     tagsFor: (orgId: string, layerId: string) => tagsForLayer(pool, orgId, layerId, APP_ROLE),
@@ -287,9 +301,164 @@ async function main(): Promise<void> {
     },
   }
 
+  /**
+   * Embedders, one per provider, built on first use.
+   *
+   * Per provider and not one for the whole process. Ingest used to embed with
+   * `NACRE_DEFAULT_EMBEDDING_*` whatever the layer's provider said, so a layer
+   * on a second provider had 1024-dim vectors written into its 768-dim slot and
+   * every document in it failed on `Vector dimension error`. A reindex embeds
+   * with the shadow provider's model for the same reason — that one was wired,
+   * and the ordinary path was not.
+   *
+   * The endpoint and model come from the `embedding_providers` row, which is
+   * where they have always been: this process's configuration only ever
+   * supplied the installation *default*, which `init` writes into that table as
+   * the global row.
+   */
+  const embedders = new Map<string, (texts: readonly string[]) => Promise<readonly (readonly number[])[]>>()
+  const embedderFor = async (providerId: string) => {
+    const cached = embedders.get(providerId)
+    if (cached !== undefined) return cached
+
+    const { rows } = await acrossOrganizations(pool, (client) =>
+      client.query<{ endpoint: string; model: string; name: string }>(
+        'SELECT endpoint, model, name FROM embedding_providers WHERE id = $1',
+        [providerId],
+      ),
+    )
+    const provider = rows[0]
+    if (provider === undefined) throw new Error(`no embedding provider ${providerId}`)
+
+    const embed = async (texts: readonly string[]) => {
+      const endpoint = new URL('/embeddings', provider.endpoint)
+
+      let response: Response
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: provider.model, input: texts }),
+          // Bounded, for the same reason the parser call is: this worker is
+          // serial, so an embedder that accepts connections and never answers
+          // stops indexing for every tenant until undici's 300 s default gives
+          // up. Generous, because a batch on a CPU-only endpoint is genuinely
+          // slow.
+          signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+        })
+      } catch (cause) {
+        // `TypeError: fetch failed` and nothing else is what an operator used to
+        // get here, in the job's `error` column and in the log. It does not say
+        // what was called, or that an embedding endpoint is a thing they have to
+        // supply — and this is the first failure anyone following the quickstart
+        // meets, because the documented `minimal` profile starts no embedder.
+        //
+        // undici puts the real reason in `cause`: ENOTFOUND for a name that does
+        // not resolve, ECONNREFUSED for a port with nothing on it, a timeout for
+        // one that accepts and never answers. Naming the URL matters as much:
+        // the endpoint comes from an `embedding_providers` row, so "which one"
+        // is the question the message has to answer.
+        const reason = String((cause as { cause?: unknown })?.cause ?? cause)
+        throw new Error(
+          `the embedding endpoint at ${endpoint.href} could not be reached: ${reason}. ` +
+            `It is the endpoint on embedding provider ${provider.name}; the installation ` +
+            'default comes from NACRE_DEFAULT_EMBEDDING_ENDPOINT and this deployment must ' +
+            'supply one — the minimal Compose profile deliberately starts no embedder.',
+          { cause },
+        )
+      }
+
+      if (!response.ok) {
+        throw new Error(`the embedding endpoint at ${endpoint.href} answered ${response.status}`)
+      }
+      const body = (await response.json()) as { data?: { embedding?: number[] }[] }
+      return (body.data ?? []).map((d) => d.embedding ?? [])
+    }
+
+    embedders.set(providerId, embed)
+    return embed
+  }
+
+  /**
+   * The cheap half of a model migration, and the reason it exists.
+   *
+   * A named vector cannot be added to a live Qdrant collection. So the way to
+   * make room for a new model is to build a collection that already has the
+   * slot, move every point across carrying the vectors it already had, and
+   * switch which collection the organization points at.
+   *
+   * **No embeddings are computed here.** Vectors come out of the old collection
+   * and go into the new one unchanged; the new slot stays empty until a layer
+   * is reindexed into it. That is what makes this affordable to do once for the
+   * whole organization while the expensive half stays per layer.
+   *
+   * Search is unaffected throughout: it reads the old collection until the
+   * pointer moves, and the new one is byte-for-byte the same data afterwards.
+   */
+  const copyOnce = async (): Promise<number> => {
+    const targets = await claimCopyable(pool, 1)
+    let done = 0
+
+    for (const target of targets) {
+      // A name derived from the old one rather than random, so an operator
+      // looking at Qdrant can tell which collection replaced which.
+      const to = `${target.collection}_${target.shadowVector}`
+      try {
+        console.log(
+          JSON.stringify({ msg: 'copying collection', org: target.orgSlug, from: target.collection, to }),
+        )
+        await store.copyCollection({
+          from: target.collection,
+          to,
+          addVector: { name: target.shadowVector, size: target.dimensions },
+        })
+        await finishCopy(pool, target.orgId, to, APP_ROLE)
+        console.log(JSON.stringify({ msg: 'collection copied', org: target.orgSlug, collection: to }))
+        done++
+      } catch (error) {
+        // Failed rather than left running. A layer that sits in `copying`
+        // forever with nothing happening is the worst outcome here: the
+        // operator watches a progress number that will never move and has
+        // nothing to read. The old collection is untouched and still live, so
+        // failing costs only the attempt.
+        console.error(
+          JSON.stringify({ msg: 'collection copy failed', org: target.orgSlug, error: String(error) }),
+        )
+        await failReindex(pool, target.orgId, target.layerId, String(error), APP_ROLE).catch(() => {})
+      }
+    }
+
+    return done
+  }
+
+  const reindexPorts = {
+    claim: (limit: number) => claimReindexable(pool, limit),
+    embed: async (providerId: string, texts: readonly string[]) =>
+      (await embedderFor(providerId))(texts),
+    addVector: vectors.addVector.bind(vectors),
+    markReindexed: (orgId: string, documentId: string, shadow: string) =>
+      markReindexed(pool, orgId, documentId, shadow, APP_ROLE),
+    finishIfDone: (orgId: string, layerId: string, shadow: string) =>
+      finishReindexIfDone(pool, orgId, layerId, shadow, APP_ROLE),
+    recordPass: (input: {
+      orgId: string
+      layerId: string
+      shadowVector: string
+      succeeded: number
+      failed: number
+      error?: string
+    }) => recordReindexPass(pool, input, REINDEX_FAILURE_BOUND, APP_ROLE),
+    onError: (target: { documentId: string }, error: unknown) => {
+      console.error(
+        JSON.stringify({ msg: 'reindex failed', document_id: target.documentId, error: String(error) }),
+      )
+    },
+  }
+
   // Not zero: a sweep on the first idle tick would run before the process has
   // done anything, which is a destructive operation racing a cold start.
   let lastCollect = Date.now()
+  let lastReindex = 0
 
   // Same reasoning, and more of it. This one deletes rows outright, so a worker
   // that crash-loops must not get a prune attempt per restart.
@@ -437,6 +606,37 @@ async function main(): Promise<void> {
         }
       }
 
+      // Before retention and after collection. A reindex is the only one of
+      // these an operator is watching in real time, and it is the only one that
+      // changes what a search returns when it finishes.
+      if (Date.now() - lastReindex >= REINDEX_EVERY_MS) {
+        lastReindex = Date.now()
+        try {
+          // The copy first. A layer in the copy phase has no room to embed
+          // into, so running the embedding pass before it would claim
+          // documents and fail every one on a vector that does not exist yet.
+          const copied = await copyOnce()
+          if (copied > 0) {
+            lastReindex = 0
+            continue
+          }
+
+          const pass = await reindexOnce(reindexPorts, REINDEX_BATCH)
+          if (pass.reindexed > 0 || pass.failed > 0 || pass.switched > 0) {
+            console.log(JSON.stringify({ msg: 'reindexed', ...pass }))
+          }
+          // A full batch means there is more, so come back now rather than in
+          // five seconds. A migration of a large layer should not be paced by
+          // an idle timer.
+          if (pass.reindexed >= REINDEX_BATCH) {
+            lastReindex = 0
+            continue
+          }
+        } catch (error) {
+          console.error(JSON.stringify({ msg: 'reindex pass failed', error: String(error) }))
+        }
+      }
+
       // Last, and on the longest clock. Retention competes with nothing: no
       // request waits on it, no metric moves when it runs, and the tables it
       // touches are read on the login path and nowhere else. Its own try/catch
@@ -464,7 +664,7 @@ async function main(): Promise<void> {
       const result = await ingest(
         {
           orgId: claim.orgId,
-          orgSlug: claim.orgSlug,
+          collection: claim.collection,
           layerId: claim.layerId,
           vectorName: claim.vectorName,
           externalId: claim.externalId,
@@ -477,7 +677,16 @@ async function main(): Promise<void> {
           aclVersion: acl.version,
           ...source,
         },
-        { parser, embedder, documents, vectors, newId: randomUUID },
+        {
+          parser,
+          // The layer's provider, resolved per claim. Not a process-wide
+          // embedder: `layers.provider_id` decides which model a layer's
+          // vectors are, and the slot they go into is named after it.
+          embedder: { embed: async (texts) => (await embedderFor(claim.providerId))(texts) },
+          documents,
+          vectors,
+          newId: randomUUID,
+        },
       )
 
       console.log(

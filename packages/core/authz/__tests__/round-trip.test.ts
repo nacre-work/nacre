@@ -6,7 +6,7 @@ import { NacreSearchService, type AuthContext } from '@nacre.work/api'
 import { ingest, PostgresDocumentStore, QdrantVectorWriter, tagsForLayer } from '@nacre.work/worker'
 
 import { createPool, withOrg } from '../../db/client.js'
-import { collectionConfig, collectionName, PAYLOAD_INDEXES } from '../../vector/query.js'
+import { collectionConfig, collectionName, PAYLOAD_INDEXES, vectorName } from '../../vector/query.js'
 import { VectorStore } from '../../vector/search.js'
 
 /**
@@ -42,8 +42,12 @@ const when = pgUrl && qdrantUrl ? describe : describe.skip
 
 const ORG = '55555555-5555-5555-5555-555555555555'
 const SLUG = 'roundtrip'
-const VECTOR = 'v_test_4'
 const DIM = 4
+const MODEL = 'm'
+// Derived, exactly as the layer-create path derives it. Written as a literal
+// here it did not match the fixture's provider at all — which nothing noticed,
+// because until search resolved the model per layer nothing compared them.
+const VECTOR = vectorName(MODEL, DIM)
 
 const ids = {
   alice: '00000000-0000-0000-0000-0000000000f1',
@@ -86,7 +90,7 @@ async function index(layerId: string, externalId: string, content: string): Prom
   await ingest(
     {
       orgId: ORG,
-      orgSlug: SLUG,
+      collection: collectionName(SLUG),
       layerId,
       vectorName: VECTOR,
       externalId,
@@ -140,8 +144,8 @@ when('pipeline round trip · the worker and the search path agree', () => {
       }
       await c.query(
         `INSERT INTO embedding_providers (id, org_id, name, endpoint, model, dimensions)
-         VALUES ($1,NULL,'rt','http://e','m',$2) ON CONFLICT DO NOTHING`,
-        [ids.provider, DIM],
+         VALUES ($1,NULL,'rt','http://e',$3,$2) ON CONFLICT DO NOTHING`,
+        [ids.provider, DIM, MODEL],
       )
       await c.query(
         `INSERT INTO workspaces (id, org_id, slug, name) VALUES ($1,$2,'w','W') ON CONFLICT DO NOTHING`,
@@ -177,9 +181,7 @@ when('pipeline round trip · the worker and the search path agree', () => {
     search = new NacreSearchService({
       pool,
       vectors: new VectorStore({ url: qdrantUrl as string }),
-      embedder,
-      orgSlug: async () => SLUG,
-      vectorName: VECTOR,
+      embedderFor: () => embedder,
       role: 'nacre_app',
     })
 
@@ -286,7 +288,7 @@ when('pipeline round trip · the worker and the search path agree', () => {
       AS_APP,
     )
 
-    await new QdrantVectorWriter(client).tombstone(SLUG, documentId)
+    await new QdrantVectorWriter(client).tombstone(collectionName(SLUG), documentId)
 
     // Invariant I5. The points are still there — garbage collection has not
     // run — and the only thing keeping them out of this answer is the

@@ -150,10 +150,36 @@ read; `platform_admin` sees administrative actions and never that, which is rule
 2 applied to the journal and is set by the handler rather than being a parameter
 a caller could drop. Reading the log is recorded as `audit.read`.
 
+A layer can be moved onto a different embedding model. Qdrant cannot add a named
+vector to a live collection — checked by asking it, not by reading — so the
+collection is not altered but replaced: a new one carrying both slots, every
+point copied across unchanged with **no embeddings computed**, the
+`organizations.vector_collection` pointer switched in one statement, and then
+re-embedding one layer at a time into the new slot. The cheap half is org-wide
+and happens once; the expensive half is per layer and incremental.
+
+Search stays available throughout and stays one query. It carries one dense
+branch per model among the layers in scope, each confined to those layers and
+each embedded by that layer's own provider — the confinement is a `must`
+appended to the permission filter, never a filter of its own.
+
+That work found four things it did not set out to find, all the same root cause:
+`organizations.vector_collection` was written once at init and read by nothing,
+so every read and write derived `org_${slug}` instead; the search path took its
+named vector and its query model from `NACRE_EMBEDDING_MODEL` for every layer in
+every organization; the worker's ingest path did the same; and
+`finishReindexIfDone` moved `vector_name` without `provider_id`. Together they
+meant **an organization could never run two embedding models**, which the schema
+has offered since 0001 — `embedding_providers.org_id`, documented "NULL = global
+default". Adding a second provider and creating a layer on it accepted documents
+and failed every one of them in the worker, forever, while the API answered
+`queued`.
+
 Not built: OAuth discovery and dynamic client registration, multipart upload on
-ingest, layer reindex, and filtering on document metadata — the worker writes no metadata to
-the vector payload, which is why `filters` answers `400` rather than being a
-silent no-op.
+ingest, the recall check against a reference query set on a reindex, dropping
+the old vector after a rollback window, and filtering on document metadata — the
+worker writes no metadata to the vector payload, which is why `filters` answers
+`400` rather than being a silent no-op.
 
 **`docker compose --profile minimal up` has now been run from a clean clone**,
 and the whole loop driven through it: init, layer, ingest, indexed, search,

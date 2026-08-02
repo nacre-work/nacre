@@ -136,16 +136,81 @@ rather than a matter of taste.
 
 ## Reindexing on a model change
 
-1. Add a new named vector `v_{model}_{dim}` to the collection.
-2. Put the layer in dual-write: new documents are indexed by both models.
-3. A background job reindexes existing documents in batches, with bounded
-   concurrency and quota awareness.
-4. On completion, check against the layer's reference query set: Recall@10 of
-   the new index is no lower than the old minus a tolerance.
-5. Switch `layers.vector_name` atomically.
-6. Drop the old vector after a rollback window (7 days by default).
+A named vector can only be declared when a collection is created.
+`update_collection` adjusts the parameters of vectors that already exist — HNSW
+settings, quantization, on-disk placement — and refuses an unknown name
+outright:
 
-Search stays available throughout. Progress lives in `layers.reindex_state`.
+```
+PATCH /collections/org_acme  {"vectors":{"v_small_v2_768":{"size":768,...}}}
+400 {"error":"Not existing vector name error: v_small_v2_768"}
+```
+
+Checked against Qdrant 1.18.3, the version this repository pins, by asking it
+directly rather than by reading. Writing a point with an undeclared vector fails
+the same way, so there is no route in through `upsert` either. Every sequence
+below follows from that one fact.
+
+So the collection is not altered — it is **replaced**, and the expensive half is
+what happens afterwards:
+
+1. Create a new collection carrying every named vector the old one has **plus**
+   the new one, with identical HNSW and quantization parameters.
+2. Copy every point across unchanged, vectors and payload alike. **No embeddings
+   are computed.** The new slot stays empty.
+3. Switch `organizations.vector_collection` in one statement. Search follows
+   that column, so this is the moment the new collection becomes live — and it
+   is live with exactly the data the old one had.
+4. Re-embed **one layer at a time** into the new slot, adding a named vector to
+   points that already exist. `updateVectors`, never `upsert`: an upsert would
+   rewrite the payload from a call that knows nothing about acl tags.
+5. Switch that layer's `vector_name` and `provider_id` together, once no live
+   document in it lacks the new vector. One statement, so a document ingested
+   in between is part of the set rather than a hole.
+
+Steps 1–3 are org-wide and happen once however many layers are migrated; steps
+4–5 are per layer and are what `POST /v1/layers/{id}/reindex` starts.
+`reindex_state.phase` distinguishes them: `copying` for the first, `embedding`
+for the second, and `progress` measures only the second because the first
+computes nothing.
+
+**Search stays available throughout, and stays one query.** During a migration
+the organization holds layers on two models, so the query carries one dense
+branch per model, each confined to the layers on it and each embedded by that
+layer's own provider. The confinement is a `must` appended to the permission
+filter, never a filter of its own — a branch that could carry its own filter is
+the leak `buildHybridQuery` exists to make unrepresentable.
+
+Two things follow from the copy not being atomic against concurrent writes. The
+worker holds documents at `pending` while their organization is copying, because
+a document indexed in between would land in the collection about to be
+abandoned. And a layer whose provider has no slot in the collection — created
+against a second provider, not reindexed at all — starts the same copy rather
+than accepting documents it can never index.
+
+The old collection is left in place. Rolling the whole organization back is
+pointing `vector_collection` at it again; rolling one layer back is a reindex
+onto the provider it came from.
+
+Two consequences an operator meets and neither is a bug. **A reindex that fails
+still moves the pointer**, because steps 1–3 are what moved it and only step 4
+failed — the new collection holds exactly the old one's data plus an empty slot,
+so it is live and correct, and the layer stays on the model it was already on.
+And **nothing reclaims an abandoned collection.** Each reindex leaves one
+behind, holding a full copy of the organization's vectors; that is what makes
+the rollback above a pointer change rather than a rebuild, and it is disk that
+grows per migration until an operator drops it by hand. There is no retention
+job for them yet.
+
+**What is not built:** the recall check against a reference query set (step 4 of
+the original sequence), and dropping the old vector after a rollback window.
+Both are additions to a migration that completes without them — the first is a
+gate nobody can run without a query set, and the second is disk.
+
+The alternative was a collection per layer, which keeps a reindex local but
+turns an unscoped search into one Qdrant query per layer — ten to twenty in the
+ordinary case, against a p95 under 200 ms. Declaring spare vector slots at
+creation time means guessing future models and their dimensions.
 
 ## Deletion and garbage collection
 

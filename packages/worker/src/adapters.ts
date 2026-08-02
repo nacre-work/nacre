@@ -1,5 +1,5 @@
 import { QdrantClient } from '@qdrant/js-client-rest'
-import { acrossOrganizations, aclTags, collectionName, loadGroupsVersion, withOrg } from '@nacre.work/core'
+import { acrossOrganizations, aclTags, explainQdrant as explain, loadGroupsVersion, withOrg } from '@nacre.work/core'
 import type { PrincipalRef } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
@@ -7,6 +7,7 @@ import type { DocumentStore, Parser, ParsedDocument, StoredDocument, VectorWrite
 import type { StaleDocument } from './retag.js'
 import type { PurgeTarget } from './collect.js'
 import type { StrandedDocument } from './reap.js'
+import type { ReindexTarget } from './reindex.js'
 
 /**
  * The adapters behind the ingest ports.
@@ -217,11 +218,6 @@ export class PostgresDocumentStore implements DocumentStore {
  * nothing about why — a wrong vector name, a payload type the index disagrees
  * with, and a malformed id all look identical.
  */
-function explain(cause: unknown): string {
-  const data = (cause as { data?: unknown } | null)?.data
-  return data === undefined ? String(cause) : `${String(cause)} — ${JSON.stringify(data)}`
-}
-
 /**
  * Whether Qdrant is saying the collection is not there.
  *
@@ -240,7 +236,7 @@ export class QdrantVectorWriter implements VectorWriter {
 
   async write(input: {
     orgId: string
-    orgSlug: string
+    collection: string
     layerId: string
     documentId: string
     vectorName: string
@@ -251,7 +247,7 @@ export class QdrantVectorWriter implements VectorWriter {
     try {
       if (input.points.length > 0) await this.upsertPoints(input)
     } catch (cause) {
-      throw new Error(`upsert into ${collectionName(input.orgSlug)} rejected: ${explain(cause)}`, { cause })
+      throw new Error(`upsert into ${input.collection} rejected: ${explain(cause)}`, { cause })
     }
 
     // After the upsert, never before, for the same reason the delete path is
@@ -261,9 +257,42 @@ export class QdrantVectorWriter implements VectorWriter {
     // second means the worst case is the state that existed before this line —
     // points nobody joins to — rather than a hole in the index.
     try {
-      await this.sweep(input.orgSlug, input.documentId, input.points.map((p) => p.pointId))
+      await this.sweep(input.collection, input.documentId, input.points.map((p) => p.pointId))
     } catch (cause) {
-      throw new Error(`sweep of ${collectionName(input.orgSlug)} rejected: ${explain(cause)}`, { cause })
+      throw new Error(`sweep of ${input.collection} rejected: ${explain(cause)}`, { cause })
+    }
+  }
+
+  /**
+   * Add a named vector to points that already exist.
+   *
+   * `updateVectors` and not `upsert`: this must not touch the payload and must
+   * not disturb the vector the layer is currently searching on. A reindex adds
+   * a second named vector to the same point, and the old one keeps answering
+   * every query until `vector_name` switches — which is the whole of "search
+   * stays available throughout".
+   *
+   * An upsert here would be the quiet version of the bug: it would rewrite the
+   * payload from whatever this call happened to know, which is nothing about
+   * acl tags, so a reindex would strip the permission tags off every point it
+   * touched.
+   */
+  async addVector(
+    collection: string,
+    vectorName: string,
+    points: readonly { pointId: string; vector: readonly number[] }[],
+  ): Promise<void> {
+    if (points.length === 0) return
+    try {
+      await this.client.updateVectors(collection, {
+        wait: true,
+        points: points.map((p) => ({ id: p.pointId, vector: { [vectorName]: [...p.vector] } })),
+      } as never)
+    } catch (cause) {
+      throw new Error(
+        `adding ${vectorName} to ${collection} rejected: ${explain(cause)}`,
+        { cause },
+      )
     }
   }
 
@@ -280,8 +309,8 @@ export class QdrantVectorWriter implements VectorWriter {
    * A filtered delete rather than a delete by id: the set to remove is
    * "whatever else is there", which is only knowable to the index.
    */
-  private async sweep(orgSlug: string, documentId: string, keep: readonly string[]): Promise<void> {
-    await this.client.delete(collectionName(orgSlug), {
+  private async sweep(collection: string, documentId: string, keep: readonly string[]): Promise<void> {
+    await this.client.delete(collection, {
       wait: true,
       filter: {
         must: [{ key: 'doc_id', match: { value: documentId } }],
@@ -295,14 +324,14 @@ export class QdrantVectorWriter implements VectorWriter {
 
   private async upsertPoints(input: {
     orgId: string
-    orgSlug: string
+    collection: string
     layerId: string
     vectorName: string
     points: readonly { pointId: string; ordinal: number; vector: readonly number[]; docId: string }[]
     aclTags: readonly string[]
     aclVersion: number
   }): Promise<void> {
-    await this.client.upsert(collectionName(input.orgSlug), {
+    await this.client.upsert(input.collection, {
       wait: true,
       points: input.points.map((p) => ({
         id: p.pointId,
@@ -339,12 +368,12 @@ export class QdrantVectorWriter implements VectorWriter {
    * standing in the way.
    */
   async retag(input: {
-    orgSlug: string
+    collection: string
     documentId: string
     aclTags: readonly string[]
     aclVersion: number
   }): Promise<void> {
-    await this.client.setPayload(collectionName(input.orgSlug), {
+    await this.client.setPayload(input.collection, {
       wait: true,
       payload: { acl_tags: [...input.aclTags], acl_version: input.aclVersion },
       filter: { must: [{ key: 'doc_id', match: { value: input.documentId } }] },
@@ -360,9 +389,9 @@ export class QdrantVectorWriter implements VectorWriter {
    * authority for what should exist is Postgres, and a vector store that
    * disagrees loses.
    */
-  async purge(orgSlug: string, documentId: string): Promise<void> {
+  async purge(collection: string, documentId: string): Promise<void> {
     try {
-      await this.client.delete(collectionName(orgSlug), {
+      await this.client.delete(collection, {
         wait: true,
         filter: { must: [{ key: 'doc_id', match: { value: documentId } }] },
       } as never)
@@ -372,7 +401,7 @@ export class QdrantVectorWriter implements VectorWriter {
       // alternative is a target that fails on every sweep, forever, at the head
       // of a queue ordered oldest-first.
       if (collectionMissing(cause)) return
-      throw new Error(`purge from ${collectionName(orgSlug)} rejected: ${explain(cause)}`, { cause })
+      throw new Error(`purge from ${collection} rejected: ${explain(cause)}`, { cause })
     }
   }
 
@@ -384,8 +413,8 @@ export class QdrantVectorWriter implements VectorWriter {
    * is still in the index. Depending on the sweep's timing is how invariant I5
    * gets broken.
    */
-  async tombstone(orgSlug: string, documentId: string): Promise<void> {
-    await this.client.setPayload(collectionName(orgSlug), {
+  async tombstone(collection: string, documentId: string): Promise<void> {
+    await this.client.setPayload(collection, {
       wait: true,
       payload: { deleted: true },
       filter: { must: [{ key: 'doc_id', match: { value: documentId } }] },
@@ -488,7 +517,7 @@ export async function claimStale(
       const { rows } = await client.query<{
         id: string
         org_id: string
-        slug: string
+        collection: string
         layer_id: string
       }>(
         `WITH claimed AS (
@@ -530,13 +559,13 @@ export async function claimStale(
            FROM claimed c
            JOIN organizations o ON TRUE
           WHERE d.id = c.id AND o.id = d.org_id
-          RETURNING d.id, d.org_id, o.slug, d.layer_id`,
+          RETURNING d.id, d.org_id, o.vector_collection AS collection, d.layer_id`,
         [limit, leaseSeconds],
       )
 
       return rows.map((r) => ({
         orgId: r.org_id,
-        orgSlug: r.slug,
+        collection: r.collection,
         documentId: r.id,
         layerId: r.layer_id,
       }))
@@ -560,7 +589,7 @@ export async function claimPurgeable(
       const { rows } = await client.query<{
         id: string
         org_id: string
-        slug: string
+        collection: string
         age: string
       }>(
         `WITH claimed AS (
@@ -583,14 +612,14 @@ export async function claimPurgeable(
            FROM claimed c
            JOIN organizations o ON TRUE
           WHERE d.id = c.id AND o.id = d.org_id
-          RETURNING d.id, d.org_id, o.slug,
+          RETURNING d.id, d.org_id, o.vector_collection AS collection,
                     EXTRACT(EPOCH FROM (now() - d.deleted_at))::text AS age`,
         [limit, graceSeconds, leaseSeconds],
       )
 
       return rows.map((r) => ({
         orgId: r.org_id,
-        orgSlug: r.slug,
+        collection: r.collection,
         documentId: r.id,
         deletedAgeSeconds: Number(r.age),
       }))
@@ -765,4 +794,388 @@ export async function pruneAuditEvents(
     )
     return Number(rows[0]?.pruned ?? 0)
   })
+}
+
+/**
+ * Documents in a reindexing layer that do not yet carry the shadow vector.
+ *
+ * Cross-tenant, under the worker's BYPASSRLS role, so `org_id` comes back and
+ * is named explicitly by everything downstream. Joined to `layers` rather than
+ * driven from it: the interesting set is documents, and a layer with nothing
+ * outstanding produces no rows rather than an empty batch to discard.
+ *
+ * Chunks come back in the same query. A reindex re-embeds stored text — it does
+ * not re-parse a source or re-chunk anything — so the text and the point ids
+ * are the whole input, and fetching them per document would be a query each.
+ */
+export async function claimReindexable(
+  pool: Pool,
+  limit: number,
+): Promise<readonly ReindexTarget[]> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{
+      org_id: string
+      collection: string
+      layer_id: string
+      document_id: string
+      shadow_vector: string
+      provider_id: string
+      chunks: { point_id: string; text: string }[]
+    }>(
+      `SELECT d.org_id, o.vector_collection AS collection, d.layer_id, d.id AS document_id,
+              l.reindex_state ->> 'shadow_vector' AS shadow_vector,
+              l.reindex_state ->> 'provider_id'   AS provider_id,
+              (SELECT json_agg(json_build_object('point_id', c.point_id, 'text', c.text)
+                               ORDER BY c.ordinal)
+                 FROM chunks c WHERE c.document_id = d.id) AS chunks
+         FROM documents d
+         JOIN layers l        ON l.id = d.layer_id
+         JOIN organizations o ON o.id = d.org_id
+        WHERE l.reindex_state ->> 'status' = 'running'
+          AND l.deleted_at IS NULL
+          AND o.deleted_at IS NULL
+          AND d.deleted_at IS NULL
+          AND d.chunk_count > 0
+          AND d.reindexed_vector IS DISTINCT FROM (l.reindex_state ->> 'shadow_vector')
+        ORDER BY d.created_at
+        LIMIT $1`,
+      [limit],
+    )
+
+    return rows
+      .filter((r) => r.chunks !== null && r.chunks.length > 0)
+      .map((r) => ({
+        orgId: r.org_id,
+        collection: r.collection,
+        layerId: r.layer_id,
+        documentId: r.document_id,
+        shadowVector: r.shadow_vector,
+        providerId: r.provider_id,
+        chunks: r.chunks.map((c) => ({ pointId: c.point_id, text: c.text })),
+      }))
+  })
+}
+
+/** Record that a document carries the shadow vector. */
+export async function markReindexed(
+  pool: Pool,
+  orgId: string,
+  documentId: string,
+  shadowVector: string,
+  role?: string,
+): Promise<void> {
+  await withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      await client.query(
+        'UPDATE documents SET reindexed_vector = $3 WHERE org_id = $1 AND id = $2',
+        [orgId, documentId, shadowVector],
+      )
+    },
+    role === undefined ? {} : { role },
+  )
+}
+
+/**
+ * Switch `vector_name` if the layer has nothing outstanding.
+ *
+ * One statement. The check and the write cannot be separated: asking first and
+ * switching second leaves a window in which a document is ingested, gets no
+ * shadow vector, and is then excluded from an index that has already become the
+ * live one — a hole in a layer that reports itself migrated.
+ *
+ * `NOT EXISTS` over the same predicate the claim uses. The two must agree, and
+ * they are three lines apart in this file for that reason.
+ */
+export async function finishReindexIfDone(
+  pool: Pool,
+  orgId: string,
+  layerId: string,
+  shadowVector: string,
+  role?: string,
+): Promise<boolean> {
+  return withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      const { rowCount } = await client.query(
+        `UPDATE layers l
+            SET vector_name = $3,
+                -- The provider moves with the vector, in the same statement.
+                --
+                -- Leaving it behind is the quiet half of a half-finished
+                -- migration: vector_name says the layer is on the new model
+                -- and provider_id still names the old one, so everything that
+                -- asks the layer *which model* — the query embedder on the
+                -- search path, the ingest embedder in the worker — keeps
+                -- answering with the model the layer just moved off. Search
+                -- then embeds a 1024-dim query against a 768-dim slot and
+                -- Qdrant refuses the whole query, taking every other layer in
+                -- the organization down with it.
+                provider_id = (l.reindex_state ->> 'provider_id')::uuid,
+                reindex_state = jsonb_set(
+                  jsonb_set(l.reindex_state, '{status}', '"complete"'),
+                  '{finished_at}', to_jsonb(now()::text))
+          WHERE l.org_id = $1 AND l.id = $2
+            AND l.reindex_state ->> 'status' = 'running'
+            AND l.reindex_state ->> 'shadow_vector' = $3
+            AND NOT EXISTS (
+              SELECT 1 FROM documents d
+               WHERE d.org_id = l.org_id AND d.layer_id = l.id
+                 AND d.deleted_at IS NULL AND d.chunk_count > 0
+                 AND d.reindexed_vector IS DISTINCT FROM $3
+            )`,
+        [orgId, layerId, shadowVector],
+      )
+      return (rowCount ?? 0) > 0
+    },
+    role === undefined ? {} : { role },
+  )
+}
+
+/** A layer waiting on the organization's collection being rebuilt. */
+export interface CopyTarget {
+  readonly orgId: string
+  readonly orgSlug: string
+  readonly layerId: string
+  readonly collection: string
+  readonly shadowVector: string
+  readonly providerId: string
+  readonly dimensions: number
+}
+
+/**
+ * Layers stuck in the copy phase.
+ *
+ * At most one per organization, because the API refuses a second start while
+ * one is copying — but the query says so rather than assuming it, since the
+ * cost of two workers rebuilding one collection is losing whichever finished
+ * first.
+ */
+export async function claimCopyable(pool: Pool, limit: number): Promise<readonly CopyTarget[]> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{
+      org_id: string
+      slug: string
+      collection: string
+      layer_id: string
+      shadow_vector: string
+      provider_id: string
+      dimensions: number
+    }>(
+      `SELECT DISTINCT ON (l.org_id)
+              l.org_id, o.slug, o.vector_collection AS collection, l.id AS layer_id,
+              l.reindex_state ->> 'shadow_vector' AS shadow_vector,
+              l.reindex_state ->> 'provider_id'   AS provider_id,
+              p.dimensions
+         FROM layers l
+         JOIN organizations o      ON o.id = l.org_id
+         JOIN embedding_providers p ON p.id = (l.reindex_state ->> 'provider_id')::uuid
+        WHERE l.reindex_state ->> 'status' = 'running'
+          AND l.reindex_state ->> 'phase'  = 'copying'
+          AND l.deleted_at IS NULL AND o.deleted_at IS NULL
+        ORDER BY l.org_id, l.id
+        LIMIT $1`,
+      [limit],
+    )
+
+    return rows.map((r) => ({
+      orgId: r.org_id,
+      orgSlug: r.slug,
+      layerId: r.layer_id,
+      collection: r.collection,
+      shadowVector: r.shadow_vector,
+      providerId: r.provider_id,
+      dimensions: Number(r.dimensions),
+    }))
+  })
+}
+
+/**
+ * Point the organization at the rebuilt collection, and move every layer of it
+ * out of the copy phase.
+ *
+ * One statement each, one transaction. The pointer and the phases have to move
+ * together: a pointer that moved without the phases leaves layers waiting for a
+ * copy that already happened, and phases that moved without the pointer send
+ * the embedding pass at a collection nothing is searching.
+ *
+ * `vector_collection` is what every search resolves through, so this line is
+ * the moment the migration becomes visible — and it is a pointer swap rather
+ * than a data change, which is why it is atomic and why rolling back is the
+ * same statement with the old name.
+ */
+export async function finishCopy(
+  pool: Pool,
+  orgId: string,
+  collection: string,
+  role?: string,
+): Promise<void> {
+  await withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      await client.query('UPDATE organizations SET vector_collection = $2 WHERE id = $1', [
+        orgId,
+        collection,
+      ])
+      // Out of the copy phase, and straight to complete for a layer with
+      // nothing to re-embed.
+      //
+      // The `NOT EXISTS` is the same predicate `finishReindexIfDone` uses, and
+      // it has to be here as well: that function only ever runs for layers
+      // whose documents a pass actually claimed, so a layer with none — one
+      // created against a new provider, or an empty one being migrated — sat in
+      // `running` forever with nothing that would ever move it. Its
+      // `vector_name` was already right and ingest worked, which is what made
+      // it a stuck status report rather than a stuck layer, and reporting a
+      // migration as running for good is its own bug.
+      await client.query(
+        `UPDATE layers l
+            SET reindex_state =
+                  CASE WHEN EXISTS (
+                    SELECT 1 FROM documents d
+                     WHERE d.org_id = l.org_id AND d.layer_id = l.id
+                       AND d.deleted_at IS NULL AND d.chunk_count > 0
+                       AND d.reindexed_vector IS DISTINCT FROM (l.reindex_state ->> 'shadow_vector')
+                  )
+                  THEN jsonb_set(l.reindex_state, '{phase}', '"embedding"')
+                  ELSE jsonb_set(
+                         jsonb_set(
+                           jsonb_set(l.reindex_state, '{phase}', '"embedding"'),
+                           '{status}', '"complete"'),
+                         '{finished_at}', to_jsonb(now()::text))
+                  END,
+                -- And the same switch finishReindexIfDone makes, for the same
+                -- reason, on the path that skips it: a layer with nothing to
+                -- re-embed is finished the moment the collection exists, and
+                -- the two columns have to move together or the layer names one
+                -- model and embeds with another. A no-op for a layer created
+                -- against the new provider, which is already on both.
+                vector_name = CASE WHEN EXISTS (
+                    SELECT 1 FROM documents d
+                     WHERE d.org_id = l.org_id AND d.layer_id = l.id
+                       AND d.deleted_at IS NULL AND d.chunk_count > 0
+                       AND d.reindexed_vector IS DISTINCT FROM (l.reindex_state ->> 'shadow_vector')
+                  ) THEN l.vector_name ELSE l.reindex_state ->> 'shadow_vector' END,
+                provider_id = CASE WHEN EXISTS (
+                    SELECT 1 FROM documents d
+                     WHERE d.org_id = l.org_id AND d.layer_id = l.id
+                       AND d.deleted_at IS NULL AND d.chunk_count > 0
+                       AND d.reindexed_vector IS DISTINCT FROM (l.reindex_state ->> 'shadow_vector')
+                  ) THEN l.provider_id ELSE (l.reindex_state ->> 'provider_id')::uuid END
+          WHERE l.org_id = $1
+            AND l.reindex_state ->> 'status' = 'running'
+            AND l.reindex_state ->> 'phase'  = 'copying'`,
+        [orgId],
+      )
+    },
+    role === undefined ? {} : { role },
+  )
+}
+
+/**
+ * Record how a pass over one layer went, and give up if it keeps going badly.
+ *
+ * Two things were missing and they are the same omission twice. Nothing wrote
+ * a per-document failure into `reindex_state`, so `GET` on the reindex path
+ * answered `failed: 0, status: running` while the worker logged the same two
+ * failures every five seconds — the endpoint an operator is told to poll was
+ * the one place the failure was invisible. And nothing bounded the retries, so
+ * a reindex that could never succeed retried until somebody noticed.
+ *
+ * `failed` counts **consecutive** failures rather than total: a pass that got
+ * anywhere resets it, so a slow embedder dropping one request in ten does not
+ * accumulate its way to a stop over an afternoon. Only a layer that is making
+ * no progress at all reaches the bound.
+ *
+ * The whole thing is one statement, so two workers passing over the same layer
+ * cannot both read `failed` and both write the same increment — which is how a
+ * bounded retry becomes an unbounded one at exactly the moment the bound
+ * matters.
+ */
+export async function recordReindexPass(
+  pool: Pool,
+  input: {
+    orgId: string
+    layerId: string
+    shadowVector: string
+    succeeded: number
+    failed: number
+    error?: string
+  },
+  bound: number,
+  role?: string,
+): Promise<void> {
+  if (input.failed === 0 && input.succeeded === 0) return
+
+  await withOrg(
+    pool,
+    input.orgId,
+    async (client) => {
+      await client.query(
+        `UPDATE layers l
+            SET reindex_state =
+                  CASE
+                    WHEN $4::int > 0 THEN
+                      -- Progress. The consecutive count goes back to zero and
+                      -- the stale error goes with it, because an error left
+                      -- behind after a successful pass reads as the reason a
+                      -- finished reindex stopped.
+                      jsonb_set(l.reindex_state, '{failed}', '0') - 'error'
+                    WHEN COALESCE((l.reindex_state ->> 'failed')::int, 0) + $5::int >= $6::int THEN
+                      jsonb_set(
+                        jsonb_set(
+                          jsonb_set(l.reindex_state, '{failed}',
+                            to_jsonb(COALESCE((l.reindex_state ->> 'failed')::int, 0) + $5::int)),
+                          '{status}', '"failed"'),
+                        '{error}', to_jsonb($7::text))
+                    ELSE
+                      jsonb_set(
+                        jsonb_set(l.reindex_state, '{failed}',
+                          to_jsonb(COALESCE((l.reindex_state ->> 'failed')::int, 0) + $5::int)),
+                        '{error}', to_jsonb($7::text))
+                  END
+          WHERE l.org_id = $1 AND l.id = $2
+            AND l.reindex_state ->> 'status' = 'running'
+            AND l.reindex_state ->> 'shadow_vector' = $3`,
+        [
+          input.orgId,
+          input.layerId,
+          input.shadowVector,
+          input.succeeded,
+          input.failed,
+          bound,
+          (input.error ?? '').slice(0, 500),
+        ],
+      )
+    },
+    role === undefined ? {} : { role },
+  )
+}
+
+/** Record that a copy could not be made, so the layer stops looking running. */
+export async function failReindex(
+  pool: Pool,
+  orgId: string,
+  layerId: string,
+  error: string,
+  role?: string,
+): Promise<void> {
+  await withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      await client.query(
+        `UPDATE layers
+            SET reindex_state = jsonb_set(
+                  jsonb_set(reindex_state, '{status}', '"failed"'),
+                  '{error}', to_jsonb($3::text))
+          WHERE org_id = $1 AND id = $2 AND reindex_state ->> 'status' = 'running'`,
+        [orgId, layerId, error.slice(0, 500)],
+      )
+    },
+    role === undefined ? {} : { role },
+  )
 }

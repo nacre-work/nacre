@@ -18,7 +18,8 @@
 
 export interface PurgeTarget {
   readonly orgId: string
-  readonly orgSlug: string
+  /** The organization's collection, not derived from its slug. */
+  readonly collection: string
   readonly documentId: string
   /** How long it has been tombstoned, for the log and the grace check. */
   readonly deletedAgeSeconds: number
@@ -28,7 +29,7 @@ export interface CollectPorts {
   /** Documents tombstoned longer than the grace period, oldest first. */
   claim(limit: number, graceSeconds: number): Promise<readonly PurgeTarget[]>
   /** Remove every point of a document. Physical, not a payload flag. */
-  purge(orgSlug: string, documentId: string): Promise<void>
+  purge(collection: string, documentId: string): Promise<void>
   /** Record that the vectors are gone, so it is not swept twice. */
   markPurged(orgId: string, documentId: string): Promise<void>
   onError(target: PurgeTarget, error: unknown): void
@@ -73,7 +74,7 @@ export async function collectOnce(
   // no deadline. There is nothing waiting on this finishing sooner.
   for (const target of targets) {
     try {
-      await ports.purge(target.orgSlug, target.documentId)
+      await ports.purge(target.collection, target.documentId)
       await ports.markPurged(target.orgId, target.documentId)
       purged++
     } catch (error) {

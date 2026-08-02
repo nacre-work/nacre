@@ -18,7 +18,6 @@ import {
   PostgresGroupGraph,
   resolve,
   VectorStore,
-  vectorName,
   withOrg,
   type Config,
 } from '@nacre.work/core'
@@ -65,24 +64,6 @@ export function buildServices(config: Config): Services {
       ? { url: config.qdrantUrl }
       : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
   )
-  const embedder = new HttpEmbedder(config.embeddingEndpoint, config.embeddingModel, config.embeddingDim)
-
-  const slugs = new Map<string, string>()
-  const orgSlug = async (orgId: string): Promise<string | undefined> => {
-    const cached = slugs.get(orgId)
-    if (cached !== undefined) return cached
-    const found = await withOrg(
-      pool,
-      orgId,
-      async (c) =>
-        (await c.query<{ slug: string }>('SELECT slug FROM organizations WHERE id = $1', [orgId])).rows[0]
-          ?.slug,
-      { role: APP_ROLE },
-    )
-    if (found !== undefined) slugs.set(orgId, found)
-    return found
-  }
-
   // The same reranker the REST surface uses. Two surfaces over one index
   // answering in different orders is the kind of difference nobody reports as
   // a bug and everybody notices.
@@ -91,9 +72,7 @@ export function buildServices(config: Config): Services {
   const search = new NacreSearchService({
     pool,
     vectors,
-    embedder,
-    orgSlug,
-    vectorName: vectorName(config.embeddingModel, config.embeddingDim),
+    embedderFor: HttpEmbedder.pool(),
     role: APP_ROLE,
     ...(reranker === undefined ? {} : { reranker }),
     rerankCandidates: config.rerankCandidates,
@@ -110,7 +89,7 @@ export function buildServices(config: Config): Services {
   // write is allowed to do. `ingest_document` and `delete_document` were in the
   // tool catalog and in docs/mcp.md from the beginning with nothing behind them:
   // an agent listed the tools, called one, and was told it did not exist.
-  const ingest = new NacreIngest({ pool, tombstone: vectors, orgSlug, role: APP_ROLE })
+  const ingest = new NacreIngest({ pool, tombstone: vectors, role: APP_ROLE })
 
   const documents = new PostgresDocuments(pool, APP_ROLE)
   const audit = new PostgresAudit(pool, APP_ROLE)
