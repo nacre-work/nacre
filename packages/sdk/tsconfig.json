@@ -1,6 +1,22 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "rootDir": "src", "outDir": "dist" },
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    // DOM, and no "types": ["node"]. This is the one package that has to build
+    // for a browser as well as for Node — the admin UI imports it — so it may
+    // use only what both runtimes have: fetch, Response, AbortController,
+    // setTimeout. Naming the Node types here would let a Node-only global
+    // compile and then fail in a bundle, which is the wrong place to find out.
+    "lib": ["ES2023", "DOM"]
+  },
+  // No project reference to core: the SDK speaks HTTP and shares no types with
+  // the server, which is what lets a consumer install it without the rest.
+  //
+  // Tests are excluded from this build because `files: ["dist"]` publishes what
+  // it produces, and a published client should not ship its own test suite.
+  // They are still typechecked — tsconfig.typecheck.json covers the whole tree.
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../core" }]
+  "exclude": ["src/__tests__/**"],
+  "references": []
 }

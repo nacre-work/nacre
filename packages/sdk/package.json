@@ -9,8 +9,10 @@
   },
   "homepage": "https://nacre.work",
   "license": "Apache-2.0",
-  "private": true,
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -b",
     "dev": "tsx watch src/index.ts"

@@ -69,12 +69,6 @@ importers:
         specifier: ^8.22.0
         version: 8.22.0
     devDependencies:
-      '@nacre.work/api':
-        specifier: workspace:*
-        version: link:../api
-      '@nacre.work/mcp':
-        specifier: workspace:*
-        version: link:../mcp
       '@types/node':
         specifier: ^26.1.2
         version: 26.1.2
