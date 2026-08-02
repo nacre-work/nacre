@@ -11,6 +11,8 @@ import {
   vectorName,
   withOrg,
   ConfigError,
+  installGuards,
+  onListenError,
 } from '@nacre.work/core'
 
 import {
@@ -235,17 +237,22 @@ async function main(): Promise<void> {
     )
   })
 
-  const shutdown = (signal: string) => {
-    console.log(JSON.stringify({ msg: 'shutting down', signal }))
+  onListenError(server, 'api', port)
+
+  installGuards({
+    service: 'api',
     // Stop accepting, let in-flight requests finish, then release the pool.
-    // Dropping a request mid-flight would leave its audit event unwritten.
-    server.close(() => {
+    // Dropping a request mid-flight would leave its audit event unwritten —
+    // but `server.close` waits without a bound, so `installGuards` puts one on
+    // it: one request stuck on a slow dependency used to mean the callback
+    // never ran, the pool was never released, and the orchestrator SIGKILLed at
+    // the end of its grace period. Every rolling deploy was an abrupt one.
+    shutdown: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
       redis.close()
-      void pool.end().then(() => process.exit(0))
-    })
-  }
-  process.on('SIGTERM', () => shutdown('SIGTERM'))
-  process.on('SIGINT', () => shutdown('SIGINT'))
+      await pool.end()
+    },
+  })
 }
 
 main().catch((error: unknown) => {

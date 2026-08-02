@@ -1,4 +1,4 @@
-import { ConfigError, loadConfig } from '@nacre.work/core'
+import { ConfigError, installGuards, loadConfig, onListenError } from '@nacre.work/core'
 
 import { createMcpServer } from './server.js'
 import { buildServices, jwtKey } from './services.js'
@@ -39,14 +39,15 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({ msg: 'mcp listening', port, env: config.env }))
   })
 
-  const shutdown = (signal: string) => {
-    console.log(JSON.stringify({ msg: 'shutting down', signal }))
-    server.close(() => {
-      void pool.end().then(() => process.exit(0))
-    })
-  }
-  process.on('SIGTERM', () => shutdown('SIGTERM'))
-  process.on('SIGINT', () => shutdown('SIGINT'))
+  onListenError(server, 'mcp', port)
+
+  installGuards({
+    service: 'mcp',
+    shutdown: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await pool.end()
+    },
+  })
 }
 
 main().catch((error: unknown) => {

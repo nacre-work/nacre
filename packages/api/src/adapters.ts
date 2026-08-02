@@ -383,15 +383,22 @@ export class HttpEmbedder implements Embedder {
     private readonly endpoint: string,
     private readonly model: string,
     private readonly dimensions: number,
+    /** One query, one vector, and a caller waiting on it. */
+    private readonly timeoutMs = 15_000,
   ) {}
 
   async embed(texts: readonly string[]): Promise<readonly (readonly number[])[]> {
     if (texts.length === 0) return []
 
+    // On the search path, so much tighter than the worker's: a caller is
+    // waiting. Without any bound a wedged embedder held every search open for
+    // undici's 300 s default, which exhausts the connection pool long before
+    // anyone sees an error.
     const response = await fetch(new URL('/embeddings', this.endpoint), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: this.model, input: texts }),
+      signal: AbortSignal.timeout(this.timeoutMs),
     })
 
     if (!response.ok) {
