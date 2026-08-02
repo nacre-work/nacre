@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline'
 
 import { authenticate, Problem, type AuthContext, type VerifyOptions } from '@nacre.work/api'
@@ -148,6 +149,9 @@ async function dispatch(
         call.name,
         (call.arguments ?? {}) as Record<string, unknown>,
         auth,
+        // One id per call here too. STDIO has no transport-level request id, so
+        // this is the only thing tying an audit row to one invocation.
+        randomUUID(),
       )
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],

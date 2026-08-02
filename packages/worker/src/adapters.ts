@@ -371,13 +371,27 @@ export class QdrantVectorWriter implements VectorWriter {
  * careful about here is not trusting its output shape.
  */
 export class HttpParser implements Parser {
-  constructor(private readonly endpoint: string) {}
+  constructor(
+    private readonly endpoint: string,
+    /**
+     * Two minutes. The sidecar has its own 30 s cap on fetching a URL, and the
+     * rest is parsing a document that may be 50 MB of PDF.
+     *
+     * There has to be a number here. Without one, undici waits 300 s by
+     * default, and the worker is strictly serial — so a sidecar that accepts
+     * connections and never answers stops indexing for **every tenant**, five
+     * minutes per attempt, with no metric and no liveness signal to say why.
+     * A bounded wait turns that into a failed document and a retry.
+     */
+    private readonly timeoutMs = 120_000,
+  ) {}
 
   async parse(source: { content?: string; url?: string }): Promise<ParsedDocument> {
     const response = await fetch(new URL('/parse', this.endpoint), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(source),
+      signal: AbortSignal.timeout(this.timeoutMs),
     })
 
     if (!response.ok) {

@@ -51,3 +51,23 @@ through the journal itself.
 `result: "deny"` is the most useful line in the file and the easiest to forget
 to write, because the code path that produces it is an early return. Every
 denial gets an event, including the ones that come out as `404` on the wire.
+
+## What is written today
+
+Every event carries `surface` (`api` or `mcp`, from the transport that made the
+call) and a `target` naming what it was about. Search records the document ids
+and layers it returned, so the question this document opens with — *which
+documents did your agent read last quarter* — has an answer.
+
+Both were literals in the insert statement until recently: `'api'` and an empty
+object, which meant every MCP call was logged as REST and the `gin (target)`
+index built for this indexed nothing.
+
+**Retention is not enforced.** `NACRE_AUDIT_RETENTION_DAYS` is validated at
+startup and read by nothing, and it cannot be implemented by the application
+role: migration `0002` revokes `DELETE` on `audit_events` from `nacre_app`
+deliberately, so a pruning job has to run as the owner. That is a decision
+still to be made rather than a line still to be written.
+
+`GET /v1/audit` is not implemented — events are written and there is no way to
+read them back over the API yet.

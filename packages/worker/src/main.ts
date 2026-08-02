@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto'
 
 import { QdrantClient } from '@qdrant/js-client-rest'
-import { acrossOrganizations, ConfigError, createPool, loadConfig, withOrg } from '@nacre.work/core'
+import {
+  acrossOrganizations,
+  ConfigError,
+  createPool,
+  installGuards,
+  loadConfig,
+  withOrg,
+} from '@nacre.work/core'
 
 import {
   claimPurgeable,
@@ -28,6 +35,9 @@ import { retagOnce } from './retag.js'
  */
 
 const APP_ROLE = 'nacre_app'
+
+/** See the call site. Two minutes, and never unbounded. */
+const EMBED_TIMEOUT_MS = 120_000
 const IDLE_MS = 2000
 
 // What a pass that only failed waits before the next one. A failing retag pass
@@ -171,10 +181,15 @@ async function main(): Promise<void> {
   const documents = new PostgresDocumentStore(pool, APP_ROLE)
   const embedder = {
     embed: async (texts: readonly string[]) => {
+      // Bounded, for the same reason the parser call is: this worker is serial,
+      // so an embedder that accepts connections and never answers stops
+      // indexing for every tenant until undici's 300 s default gives up.
+      // Generous, because a batch on a CPU-only endpoint is genuinely slow.
       const response = await fetch(new URL('/embeddings', config.embeddingEndpoint), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model: config.embeddingModel, input: texts }),
+        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
       })
       if (!response.ok) throw new Error(`the embedding endpoint answered ${response.status}`)
       const body = (await response.json()) as { data?: { embedding?: number[] }[] }
@@ -236,12 +251,42 @@ async function main(): Promise<void> {
   const backoff = () => Math.min(BACKOFF_MS * 2 ** Math.min(barren, 5), BACKOFF_MAX_MS)
 
   let running = true
+  // Woken by the signal handler so an idle sleep does not have to run out.
+  let wake: (() => void) | undefined
+
+  /**
+   * Sleep, unless we are asked to stop first.
+   *
+   * The loop's idle wait backs off to 30 seconds, which is exactly Kubernetes'
+   * default grace period — so a SIGTERM arriving just after a sleep began sat
+   * there until the orchestrator lost patience and SIGKILLed. That is survivable
+   * (the lease reclaims the document) and it made every drain a kill.
+   */
+  const sleep = (ms: number): Promise<void> =>
+    new Promise<void>((resolve) => {
+      if (!running) return resolve()
+      const timer = setTimeout(() => {
+        wake = undefined
+        resolve()
+      }, ms)
+      wake = () => {
+        clearTimeout(timer)
+        wake = undefined
+        resolve()
+      }
+    })
+
   const stop = (signal: string) => {
     console.log(JSON.stringify({ msg: 'draining', signal }))
     running = false
+    wake?.()
   }
-  process.on('SIGTERM', () => stop('SIGTERM'))
-  process.on('SIGINT', () => stop('SIGINT'))
+
+  // The guards own the signals; `stop` only sets the flag and wakes the sleep.
+  // The loop finishes the document it holds and exits on its own — and if it
+  // cannot, the deadline in installGuards exits anyway rather than waiting for
+  // a SIGKILL. A document interrupted mid-pipeline is reclaimed by its lease.
+  installGuards({ service: 'worker', shutdown: async () => { stop('shutdown'); await pool.end() } })
 
   console.log(JSON.stringify({ msg: 'worker started', env: config.env }))
 
@@ -251,7 +296,7 @@ async function main(): Promise<void> {
       claim = await claimNext(pool)
     } catch (error) {
       console.error(JSON.stringify({ msg: 'claim failed', error: String(error) }))
-      await new Promise((r) => setTimeout(r, IDLE_MS))
+      await sleep(IDLE_MS)
       continue
     }
 
@@ -336,7 +381,7 @@ async function main(): Promise<void> {
         }
       }
 
-      await new Promise((r) => setTimeout(r, wait))
+      await sleep(wait)
       continue
     }
 

@@ -267,6 +267,40 @@ export interface AuditEvent {
   readonly result: 'allow' | 'deny' | 'error'
   readonly detail: Record<string, unknown>
   readonly requestId: string
+  /**
+   * Which surface the call came in on.
+   *
+   * Was hardcoded `'api'` in the adapter, and the MCP server shares that sink —
+   * so every agent's read was logged as though a human had made it over REST.
+   * The column existed, the schema declared the enum, and nothing could tell
+   * the two apart. Defaults to `api` so an omission is the common case rather
+   * than a lie.
+   */
+  readonly surface?: 'api' | 'mcp' | 'admin' | 'system'
+  /**
+   * What the call was about, as `docs/audit.md` specifies it.
+   *
+   * Was hardcoded `'{}'::jsonb`, so the `gin (target)` index built for it
+   * indexed nothing and the document's opening promise — "show me which
+   * documents your agent read last quarter" — could not be answered at all.
+   * Search fills in the layers and the ids it returned; the rest name what they
+   * touched.
+   */
+  readonly target?: Record<string, unknown>
+}
+
+/**
+ * The counters and histograms the request path fills in.
+ *
+ * Deliberately a narrow port rather than the whole `Metrics` object: the server
+ * should not be able to reach the gauges that a background collector owns, and
+ * a test should not need a registry to check that a denial was counted.
+ */
+export interface RequestMetrics {
+  searchDuration: { observe(seconds: number, labels?: Record<string, string>): void }
+  searchResults: { inc(labels?: Record<string, string>, by?: number): void }
+  aclDenials: { inc(labels?: Record<string, string>, by?: number): void }
+  ingestDuration: { observe(seconds: number, labels?: Record<string, string>): void }
 }
 
 export interface AuditSink {
@@ -278,6 +312,16 @@ export interface ApiOptions {
   readonly verify: VerifyOptions
   /** Rendered at /metrics. Absent means the endpoint answers 404. */
   readonly metrics?: { render(): Promise<string> }
+  /**
+   * Where the request path writes what it measured.
+   *
+   * Four of these were registered and never written: `/metrics` served
+   * `nacre_search_results_total 0` and `nacre_acl_denials_total 0` forever, and
+   * the two histograms rendered nothing at all. A series pinned at zero reads
+   * as health, so the p95 target `docs/config.md` sets was not merely unmet —
+   * it was unmeasurable, and looked fine.
+   */
+  readonly observe?: RequestMetrics
   /**
    * Answered at `/v1/ready`. Absent means the endpoint answers 404.
    *
@@ -946,6 +990,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
+      const started = process.hrtime.bigint()
       const results = await options.search.search(
         auth,
         query,
@@ -954,11 +999,33 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         // configured does not acquire one because a client asked.
         rerank === false ? { rerank: false } : {},
       )
+      // Measured around the whole thing — resolve, embed, traverse, hydrate,
+      // rerank — because that is what a caller waits for and what the p95
+      // target in docs/config.md is about. It was never observed at all, so the
+      // histogram rendered no series and the target was unmeasurable.
+      options.observe?.searchDuration.observe(Number(process.hrtime.bigint() - started) / 1e9)
+      options.observe?.searchResults.inc({}, results.length)
+      if (results.length === 0) {
+        // Zero permitted results is what a denial looks like on this endpoint:
+        // there is no 403 to count, by design. Without it the denial counter sat
+        // at zero forever, which reads as "nobody is being refused".
+        options.observe?.aclDenials.inc({ reason: 'search_empty' })
+      }
       await options.audit.write({
         orgId: auth.orgId,
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'search',
         result: 'allow',
+        // `docs/audit.md` opens by promising that "show me which documents your
+        // agent read last quarter has to get a precise answer". That needs the
+        // ids, and this wrote a count. The query text is deliberately still not
+        // here — CLAUDE.md forbids logging it, and `NACRE_AUDIT_QUERY_TEXT`
+        // exists for deployments that decide otherwise.
+        target: {
+          returned_docs: [...new Set(results.map((r) => r.doc_id))],
+          layers: [...new Set(results.map((r) => r.layer))],
+          top_k: boundedTopK(topK),
+        },
         detail: { returned: results.length },
         requestId,
       })
@@ -986,6 +1053,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
+      const queuedAt = process.hrtime.bigint()
       const outcome = await options.ingest.queue(auth, {
         layer,
         externalId,
@@ -993,8 +1061,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         ...(typeof content === 'string' ? { content } : {}),
         ...(typeof url_ === 'string' ? { url: url_ } : {}),
       })
+      // The accept stage only — parse, chunk and embed happen in the worker,
+      // which has no registry of its own. Labelled so the rest can join it
+      // later without changing the metric's meaning.
+      options.observe?.ingestDuration.observe(Number(process.hrtime.bigint() - queuedAt) / 1e9, {
+        stage: 'accept',
+      })
 
       if (outcome === undefined) {
+        options.observe?.aclDenials.inc({ reason: 'ingest_layer' })
         // Not 403. A caller without write access must not learn which layers
         // exist by seeing which ones refuse differently from which ones are
         // absent.
@@ -1003,6 +1078,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'ingest',
           result: 'deny',
+          target: { layer },
           detail: { layer },
           requestId,
         })
@@ -1016,6 +1092,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'ingest',
         result: 'allow',
+        target: { layer, document_id: outcome.documentId },
         detail: { document_id: outcome.documentId, unchanged: outcome.unchanged },
         requestId,
       })
@@ -1042,6 +1119,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'delete_document',
         result: removed ? 'allow' : 'deny',
+        target: { document_id: id },
         detail: { document_id: id },
         requestId,
       })
@@ -1069,6 +1147,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'get_document',
           result: 'deny',
+          target: { document_id: id },
           detail: { document_id: id },
           requestId,
         })
@@ -1082,6 +1161,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'get_document',
         result: 'allow',
+        target: { document_id: id },
         detail: { document_id: id },
         requestId,
       })

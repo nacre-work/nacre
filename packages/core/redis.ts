@@ -66,6 +66,19 @@ export class Redis {
     })
     socket.setNoDelay(true)
 
+    // A connect deadline, which `#timeoutMs` alone did not give: that guards
+    // replies, and a reply cannot time out on a connection that never opened.
+    //
+    // A restarted Redis refuses immediately and fails open in milliseconds,
+    // which is the case the fail-open was designed against. A *partitioned* one
+    // — a firewall dropping packets, a node that vanished — blackholes the SYN,
+    // and Linux retries it for around 127 seconds. Every rate-limited request
+    // blocked for that long before being allowed through, so the documented
+    // "a cache outage must not become an outage" turned into one anyway.
+    socket.setTimeout(this.#timeoutMs, () => {
+      socket.destroy(new RedisError(`redis did not accept a connection within ${this.#timeoutMs}ms`))
+    })
+
     socket.on('data', (chunk: Buffer) => {
       this.#buffer = Buffer.concat([this.#buffer, chunk])
       this.#drain()
@@ -81,9 +94,16 @@ export class Redis {
       for (const p of pending) p.reject(new RedisError('the redis connection closed', { cause }))
     }
     socket.on('error', fail)
-    socket.on('close', () => fail(undefined))
+    // Guarded on identity: without it a late `close` from a socket that has
+    // already been replaced clears `#socket` and rejects the commands in flight
+    // on the *new* connection.
+    socket.on('close', () => {
+      if (this.#socket === socket || this.#socket === undefined) fail(undefined)
+    })
 
     await once(socket, 'connect')
+    // The deadline was for connecting. Replies have their own, per command.
+    socket.setTimeout(0)
     this.#socket = socket
 
     // Auth and database come from the URL, so a deployment configures them in

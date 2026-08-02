@@ -351,15 +351,22 @@ export class PostgresAudit implements AuditSink {
       event.orgId,
       async (client) => {
         await client.query(
+          // `surface` and `target` were literals in this statement — 'api' and
+          // an empty object — so every MCP call was logged as REST and the
+          // `gin (target)` index built for this indexed nothing. The columns
+          // and the schema were right from the first migration; only the write
+          // was not.
           `INSERT INTO audit_events
              (org_id, actor_type, actor_id, actor_label, action, surface, target, result, detail, request_id)
-           VALUES ($1,$2,$3,$4,$5,'api','{}'::jsonb,$6,$7,$8)`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)`,
           [
             event.orgId,
             actorType ?? 'unknown',
             /^[0-9a-f-]{36}$/i.test(actorId ?? '') ? actorId : null,
             event.actor,
             event.action,
+            event.surface ?? 'api',
+            JSON.stringify(event.target ?? {}),
             event.result,
             JSON.stringify(event.detail),
             event.requestId,
@@ -383,15 +390,22 @@ export class HttpEmbedder implements Embedder {
     private readonly endpoint: string,
     private readonly model: string,
     private readonly dimensions: number,
+    /** One query, one vector, and a caller waiting on it. */
+    private readonly timeoutMs = 15_000,
   ) {}
 
   async embed(texts: readonly string[]): Promise<readonly (readonly number[])[]> {
     if (texts.length === 0) return []
 
+    // On the search path, so much tighter than the worker's: a caller is
+    // waiting. Without any bound a wedged embedder held every search open for
+    // undici's 300 s default, which exhausts the connection pool long before
+    // anyone sees an error.
     const response = await fetch(new URL('/embeddings', this.endpoint), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: this.model, input: texts }),
+      signal: AbortSignal.timeout(this.timeoutMs),
     })
 
     if (!response.ok) {

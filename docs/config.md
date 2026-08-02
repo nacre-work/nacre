@@ -136,6 +136,32 @@ per-variable check cannot catch them:
 URLs are not allowed — a default that quietly points at localhost is how a
 production deployment ends up talking to nothing and reporting success.
 
+### Accepted and not implemented
+
+These parse, and the code reads none of them. Listed rather than removed,
+because each is in the contract and will be built to it — but an operator
+should know that setting one changes nothing today:
+
+| Variable | What it would do |
+|---|---|
+| `NACRE_LOG_LEVEL`, `NACRE_LOG_FORMAT` | all logging is structured JSON at one level |
+| `NACRE_AUDIT_RETENTION_DAYS` | nothing prunes `audit_events`; see [audit.md](./audit.md) |
+| `NACRE_AUDIT_QUERY_TEXT` | query text is never written, with or without it |
+| `NACRE_ACL_CACHE_TTL` | the resolver cache is written and not wired in, so every search recomputes the group closure. Safe — it errs towards recomputing — and slower than it should be |
+| `NACRE_S3_*`, `NACRE_PRESIGN_TTL` | object storage is not wired; document bodies live in Postgres |
+| `NACRE_OAUTH_*`, `NACRE_EMA_*` | OAuth discovery, DCR and EMA are not built |
+| `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module and is not written |
+
+Two are **refused** rather than ignored, because ignoring them would silently
+overrule a decision about isolation:
+
+- `NACRE_VECTOR_TENANCY=shared` — every collection is named per organization and
+  no code path shares one. Accepting it would give you a single-collection
+  deployment that believes it is isolated.
+- `NACRE_ACL_TAG_HASH_BYTES` other than 8 — the width is fixed in the code that
+  writes and matches tags, so setting it changes the collision probability you
+  think you have and nothing else.
+
 ### What Redis is for
 
 `NACRE_REDIS_URL` holds the rate limit counters and the `Idempotency-Key` cache,
@@ -181,21 +207,19 @@ packaging one — see [licensing.md](./licensing.md).
 Required metrics:
 
 ```
-nacre_acl_propagation_lag_seconds{org}     # target < 60. Emitted.
-nacre_documents_total{org,status}          # emitted
-nacre_tombstones_pending_total{org}        # emitted; climbing means GC is losing
-```
-
-Registered and **not yet emitted** — the series exist and stay at zero, which is
-worse than absent because it reads as health. Wiring them is outstanding work,
-not a decision:
-
-```
-nacre_search_duration_seconds{quantile}    # target p95 < 200ms at 10M vectors
-nacre_search_results_total{layer}
+nacre_acl_propagation_lag_seconds{org}     # target < 60
+nacre_documents_total{org,status}
+nacre_tombstones_pending_total{org}        # climbing means GC is losing
+nacre_search_duration_seconds              # target p95 < 200ms at 10M vectors
+nacre_search_results_total
 nacre_acl_denials_total{reason}
-nacre_ingest_duration_seconds{stage}
+nacre_ingest_duration_seconds{stage}       # the accept stage; the worker has no registry
 ```
+
+`nacre_acl_denials_total` counts what a denial looks like on each surface. On
+ingest that is a refused layer. On search there is no `403` to count, by design
+— invariant 4 makes an invisible layer indistinguishable from an absent one —
+so zero permitted results is the denial, under `reason="search_empty"`.
 
 Specified and not registered at all, both tied to reindexing, which is not
 built: `nacre_reindex_progress_ratio{layer}`, `nacre_vectors_total{org}`.
