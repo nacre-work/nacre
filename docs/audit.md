@@ -11,8 +11,15 @@ change to an organization's configuration; every reindex start; every denial.
 
 **Never:** document contents, chunk text, and — with
 `NACRE_AUDIT_QUERY_TEXT=false`, the default — full query text. A query hash is
-stored instead. That is enough to investigate an incident and not enough to leak
-through the journal itself.
+stored instead: `detail.query_hash`, `sha256:` and hex, the same shape as
+`documents.content_hash`. That is enough to investigate an incident — *did this
+agent run this query, and how often* is a comparison of hashes — and not enough
+to leak what was searched for through the journal itself.
+
+With the flag on, `detail.query` carries the text as well. The hash is written
+either way and is always of the whole query, so an installation that turns the
+flag on can still compare its new records against its old ones. A stored query
+is truncated at 1024 characters; the hash is not.
 
 ## Schema
 

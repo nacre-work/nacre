@@ -309,6 +309,16 @@ the client cannot parse — checked by running it and confirming stdout stayed a
 zero bytes. `installGuards` also stopped reporting a clean shutdown as an error,
 which is what turned every deploy into a line a dashboard counts.
 
+A search leaves a `query_hash` in the journal, and the query itself where
+`NACRE_AUDIT_QUERY_TEXT` says so. `docs/audit.md` promised both — "a query hash
+is stored instead", and the flag for deployments that decide otherwise — and the
+event carried a count. So the hash the document calls "enough to investigate an
+incident" did not exist, and the flag was a third variable read by nothing. The
+hash is unconditional and always of the whole query even when the stored text is
+truncated, or two records of one long query would not match each other, which is
+the comparison an investigation makes. `latency_ms` went in beside it: the
+number was already measured for the histogram and never reached the journal.
+
 **Test what you write by running it, not only by testing it.** Twelve of the
 worst defects found so far were each invisible to a green suite and obvious
 within a minute of starting the processes: the worker indexing nothing at all,
