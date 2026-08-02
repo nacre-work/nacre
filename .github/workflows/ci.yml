@@ -3,6 +3,11 @@ name: build
 on:
   push:    { branches: [main] }
   pull_request:
+  # Manual, because `pull_request` was the only way to ask for a run and that
+  # left no recourse when Actions stopped scheduling them — no failed run to
+  # re-run, nothing queued to wait for, and an empty commit as the only lever.
+  # A required check needs a way to be asked for by hand.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
