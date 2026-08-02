@@ -116,6 +116,8 @@ interface Claim {
   readonly layerId: string
   readonly externalId: string
   readonly vectorName: string
+  /** The layer's embedding provider. Never this process's configuration. */
+  readonly providerId: string
   readonly sourceRef: string | null
   readonly sourceType: string
 }
@@ -139,11 +141,12 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
       layer_id: string
       external_id: string | null
       vector_name: string
+      provider_id: string
       source_ref: string | null
       source_type: string
     }>(
       `SELECT d.id, d.org_id, o.vector_collection AS collection, d.layer_id, d.external_id, l.vector_name,
-              d.source_ref, d.source_type
+              l.provider_id, d.source_ref, d.source_type
          FROM documents d
          JOIN organizations o ON o.id = d.org_id
          JOIN layers l        ON l.id = d.layer_id
@@ -196,6 +199,7 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
       layerId: row.layer_id,
       externalId: row.external_id ?? row.id,
       vectorName: row.vector_name,
+      providerId: row.provider_id,
       sourceRef: row.source_ref,
       sourceType: row.source_type,
     }
@@ -248,53 +252,6 @@ async function main(): Promise<void> {
       : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
   )
   const documents = new PostgresDocumentStore(pool, APP_ROLE)
-  const embedder = {
-    embed: async (texts: readonly string[]) => {
-      // Bounded, for the same reason the parser call is: this worker is serial,
-      // so an embedder that accepts connections and never answers stops
-      // indexing for every tenant until undici's 300 s default gives up.
-      // Generous, because a batch on a CPU-only endpoint is genuinely slow.
-      const endpoint = new URL('/embeddings', config.embeddingEndpoint)
-
-      let response: Response
-      try {
-        response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ model: config.embeddingModel, input: texts }),
-          signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
-        })
-      } catch (cause) {
-        // `TypeError: fetch failed` and nothing else is what an operator used to
-        // get here, in the job's `error` column and in the log. It does not say
-        // what was called, or that an embedding endpoint is a thing they have to
-        // supply — and this is the first failure anyone following the quickstart
-        // meets, because the documented `minimal` profile starts no embedder.
-        //
-        // undici puts the real reason in `cause`: ENOTFOUND for a name that does
-        // not resolve, ECONNREFUSED for a port with nothing on it, a timeout for
-        // one that accepts and never answers. Naming the URL matters as much:
-        // the endpoint comes from configuration, so "which one" is the question
-        // the message has to answer.
-        const reason = String((cause as { cause?: unknown })?.cause ?? cause)
-        throw new Error(
-          `the embedding endpoint at ${endpoint.href} could not be reached: ${reason}. ` +
-            'It is set by NACRE_DEFAULT_EMBEDDING_ENDPOINT and this deployment must ' +
-            'supply one — the minimal Compose profile deliberately starts no embedder.',
-          { cause },
-        )
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          `the embedding endpoint at ${endpoint.href} answered ${response.status}`,
-        )
-      }
-      const body = (await response.json()) as { data?: { embedding?: number[] }[] }
-      return (body.data ?? []).map((d) => d.embedding ?? [])
-    },
-  }
-
   const retagPorts = {
     claim: (limit: number) => claimStale(pool, limit),
     tagsFor: (orgId: string, layerId: string) => tagsForLayer(pool, orgId, layerId, APP_ROLE),
@@ -347,9 +304,17 @@ async function main(): Promise<void> {
   /**
    * Embedders, one per provider, built on first use.
    *
-   * A reindex embeds with the *shadow* provider's model, which is not the one
-   * this process is configured with — that is the entire point of a reindex.
-   * The endpoint and model come from the `embedding_providers` row.
+   * Per provider and not one for the whole process. Ingest used to embed with
+   * `NACRE_DEFAULT_EMBEDDING_*` whatever the layer's provider said, so a layer
+   * on a second provider had 1024-dim vectors written into its 768-dim slot and
+   * every document in it failed on `Vector dimension error`. A reindex embeds
+   * with the shadow provider's model for the same reason — that one was wired,
+   * and the ordinary path was not.
+   *
+   * The endpoint and model come from the `embedding_providers` row, which is
+   * where they have always been: this process's configuration only ever
+   * supplied the installation *default*, which `init` writes into that table as
+   * the global row.
    */
   const embedders = new Map<string, (texts: readonly string[]) => Promise<readonly (readonly number[])[]>>()
   const embedderFor = async (providerId: string) => {
@@ -357,8 +322,8 @@ async function main(): Promise<void> {
     if (cached !== undefined) return cached
 
     const { rows } = await acrossOrganizations(pool, (client) =>
-      client.query<{ endpoint: string; model: string }>(
-        'SELECT endpoint, model FROM embedding_providers WHERE id = $1',
+      client.query<{ endpoint: string; model: string; name: string }>(
+        'SELECT endpoint, model, name FROM embedding_providers WHERE id = $1',
         [providerId],
       ),
     )
@@ -367,12 +332,42 @@ async function main(): Promise<void> {
 
     const embed = async (texts: readonly string[]) => {
       const endpoint = new URL('/embeddings', provider.endpoint)
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: provider.model, input: texts }),
-        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
-      })
+
+      let response: Response
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: provider.model, input: texts }),
+          // Bounded, for the same reason the parser call is: this worker is
+          // serial, so an embedder that accepts connections and never answers
+          // stops indexing for every tenant until undici's 300 s default gives
+          // up. Generous, because a batch on a CPU-only endpoint is genuinely
+          // slow.
+          signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+        })
+      } catch (cause) {
+        // `TypeError: fetch failed` and nothing else is what an operator used to
+        // get here, in the job's `error` column and in the log. It does not say
+        // what was called, or that an embedding endpoint is a thing they have to
+        // supply — and this is the first failure anyone following the quickstart
+        // meets, because the documented `minimal` profile starts no embedder.
+        //
+        // undici puts the real reason in `cause`: ENOTFOUND for a name that does
+        // not resolve, ECONNREFUSED for a port with nothing on it, a timeout for
+        // one that accepts and never answers. Naming the URL matters as much:
+        // the endpoint comes from an `embedding_providers` row, so "which one"
+        // is the question the message has to answer.
+        const reason = String((cause as { cause?: unknown })?.cause ?? cause)
+        throw new Error(
+          `the embedding endpoint at ${endpoint.href} could not be reached: ${reason}. ` +
+            `It is the endpoint on embedding provider ${provider.name}; the installation ` +
+            'default comes from NACRE_DEFAULT_EMBEDDING_ENDPOINT and this deployment must ' +
+            'supply one — the minimal Compose profile deliberately starts no embedder.',
+          { cause },
+        )
+      }
+
       if (!response.ok) {
         throw new Error(`the embedding endpoint at ${endpoint.href} answered ${response.status}`)
       }
@@ -682,7 +677,16 @@ async function main(): Promise<void> {
           aclVersion: acl.version,
           ...source,
         },
-        { parser, embedder, documents, vectors, newId: randomUUID },
+        {
+          parser,
+          // The layer's provider, resolved per claim. Not a process-wide
+          // embedder: `layers.provider_id` decides which model a layer's
+          // vectors are, and the slot they go into is named after it.
+          embedder: { embed: async (texts) => (await embedderFor(claim.providerId))(texts) },
+          documents,
+          vectors,
+          newId: randomUUID,
+        },
       )
 
       console.log(

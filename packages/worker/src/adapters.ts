@@ -1013,12 +1013,36 @@ export async function finishCopy(
         orgId,
         collection,
       ])
+      // Out of the copy phase, and straight to complete for a layer with
+      // nothing to re-embed.
+      //
+      // The `NOT EXISTS` is the same predicate `finishReindexIfDone` uses, and
+      // it has to be here as well: that function only ever runs for layers
+      // whose documents a pass actually claimed, so a layer with none — one
+      // created against a new provider, or an empty one being migrated — sat in
+      // `running` forever with nothing that would ever move it. Its
+      // `vector_name` was already right and ingest worked, which is what made
+      // it a stuck status report rather than a stuck layer, and reporting a
+      // migration as running for good is its own bug.
       await client.query(
-        `UPDATE layers
-            SET reindex_state = jsonb_set(reindex_state, '{phase}', '"embedding"')
-          WHERE org_id = $1
-            AND reindex_state ->> 'status' = 'running'
-            AND reindex_state ->> 'phase'  = 'copying'`,
+        `UPDATE layers l
+            SET reindex_state =
+                  CASE WHEN EXISTS (
+                    SELECT 1 FROM documents d
+                     WHERE d.org_id = l.org_id AND d.layer_id = l.id
+                       AND d.deleted_at IS NULL AND d.chunk_count > 0
+                       AND d.reindexed_vector IS DISTINCT FROM (l.reindex_state ->> 'shadow_vector')
+                  )
+                  THEN jsonb_set(l.reindex_state, '{phase}', '"embedding"')
+                  ELSE jsonb_set(
+                         jsonb_set(
+                           jsonb_set(l.reindex_state, '{phase}', '"embedding"'),
+                           '{status}', '"complete"'),
+                         '{finished_at}', to_jsonb(now()::text))
+                  END
+          WHERE l.org_id = $1
+            AND l.reindex_state ->> 'status' = 'running'
+            AND l.reindex_state ->> 'phase'  = 'copying'`,
         [orgId],
       )
     },
