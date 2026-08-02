@@ -89,6 +89,8 @@ export interface Config {
 
   readonly auditRetentionDays: number
   readonly auditQueryText: boolean
+  /** The reindex rollback window: how long a superseded collection survives. */
+  readonly collectionRetentionDays: number
 }
 
 /**
@@ -343,6 +345,19 @@ export function loadConfig(env: Env = process.env): Config {
     // should stop the deployment, not fill a log.
     auditRetentionDays: r.number('NACRE_AUDIT_RETENTION_DAYS', 400, { min: 30 }),
     auditQueryText: r.boolean('NACRE_AUDIT_QUERY_TEXT', false),
+
+    // How long a superseded collection survives a model migration.
+    //
+    // It is a rollback window and nothing else. The cheap rollback in
+    // `rollback-layer-reindex.md` is "move the pointer back", which works for
+    // exactly as long as the collection it points back to still exists; past
+    // this horizon that option is gone and a rollback means reindexing.
+    //
+    // The floor is 1 rather than 0 because a collection deleted the instant the
+    // pointer moved would make a migration irreversible at the moment it is
+    // most likely to be found wrong. Setting it high costs disk: each retained
+    // collection is a full copy of the organization's vectors.
+    collectionRetentionDays: r.number('NACRE_COLLECTION_RETENTION_DAYS', 7, { min: 1 }),
   }
 
   // Cross-field checks. Each one is a combination that parses fine and is

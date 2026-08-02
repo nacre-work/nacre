@@ -28,6 +28,7 @@ export function collectDatabaseGauges(pool: Pool, metrics: Metrics, role?: strin
       metrics.tombstonesPending.reset()
       metrics.aclPropagationLag.reset()
       metrics.reindexProgress.reset()
+      metrics.collectionsRetired.reset()
 
       // One series per layer that has ever been reindexed, labelled by slug
       // like every other per-tenant gauge here. Layers with no reindex produce
@@ -54,6 +55,27 @@ export function collectDatabaseGauges(pool: Pool, metrics: Metrics, role?: strin
         const state = fromStateJson(row.state)
         if (state === undefined) continue
         metrics.reindexProgress.set(reindexProgress(state), { org: row.slug, layer: row.layer })
+      }
+
+      // Collections a finished migration is still holding, for the same reason
+      // and in the same shape as the reindex gauge above: one query across
+      // organizations, because `retired_collections` holds a handful of rows in
+      // total rather than a handful per tenant, and a scrape must not cost a
+      // query per organization.
+      //
+      // Only organizations that have one produce a series. A zero for everybody
+      // else would be true and useless — the number that matters is how much
+      // disk a completed migration has not given back, and the alertable shape
+      // is one that stops falling, which needs a series to exist at all rather
+      // than a floor under every tenant.
+      const { rows: retained } = await client.query<{ slug: string; n: string }>(
+        `SELECT o.slug, count(*) AS n
+           FROM retired_collections r
+           JOIN organizations o ON o.id = r.org_id
+          GROUP BY o.slug`,
+      )
+      for (const row of retained) {
+        metrics.collectionsRetired.set(Number(row.n), { org: row.slug })
       }
 
       for (const org of orgs) {

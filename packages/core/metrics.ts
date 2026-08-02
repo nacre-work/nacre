@@ -302,6 +302,18 @@ export function createMetrics(registry: Registry) {
         'Deleted documents whose vectors are not yet purged. Climbing means garbage collection is losing',
       ),
     ),
+    // A gauge and not a counter, because the question an operator has is "how
+    // much disk is a finished migration still holding", not "how many have I
+    // reclaimed since this process started". Each one retained is a full copy
+    // of an organization's vectors, so a number that stays high is the signal —
+    // and a number that never falls means the sweep is not running at all,
+    // which is the state this whole table replaced.
+    collectionsRetired: registry.register(
+      new Gauge(
+        'nacre_collections_retired_total',
+        'Superseded collections still held for the reindex rollback window, by organization. Each is a full copy of that organization vectors',
+      ),
+    ),
   }
 }
 

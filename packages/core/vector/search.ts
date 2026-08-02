@@ -304,6 +304,30 @@ export class VectorStore {
   }
 
   /**
+   * Remove a collection.
+   *
+   * Tolerates one that is not there. The caller is the retire sweep, which
+   * drops before it forgets the row — so a pass that dropped and then failed to
+   * forget comes back to a name whose collection is already gone, and that is a
+   * completed job rather than an error. The alternative order loses the only
+   * record that the collection exists.
+   *
+   * There is no confirmation and no dry run because there is no ambiguity at
+   * this level: by the time a name reaches here it has been through the
+   * rollback window and been checked against every organization's pointer.
+   */
+  async dropCollection(collection: string): Promise<void> {
+    try {
+      await this.#client.deleteCollection(collection)
+    } catch (cause) {
+      const existing = await this.#client.getCollections()
+      if (existing.collections.some((c) => c.name === collection)) {
+        throw new Error(`deleting ${collection} rejected: ${explainQdrant(cause)}`, { cause })
+      }
+    }
+  }
+
+  /**
    * The named vectors a collection has, and their widths.
    *
    * The set is fixed when the collection is created. That is the fact the whole
