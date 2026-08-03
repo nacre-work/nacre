@@ -6,9 +6,12 @@ separate process because this is the one component that runs untrusted input
 through a large C dependency tree. It holds no credentials and reaches no
 database. If it is compromised, there is nothing here to reach.
 
-Deliberately dependency-free at this stage: the format handlers are the next
-step, and standing up a web framework before there is anything to parse would
-just be a dependency to keep patched.
+One dependency, taken deliberately: pypdf, pure Python, pinned in
+requirements.txt. This service was stdlib-only until the binary-ingest work,
+and the bar for adding anything here is dependency surface first — it runs
+hostile input through whatever it depends on, which is why the extractor has
+no native parsers and why there is still no web framework. Everything else
+stays standard library.
 """
 
 from __future__ import annotations
@@ -138,6 +141,56 @@ def _decode(raw: bytes) -> str:
         ) from error
 
 
+def parse_pdf(raw: bytes) -> dict:
+    """PDF bytes to text, or a refusal that says why.
+
+    The magic is checked here as well as at the API edge — this process must
+    hold its own line, because the edge is not the only caller and a sidecar
+    that trusts its callers is a sidecar whose checks live somewhere else.
+
+    pypdf is imported lazily so a deployment that never sends a PDF never
+    loads it, and a missing install fails the one request that needed it with
+    a reason instead of failing the whole process at import.
+
+    Failure text never carries the exception message: pypdf errors can quote
+    the bytes they choked on, and the failure path is part of the attack
+    surface. The class name says what kind of failure it was; the document
+    lands in `failed` with that, where an operator can see it.
+    """
+    if not raw.startswith(b"%PDF-"):
+        raise ParseError("the body does not start with the %PDF- magic; it is not a PDF")
+
+    try:
+        from io import BytesIO
+
+        from pypdf import PdfReader
+    except ImportError as error:  # pragma: no cover - an install problem, not input
+        raise ParseError(
+            "the PDF extractor is not installed; the parser image is missing pypdf"
+        ) from error
+
+    try:
+        reader = PdfReader(BytesIO(raw))
+        if reader.is_encrypted:
+            raise ParseError("the PDF is encrypted, and this parser holds no passwords")
+        pages = [page.extract_text() or "" for page in reader.pages]
+    except ParseError:
+        raise
+    except Exception as error:  # noqa: BLE001 - hostile input, reason class only
+        raise ParseError(
+            f"the PDF could not be parsed ({type(error).__name__})"
+        ) from error
+
+    # Two newlines between pages: a page boundary is at least a paragraph
+    # boundary, and the chunker splits on paragraphs.
+    text = "\n\n".join(part for part in pages if part.strip() != "")
+    return {
+        "text": text,
+        "blocks": [],
+        "metadata": {"bytes": len(raw), "pages": len(reader.pages)},
+    }
+
+
 def parse_source(source: dict) -> dict:
     content = source.get("content")
     url = source.get("url")
@@ -194,6 +247,31 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length") or 0)
         if length > MAX_BYTES:
             self._reply(413, {"error": "document exceeds the size limit"})
+            return
+
+        # The body's declared type decides the branch. JSON carries the
+        # {content|url} contract the deployed callers already speak; a PDF
+        # arrives as its own raw bytes, because base64-in-JSON would carry the
+        # same bytes at four-thirds the size. Anything else is refused by name
+        # — new binary formats extend this dispatch, they never fall through
+        # to a guess.
+        declared = (self.headers.get("content-type") or "").split(";")[0].strip().lower()
+
+        if declared == "application/pdf":
+            raw = self.rfile.read(length)
+            try:
+                self._reply(200, parse_pdf(raw))
+            except ParseError as error:
+                self._reply(422, {"error": str(error)})
+            except Exception:  # noqa: BLE001
+                self._reply(500, {"error": "the document could not be parsed"})
+            return
+
+        if declared not in ("", "application/json"):
+            self._reply(
+                415,
+                {"error": "unsupported content type; this parser takes application/json or application/pdf"},
+            )
             return
 
         try:

@@ -161,5 +161,64 @@ class ParseSourceTests(unittest.TestCase):
                 app.parse_source({"url": "http://example.com/doc"})
 
 
+def minimal_pdf(text: str) -> bytes:
+    """A real, valid, one-page PDF carrying `text` — built by hand.
+
+    Hand-built so the fixture is legible and carries nothing but what the test
+    put there. The xref offsets are computed, not guessed, because a PDF with a
+    wrong xref is exactly the kind of almost-valid input these tests must not
+    accidentally depend on.
+    """
+    stream = f"BT /F1 12 Tf 72 712 Td ({text}) Tj ET".encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
+
+    xref_at = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref_at}\n%%EOF\n"
+    ).encode()
+    return bytes(out)
+
+
+class ParsePdfTests(unittest.TestCase):
+    def test_a_real_pdf_yields_its_text_and_page_count(self) -> None:
+        result = app.parse_pdf(minimal_pdf("New engineers get repository access"))
+        self.assertIn("New engineers get repository access", result["text"])
+        self.assertEqual(result["metadata"]["pages"], 1)
+        self.assertEqual(result["blocks"], [])
+
+    def test_bytes_without_the_magic_are_refused_by_name(self) -> None:
+        with self.assertRaises(app.ParseError) as caught:
+            app.parse_pdf(b"not a pdf at all")
+        self.assertIn("%PDF-", str(caught.exception))
+
+    def test_a_corrupt_pdf_is_refused_without_quoting_its_bytes(self) -> None:
+        # Valid magic, garbage after it. The reason names the failure class
+        # and never the content — pypdf errors can quote the bytes they choked
+        # on, and the failure path is part of the attack surface.
+        payload = b"%PDF-1.4\n" + b"\x00\xff" * 64
+        with self.assertRaises(app.ParseError) as caught:
+            app.parse_pdf(payload)
+        self.assertNotIn("\\x00", str(caught.exception))
+        self.assertNotIn("xff", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
