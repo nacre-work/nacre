@@ -324,6 +324,16 @@ as `init` and `migrate` and for the same reason — recreating a collection and
 requeuing an organization's documents is not a request the API takes from the
 network.
 
+The requeue also clears `reindexed_vector`, and that reset is about correctness
+rather than scheduling. The marker records which shadow slot a document was
+re-embedded into during a model migration, and the rebuilt collection holds
+nothing in any shadow slot — so a disaster that struck mid-reindex would
+otherwise leave the completeness predicate above satisfied by markers alone,
+and on a layer without a recall gate the switch could move `vector_name` onto
+a slot with no data in it. NULL restores the truth the predicate reads:
+nothing has been re-embedded into this collection yet, and the interrupted
+reindex resumes from the start of its embedding phase rather than from a lie.
+
 The alternative was a collection per layer, which keeps a reindex local but
 turns an unscoped search into one Qdrant query per layer — ten to twenty in the
 ordinary case, against a p95 under 200 ms. Declaring spare vector slots at

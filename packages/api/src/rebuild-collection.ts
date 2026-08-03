@@ -137,6 +137,18 @@ async function readSchema(pool: Pool, slug: string): Promise<Schema | string> {
  * they are not in the index and must not be put back into it. Run only after the
  * collection exists, or a worker claims a pending document and upserts into a
  * collection that is not there.
+ *
+ * `reindexed_vector = NULL` is the one reset that is about correctness rather
+ * than scheduling. It records which shadow slot a document was re-embedded into
+ * during a model migration — and the rebuild has just created a collection in
+ * which no shadow slot holds anything, so every surviving marker is now false.
+ * Left standing, a disaster that struck mid-reindex would leave
+ * `finishReindexIfDone`'s completeness predicate ("no live document lacks the
+ * shadow vector") satisfied by markers alone, and on a layer without a recall
+ * gate the switch could move `vector_name` onto a slot with no data in it —
+ * retrieval collapsing with no error anywhere, which is exactly the failure the
+ * gate exists to catch. NULL restores the truth: nothing has been re-embedded
+ * into this collection yet.
  */
 async function requeue(pool: Pool, orgId: string): Promise<number> {
   const client = await pool.connect()
@@ -145,7 +157,8 @@ async function requeue(pool: Pool, orgId: string): Promise<number> {
     await client.query('SELECT set_config($1, $2, true)', ['app.current_org', orgId])
     const { rowCount } = await client.query(
       `UPDATE documents
-          SET status = 'pending', claimed_at = NULL, attempts = 0, error = NULL
+          SET status = 'pending', claimed_at = NULL, attempts = 0, error = NULL,
+              reindexed_vector = NULL
         WHERE org_id = $1 AND deleted_at IS NULL`,
       [orgId],
     )
