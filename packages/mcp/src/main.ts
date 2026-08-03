@@ -81,6 +81,9 @@ async function main(): Promise<void> {
       // Allowed through and said so, exactly as on REST. A rate limit is
       // availability protection rather than an authorization control, so
       // failing closed would trade a rare over-serve for a certain outage.
+      // Counted too, on the same series REST uses, because a failed-open
+      // request leaves no other trace to alert on.
+      observe.rateLimitUnavailable.inc({ resource })
       logger.warn('rate limit check unavailable; request allowed', { resource,
           error: String(error).slice(0, 200) })
     },
@@ -113,6 +116,15 @@ async function main(): Promise<void> {
       new Counter(
         'nacre_auth_failures_total',
         'Rejected credentials, by the kind presented: missing, jwt, service_key. Never by reason — the 401 is deliberately one answer',
+      ),
+    ),
+    // Same name and reason as the REST surface, or the two do not add up on one
+    // dashboard — MCP and REST share the rate limiter, so a Redis outage
+    // degrades both and both must count it.
+    rateLimitUnavailable: registry.register(
+      new Counter(
+        'nacre_rate_limit_unavailable_total',
+        'Requests allowed because the rate-limit check could not run (Redis unreachable), by resource',
       ),
     ),
   }

@@ -121,6 +121,12 @@ async function main(): Promise<void> {
       // rather than an authorization control, so failing closed here would
       // trade a rare over-serve for a certain outage — the opposite of the
       // rule for permissions, and deliberately so.
+      //
+      // Counted as well as logged: the whole point of failing open is that the
+      // request still succeeds, so a log line is the only trace, and an
+      // operator cannot alert on the absence of one. The counter is what
+      // `docs/config.md` names as the signal.
+      metrics.rateLimitUnavailable.inc({ resource })
       logger.warn('rate limit check unavailable; request allowed', { resource,
           error: String(error).slice(0, 200) })
     },

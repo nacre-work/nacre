@@ -586,7 +586,16 @@ nacre_acl_denials_total{reason}
 nacre_ingest_duration_seconds{stage}       # the accept stage; the worker has no registry
 nacre_reindex_progress_ratio{layer}        # 0 to 1; absent for a layer never reindexed
 nacre_auth_failures_total{kind}            # missing | jwt | service_key
+nacre_rate_limit_unavailable_total{resource}  # requests let through with Redis down
 ```
+
+`nacre_rate_limit_unavailable_total` is the one to alert on for the rate limiter,
+because the limiter **fails open**: when Redis is unreachable the request is
+allowed rather than refused, since a rate limit is availability protection and
+not an authorization control. That is the right call and it is also invisible —
+the request succeeds, so nothing else marks it. This counter is the mark. A
+non-zero rate means the limits are not being enforced, on both surfaces (REST and
+MCP share the limiter and the series).
 
 `nacre_auth_failures_total` is labelled by the kind of credential presented and
 **never by why it failed**. The `401` itself carries one message for every
