@@ -754,3 +754,10 @@ the source.
 access key and secret key, or none of them. Half is refused rather than
 accepted, because an endpoint with no credential parses fine and fails later, as
 a deployment that accepts documents and cannot store them.
+
+**Binary ingest requires it.** A PDF's bytes have exactly one home — the
+bucket; `documents.source_ref` is text and stays text. A PDF uploaded to a
+deployment without `NACRE_S3_*` is refused at the edge with a `400` naming
+these variables, so the caller learns on the request rather than from a
+`failed` row. Text-only deployments are unaffected: without object storage
+everything behaves exactly as before.

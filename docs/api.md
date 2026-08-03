@@ -28,8 +28,9 @@ POST   /v1/auth/login    /v1/auth/refresh        /v1/auth/logout
 
 Everything the contract describes is implemented, with one limit that is a
 property of the product rather than of the handler: an uploaded file must be
-UTF-8 text, and a binary one is refused at the edge. The section on multipart
-below says why, because "not built" would be the wrong summary of it.
+UTF-8 text or a PDF, and any other binary format is refused at the edge. The
+section on multipart below says what the PDF path requires and why the line
+is drawn there.
 
 ## Errors — RFC 9457 (`application/problem+json`)
 
@@ -372,26 +373,33 @@ path should be: nested multipart, `Content-Transfer-Encoding` other than
 header block over 8 KiB are all refusals rather than branches. `413` is the
 size limit, `400` is everything else, and neither is configurable.
 
-### The limit that is not the handler's
+### Binary upload — PDF, and the rules it carries
 
-**An uploaded file must be UTF-8 text, and a binary one is refused with `400`.**
-That is not a gap in this endpoint; the whole ingest path carries text:
+**A binary file must be a PDF, and a PDF must carry both signals**: the file
+part declares `application/pdf` **and** the bytes begin with the `%PDF-`
+magic. Either alone is a `400` naming the other — a declared type the bytes
+contradict is the disagreement the envelope's strictness exists to refuse, and
+sniffing alone would turn the declared type into decoration. Other formats are
+added by extending that table, never by falling through to a guess; anything
+else binary is refused with `400` at the edge, where the caller learns on the
+request and nothing is queued. It used not to be: the sidecar decoded with
+`errors="replace"`, so a PDF became a string of replacement characters that
+was chunked, embedded, stored as the document body, and reported as `indexed`.
 
-- `Parser.parse` takes `{ content?: string, url?: string }`. There is no bytes
-  argument, so the sidecar that exists to turn bytes into text can only be
-  handed a string or an address to fetch.
-- `documents.source_ref` is `text`, and the object-storage path stores the same
-  UTF-8 and decodes it back on the way out. Bytes have nowhere to go that
-  survives the round trip.
-- `content_hash` is computed over the text, so idempotency is defined on the
-  text rather than on what was uploaded.
+**Binary upload requires `NACRE_S3_*`.** `documents.source_ref` is text and
+stays text, so the bytes' only home is the bucket — a PDF on a deployment
+without object storage is `400` naming the variables. The bytes go up with
+their real `Content-Type`, before the row, in the write order the text path
+already uses.
 
-Extracting a PDF is therefore an end-to-end change — the parser port, the
-sidecar's contract, the ingest signature, and the hash — and it implies a rule
-worth deciding deliberately rather than discovering: **binary upload requires
-`NACRE_S3_*`**, because that is the only place bytes can live.
+**Idempotency for a binary document is defined on the uploaded bytes**:
+`content_hash` is `sha256:` over them, computed the same way by the API and
+the worker, so re-sending the same file is a no-op and a changed file
+re-indexes — the same semantics text sources get from hashing the text.
+`documents.content_type` records which of the two the row is, and the worker
+dispatches on it: `text/plain` decodes UTF-8 with `fatal: true`,
+`application/pdf` passes the bytes to the parser sidecar untouched.
 
-Until then the refusal is at the edge, on the request, where the caller learns
-immediately and nothing is queued. It used not to be: the sidecar decoded with
-`errors="replace"`, so a PDF became a string of replacement characters that was
-chunked, embedded, stored as the document body, and reported as `indexed`.
+The URL ingest path stays text-only: a response's declared type is an
+attacker's field, and extending the magic check to fetched bytes is its own
+change with its own tests.

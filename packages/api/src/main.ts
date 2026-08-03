@@ -217,6 +217,9 @@ async function main(): Promise<void> {
     observe: metrics,
     ready,
     maxBodyBytes: config.maxDocumentBytes,
+    // The same fact that builds the S3 client, as a boolean: the handler
+    // refuses a PDF at the edge when there is no bucket for its bytes.
+    objectStorage: objects !== undefined,
     limits,
     limitPolicies,
     trustProxy: config.trustProxy,

@@ -954,8 +954,24 @@ export class NacreIngest implements Ingest {
         if (layerId === undefined) return undefined
 
         const inline = request.content !== undefined
-        const source = inline ? request.content : (request.url as string)
-        const hash = createHash('sha256').update(source, 'utf8').digest('hex')
+        const binary = request.bytes !== undefined
+        if (binary && this.deps.objects === undefined) {
+          // The handler refuses this at the edge, naming NACRE_S3_*; reaching
+          // here means a second surface started passing bytes without the
+          // check. Refusing keeps the invariant local: the bytes' only home is
+          // the bucket, and there is no bucket.
+          throw new Error('binary ingest requires object storage, and this deployment has none')
+        }
+        const source = binary ? undefined : inline ? (request.content as string) : (request.url as string)
+
+        // For a binary source the hash is over the uploaded bytes — the worker
+        // computes the same, so the upsert's idempotency semantics hold across
+        // both halves: re-sending the same file is a no-op, a changed file
+        // re-indexes. For text it stays over the text, which is the same
+        // statement.
+        const hash = binary
+          ? createHash('sha256').update(request.bytes as Uint8Array).digest('hex')
+          : createHash('sha256').update(source as string, 'utf8').digest('hex')
 
         // A module's ingest gate, after write is established and before anything
         // is stored, so a refusal leaves neither a row nor an object behind. No
@@ -969,7 +985,9 @@ export class NacreIngest implements Ingest {
           principal: auth.principal,
           role: auth.role,
           externalId: request.externalId,
-          bytes: new TextEncoder().encode(source).byteLength,
+          bytes: binary
+            ? (request.bytes as Uint8Array).byteLength
+            : new TextEncoder().encode(source as string).byteLength,
         })
         if (refusal !== undefined) {
           return { refused: true, status: refusal.status, reason: refusal.reason }
@@ -987,19 +1005,30 @@ export class NacreIngest implements Ingest {
         // copying somebody else's URL into our bucket at ingest time would be
         // a fetch on the request path — which is exactly what the worker does
         // later, with a timeout and a sandbox.
-        let sourceType: 'inline' | 'url' | 's3' = inline ? 'inline' : 'url'
-        let sourceRef = source
-        if (inline && this.deps.objects !== undefined) {
+        let sourceType: 'inline' | 'url' | 's3' = binary ? 's3' : inline ? 'inline' : 'url'
+        let sourceRef = source as string
+        if (binary) {
+          // A binary source has exactly one home. The bytes go up with their
+          // real Content-Type, so a presigned GET later answers with the type
+          // the caller sent rather than a lie a browser would act on.
           const key = documentKey(auth.orgId, layerId, request.externalId)
-          await this.deps.objects.put(key, new TextEncoder().encode(source), 'text/plain')
+          await (this.deps.objects as ObjectStore).put(
+            key,
+            request.bytes as Uint8Array,
+            request.contentType as string,
+          )
+          sourceRef = key
+        } else if (inline && this.deps.objects !== undefined) {
+          const key = documentKey(auth.orgId, layerId, request.externalId)
+          await this.deps.objects.put(key, new TextEncoder().encode(source as string), 'text/plain')
           sourceType = 's3'
           sourceRef = key
         }
 
         const { rows } = await client.query<{ id: string; content_hash: string; status: string }>(
           `INSERT INTO documents
-             (org_id, layer_id, external_id, source_type, source_ref, title, content_hash, metadata, status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending')
+             (org_id, layer_id, external_id, source_type, source_ref, title, content_hash, metadata, content_type, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')
            ON CONFLICT (layer_id, external_id) DO UPDATE SET
              -- Only touch the row when the content actually changed. A repeat
              -- with the same bytes must not re-queue work: every client that
@@ -1009,6 +1038,10 @@ export class NacreIngest implements Ingest {
              title        = COALESCE(EXCLUDED.title, documents.title),
              content_hash = EXCLUDED.content_hash,
              metadata     = EXCLUDED.metadata,
+             -- The worker dispatches on this. A document re-sent as a different
+             -- format carries a different hash too, so the status CASE below
+             -- already re-queues it; this just keeps the row telling the truth.
+             content_type = EXCLUDED.content_type,
              -- Metadata counts as a change, because it is written into the
              -- vector payload of every point and a filter reads it from there.
              -- Updating the row alone would leave the two disagreeing: the
@@ -1034,6 +1067,7 @@ export class NacreIngest implements Ingest {
             request.title ?? null,
             `sha256:${hash}`,
             JSON.stringify(request.metadata),
+            binary ? (request.contentType as string) : 'text/plain',
           ],
         )
 

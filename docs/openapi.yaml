@@ -629,10 +629,14 @@ paths:
         bucket.
 
 
-        **The file must be UTF-8 text.** A binary one is `400`, refused on the
-        request rather than queued: the parser extracts no binary formats, so
-        the alternative is a document stored as replacement characters and
-        reported as indexed. See docs/api.md for what changes that.
+        **The file is UTF-8 text, or a PDF.** A PDF must carry both signals:
+        the part declares `application/pdf` **and** the bytes begin with the
+        `%PDF-` magic — either alone is `400`, naming the other. Binary bytes
+        live only in object storage, so a PDF on a deployment without
+        `NACRE_S3_*` is `400` naming the variables, on the request rather
+        than from a `failed` row. Any other binary format is `400`: the
+        parser extracts PDF and nothing else, and the alternative is a
+        document stored as replacement characters and reported as indexed.
       requestBody:
         required: true
         content:
@@ -647,12 +651,12 @@ paths:
                 # one. `metadata` therefore carries a JSON object as text — the
                 # same value the JSON body sends as an object.
                 layer:       { type: string }
-                file:        { type: string, format: binary, description: "UTF-8 text. A binary file is refused with 400." }
+                file:        { type: string, format: binary, description: "UTF-8 text, or a PDF declaring application/pdf whose bytes carry the %PDF- magic. Any other binary file is refused with 400." }
                 external_id: { type: string, description: "Defaults to the file part's filename." }
                 title:       { type: string }
                 metadata:    { type: string, description: "A JSON object, as text." }
             encoding:
-              file: { contentType: 'text/plain, text/markdown, application/octet-stream' }
+              file: { contentType: 'text/plain, text/markdown, application/pdf, application/octet-stream' }
       responses:
         '200': { description: Idempotent repeat; the document is unchanged }
         '202':
@@ -662,9 +666,11 @@ paths:
               schema: { $ref: '#/components/schemas/Job' }
         '400':
           description: >
-            A malformed multipart envelope, a file that is not UTF-8 text, a
-            file alongside `content` or `url`, a second file part, or a
-            repeated field.
+            A malformed multipart envelope, a binary file that is not a PDF, a
+            declared PDF without the `%PDF-` magic or the magic without the
+            declaration, a PDF on a deployment without object storage, a file
+            alongside `content` or `url`, a second file part, or a repeated
+            field.
         '413': { description: Document exceeds NACRE_MAX_DOCUMENT_BYTES }
         '429': { $ref: '#/components/responses/RateLimited' }
   /documents/{id}:
