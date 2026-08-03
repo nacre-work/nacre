@@ -485,6 +485,19 @@ organization". The public half is published at `/.well-known/jwks.json`, which
 `404`s on a secret-based deployment — a shared secret has no publishable half,
 and an endpoint that produced one would be publishing the signing key.
 
+And a process that only verifies is now configured with the public key alone.
+`loadJwtKeys` separated `signing` from `verification` in its return, but its only
+input was `NACRE_JWT_PRIVATE_KEY_REF` — so the MCP transport, a resource server
+that never signs, still had to be handed the private key to derive the public
+one, and the blast-radius argument was true of the type and not of the
+deployment. `loadJwtVerification` closes that: `NACRE_JWT_PUBLIC_KEY_REF` (with
+`NACRE_JWT_PREVIOUS_PUBLIC_KEY_REF` for the rotation overlap) gives a verifier
+the public half and nothing else. It refuses a file that contains private
+material outright, because the whole point is that the signing key is nowhere
+near the process — and a token signed with the private key was checked, by
+running it, to verify against a verifier loaded from only the public one, while
+a forgery from another key was rejected.
+
 `file://` only, and Ed25519 only. Every platform with a secret store presents
 one as a file, and a `vault://` scheme would put a network client on the startup
 path; RSA needs a size and a padding choice and EC a curve mapping, while

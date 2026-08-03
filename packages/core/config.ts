@@ -194,6 +194,20 @@ export interface JwtKeys {
   readonly jwks?: readonly Record<string, unknown>[]
 }
 
+/**
+ * What a process that only *verifies* tokens needs — the verification key, the
+ * keys still accepted during a rotation, and the one algorithm it will honour.
+ * No `signing`, no `jwks` to publish: a resource server such as the MCP
+ * transport checks tokens and never mints them, and `loadJwtVerification` lets
+ * it be configured with only the public half, so reading its environment gets
+ * an attacker to "can check tokens" and no further.
+ */
+export interface JwtVerification {
+  readonly verification: KeyObject | Uint8Array
+  readonly alsoAccept: readonly (KeyObject | Uint8Array)[]
+  readonly algorithm: 'HS256' | 'EdDSA'
+}
+
 /** A stable identifier for a key, from its public bytes. Never from the secret. */
 function fingerprint(der: Buffer): string {
   return createHash('sha256').update(der).digest('base64url').slice(0, 16)
@@ -250,7 +264,12 @@ export function keyFingerprint(key: KeyObject | Uint8Array): string {
  * or `aws-kms://` scheme would be a network client on the startup path, which
  * is a different feature with different failure modes.
  */
-function loadEd25519(ref: string, variable: string): { private: KeyObject; public: KeyObject } {
+/**
+ * Read the PEM a `file://` reference names. Shared by the private- and
+ * public-key loaders so the `file://`-only rule and its error wording live in
+ * one place; `kind` only changes the noun in the messages.
+ */
+function readPemRef(ref: string, variable: string, kind: 'private' | 'public'): string {
   let path: string
   try {
     const url = new URL(ref)
@@ -261,26 +280,73 @@ function loadEd25519(ref: string, variable: string): { private: KeyObject; publi
   } catch (cause) {
     throw new ConfigError([
       `${variable} is not a file:// URL: ${String(cause)}. ` +
-        'It names a file holding a PEM private key, for example ' +
+        `It names a file holding a PEM ${kind} key, for example ` +
         'file:///run/secrets/jwt_ed25519.',
     ])
   }
 
-  let pem: string
   try {
-    pem = readFileSync(path, 'utf8')
+    return readFileSync(path, 'utf8')
   } catch (cause) {
     throw new ConfigError([
       `${variable} names ${path}, which cannot be read: ${String(cause)}.`,
     ])
   }
+}
+
+/**
+ * The public half of an Ed25519 key, from a `file://` reference to a PEM public
+ * key. This is what a process that only *verifies* tokens needs — and all it
+ * needs, which is the point: reading its environment gets an attacker to "can
+ * check tokens" and no further. See `loadJwtVerification`.
+ */
+function loadEd25519Public(ref: string, variable: string): KeyObject {
+  const pem = readPemRef(ref, variable, 'public')
+
+  // `createPublicKey` will happily extract the public half from a *private* PEM,
+  // which would let an operator paste the private key into the public-key
+  // variable and never notice — leaving the file this variable exists to keep
+  // off this process sitting right on it. Refuse it by name: the whole point of
+  // a verify-only process is that the private key is nowhere near it.
+  if (/PRIVATE KEY/.test(pem)) {
+    throw new ConfigError([
+      `${variable} names a file that contains a PRIVATE key. This variable is for ` +
+        'the public half only — a process that verifies must not be given the ' +
+        'signing key. Export the public half with ' +
+        '`openssl pkey -in jwt_ed25519.pem -pubout -out jwt_ed25519.pub`.',
+    ])
+  }
+
+  let key: KeyObject
+  try {
+    key = createPublicKey(pem)
+  } catch (cause) {
+    throw new ConfigError([
+      `${variable} names a file that is not a PEM public key: ${String(cause)}. ` +
+        'Export one from the signing key with ' +
+        '`openssl pkey -in jwt_ed25519.pem -pubout -out jwt_ed25519.pub`.',
+    ])
+  }
+
+  if (key.asymmetricKeyType !== 'ed25519') {
+    throw new ConfigError([
+      `${variable} names a ${String(key.asymmetricKeyType)} public key. Only Ed25519 ` +
+        'is accepted — it must match the signing key, which is Ed25519.',
+    ])
+  }
+
+  return key
+}
+
+function loadEd25519(ref: string, variable: string): { private: KeyObject; public: KeyObject } {
+  const pem = readPemRef(ref, variable, 'private')
 
   let key: KeyObject
   try {
     key = createPrivateKey(pem)
   } catch (cause) {
     throw new ConfigError([
-      `${variable} names ${path}, which is not a PEM private key: ${String(cause)}.`,
+      `${variable} names a file that is not a PEM private key: ${String(cause)}.`,
     ])
   }
 
@@ -397,6 +463,138 @@ export function loadJwtKeys(env: NodeJS.ProcessEnv = process.env): JwtKeys {
     signing: key,
     verification: key,
     alsoAccept: [new TextEncoder().encode(previous)],
+    algorithm: 'HS256',
+  }
+}
+
+/**
+ * Verification-only key material, for a process that checks tokens and never
+ * signs one — the MCP transport, which is a resource server.
+ *
+ * Three ways to name the key, exactly one of them at a time:
+ *
+ * - `NACRE_JWT_PUBLIC_KEY_REF` — the Ed25519 **public** key, and nothing else.
+ *   This is the one that makes the asymmetric mode worth what it claims: the
+ *   verifier holds no secret and no private key, so an attacker who reads its
+ *   environment can check tokens and cannot mint them. `NACRE_JWT_PREVIOUS_PUBLIC_KEY_REF`
+ *   is its rotation overlap, mirroring the private side.
+ * - `NACRE_JWT_PRIVATE_KEY_REF` — the private key, from which the public half is
+ *   derived. Accepted so a process co-located with the signer, or one that
+ *   simply has the private key, still verifies; it just does not get the
+ *   separation the public-only path does.
+ * - `NACRE_JWT_SECRET` — the shared secret. Verifying and signing are the same
+ *   key here by definition, so there is no separation to be had and the process
+ *   holds the secret regardless; this exists so a Compose deployment that runs
+ *   on a shared secret still starts.
+ *
+ * Setting more than one is refused, for the same reason `loadJwtKeys` refuses
+ * two answers to "what signs a token": whichever won, the others would be
+ * configured, apparently in use, and ignored.
+ */
+export function loadJwtVerification(env: NodeJS.ProcessEnv = process.env): JwtVerification {
+  const secret = env.NACRE_JWT_SECRET
+  const publicRef = env.NACRE_JWT_PUBLIC_KEY_REF
+  const privateRef = env.NACRE_JWT_PRIVATE_KEY_REF
+
+  const named = [
+    secret !== undefined && secret !== '' ? 'NACRE_JWT_SECRET' : undefined,
+    publicRef !== undefined && publicRef !== '' ? 'NACRE_JWT_PUBLIC_KEY_REF' : undefined,
+    privateRef !== undefined && privateRef !== '' ? 'NACRE_JWT_PRIVATE_KEY_REF' : undefined,
+  ].filter((v): v is string => v !== undefined)
+
+  if (named.length > 1) {
+    throw new ConfigError([
+      `${named.join(' and ')} are set together. They are ${named.length} answers to ` +
+        '"what verifies a token" and there is no order of precedence worth ' +
+        'inventing. A resource server needs exactly one: the public key ' +
+        '(NACRE_JWT_PUBLIC_KEY_REF) if the deployment signs with Ed25519, or ' +
+        'NACRE_JWT_SECRET if it signs with a shared secret.',
+    ])
+  }
+
+  const sameSpki = (a: KeyObject, b: KeyObject): boolean =>
+    a
+      .export({ type: 'spki', format: 'der' })
+      .equals(b.export({ type: 'spki', format: 'der' }))
+
+  if (publicRef !== undefined && publicRef !== '') {
+    const current = loadEd25519Public(publicRef, 'NACRE_JWT_PUBLIC_KEY_REF')
+    const prevRef = env.NACRE_JWT_PREVIOUS_PUBLIC_KEY_REF
+    const previous =
+      prevRef === undefined || prevRef === ''
+        ? undefined
+        : loadEd25519Public(prevRef, 'NACRE_JWT_PREVIOUS_PUBLIC_KEY_REF')
+
+    if (previous !== undefined && sameSpki(current, previous)) {
+      throw new ConfigError([
+        'NACRE_JWT_PREVIOUS_PUBLIC_KEY_REF names the same key as ' +
+          'NACRE_JWT_PUBLIC_KEY_REF. That is not a rotation: it accepts one key ' +
+          'twice. Point NACRE_JWT_PUBLIC_KEY_REF at the new public key and ' +
+          'NACRE_JWT_PREVIOUS_PUBLIC_KEY_REF at the one it replaces.',
+      ])
+    }
+
+    return {
+      verification: current,
+      alsoAccept: previous === undefined ? [] : [previous],
+      algorithm: 'EdDSA',
+    }
+  }
+
+  if (privateRef !== undefined && privateRef !== '') {
+    const current = loadEd25519(privateRef, 'NACRE_JWT_PRIVATE_KEY_REF')
+    const prevRef = env.NACRE_JWT_PREVIOUS_KEY_REF
+    const previous =
+      prevRef === undefined || prevRef === ''
+        ? undefined
+        : loadEd25519(prevRef, 'NACRE_JWT_PREVIOUS_KEY_REF')
+
+    if (previous !== undefined && sameSpki(current.public, previous.public)) {
+      throw new ConfigError([
+        'NACRE_JWT_PREVIOUS_KEY_REF names the same key as NACRE_JWT_PRIVATE_KEY_REF. ' +
+          'That is not a rotation: it accepts one key twice.',
+      ])
+    }
+
+    return {
+      verification: current.public,
+      alsoAccept: previous === undefined ? [] : [previous.public],
+      algorithm: 'EdDSA',
+    }
+  }
+
+  if (secret === undefined || secret.length < 32) {
+    throw new ConfigError([
+      'no verification key is set, or NACRE_JWT_SECRET is shorter than 32 bytes. ' +
+        'A resource server needs one of NACRE_JWT_PUBLIC_KEY_REF (Ed25519 public ' +
+        'key), NACRE_JWT_PRIVATE_KEY_REF, or NACRE_JWT_SECRET — matching how the ' +
+        'issuer signs.',
+    ])
+  }
+
+  const previousSecret = env.NACRE_JWT_SECRET_PREVIOUS
+  if (previousSecret !== undefined && previousSecret !== '') {
+    if (previousSecret.length < 32) {
+      throw new ConfigError([
+        'NACRE_JWT_SECRET_PREVIOUS is set but shorter than 32 bytes. It holds the ' +
+          'key being rotated out and is held to the same floor as the one replacing it.',
+      ])
+    }
+    if (previousSecret === secret) {
+      throw new ConfigError([
+        'NACRE_JWT_SECRET_PREVIOUS is the same value as NACRE_JWT_SECRET. That is ' +
+          'not a rotation: it accepts one key twice.',
+      ])
+    }
+  }
+
+  const key = new TextEncoder().encode(secret)
+  return {
+    verification: key,
+    alsoAccept:
+      previousSecret === undefined || previousSecret === ''
+        ? []
+        : [new TextEncoder().encode(previousSecret)],
     algorithm: 'HS256',
   }
 }

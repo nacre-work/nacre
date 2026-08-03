@@ -6,7 +6,13 @@ import { pathToFileURL } from 'node:url'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
-import { ConfigError, loadConfig, loadJwtKeys, keyFingerprint } from '../config.js'
+import {
+  ConfigError,
+  loadConfig,
+  loadJwtKeys,
+  loadJwtVerification,
+  keyFingerprint,
+} from '../config.js'
 
 const COMPLETE = {
   NACRE_CANONICAL_URL: 'https://api.nacre.test',
@@ -445,5 +451,116 @@ describe('signing keys, Ed25519', () => {
     // lines has to be able to tell whether they agree.
     const keys = loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: REF })
     expect(keyFingerprint(keys.signing)).toBe(keyFingerprint(keys.verification))
+  })
+})
+
+describe('verification-only keys', () => {
+  /**
+   * A resource server — the MCP transport — verifies tokens and never signs
+   * one, so it should be configurable with the public key alone. That is what
+   * makes the asymmetric mode's promise true: reading this process's
+   * environment gets an attacker to "can check tokens" and no private key to
+   * mint them with.
+   */
+  const dir = mkdtempSync(join(tmpdir(), 'nacre-jwtverify-'))
+  const first = generateKeyPairSync('ed25519')
+  const second = generateKeyPairSync('ed25519')
+  const writePub = (name: string, key: KeyObject): string => {
+    const path = join(dir, name)
+    writeFileSync(path, key.export({ type: 'spki', format: 'pem' }) as string)
+    return pathToFileURL(path).href
+  }
+  const writePriv = (name: string, key: KeyObject): string => {
+    const path = join(dir, name)
+    writeFileSync(path, key.export({ type: 'pkcs8', format: 'pem' }) as string)
+    return pathToFileURL(path).href
+  }
+  const PUB = writePub('first.pub', first.publicKey)
+  const PREV_PUB = writePub('second.pub', second.publicKey)
+  const PRIV = writePriv('first.pem', first.privateKey)
+  const SECRET = 'x'.repeat(32)
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('verifies from the public key with no private material in reach', () => {
+    const v = loadJwtVerification({ NACRE_JWT_PUBLIC_KEY_REF: PUB })
+    expect((v.verification as KeyObject).type).toBe('public')
+    expect(v.algorithm).toBe('EdDSA')
+    expect(v.alsoAccept).toEqual([])
+    // The whole object, serialized, carries nothing that could sign.
+    expect(JSON.stringify(v)).not.toContain('PRIVATE')
+  })
+
+  it('the public-key verifier agrees with the private-key signer on the same key', () => {
+    // The guarantee the split rests on: a token the API signs (private half)
+    // verifies against the key MCP loads (public half). Proven here by the
+    // fingerprints matching — same SPKI, same key, so the same tokens verify.
+    const signer = loadJwtKeys({ NACRE_JWT_PRIVATE_KEY_REF: PRIV })
+    const verifier = loadJwtVerification({ NACRE_JWT_PUBLIC_KEY_REF: PUB })
+    expect(keyFingerprint(verifier.verification)).toBe(keyFingerprint(signer.verification))
+    expect(keyFingerprint(verifier.verification)).toBe(keyFingerprint(signer.signing))
+  })
+
+  it('carries the previous public key through a rotation', () => {
+    const v = loadJwtVerification({
+      NACRE_JWT_PUBLIC_KEY_REF: PUB,
+      NACRE_JWT_PREVIOUS_PUBLIC_KEY_REF: PREV_PUB,
+    })
+    expect(v.alsoAccept).toHaveLength(1)
+    expect(keyFingerprint(v.alsoAccept[0] as KeyObject)).toBe(
+      keyFingerprint(second.publicKey),
+    )
+  })
+
+  it('refuses a previous public key that is the current one', () => {
+    expect(() =>
+      loadJwtVerification({
+        NACRE_JWT_PUBLIC_KEY_REF: PUB,
+        NACRE_JWT_PREVIOUS_PUBLIC_KEY_REF: PUB,
+      }),
+    ).toThrow(/not a rotation/)
+  })
+
+  it('still verifies when handed the private key, for a co-located process', () => {
+    const v = loadJwtVerification({ NACRE_JWT_PRIVATE_KEY_REF: PRIV })
+    expect((v.verification as KeyObject).type).toBe('public')
+    expect(v.algorithm).toBe('EdDSA')
+  })
+
+  it('verifies with a shared secret, where no separation is possible', () => {
+    const v = loadJwtVerification({ NACRE_JWT_SECRET: SECRET })
+    expect(v.algorithm).toBe('HS256')
+    expect(v.verification).toBeInstanceOf(Uint8Array)
+  })
+
+  it('refuses more than one source at once', () => {
+    expect(() =>
+      loadJwtVerification({ NACRE_JWT_PUBLIC_KEY_REF: PUB, NACRE_JWT_PRIVATE_KEY_REF: PRIV }),
+    ).toThrow(/answers to "what verifies a token"/)
+    expect(() =>
+      loadJwtVerification({ NACRE_JWT_PUBLIC_KEY_REF: PUB, NACRE_JWT_SECRET: SECRET }),
+    ).toThrow(/answers to "what verifies a token"/)
+  })
+
+  it('refuses nothing at all', () => {
+    expect(() => loadJwtVerification({})).toThrow(/no verification key is set/)
+  })
+
+  it('refuses a private key handed to the public-key variable, by name', () => {
+    // The paste error the whole variable exists to catch: the private PEM into
+    // the _PUBLIC_ ref. createPublicKey would silently extract the public half
+    // and leave the private key file mounted on a process that must not have
+    // it, so the loader refuses a file containing private material outright.
+    expect(() => loadJwtVerification({ NACRE_JWT_PUBLIC_KEY_REF: PRIV })).toThrow(
+      /contains a PRIVATE key/,
+    )
+  })
+
+  it('refuses a non-Ed25519 public key, by name', () => {
+    const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 })
+    const ref = writePub('rsa.pub', rsa.publicKey)
+    expect(() => loadJwtVerification({ NACRE_JWT_PUBLIC_KEY_REF: ref })).toThrow(
+      /rsa public key/,
+    )
   })
 })

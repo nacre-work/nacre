@@ -44,6 +44,18 @@ The MCP server is a **resource server**, not an authorization server.
 **The whole of the OAuth surface a resource server has is built**: the RFC 9728
 document, and local validation of an audience-bound token. There is no third
 thing waiting to be written, which is why nothing below lists one.
+
+Because it only verifies, this transport runs on the **public key alone** where
+the deployment signs with Ed25519: set `NACRE_JWT_PUBLIC_KEY_REF` here and
+`NACRE_JWT_PRIVATE_KEY_REF` on the API. The signing key never reaches the MCP
+process, so reading its environment gets an attacker to "can check tokens" and
+no private key to mint them with — which is the property the asymmetric mode
+exists for. A rotation then updates the API (new private key, previous accepted
+during the overlap) and the verifiers (`NACRE_JWT_PUBLIC_KEY_REF` to the new
+public key, `NACRE_JWT_PREVIOUS_PUBLIC_KEY_REF` to the old) independently: the
+overlap window is what lets them not restart in lockstep. A shared-secret
+deployment has no such split — the same `NACRE_JWT_SECRET` verifies and signs —
+and that is still supported for a laptop or a Compose run.
 - **EMA** (`io.modelcontextprotocol/enterprise-managed-authorization`): the
   server advertises the `id-jag` grant profile, accepts an ID-JAG from a
   corporate IdP, and exchanges it for an access token (RFC 7523).

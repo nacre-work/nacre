@@ -4,7 +4,7 @@ import {
   ConfigError,
   loadConfig,
   loadModules,
-  loadJwtKeys,
+  loadJwtVerification,
   logger,
 } from '@nacre.work/core'
 
@@ -45,7 +45,7 @@ async function main(): Promise<void> {
   // dropping them here would be one surface deciding access differently.
   await loadModules(config.modules)
 
-  const jwt = loadJwtKeys()
+  const jwt = loadJwtVerification()
 
   const serviceKey = process.env.NACRE_SERVICE_KEY
   if (serviceKey === undefined || serviceKey.length === 0) {
