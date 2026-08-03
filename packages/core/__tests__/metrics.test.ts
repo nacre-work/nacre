@@ -99,11 +99,28 @@ describe('metrics', () => {
       'nacre_ingest_duration_seconds',
       'nacre_documents_total',
       'nacre_tombstones_pending_total',
+      'nacre_rate_limit_unavailable_total',
     ]) {
       expect(rendered, `${name} is required by docs/config.md`).toContain(`# TYPE ${name}`)
     }
   })
 
+  it('the rate-limit degradation counter reports zero until a request is let through', async () => {
+    // Zero, not absent — the whole reason it exists is that a failed-open
+    // request leaves no other trace, so an operator has to be able to tell
+    // "the limiter is fine" (a flat zero) from "the exporter is not running"
+    // (no series at all).
+    const registry = new Registry()
+    const metrics = createMetrics(registry)
+    expect(await registry.render()).toContain('nacre_rate_limit_unavailable_total 0')
+
+    metrics.rateLimitUnavailable.inc({ resource: 'search' })
+    metrics.rateLimitUnavailable.inc({ resource: 'search' })
+    metrics.rateLimitUnavailable.inc({ resource: 'ingest' })
+    const rendered = await registry.render()
+    expect(rendered).toContain('nacre_rate_limit_unavailable_total{resource="search"} 2')
+    expect(rendered).toContain('nacre_rate_limit_unavailable_total{resource="ingest"} 1')
+  })
 })
 
 /**

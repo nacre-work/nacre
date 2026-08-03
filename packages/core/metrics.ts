@@ -270,6 +270,17 @@ export function createMetrics(registry: Registry) {
         'Rejected credentials, by the kind presented: missing, jwt, service_key. Never by reason — the 401 is deliberately one answer',
       ),
     ),
+    // Rate limiting fails open when Redis is unreachable, deliberately — it is
+    // availability protection, not an authorization control. That is the one
+    // degradation an operator has to be able to see, because the symptom is
+    // *silence*: requests keep flowing and nothing is being counted. Every
+    // increment here is a request that was let through unmetered.
+    rateLimitUnavailable: registry.register(
+      new Counter(
+        'nacre_rate_limit_unavailable_total',
+        'Requests allowed because the rate-limit check could not run (Redis unreachable), by resource',
+      ),
+    ),
     ingestDuration: registry.register(
       new Histogram('nacre_ingest_duration_seconds', 'Indexing latency, by stage'),
     ),
