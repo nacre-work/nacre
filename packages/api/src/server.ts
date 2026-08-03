@@ -192,6 +192,15 @@ export interface IngestRequest {
   readonly title?: string
   readonly content?: string
   readonly url?: string
+  /**
+   * Raw document bytes, the third mutually exclusive source. Only the
+   * multipart file part produces them, only after the handler verified the
+   * declared type and the magic agree, and only on a deployment with object
+   * storage — the bytes' only home is the bucket. `contentType` travels with
+   * them; the two are set together or not at all.
+   */
+  readonly bytes?: Uint8Array
+  readonly contentType?: string
   /** Validated before it gets here. `{}` when the caller sent none. */
   readonly metadata: Metadata
 }
@@ -691,6 +700,15 @@ export interface ApiOptions {
   readonly serviceAccounts?: ServiceAccountPort
   /** `NACRE_MAX_DOCUMENT_BYTES`. Over it is `413`, not `400`. */
   readonly maxBodyBytes?: number
+  /**
+   * Whether this deployment has object storage — `main.ts` sets it from the
+   * same fact that builds the S3 client. Binary upload is refused at the edge
+   * without it, naming `NACRE_S3_*`: the bytes' only home is the bucket, and
+   * the caller should learn that on the request rather than from a `failed`
+   * row. Absent means false, which keeps every existing test and every
+   * text-only deployment exactly as it was.
+   */
+  readonly objectStorage?: boolean
   /**
    * `NACRE_AUDIT_QUERY_TEXT`. Absent is the default and means the journal keeps
    * the hash of a query and not the query.
@@ -1768,6 +1786,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           : (uploaded?.filename ?? undefined)
 
       let content = body_.content
+      let binary: { bytes: Uint8Array; contentType: string } | undefined
       if (uploaded !== undefined) {
         if (typeof content === 'string' || typeof body_.url === 'string') {
           const problem = badRequest(
@@ -1778,30 +1797,84 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           send(res, problem.status, problem.toJSON(), requestId)
           return
         }
-        // Decoded here, and refused here, rather than queued and failed later.
-        //
-        // The parser this feeds extracts no binary formats — it is stdlib-only
-        // on purpose, since it runs hostile input through whatever it depends
-        // on. Until this check existed the sidecar decoded with
-        // `errors="replace"`, so a PDF became a string of replacement
-        // characters that was chunked, embedded, stored as the document body
-        // and reported as indexed.
-        //
-        // At the edge the caller learns immediately and nothing is queued. Deep
-        // in the worker they would have learned from a `failed` row minutes
-        // later, if they looked.
-        const decoder = new TextDecoder('utf-8', { fatal: true })
-        try {
-          content = decoder.decode(uploaded.bytes)
-        } catch {
+
+        // PDF first, and both signals must agree: the part must declare
+        // `application/pdf` AND the bytes must begin with `%PDF-`. Either
+        // alone is a refusal that names the other — a declared type the bytes
+        // contradict is exactly the disagreement the multipart parser's
+        // strictness doctrine exists to refuse, and sniffing alone would turn
+        // the declared type into decoration. Other formats extend this table;
+        // nothing falls through to a guess.
+        const declared = (uploaded.contentType ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+        const MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d] // %PDF-
+        const magic =
+          uploaded.bytes.length >= MAGIC.length && MAGIC.every((b, i) => uploaded.bytes[i] === b)
+
+        if (declared === 'application/pdf' && !magic) {
           const problem = badRequest(
             instance,
             requestId,
-            'The uploaded file is not UTF-8 text. This installation extracts no binary formats — ' +
-              'a PDF, a Word file or an image needs an extractor the parser deliberately does not carry.',
+            "The file part declares 'application/pdf' but the bytes do not begin with the %PDF- magic. " +
+              'Both must agree; a declared type the bytes contradict is refused rather than trusted.',
           )
           send(res, problem.status, problem.toJSON(), requestId)
           return
+        }
+        if (declared !== 'application/pdf' && magic) {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "The bytes begin with the %PDF- magic but the file part does not declare 'application/pdf'. " +
+              'Both must agree; declare the type rather than relying on sniffing.',
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        if (declared === 'application/pdf' && magic) {
+          // Binary requires object storage, at the edge. The bytes' only home
+          // is the bucket — `documents.source_ref` is text and stays text — so
+          // a deployment without one learns on the request, naming the
+          // variables, not from a `failed` row minutes later.
+          if (options.objectStorage !== true) {
+            const problem = badRequest(
+              instance,
+              requestId,
+              'A PDF upload needs object storage, and this deployment has none configured. ' +
+                'Set NACRE_S3_* (endpoint, bucket, access key, secret key) to enable binary ingest.',
+            )
+            send(res, problem.status, problem.toJSON(), requestId)
+            return
+          }
+          binary = { bytes: uploaded.bytes, contentType: 'application/pdf' }
+        } else {
+          // Decoded here, and refused here, rather than queued and failed
+          // later.
+          //
+          // The parser extracts exactly the formats in the table above — it
+          // took its first dependency for PDF and nothing else. Until this
+          // check existed the sidecar decoded with `errors="replace"`, so a
+          // binary file became a string of replacement characters that was
+          // chunked, embedded, stored as the document body and reported as
+          // indexed.
+          //
+          // At the edge the caller learns immediately and nothing is queued.
+          // Deep in the worker they would have learned from a `failed` row
+          // minutes later, if they looked.
+          const decoder = new TextDecoder('utf-8', { fatal: true })
+          try {
+            content = decoder.decode(uploaded.bytes)
+          } catch {
+            const problem = badRequest(
+              instance,
+              requestId,
+              'The uploaded file is not UTF-8 text. This installation extracts PDF and nothing else — ' +
+                'a Word file or an image needs an extractor the parser deliberately does not carry, ' +
+                'and a PDF must declare application/pdf on the file part.',
+            )
+            send(res, problem.status, problem.toJSON(), requestId)
+            return
+          }
         }
       }
       const url_ = body_.url
@@ -1811,7 +1884,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
-      if ((typeof content === 'string') === (typeof url_ === 'string')) {
+      // A PDF file part is the third source and already excludes the other
+      // two: `content` and `url` beside a file were refused above, before the
+      // bytes were even looked at.
+      if (binary === undefined && (typeof content === 'string') === (typeof url_ === 'string')) {
         // Accepting both would mean choosing silently, and the choice would
         // differ from whatever the caller assumed.
         const problem = badRequest(instance, requestId, "Exactly one of 'content' or 'url' is required.")
@@ -1867,6 +1943,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         ...(typeof body_.title === 'string' ? { title: body_.title } : {}),
         ...(typeof content === 'string' ? { content } : {}),
         ...(typeof url_ === 'string' ? { url: url_ } : {}),
+        ...(binary === undefined ? {} : { bytes: binary.bytes, contentType: binary.contentType }),
         metadata,
       })
       // The accept stage only — parse, chunk and embed happen in the worker,
