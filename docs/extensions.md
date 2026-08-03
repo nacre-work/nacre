@@ -52,8 +52,8 @@ Not what was named. The resolver, the providers by module and name, the sinks,
 and the route count:
 
 ```
-api listening port=8080 extensions={"resolver":"@nacre.work/enterprise/tenancy",
-  "providers":["@nacre.work/enterprise/sso:oidc"],"sinks":[],"routes":4}
+api listening port=8080 extensions={"resolver":"@nacre.work/enterprise-tenancy",
+  "providers":["@nacre.work/enterprise-sso:oidc"],"sinks":[],"routes":4}
 ```
 
 A module that imports cleanly and registers nothing is the failure worth seeing,

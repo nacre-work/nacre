@@ -57,6 +57,14 @@ NACRE_EMA_TRUSTED_ISSUERS=
 # ─── permissions ───
 NACRE_ACL_CACHE_TTL=60
 
+# ─── MCP STDIO local mode only ───
+# Read by `@nacre.work/mcp` when it runs as a STDIO subprocess, not by any
+# server this file otherwise configures — the STDIO transport has no HTTP
+# request to authenticate, so it authenticates once from this service account
+# key and carries exactly its permissions. Required in that mode and read
+# nowhere else; the full contract is in docs/mcp.md.
+NACRE_SERVICE_KEY=nacre_sk_…
+
 # ─── the background worker ───
 NACRE_GC_GRACE=3600                    # tombstone to physical purge
 NACRE_INDEX_LEASE=900                  # any claim older than this is abandoned: indexing, purge
@@ -520,7 +528,7 @@ so two processes agree on it without anyone keeping two settings in step.
 
 | Profile | Contains | For |
 |---|---|---|
-| `minimal` | api, worker, postgres, qdrant, redis, parser; embeddings via an external endpoint | pilot, laptop, no GPU |
+| `minimal` | api, mcp, worker, the migrate job, parser, postgres, qdrant, redis; embeddings via an external endpoint | pilot, laptop, no GPU |
 | `full` | plus minio, embedder (TEI), reranker | typical deployment |
 | `airgapped` | everything local, zero outbound traffic, local OIDC (Keycloak) | closed network |
 

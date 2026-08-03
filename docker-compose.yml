@@ -1,12 +1,13 @@
 # Nacre — the three deployment profiles from docs/config.md.
 #
-#   minimal    api, worker, postgres, qdrant, redis, parser.
+#   minimal    api, mcp, worker, the migrate job, parser, postgres, qdrant, redis.
 #              Embeddings come from an endpoint you name. Runs on a laptop.
 #   full       plus minio, an embedder, and a reranker. The typical install.
 #   airgapped  everything local, zero outbound traffic, local OIDC.
 #
 # Services with no `profiles` key belong to every profile — that is how Compose
-# works, and it is why the core six are unmarked rather than listed three times.
+# works, and it is why the eight unprofiled services (the migrate job and mcp
+# among them) are unmarked rather than listed three times.
 #
 #   docker compose --profile minimal up -d
 #

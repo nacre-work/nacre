@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         ⚠ **Found an access-control problem or a data leak?**
-        Don't open an issue — see [SECURITY.md](../../SECURITY.md).
+        Don't open an issue — [report it privately](https://github.com/nacre-work/nacre/security/advisories/new), or see the [security policy](https://github.com/nacre-work/nacre/security/policy).
   - type: input
     attributes: { label: Nacre version }
     validations: { required: true }
