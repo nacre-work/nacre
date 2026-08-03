@@ -66,6 +66,29 @@ export interface ClientOptions {
   readonly retries?: number
   /** Swap in for tests, or for a runtime with its own instrumented fetch. */
   readonly fetch?: typeof globalThis.fetch
+  /**
+   * A refresh token, which turns on automatic renewal. With one set, a `401`
+   * from an ordinary request makes the client exchange it for a new pair once
+   * and replay the request, so a caller does not see the `401`s a forced key
+   * rotation or an expiry between calls would otherwise cause. Without one, a
+   * `401` surfaces exactly as before — which is the right behaviour for a
+   * service-account key, since `nacre_sk_` is not a JWT and has nothing to
+   * refresh.
+   *
+   * The renewal is shared: a burst of concurrent requests that all `401`
+   * triggers exactly **one** exchange, because replaying a spent refresh token
+   * revokes the whole family, and a client that let ten requests each present
+   * the same one would sign its user out on the second.
+   */
+  readonly refreshToken?: string
+  /**
+   * Called whenever the client rotates its tokens, with the new pair. Persist
+   * the refresh token here — the old one is spent the moment the new one is
+   * issued, so an application that reconstructs the client from storage without
+   * this loses the session on the next start. Not called for the explicit
+   * `auth.login`/`auth.refresh` methods, which hand the tokens back directly.
+   */
+  readonly onTokens?: (tokens: Tokens) => void
 }
 
 interface RequestOptions {
@@ -75,6 +98,12 @@ interface RequestOptions {
   readonly signal?: AbortSignal
   /** Safe or idempotent, so a transient failure may be retried. */
   readonly retryable?: boolean
+  /**
+   * The sign-in endpoints and the internal renewal set this, so a `401` from
+   * them is an answer rather than a trigger for another renewal — a refresh
+   * that itself `401`s means the session is over, not that it should recurse.
+   */
+  readonly noAuthRefresh?: boolean
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -88,10 +117,14 @@ const isProblem = (value: unknown): value is Problem =>
 
 export class NacreClient {
   readonly #base: string
-  readonly #token: string
+  #token: string
   readonly #timeoutMs: number
   readonly #retries: number
   readonly #fetch: typeof globalThis.fetch
+  #refreshToken: string | undefined
+  readonly #onTokens: ((tokens: Tokens) => void) | undefined
+  /** The one in-flight renewal, shared by every request that 401s during it. */
+  #renewing: Promise<boolean> | undefined
 
   constructor(options: ClientOptions) {
     if (!options.baseUrl) throw new TypeError('baseUrl is required')
@@ -104,6 +137,8 @@ export class NacreClient {
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
     this.#retries = Math.max(1, options.retries ?? DEFAULT_RETRIES)
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis)
+    this.#refreshToken = options.refreshToken
+    this.#onTokens = options.onTokens
   }
 
   async #once(options: RequestOptions): Promise<unknown> {
@@ -164,7 +199,7 @@ export class NacreClient {
     )
   }
 
-  async #request(options: RequestOptions): Promise<unknown> {
+  async #attempt(options: RequestOptions): Promise<unknown> {
     let attempt = 0
     for (;;) {
       attempt++
@@ -183,6 +218,70 @@ export class NacreClient {
         await new Promise((r) => setTimeout(r, 250 * 2 ** (attempt - 1)))
       }
     }
+  }
+
+  async #request(options: RequestOptions): Promise<unknown> {
+    try {
+      return await this.#attempt(options)
+    } catch (error) {
+      // A 401 on an ordinary request, with a refresh token in hand: renew once
+      // and replay. `noAuthRefresh` keeps the sign-in endpoints and the renewal
+      // itself out of this, so a spent refresh token ends the session instead
+      // of recursing. The replay is not wrapped — a second 401 is the caller's
+      // answer, not a reason to renew again.
+      if (
+        this.#refreshToken !== undefined &&
+        options.noAuthRefresh !== true &&
+        error instanceof NacreError &&
+        error.status === 401 &&
+        (await this.#renewOnce())
+      ) {
+        return await this.#attempt(options)
+      }
+      throw error
+    }
+  }
+
+  /**
+   * Exchange the refresh token for a new pair, at most once concurrently.
+   *
+   * Every request that 401s during a renewal awaits the same promise rather
+   * than starting its own — a spent refresh token revokes the whole family, so
+   * a burst presenting it in parallel would sign the user out. Returns whether
+   * the client now holds a fresh access token.
+   */
+  #renewOnce(): Promise<boolean> {
+    this.#renewing ??= this.#renew().finally(() => {
+      this.#renewing = undefined
+    })
+    return this.#renewing
+  }
+
+  async #renew(): Promise<boolean> {
+    const refreshToken = this.#refreshToken
+    if (refreshToken === undefined) return false
+
+    let tokens: Tokens | undefined
+    try {
+      tokens = await this.auth.refresh(refreshToken)
+    } catch {
+      // A transport error says nothing about the token's validity, so keep it
+      // and let a later request try again rather than ending the session on a
+      // blip.
+      return false
+    }
+
+    // `undefined` is the server refusing the refresh token: the session is over
+    // and re-presenting it only 401s again, so drop it and let the 401 surface.
+    if (tokens === undefined) {
+      this.#refreshToken = undefined
+      return false
+    }
+
+    this.#token = tokens.accessToken
+    this.#refreshToken = tokens.refreshToken
+    this.#onTokens?.(tokens)
+    return true
   }
 
   /**
@@ -729,6 +828,7 @@ export class NacreClient {
       const body = await this.#unauthorized<Record<string, unknown>>({
         method: 'POST',
         path: '/v1/auth/login',
+        noAuthRefresh: true,
         body: {
           email: input.email,
           password: input.password,
@@ -751,6 +851,7 @@ export class NacreClient {
       const body = await this.#unauthorized<Record<string, unknown>>({
         method: 'POST',
         path: '/v1/auth/refresh',
+        noAuthRefresh: true,
         body: { refresh_token: refreshToken },
       })
       return body === undefined ? undefined : tokensFrom(body)
@@ -761,6 +862,7 @@ export class NacreClient {
       await this.#request({
         method: 'POST',
         path: '/v1/auth/logout',
+        noAuthRefresh: true,
         body: { refresh_token: refreshToken },
       })
     },

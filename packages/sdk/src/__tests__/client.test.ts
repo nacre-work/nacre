@@ -559,3 +559,84 @@ describe('layers.update', () => {
     expect(await nacre.layers.update('l1', { name: 'x' })).toBe(false)
   })
 })
+
+describe('automatic token refresh', () => {
+  const tokens = (access: string, refresh: string) =>
+    json(200, { access_token: access, token_type: 'Bearer', expires_in: 900, refresh_token: refresh })
+
+  it('renews once on a 401 and replays with the new access token', async () => {
+    const { fetchImpl, calls } = stub(
+      problem(401, 'Unauthorized', 'The access token is expired.'),
+      tokens('access-2', 'refresh-2'),
+      json(200, { items: [{ id: 'w1', slug: 's', name: 'W', layer_count: 0 }] }),
+    )
+    const rotated: unknown[] = []
+    const nacre = new NacreClient({
+      baseUrl: BASE,
+      token: 'access-1',
+      fetch: fetchImpl,
+      refreshToken: 'refresh-1',
+      onTokens: (t) => rotated.push(t),
+    })
+
+    const result = await nacre.workspaces.list()
+    expect(result).toHaveLength(1)
+
+    expect(calls.map((c) => c.url)).toEqual([
+      `${BASE}/v1/workspaces`,
+      `${BASE}/v1/auth/refresh`,
+      `${BASE}/v1/workspaces`,
+    ])
+    // the exchange presented the token the client was constructed with
+    expect(calls[1]?.body).toEqual({ refresh_token: 'refresh-1' })
+    // the replay carried the freshly issued access token, not the expired one
+    expect(calls[0]?.headers.authorization).toBe('Bearer access-1')
+    expect(calls[2]?.headers.authorization).toBe('Bearer access-2')
+    // the application is handed the new pair to persist
+    expect(rotated).toEqual([
+      { accessToken: 'access-2', tokenType: 'Bearer', expiresIn: 900, refreshToken: 'refresh-2' },
+    ])
+  })
+
+  it('shares one renewal across concurrent 401s, never presenting a spent token twice', async () => {
+    // Replaying a spent refresh token revokes the whole family, so a burst that
+    // all 401 at once must produce exactly one exchange.
+    let refreshCalls = 0
+    let renewed = false
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const u = String(url)
+      if (u.endsWith('/v1/auth/refresh')) {
+        refreshCalls++
+        renewed = true
+        return tokens('access-2', 'refresh-2')
+      }
+      return renewed ? json(200, { items: [] }) : problem(401, 'Unauthorized')
+    }) as unknown as typeof globalThis.fetch
+
+    const nacre = new NacreClient({ baseUrl: BASE, token: 'access-1', fetch: fetchImpl, refreshToken: 'refresh-1' })
+
+    const results = await Promise.all([nacre.workspaces.list(), nacre.layers.list(), nacre.grants.list()])
+    results.forEach((r) => expect(Array.isArray(r)).toBe(true))
+    expect(refreshCalls).toBe(1)
+  })
+
+  it('leaves a 401 untouched when no refresh token is configured (a service-account key)', async () => {
+    const { fetchImpl, calls } = stub(problem(401, 'Unauthorized'))
+    const nacre = new NacreClient({ baseUrl: BASE, token: 'nacre_sk_x', fetch: fetchImpl })
+
+    await expect(nacre.workspaces.list()).rejects.toMatchObject({ status: 401 })
+    expect(calls).toHaveLength(1)
+  })
+
+  it('surfaces the 401 and drops the token when the refresh is itself refused', async () => {
+    const { fetchImpl, calls } = stub(problem(401, 'Unauthorized'), problem(401, 'Unauthorized'))
+    const nacre = new NacreClient({ baseUrl: BASE, token: 'access-1', fetch: fetchImpl, refreshToken: 'spent' })
+
+    await expect(nacre.workspaces.list()).rejects.toMatchObject({ status: 401 })
+    expect(calls.map((c) => c.url)).toEqual([`${BASE}/v1/workspaces`, `${BASE}/v1/auth/refresh`])
+
+    // the spent token is gone, so a later 401 does not present it a second time
+    await expect(nacre.workspaces.list()).rejects.toMatchObject({ status: 401 })
+    expect(calls.filter((c) => c.url.endsWith('/v1/auth/refresh'))).toHaveLength(1)
+  })
+})
