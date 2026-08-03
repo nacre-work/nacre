@@ -29,10 +29,10 @@ const server = createServer((req, res) => {
       body += chunk
     })
     req.on('end', () => {
-      let input = []
+      let input
       try {
         const parsed = JSON.parse(body || '{}')
-        input = Array.isArray(parsed.input) ? parsed.input : [parsed.input]
+        input = Array.isArray(parsed.input) ? parsed.input : []
       } catch {
         input = []
       }
