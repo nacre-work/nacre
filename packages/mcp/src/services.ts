@@ -340,21 +340,49 @@ export function buildServices(
             metadata: parseMetadata(args.metadata),
           })
 
+          // Undefined means the caller may not write to that layer — and it has
+          // to mean the same for a layer that does not exist, or ingest becomes
+          // the cheapest way to enumerate layer names. A refusal is a module's
+          // ingest gate declining a document the caller may write — the same
+          // gate the REST surface runs, because it lives in the shared queue, so
+          // a quota holds whichever port a document arrives on.
+          if (outcome === undefined) {
+            await audit.write({
+              orgId: auth.orgId,
+              actor: `${auth.principal.type}:${auth.principal.id}`,
+              action: 'ingest',
+              result: 'deny',
+              surface: 'mcp',
+              target: { layer, document_id: null },
+              detail: { layer },
+              requestId,
+            })
+            throw new Error('not found')
+          }
+          if ('refused' in outcome) {
+            await audit.write({
+              orgId: auth.orgId,
+              actor: `${auth.principal.type}:${auth.principal.id}`,
+              action: 'ingest',
+              result: 'deny',
+              surface: 'mcp',
+              target: { layer, document_id: null },
+              detail: { layer, reason: outcome.reason },
+              requestId,
+            })
+            throw new Error(outcome.reason)
+          }
+
           await audit.write({
             orgId: auth.orgId,
             actor: `${auth.principal.type}:${auth.principal.id}`,
             action: 'ingest',
-            result: outcome === undefined ? 'deny' : 'allow',
+            result: 'allow',
             surface: 'mcp',
-            target: { layer, document_id: outcome?.documentId ?? null },
+            target: { layer, document_id: outcome.documentId },
             detail: { layer },
             requestId,
           })
-
-          // Undefined means the caller may not write to that layer — and it has
-          // to mean the same for a layer that does not exist, or ingest becomes
-          // the cheapest way to enumerate layer names.
-          if (outcome === undefined) throw new Error('not found')
           return {
             document_id: outcome.documentId,
             job_id: outcome.jobId,

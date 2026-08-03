@@ -11,6 +11,7 @@ import {
   referenceAllows,
   reindexProgress,
   activeResolver,
+  admitIngest,
   toStateJson,
   VectorStore,
   vectorName,
@@ -46,6 +47,7 @@ import type {
   Grants,
   Ingest,
   IngestOutcome,
+  IngestRefused,
   IngestRequest,
   Job,
   Jobs,
@@ -943,7 +945,7 @@ export class NacreIngest implements Ingest {
     return plan.layers.includes(id) ? id : undefined
   }
 
-  async queue(auth: AuthContext, request: IngestRequest): Promise<IngestOutcome | undefined> {
+  async queue(auth: AuthContext, request: IngestRequest): Promise<IngestOutcome | IngestRefused | undefined> {
     return withOrg(
       this.pool,
       auth.orgId,
@@ -954,6 +956,24 @@ export class NacreIngest implements Ingest {
         const inline = request.content !== undefined
         const source = inline ? request.content : (request.url as string)
         const hash = createHash('sha256').update(source, 'utf8').digest('hex')
+
+        // A module's ingest gate, after write is established and before anything
+        // is stored, so a refusal leaves neither a row nor an object behind. No
+        // gate registered is the open core admitting every document a caller may
+        // write, which is what it did before this point existed. A refusal
+        // becomes the handler's 4xx; it is not `undefined`, because that would
+        // read as "unwritable" and hide the layer the caller just wrote against.
+        const refusal = await admitIngest({
+          orgId: auth.orgId,
+          layerId,
+          principal: auth.principal,
+          role: auth.role,
+          externalId: request.externalId,
+          bytes: new TextEncoder().encode(source).byteLength,
+        })
+        if (refusal !== undefined) {
+          return { refused: true, status: refusal.status, reason: refusal.reason }
+        }
 
         // Bytes to object storage before the row, never after.
         //
