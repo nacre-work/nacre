@@ -118,3 +118,27 @@ jobs:
             echo "::error::public core references enterprise modules"
             exit 1
           fi
+
+  # The two images the Helm chart names in its defaults must actually build.
+  # "This image could not be built by anyone" was a real state once — a pnpm
+  # step that needs a TTY, in a `docker build` that never has one — and the only
+  # place that surfaces is a build. Built here on every pull request, not pushed;
+  # the release workflow pushes the same Dockerfiles to ghcr on a version bump.
+  docker:
+    name: docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: nacre (api, mcp, worker)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+      - name: nacre-parser
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.parser
+          push: false
