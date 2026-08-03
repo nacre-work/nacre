@@ -2,4 +2,4 @@
 # process runs hostile input through whatever it depends on, so the extractor
 # is chosen for dependency surface first. Anything added here is a decision
 # about that surface, not a convenience; see the module docstring in app.py.
-pypdf==5.1.0
+pypdf==6.14.2
