@@ -309,6 +309,22 @@ export function createMetrics(registry: Registry) {
         'Deleted documents whose vectors are not yet purged. Climbing means garbage collection is losing',
       ),
     ),
+    // The one thing a wedged worker leaves outside its own log. The worker
+    // serves no port and has no registry — by design, so that a liveness check
+    // is not a second surface with an auth story — so a worker stuck inside one
+    // document is invisible except in the log line that stopped. This is the
+    // age of the oldest document currently claimed for indexing, per
+    // organization, computed on the API's side from `documents.claimed_at`. A
+    // series appears only while something is in flight; one that climbs past
+    // NACRE_INDEX_LEASE is a worker wedged in a document, or gone with the
+    // reaper not reclaiming it — and either way the document behind it is not
+    // getting indexed.
+    processingAge: registry.register(
+      new Gauge(
+        'nacre_document_processing_age_seconds',
+        'Age of the oldest document a worker is currently indexing, by organization. Absent when nothing is in flight; past the index lease means a worker is wedged or gone',
+      ),
+    ),
     // A gauge and not a counter, because the question an operator has is "how
     // much disk is a finished migration still holding", not "how many have I
     // reclaimed since this process started". Each one retained is a full copy

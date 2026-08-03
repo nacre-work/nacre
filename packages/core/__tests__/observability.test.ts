@@ -145,6 +145,48 @@ when('observability · the database gauges', () => {
     expect(gauge(text, 'nacre_documents_total', '{org="obs",status="indexed"}')).toBe(2)
   })
 
+  it('a claimed document surfaces its age, and nothing in flight leaves no series', async () => {
+    // Nothing is being indexed yet: the gauge has no per-org series, so the
+    // registry emits the bare "nothing to report" line and no {org="obs"} one.
+    const idle = await scrape()
+    expect(gauge(idle, 'nacre_document_processing_age_seconds', '{org="obs"}')).toBeUndefined()
+
+    // Claim one document 90 seconds ago, the shape a worker holding it leaves.
+    await withOrg(
+      pool,
+      ORG,
+      async (c) => {
+        await c.query(
+          `UPDATE documents SET status = 'parsing', claimed_at = now() - interval '90 seconds'
+            WHERE org_id = $1 AND id = $2`,
+          [ORG, ids.fresh],
+        )
+      },
+      AS_APP,
+    )
+
+    const age = gauge(await scrape(), 'nacre_document_processing_age_seconds', '{org="obs"}')
+    expect(age).toBeGreaterThanOrEqual(89)
+    expect(age).toBeLessThan(120)
+
+    // Finished: claimed_at is cleared, so the series is gone on the next scrape
+    // rather than frozen at its last age forever.
+    await withOrg(
+      pool,
+      ORG,
+      async (c) => {
+        await c.query(
+          `UPDATE documents SET status = 'indexed', claimed_at = NULL WHERE org_id = $1 AND id = $2`,
+          [ORG, ids.fresh],
+        )
+      },
+      AS_APP,
+    )
+    expect(
+      gauge(await scrape(), 'nacre_document_processing_age_seconds', '{org="obs"}'),
+    ).toBeUndefined()
+  })
+
   it('a scrape leaves no gauge behind when its rows go away', async () => {
     await scrape()
     const before = gauge(await scrape(), 'nacre_documents_total', '{org="obs",status="indexed"}')

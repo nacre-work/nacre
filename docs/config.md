@@ -604,6 +604,7 @@ Required metrics:
 nacre_documents_total{org,status}
 nacre_tombstones_pending_total{org}        # climbing means GC is losing
 nacre_collections_retired_total{org}       # superseded collections still on disk
+nacre_document_processing_age_seconds{org} # oldest in-flight doc; past the lease = worker wedged
 nacre_search_duration_seconds              # target p95 < 200ms at 10M vectors
 nacre_search_results_total
 nacre_acl_denials_total{reason}
@@ -669,9 +670,17 @@ It recorded nothing at all before — no registry, no endpoint — so everything
 above was true of REST and silent on the transport the product is actually for.
 An agent's search was not slow or failing; it was absent.
 
-The worker emits no metrics of any kind — it serves no port. What it does is
-visible through the API's gauges: `nacre_documents_total` by status, and
-`nacre_tombstones_pending_total` climbing when collection is losing.
+The worker emits no metrics of any kind — it serves no port, and giving it one
+would be a surface with its own authentication story for the sake of a checkbox.
+What it does is visible through the API's gauges: `nacre_documents_total` by
+status, `nacre_tombstones_pending_total` climbing when collection is losing, and
+`nacre_document_processing_age_seconds` — the age of the oldest document a worker
+is currently indexing, computed on the API's side from `documents.claimed_at`. A
+worker wedged inside one document used to show up only in the log line that
+stopped; it is a series here now, and one that climbs past `NACRE_INDEX_LEASE` is
+a worker stuck or gone with the reaper not reclaiming its claim. It is absent
+while nothing is in flight, the same as the reindex and retired-collection
+gauges are silent about tenants with nothing to report.
 
 **There is no propagation alert, and that is the change worth reading twice.**
 `nacre_acl_propagation_lag_seconds` was here, described as "the only external

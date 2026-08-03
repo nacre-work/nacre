@@ -26,6 +26,7 @@ export function collectDatabaseGauges(pool: Pool, metrics: Metrics, role?: strin
 
       metrics.documents.reset()
       metrics.tombstonesPending.reset()
+      metrics.processingAge.reset()
       metrics.reindexProgress.reset()
       metrics.collectionsRetired.reset()
 
@@ -102,12 +103,22 @@ export function collectDatabaseGauges(pool: Pool, metrics: Metrics, role?: strin
                 status: string
                 live: string
                 tombstoned: string
+                claim_age: string | null
               }>(
+                // claim_age rides this query rather than adding one: claimed_at
+                // is on the same documents rows, non-null only while a document
+                // is being indexed, and cleared on success or failure. The max
+                // per status is the oldest in-flight document; the max across
+                // statuses is taken below, so a worker wedged in either
+                // `parsing` or `indexing` shows up.
                 `SELECT status,
                         count(*) FILTER (WHERE deleted_at IS NULL)::text AS live,
                         count(*) FILTER (
                           WHERE deleted_at IS NOT NULL AND vectors_purged_at IS NULL
-                        )::text AS tombstoned
+                        )::text AS tombstoned,
+                        extract(
+                          epoch FROM max(now() - claimed_at) FILTER (WHERE claimed_at IS NOT NULL)
+                        ) AS claim_age
                    FROM documents
                   WHERE org_id = $1
                   GROUP BY status`,
@@ -118,12 +129,20 @@ export function collectDatabaseGauges(pool: Pool, metrics: Metrics, role?: strin
         )
 
         let tombstoned = 0
+        let claimAge = 0
         for (const row of rows) {
           metrics.documents.set(Number(row.live), { org: org.slug, status: row.status })
           tombstoned += Number(row.tombstoned)
+          if (row.claim_age !== null) claimAge = Math.max(claimAge, Number(row.claim_age))
         }
 
         metrics.tombstonesPending.set(tombstoned, { org: org.slug })
+        // Only when something is in flight. A zero for every idle tenant would
+        // be true and useless; the alertable shape is a series that exists and
+        // climbs, so no claimed document means no series, the same way the
+        // reindex and retired-collection gauges stay silent about tenants with
+        // nothing to report.
+        if (claimAge > 0) metrics.processingAge.set(claimAge, { org: org.slug })
       }
     } finally {
       client.release()
