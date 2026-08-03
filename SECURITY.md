@@ -39,5 +39,8 @@ no bug bounty at this time.
 
 ## Supported versions
 
-Security fixes ship for the current major version and for the previous one
-for six months after a new major is released.
+The project is pre-1.0, so there is no "previous major" yet and any `0.x`
+release may carry breaking changes. Security fixes ship for the latest `0.x`
+release; a deployment on an older `0.x` upgrades forward to receive them. Once
+`1.0` ships this becomes the current major and the previous one, supported for
+six months after each new major is released.
