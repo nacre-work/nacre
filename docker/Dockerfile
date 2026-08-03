@@ -38,6 +38,18 @@ RUN pnpm build
 # Drop everything the runtime does not need, including the compilers.
 RUN pnpm install --frozen-lockfile --prod --ignore-scripts
 
+# The company admin UI, on one origin with the API.
+#
+# `packages/admin` is static files — `pnpm build` above already produced them —
+# so serving it is nginx and nothing else. It is a separate stage rather than a
+# separate Dockerfile so it reuses the build above rather than installing and
+# compiling the workspace a second time, and it sits before `runtime` on purpose:
+# the last stage is the default build target, and that has to stay the node image
+# the api/mcp/worker services run.
+FROM nginx:alpine AS web
+COPY --from=build /app/packages/admin/dist /usr/share/nginx/html
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+
 FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production

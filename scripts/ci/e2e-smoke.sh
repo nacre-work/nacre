@@ -40,6 +40,21 @@ for i in $(seq 1 60); do
 done
 say "API healthy"
 
+# ── the admin front-door serves the UI on one origin with the API ──────────
+# The `web` service serves the static admin bundle and proxies /v1 to the api
+# service, so the browser makes same-origin requests and needs no CORS. Assert
+# both halves: the bundle answers at /, and /v1 reaches the API through it.
+WEB="http://localhost:${NACRE_WEB_HOST_PORT:-8082}"
+say "waiting for the admin UI on the web front-door"
+for i in $(seq 1 30); do
+  if curl -fsS "${WEB}/" >/dev/null 2>&1; then break; fi
+  if [ "$i" = 30 ]; then die "the admin UI never answered on the web front-door"; fi
+  sleep 2
+done
+curl -fsS "${WEB}/" | grep -qi '<title' || die "the web front-door did not serve an HTML page at /"
+curl -fsS "${WEB}/v1/health" >/dev/null || die "the API was not reachable through the web front-door at /v1"
+say "admin UI served, and /v1 proxied, on the web front-door"
+
 # ── init: one organization, one admin, the collection ──────────────────────
 say "init"
 INIT=$(${COMPOSE} run --rm -T api node packages/api/dist/init.js \
