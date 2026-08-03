@@ -474,13 +474,30 @@ export class HttpParser implements Parser {
     private readonly timeoutMs = 120_000,
   ) {}
 
-  async parse(source: { content?: string; url?: string }): Promise<ParsedDocument> {
-    const response = await fetch(new URL('/parse', this.endpoint), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(source),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    })
+  async parse(source: {
+    content?: string
+    url?: string
+    bytes?: Uint8Array
+    contentType?: string
+  }): Promise<ParsedDocument> {
+    // Bytes travel as their own raw body under their real content type — the
+    // sidecar dispatches on it — because base64-in-JSON would carry the same
+    // bytes at four-thirds the size. The JSON form is the deployed contract
+    // and stays byte-for-byte what it was.
+    const response =
+      source.bytes !== undefined
+        ? await fetch(new URL('/parse', this.endpoint), {
+            method: 'POST',
+            headers: { 'content-type': source.contentType ?? 'application/octet-stream' },
+            body: source.bytes,
+            signal: AbortSignal.timeout(this.timeoutMs),
+          })
+        : await fetch(new URL('/parse', this.endpoint), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(source),
+            signal: AbortSignal.timeout(this.timeoutMs),
+          })
 
     if (!response.ok) {
       throw new Error(`the parser answered ${response.status}`)

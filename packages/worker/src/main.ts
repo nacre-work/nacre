@@ -126,6 +126,8 @@ interface Claim {
   readonly metadata: Record<string, unknown>
   readonly sourceRef: string | null
   readonly sourceType: string
+  /** What the stored bytes are. Decides how the s3 branch hands them to the parser. */
+  readonly contentType: string
 }
 
 async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | undefined> {
@@ -151,9 +153,10 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
       metadata: Record<string, unknown> | null
       source_ref: string | null
       source_type: string
+      content_type: string
     }>(
       `SELECT d.id, d.org_id, o.vector_collection AS collection, d.layer_id, d.external_id, l.vector_name,
-              l.provider_id, d.metadata, d.source_ref, d.source_type
+              l.provider_id, d.metadata, d.source_ref, d.source_type, d.content_type
          FROM documents d
          JOIN organizations o ON o.id = d.org_id
          JOIN layers l        ON l.id = d.layer_id
@@ -210,6 +213,7 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
       metadata: row.metadata ?? {},
       sourceRef: row.source_ref,
       sourceType: row.source_type,
+      contentType: row.content_type,
     }
   })
 }
@@ -778,7 +782,7 @@ async function main(): Promise<void> {
       // that is not there means it was removed underneath us, and an empty
       // document silently replacing it would delete the content from every
       // answer while reporting success.
-      let source: { url: string } | { content: string }
+      let source: { url: string } | { content: string } | { bytes: Uint8Array; contentType: string }
       if (claim.sourceType === 's3' && claim.sourceRef !== null) {
         if (objects === undefined) {
           throw new Error(
@@ -789,7 +793,22 @@ async function main(): Promise<void> {
         if (bytes === undefined) {
           throw new Error(`object ${claim.sourceRef} is missing from the bucket`)
         }
-        source = { content: new TextDecoder().decode(bytes) }
+        if (claim.contentType === 'application/pdf') {
+          // Binary goes to the parser as bytes under its real type; extraction
+          // is the sidecar's job and the text never exists on this side.
+          source = { bytes, contentType: claim.contentType }
+        } else {
+          // Text objects were validated as UTF-8 at the edge, so a decode
+          // failure here means the bucket returned different bytes than were
+          // stored — worth a failed row with a reason, never a silent mangle.
+          try {
+            source = { content: new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
+          } catch {
+            throw new Error(
+              `object ${claim.sourceRef} is not the UTF-8 text that was stored; the bucket's copy is corrupt`,
+            )
+          }
+        }
       } else if (claim.sourceType === 'url' && claim.sourceRef !== null) {
         source = { url: claim.sourceRef }
       } else {
