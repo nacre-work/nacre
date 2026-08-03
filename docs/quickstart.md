@@ -55,18 +55,37 @@ sidecar, and expects embeddings from an endpoint you name in
 `NACRE_DEFAULT_EMBEDDING_ENDPOINT`. Use `--profile full` to run the embedder and
 the reranker locally too; see [config.md](./config.md) for the difference.
 
-## Who listens where
+## After startup — what listens where
 
-Two containers take traffic from outside, and nothing else is published:
+The stack publishes exactly two ports. Here is every surface a person or an
+agent talks to, and where each one is:
 
-| Container | Port | Serves |
+| Surface | Where | For |
 |---|---|---|
-| `api` | `http://localhost:8080` | the REST API (`/v1/*`), sign-in, `/.well-known/*`, `/metrics` — and the origin to put the admin UI on |
-| `mcp` | `http://localhost:8081` | `POST /mcp` (Streamable HTTP, for agents) and its own `/metrics` |
+| **API** — REST | `http://localhost:8080` | apps, `init`, the SDK — every `curl` on this page |
+| **MCP** | `http://localhost:8081/mcp` | agents (Streamable HTTP) |
+| **Admin UI — your organization** | not a container; build it and put it on the API origin → then `http://localhost:8080/` | a person: search, layers, grants, service accounts |
+| **Global admin — every organization** | commercial (`admin-global`); not in this build | a platform administrator, across organizations |
+
+Two of the four have a URL the moment the stack is up — **`api` on 8080** and
+**`mcp` on 8081**. The other two are worth being explicit about, because the
+difference is the whole open-core line:
+
+- The **admin UI** is static files, not a service, which is why the Compose
+  stack does not serve it. It is one organization — *your* company — and you
+  reach it by building it and serving it on the API's origin; it is then
+  `http://localhost:8080/` beside the API's `http://localhost:8080/v1`. See
+  [The same thing in a browser](#the-same-thing-in-a-browser) for the one
+  command and the proxy line.
+- The **global admin** — organizations, quotas and the default embedding model
+  across the *whole* installation — is the one screen that is commercial. The
+  community UI is scoped to the single organization in your token and has no way
+  to name another; managing many is `admin-global`, in the enterprise build.
 
 Postgres, Qdrant, Redis and the parser are internal to the Compose network and
 deliberately stay that way — nothing outside the stack should reach them, and
-in production the same two surfaces are the only ones an ingress routes to.
+in production the same two published surfaces are the only ones an ingress
+routes to.
 
 Every command below talks to `api`; the mcp port matters once you reach
 "Connecting an agent" at the end. If 8080 or 8081 is already taken on your
@@ -233,8 +252,10 @@ pnpm --filter @nacre.work/admin build     # writes packages/admin/dist
 Serve that directory **from the same origin as the API**. The API sets no CORS
 headers, deliberately, so a UI on a different origin is a decision to make in a
 proxy rather than something that works by accident — put `/` on the directory
-and `/v1` on the API and both are same-origin. `packages/admin/README.md` has
-the two headers to add, and why one of them cannot come from a meta tag.
+and `/v1` on the API and both are same-origin. Locally that makes the admin UI
+`http://localhost:8080/` and the API `http://localhost:8080/v1` — the row the
+table above pointed here for. `packages/admin/README.md` has the two headers to
+add, and why one of them cannot come from a meta tag.
 
 Sign in with the address and password `init` printed. The session renews itself,
 so it outlives the hour that token above has. Pasting the token works too, and
