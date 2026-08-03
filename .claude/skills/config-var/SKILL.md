@@ -35,7 +35,7 @@ matters most.
 
 | Profile | Contains | For |
 |---|---|---|
-| `minimal` | api, worker, postgres, qdrant, redis, parser | pilot, laptop, no GPU |
+| `minimal` | api, mcp, worker, migrate job, parser, postgres, qdrant, redis | pilot, laptop, no GPU |
 | `full` | plus minio, embedder, reranker | typical deployment |
 | `airgapped` | everything local, zero outbound traffic | closed network |
 
