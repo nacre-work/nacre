@@ -537,10 +537,27 @@ so two processes agree on it without anyone keeping two settings in step.
 |---|---|---|
 | `minimal` | api, mcp, worker, the migrate job, parser, postgres, qdrant, redis; embeddings via an external endpoint | pilot, laptop, no GPU |
 | `full` | plus minio, embedder (TEI), reranker | typical deployment |
-| `airgapped` | everything local, zero outbound traffic, local OIDC (Keycloak) | closed network |
+| `airgapped` | everything local; email/password sign-in; models pre-seeded | closed network |
 
 MinIO appears only in `full`, and that is a licensing decision as much as a
 packaging one — see [licensing.md](./licensing.md).
+
+**`airgapped` is airgapped only after two one-time steps, and the profile now
+says so rather than implying it happens by itself.**
+
+- The embedder and reranker are Text Embeddings Inference images pointed at
+  `BAAI/bge-m3` and `BAAI/bge-reranker-base`. On a first boot those weights are
+  fetched from the Hugging Face Hub — outbound traffic a closed network does not
+  have. Populate the `models` volume once from a machine that does have it, then
+  set `HF_HUB_OFFLINE=1` (the Compose file passes it through to both) so the
+  containers use the cached weights and never reach for the network. With it set
+  and the volume empty, they fail at startup rather than silently downloading,
+  which is the behaviour an airgapped deployment wants.
+- **Sign-in is email and password**, the built-in mechanism, not OIDC. The
+  Keycloak container in this profile is a placeholder for the commercial `sso`
+  module — the open core has no code path that accepts a token Keycloak issues,
+  so nothing here consumes it. The earlier "local OIDC (Keycloak)" was a
+  capability the open product does not have.
 
 Two variables belong to the Compose file rather than to the product:
 **`NACRE_API_HOST_PORT`** (default 8080) and **`NACRE_MCP_HOST_PORT`** (default
