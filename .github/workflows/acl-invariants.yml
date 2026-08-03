@@ -124,6 +124,13 @@ jobs:
       - name: I2 · a caller restriction only ever removes results
         run: pnpm test:acl:group "narrowing"
 
+      # The installation-wide default embedding provider is a NULL-org_id row
+      # every tenant reads and none may write. Its own step because a
+      # permissive-vs-restrictive slip in the write policies is a tenant
+      # repointing or deleting the model every other tenant depends on.
+      - name: RLS · the installation default embedding provider is read-only to a tenant
+        run: pnpm test:acl:group "embedding_providers"
+
       # Fast on a pull request, exhaustive at night. The nightly run is where a
       # rare interaction between deny and inheritance actually gets found.
       - name: property · resolve vs the reference implementation
