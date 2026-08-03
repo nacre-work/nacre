@@ -5,11 +5,59 @@
 # with a constant vector — enough to drive the permission loop, where the ACL
 # pre-filter and not relevance decides what a search returns.
 #
+# It also pulls MinIO forward into `minimal`, which no real deployment should
+# do — object storage is `full`, and for a licensing reason (AGPLv3; see
+# docs/licensing.md). CI needs it because **binary ingest requires a bucket**:
+# a PDF's bytes have no other home, so the smoke cannot prove that path
+# without one. The text half of the loop runs through the bucket too as a
+# result, which is coverage the smoke did not have before.
+#
 # Used only as `docker compose -f docker-compose.yml -f docker-compose.ci.yml`,
 # so it is invisible to `docker compose --profile … config` and to the
 # lint:compose check, which read the base file alone.
 
 services:
+  # `minimal` as well as `full`. Both are named because Compose's merge rule
+  # for a sequence — append to the base, or replace it — decides what this
+  # becomes, and `minimal` has to survive either answer.
+  minio:
+    profiles: [minimal, full]
+
+  # The bucket, which MinIO does not create and the S3 client does not either:
+  # a PUT into a bucket that is not there is a 404 the API would report as a
+  # failed ingest. One shot, and the API and the worker wait for it to finish.
+  #
+  # The retry loop is the healthcheck MinIO's image cannot easily carry here —
+  # `mc` is the only client in this overlay that can speak to it, so it waits
+  # for the server by trying the thing it came to do.
+  minio-init:
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      minio: { condition: service_started }
+    environment:
+      MC_HOST_ci: http://${NACRE_S3_ACCESS_KEY:-minioadmin}:${NACRE_S3_SECRET_KEY:-minioadmin}@minio:9000
+    entrypoint:
+      - sh
+      - -c
+      - >
+        for i in $$(seq 1 30); do
+          mc mb --ignore-existing "ci/${NACRE_S3_BUCKET:-nacre}" && exit 0;
+          sleep 2;
+        done;
+        echo "the bucket was never created" >&2; exit 1
+
+  # Both write to the bucket — the API on ingest, the worker when it reads the
+  # bytes back — so neither may start before it exists. The base file's
+  # conditions are kept: depends_on is a mapping, and mappings merge.
+  api:
+    depends_on:
+      minio-init: { condition: service_completed_successfully }
+
+  worker:
+    depends_on:
+      minio-init: { condition: service_completed_successfully }
+
   stub-embedder:
     image: node:22-alpine
     restart: unless-stopped

@@ -160,6 +160,11 @@ jobs:
   # stub answering the /embeddings contract is added through a CI-only overlay;
   # the smoke script drives init, a layer, a grant, ingest to indexed, a search
   # that returns the document and a revoke that removes it.
+  #
+  # The same overlay pulls MinIO forward into `minimal`. Object storage is a
+  # `full` service and stays one, but binary ingest has nowhere to put a PDF's
+  # bytes without a bucket — so without it the smoke could not prove that path
+  # at all, only that the edge refuses it.
   e2e:
     name: e2e
     runs-on: ubuntu-latest
@@ -174,6 +179,18 @@ jobs:
           # thousand and faster.
           sed -i 's#^NACRE_DEFAULT_EMBEDDING_ENDPOINT=.*#NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://stub-embedder:8000#' .env
           sed -i 's#^NACRE_DEFAULT_EMBEDDING_DIM=.*#NACRE_DEFAULT_EMBEDDING_DIM=8#' .env
+          # Object storage, which .env.example ships commented out because it
+          # is off by default. Uncommented here rather than sed-ed line by
+          # line, and appended so the values are visible in one block: binary
+          # ingest refuses at the edge without them, so the PDF half of the
+          # smoke would test the refusal and nothing else.
+          cat >> .env <<'EOF'
+          NACRE_S3_ENDPOINT=http://minio:9000
+          NACRE_S3_BUCKET=nacre
+          NACRE_S3_ACCESS_KEY=minioadmin
+          NACRE_S3_SECRET_KEY=minioadmin
+          NACRE_S3_FORCE_PATH_STYLE=true
+          EOF
       - name: build and start minimal, plus the stub embedder
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile minimal up -d --build
       - name: drive the loop
