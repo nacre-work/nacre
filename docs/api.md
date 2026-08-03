@@ -248,7 +248,10 @@ It is the only signal that more exist.
 
 Ingest returns `202` with a `job_id`. Status at `GET /v1/jobs/{id}`:
 `queued | parsing | embedding | indexed | failed`, with progress and an error
-message. An HMAC-signed completion webhook is optional.
+message. There is no completion callback: a client polls `GET /v1/jobs/{id}`
+until it reads a terminal state (`indexed` or `failed`). A webhook is not built,
+and the contract carries no path for one — adding it is a change to
+`docs/openapi.yaml` first.
 
 ## Limits
 
@@ -260,7 +263,12 @@ issuing more keys.
 | search | 60 requests/min |
 | ingest | 600 documents/hour |
 | document size | 50 MB |
-| vectors per organization | from `organizations.quotas` |
+
+There is no core limit on vectors or documents per organization. The
+`organizations.quotas` column exists in the schema, but nothing on the ingest
+path reads it: the open core stores what it is given, and enforcing a volume
+quota is a commercial concern (`docs/licensing.md`). A row that named it as an
+enforced default was the one thing this table claimed the code does not do.
 
 A `429` carries `Retry-After` and the `RateLimit-*` headers (RFC 9331). Every
 counted response carries `RateLimit-Limit`, `RateLimit-Remaining`,
