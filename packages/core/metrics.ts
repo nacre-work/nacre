@@ -233,11 +233,13 @@ export class Registry {
 /**
  * The metrics docs/config.md requires.
  *
- * `nacre_acl_propagation_lag_seconds` is the one with an alert on it, and the
- * reason is worth restating where the metric is defined: it is the only
- * external evidence that invariant I4 — a revoked grant reflected within the
- * SLA — still holds. Everything else here describes how the system is doing.
- * This one describes whether it is still correct.
+ * There is deliberately no `nacre_acl_propagation_lag_seconds` here. It was the
+ * one metric with an alert on it, back when invariant I4 was temporal — a
+ * revoked grant reflected *within an SLA*, with a cache the worker had to catch
+ * up. Migration 0016 removed that cache: the permitted set is computed per
+ * request from the grants, so I4 is structural now and there is no lag to
+ * measure. A gauge that reported one would be reporting on a subsystem that no
+ * longer exists.
  */
 export function createMetrics(registry: Registry) {
   return {

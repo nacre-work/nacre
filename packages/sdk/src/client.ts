@@ -637,9 +637,10 @@ export class NacreClient {
      * Withdraw a grant. `false` when it is absent or on a scope this caller may
      * not administer.
      *
-     * The change is reflected in results within the propagation SLA, not
-     * instantly: the payload tags on the vectors are recomputed by the worker.
-     * `nacre_acl_propagation_lag_seconds` is what says how far behind that is.
+     * The change is reflected on the next request. The permitted set is computed
+     * per request from the grants, so a revoked grant is gone from results
+     * immediately — there is nothing asynchronous to propagate and nothing to
+     * wait on.
      */
     revoke: async (grantId: string): Promise<boolean> => {
       try {

@@ -166,7 +166,7 @@ blocks a release.
 | T3 | `read` on a workspace, `deny read` on one layer | that layer never appears, for any query |
 | T4 | `write` without `read` | ingest succeeds, search returns empty |
 | T5 | `read` on one document, nothing on its layer | that document is found, its neighbours are not |
-| T6 | A user is removed from a group | results are empty within 60s |
+| T6 | A user is removed from a group | results are empty on the next request |
 | T7 | A document is deleted | not found immediately, before GC |
 | T8 | A direct request for another org's `document_id` | 404, not 403 |
 
@@ -181,7 +181,7 @@ blocks a release.
 
 | # | Scenario | Expected |
 |---|---|---|
-| T11 | A group changes while 1000 queries run concurrently | nothing from the revoked layer after the SLA |
+| T11 | A group changes while 1000 queries run concurrently | nothing from the revoked layer on any request after the change |
 | T12 | A layer is reindexed during active search | permissions hold on both indexes |
 | T13 | A grant issued and revoked in one transaction | no access |
 | T14 | Cyclic group nesting (A ⊂ B ⊂ A) | terminates, resolves correctly |

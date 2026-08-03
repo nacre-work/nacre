@@ -53,10 +53,13 @@ short legal review into a long one. See `docs/licensing.md`.
 New behavior that can silently degrade needs a metric before it needs a feature
 flag. The required set is in `docs/config.md`.
 
-`nacre_acl_propagation_lag_seconds` is the one with an alert on it: it is the
-only external evidence that invariant 4 — revocation reflected within the SLA —
-still holds. If your change can affect propagation, check that this metric still
-measures what its name claims.
+`nacre_tombstones_pending_total` is the one with an alert on it: it is the only
+external evidence that a background pass — the collector that reclaims a deleted
+document's vectors — is still running. (Invariant 4 no longer needs a metric:
+migration 0016 removed the propagation cache, so a revoked grant is reflected on
+the next request and there is no lag to measure — the old
+`nacre_acl_propagation_lag_seconds` went with it.) If your change can affect a
+background sweep, check that this gauge still measures what its name claims.
 
 ## Health endpoints
 
