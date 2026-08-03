@@ -148,3 +148,39 @@ jobs:
           context: .
           file: docker/Dockerfile.parser
           push: false
+
+  # The whole loop, booted from the Compose file the quickstart hands out. Every
+  # other job asserts on a part; this one starts the parts together and runs a
+  # request through all of them, which is where the defects a green unit suite
+  # never sees have lived — a port collision, a healthcheck that fails a
+  # transport that has no HTTP surface, a migration that ran after the API
+  # opened, the worker indexing nothing. `minimal` starts no embedder, so a
+  # stub answering the /embeddings contract is added through a CI-only overlay;
+  # the smoke script drives init, a layer, a grant, ingest to indexed, a search
+  # that returns the document and a revoke that removes it.
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: configure the environment
+        run: |
+          cp .env.example .env
+          # Point at the stub, and shrink the vector width — the vectors are
+          # constant and meaningless, so eight floats index as well as a
+          # thousand and faster.
+          sed -i 's#^NACRE_DEFAULT_EMBEDDING_ENDPOINT=.*#NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://stub-embedder:8000#' .env
+          sed -i 's#^NACRE_DEFAULT_EMBEDDING_DIM=.*#NACRE_DEFAULT_EMBEDDING_DIM=8#' .env
+      - name: build and start minimal, plus the stub embedder
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile minimal up -d --build
+      - name: drive the loop
+        run: bash scripts/ci/e2e-smoke.sh
+      - name: logs on failure
+        if: failure()
+        # api and worker only, and tailed — the datastore init banners drown the
+        # two logs that say why the loop stopped.
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile minimal logs --no-color --tail 40 api worker
+      - name: tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile minimal down -v

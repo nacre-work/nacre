@@ -1,0 +1,35 @@
+# CI overlay for the end-to-end smoke test. Never part of a real deployment.
+#
+# `minimal` deliberately starts no embedder, so booting the whole loop in CI
+# needs one supplied. This adds a stub that answers the /embeddings contract
+# with a constant vector — enough to drive the permission loop, where the ACL
+# pre-filter and not relevance decides what a search returns.
+#
+# Used only as `docker compose -f docker-compose.yml -f docker-compose.ci.yml`,
+# so it is invisible to `docker compose --profile … config` and to the
+# lint:compose check, which read the base file alone.
+
+services:
+  stub-embedder:
+    image: node:22-alpine
+    restart: unless-stopped
+    command: ["node", "/opt/stub/stub-embedder.mjs"]
+    environment:
+      PORT: "8000"
+      # Kept in step with the .env the smoke workflow writes, so the vector
+      # width matches the collection init builds.
+      NACRE_DEFAULT_EMBEDDING_DIM: "${NACRE_DEFAULT_EMBEDDING_DIM:-8}"
+    volumes:
+      - ./scripts/ci:/opt/stub:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:8000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
