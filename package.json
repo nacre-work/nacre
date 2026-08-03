@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "lint:openapi": "redocly lint docs/openapi.yaml",
     "lint:compose": "node scripts/check-compose.mjs",
+    "lint:config": "node scripts/check-config-docs.mjs",
     "lint:entrypoints": "node scripts/check-entrypoints.mjs",
     "lint:acl-groups": "node scripts/check-acl-groups.mjs",
     "lint:publish": "node scripts/check-publish.mjs",
