@@ -175,6 +175,17 @@ export async function initialize(
     // Shared across organizations by default: one endpoint serves every tenant
     // in a self-hosted install, and a per-organization provider is the
     // exception rather than the shape to create on day one.
+    //
+    // This row carries `org_id = NULL`, and since 0019 a tenant-scoped role
+    // cannot write one — the RESTRICTIVE policies on `embedding_providers`
+    // require `org_id = current_setting('app.current_org')`, which NULL fails.
+    // That is the point: the installation default is not a tenant's to change.
+    // Writing it is a bootstrap act, so this one statement runs under
+    // `nacre_worker`, the BYPASSRLS role the worker's queue already uses;
+    // `nacre_app` is a member of it (migration 0008), so the switch is
+    // available wherever init connects. `SET LOCAL` reverts at COMMIT, and it
+    // is reset immediately below so nothing after it bypasses RLS.
+    await client.query('SET LOCAL ROLE nacre_worker')
     const { rows: providers } = await client.query<{ id: string }>(
       `WITH ins AS (
          INSERT INTO embedding_providers (org_id, name, endpoint, model, dimensions)
@@ -188,6 +199,7 @@ export async function initialize(
        LIMIT 1`,
       [provider.endpoint, provider.model, provider.dimensions],
     )
+    await client.query('RESET ROLE')
     const providerId = providers[0]?.id
     if (providerId === undefined) throw new Error('the embedding provider insert returned no row')
     log('embedding provider ready', { provider_id: providerId, model: provider.model })

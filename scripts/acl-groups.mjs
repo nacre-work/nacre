@@ -38,6 +38,16 @@ export const ACL_GROUPS = [
   // reaches a layer no grant does, which is invariant I2 broken by a feature
   // that looks like a convenience.
   { selector: 'narrowing', title: 'I2 · a caller restriction only ever removes results' },
+  // Not a T-case. The write policies on `embedding_providers` — the one tenant
+  // table with a legitimate NULL-org_id row, the installation default — must
+  // let a tenant read that row and never write it. It is RLS composition, so it
+  // is checked against a real database, and it has its own step because a
+  // permissive-vs-restrictive slip here is a tenant tampering with every other
+  // tenant's default model.
+  {
+    selector: 'embedding_providers',
+    title: 'RLS · the installation default embedding provider is read-only to a tenant',
+  },
 ]
 
 /** The property run is its own step with its own run count; not a group. */
