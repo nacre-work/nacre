@@ -55,6 +55,24 @@ sidecar, and expects embeddings from an endpoint you name in
 `NACRE_DEFAULT_EMBEDDING_ENDPOINT`. Use `--profile full` to run the embedder and
 the reranker locally too; see [config.md](./config.md) for the difference.
 
+## Who listens where
+
+Two containers take traffic from outside, and nothing else is published:
+
+| Container | Port | Serves |
+|---|---|---|
+| `api` | `http://localhost:8080` | the REST API (`/v1/*`), sign-in, `/.well-known/*`, `/metrics` — and the origin to put the admin UI on |
+| `mcp` | `http://localhost:8081` | `POST /mcp` (Streamable HTTP, for agents) and its own `/metrics` |
+
+Postgres, Qdrant, Redis and the parser are internal to the Compose network and
+deliberately stay that way — nothing outside the stack should reach them, and
+in production the same two surfaces are the only ones an ingress routes to.
+
+Every command below talks to `api`; the mcp port matters once you reach
+"Connecting an agent" at the end. If 8080 or 8081 is already taken on your
+machine, set `NACRE_API_HOST_PORT` / `NACRE_MCP_HOST_PORT` in `.env` — the host
+side moves, the ports inside the network do not, and nothing else changes.
+
 ## The first organization
 
 Nothing exists yet — not an organization, not a user, not the Qdrant collection.
@@ -225,11 +243,16 @@ can see, from the other side of this page.
 
 ## Connecting an agent
 
-Over MCP, Streamable HTTP:
+Over MCP, Streamable HTTP — this is the `mcp` container from the table above:
 
 ```
-https://api.nacre.work/mcp
+http://localhost:8081/mcp
 ```
+
+In production the same endpoint lives behind the API's host rather than on its
+own one — the ingress routes `/mcp` there, so an agent is configured with
+`https://api.example.com/mcp` and never needs to know there is a second
+process.
 
 Locally, over STDIO, with a service account key. Mint one first — the token
 `init` printed expires in an hour and is not a credential for an agent:
