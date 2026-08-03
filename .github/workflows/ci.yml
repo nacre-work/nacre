@@ -61,6 +61,12 @@ jobs:
       # hands back the unprofiled services — so a typo starts a working stack
       # and nobody notices.
       - run: pnpm lint:compose
+      # docs/config.md is the contract a self-hoster deploys against. This fails
+      # if the core reads a NACRE_ variable the reference omits, or .env.example
+      # seeds one it does not explain — the "validated at startup and read by
+      # nothing / read by the code and documented nowhere" defect, which is the
+      # single most-repeated one in this repository's history.
+      - run: pnpm lint:config
       - run: pnpm typecheck
       - run: pnpm build
       # The entry points are what docker-compose runs. Until they existed it ran
