@@ -392,13 +392,14 @@ documents and cannot store them.
 
 Rehearse the restore quarterly, at real volume.
 
-## Binary ingest — specified for 0.4.0, not built
+## Binary ingest
 
-This section is normative and ahead of the code, and says so — the gap is
-named here on purpose, because a contract that ships silently unimplemented is
-the drift this repository keeps finding. Today an uploaded file must be UTF-8
-text and a binary one is refused at the edge; lifting that is the following
-design, in this order, and nothing else.
+Built, in the four stages this section was written to order. It stays here in
+the same words rather than being rewritten as a description: the design was
+settled before the code, every stage landed against it, and the last of them
+is what turned the argument below into something that has been run rather than
+reasoned about. An uploaded file is UTF-8 text or a PDF; any other binary
+format is still refused at the edge.
 
 **Binary enters through the multipart upload only.** The file part is already
 held outside the JSON-shaped body — a document's bytes do not belong in the
@@ -454,6 +455,16 @@ is a decision rather than a leftover.
 already presigns `source_url` for `s3` documents, so the original PDF becomes
 retrievable by exactly the callers rule 6 allows, with no new code. The
 collector already removes the object when it purges the vectors. The proof is
-the same bar every ingest change has met: the compose e2e gains MinIO in its
-CI overlay, uploads a real small PDF, drives it to `indexed`, and finds its
-text through search — asserted against the running stack, not against a mock.
+the same bar every ingest change has met, and it is in place: the compose e2e
+carries MinIO in its CI overlay, generates a real one-page PDF, uploads it,
+drives it to `indexed`, and asserts the *extracted text* comes back out of a
+search — against the running stack, not against a mock.
+
+That last assertion is the one worth naming. Each of the four stages was
+tested against a mock of the next: the sidecar against bytes a test built, the
+worker against a fake parser, the edge against a fake ingest port. Every one
+of those can pass while the four disagree with each other, which is the shape
+of defect this repository keeps finding by running things. The stub embedder
+returns a constant vector, so relevance decides nothing in that search — the
+phrase is in the response because it was pulled out of the PDF, or it is not
+there at all.

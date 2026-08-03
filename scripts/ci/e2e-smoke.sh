@@ -6,6 +6,10 @@
 # defects a green unit suite could not — a port collision, a healthcheck loop, a
 # migration that ran too late — so it belongs in CI, once, end to end.
 #
+# It also uploads a real PDF and asserts its extracted text comes back out of a
+# search. That half needs object storage, which the CI overlay supplies: a
+# binary document's bytes live in the bucket and nowhere else.
+#
 # It talks to the API on localhost:8080 (published by the api service) and runs
 # `init` inside the api container. The token init prints is valid for an hour,
 # which is all this needs, so there is no sign-in step.
@@ -97,6 +101,79 @@ for i in $(seq 1 60); do
   if [ "$i" = 60 ]; then die "the job never reached indexed"; fi
   sleep 2
 done
+
+# ── a PDF, all the way through ─────────────────────────────────────────────
+# The one path no unit test can prove: the edge accepts the bytes, the bucket
+# holds them, the worker fetches them back and hands them to the sidecar as a
+# raw body, pypdf extracts the text, and that text comes back out of a search.
+# Every stage of binary ingest was tested against a mock of the next one; this
+# is the first time they are asked to agree with each other.
+PDF_TEXT="Espresso machine refills happen every Tuesday"
+say "build a real PDF"
+python3 scripts/ci/make-pdf.py /tmp/coffee.pdf "$PDF_TEXT"
+head -c 5 /tmp/coffee.pdf | grep -q '%PDF-' || die "the generated file is not a PDF"
+
+# Multipart, so `req` does not fit: this is the one request in the loop that
+# carries bytes rather than a JSON body.
+upload_pdf() {
+  local declared="$1" out status body
+  out=$(curl -sS -X POST "${API}/v1/documents" \
+    -H "authorization: Bearer ${TOKEN}" -H 'accept: application/json' \
+    -F 'layer=handbook' -F 'external_id=coffee-policy' -F 'title=Coffee policy' \
+    -F "file=@/tmp/coffee.pdf;type=${declared}" \
+    -w $'\n%{http_code}')
+  status=${out##*$'\n'}
+  body=${out%$'\n'*}
+  # Status first, body after: the body is what varies in length, so anything
+  # reading this takes line 1 and then everything from line 2 on.
+  printf '%s\n%s' "$status" "$body"
+}
+
+# The refusal first, because it must not depend on anything the accepted
+# upload leaves behind. Same bytes, a declared type they contradict: both
+# signals have to agree, and the answer names the one that is missing.
+say "upload the PDF declared as text/plain — expect a refusal"
+RESULT=$(upload_pdf 'text/plain')
+[ "$(printf '%s' "$RESULT" | head -1)" = "400" ] || die "a PDF declared text/plain was not refused: ${RESULT}"
+printf '%s' "$RESULT" | tail -n +2 | grep -q 'application/pdf' || die "the refusal did not name application/pdf: ${RESULT}"
+say "  refused, naming the declaration"
+
+say "upload the PDF properly declared"
+RESULT=$(upload_pdf 'application/pdf')
+[ "$(printf '%s' "$RESULT" | head -1)" = "202" ] || die "the PDF upload was not accepted: ${RESULT}"
+PDF_BODY=$(printf '%s' "$RESULT" | tail -n +2)
+PDF_JOB=$(printf '%s' "$PDF_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+PDF_DOC=$(printf '%s' "$PDF_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['document_id'])")
+say "pdf job ${PDF_JOB}"
+
+for i in $(seq 1 60); do
+  STATUS=$(req GET "/v1/jobs/${PDF_JOB}" "$TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  say "  pdf job status: ${STATUS}"
+  case "$STATUS" in
+    indexed) break ;;
+    failed) die "the PDF ingest failed" ;;
+  esac
+  if [ "$i" = 60 ]; then die "the PDF job never reached indexed"; fi
+  sleep 2
+done
+
+# The assertion that matters. The stub embedder returns a constant vector, so
+# relevance decides nothing here and every permitted chunk comes back — which
+# is exactly what makes this a test of *extraction* rather than of ranking:
+# the text is in the response or it was never pulled out of the PDF.
+say "search, and expect the PDF's own text in a hit"
+hit_texts() { python3 -c "import sys,json; print('\n'.join(h.get('text','') for h in json.load(sys.stdin).get('items',[])))"; }
+BODY=$(req POST /v1/search "$TOKEN" '{"query":"coffee","top_k":10}')
+printf '%s' "$BODY" | hit_texts | grep -qF "$PDF_TEXT" \
+  || die "the PDF's text never reached the index — search returned: ${BODY}"
+say "  the extracted text came back from the index"
+
+# Falls out for free, and says so in docs/architecture.md: the bytes are in the
+# bucket, so the document carries a presigned link for a caller holding read.
+say "the document carries a presigned source_url"
+req GET "/v1/documents/${PDF_DOC}" "$TOKEN" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('source_url') else 1)" \
+  || die "an s3-stored document carried no source_url"
 
 # ── a service account, a grant, and the revoke that removes it ─────────────
 # The document is indexed and the admin can already see it by role. The ACL

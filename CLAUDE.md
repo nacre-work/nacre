@@ -331,20 +331,39 @@ the metrics each had when MCP became a second surface. The file is deliberately
 kept out of that object; a document body does not belong in something that gets
 scanned, logged and put into error messages.
 
-**An uploaded file must be UTF-8 text, and a binary one is refused at the edge.**
-That is the product's limit, not the handler's: `Parser.parse` takes
-`{ content?: string, url?: string }` with no bytes argument, `source_ref` is
-`text` and the S3 path stores UTF-8 and decodes it back, and `content_hash` is
-over the text. Extracting a PDF is a change to the parser port, the sidecar's
-contract, the ingest signature and the hash, and it implies that binary upload
-requires `NACRE_S3_*`, because that is the only place bytes can live.
+**A PDF can be uploaded, and any other binary format is still refused at the
+edge.** That was an end-to-end change and the estimate was right about which
+pieces it touched: the parser port grew a third form
+(`{ content } | { url } | { bytes, contentType }`), the sidecar took its first
+dependency ever — pure-Python `pypdf`, pinned, chosen for dependency surface
+because it runs hostile input — migration 0020 added `documents.content_type`,
+and `content_hash` became `sha256` over the *uploaded bytes* for a binary
+source while staying over the text for the others. Getting that last one wrong
+would have been invisible: the API stores the hash when it accepts the file and
+the worker recomputes it, so a worker hashing the extracted text instead would
+make every identical re-upload miss the row and re-embed forever.
 
-The sidecar decoded with `errors="replace"` until this went in, so the refusal
+**Both signals must agree, and binary requires object storage.** The part must
+declare `application/pdf` *and* the bytes must begin with `%PDF-`; either alone
+is a refusal naming the other, because a declared type the bytes contradict is
+the disagreement the multipart parser's strictness exists to refuse, and
+sniffing alone would make the declared type decoration. A PDF's bytes have one
+home — `documents.source_ref` is text and stays text — so a deployment without
+`NACRE_S3_*` is refused on the request, naming the variables. The URL path
+stays text-only on purpose: a response's declared type is an attacker's field.
+
+The sidecar decoded with `errors="replace"` until the refusal went in, so it
 replaced a real corruption rather than a hypothetical one — a 58-byte PDF
 produced six replacement characters that would have been chunked, embedded,
-stored as the document body and reported as `indexed`. It raises now, and the
-edge check means the caller learns on the request instead of from a `failed` row
-minutes later, if they looked.
+stored as the document body and reported as `indexed`.
+
+Proved by running it rather than only by testing it, which is the rule this
+repository keeps re-learning: each of the four stages passed against a mock of
+the next one, and mocks agree with whatever they were written to. The compose
+e2e now generates a real one-page PDF, uploads it to the running stack, drives
+it to `indexed`, and asserts the extracted phrase comes back out of a search —
+with a constant-vector stub embedder, so relevance decides nothing and the
+phrase is there only if it came out of the PDF.
 
 **Object storage is wired.** `NACRE_S3_*` spent its whole life in
 `docs/config.md` and in the `full` Compose profile while `loadConfig` did not
