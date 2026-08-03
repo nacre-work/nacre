@@ -217,3 +217,51 @@ jobs:
           else
             gh release create "v$VERSION" --title "v$VERSION" --generate-notes
           fi
+
+  # The container images the Helm chart names in its defaults —
+  # ghcr.io/nacre-work/nacre and -parser. Nothing built them: this workflow
+  # published the npm packages and stopped, so `helm install` on the chart's
+  # defaults pulled a tag that did not exist. Built here, from the same tree the
+  # npm packages came from and only once they have published, so the two halves
+  # of a release do not disagree about what a version is.
+  #
+  # Tagged with the version and `latest`. The chart's image.tag defaults to
+  # Chart.appVersion, so the version tag is the one an untouched values file
+  # resolves to; a deployment that wants immutability pins the digest this job
+  # prints.
+  containers:
+    name: containers ${{ needs.decide.outputs.version }}
+    needs: [decide, npm]
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: nacre (api, mcp, worker — one image, three entry points)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/nacre-work/nacre:${{ needs.decide.outputs.version }}
+            ghcr.io/nacre-work/nacre:latest
+
+      - name: nacre-parser (the Python sidecar)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.parser
+          push: true
+          tags: |
+            ghcr.io/nacre-work/nacre-parser:${{ needs.decide.outputs.version }}
+            ghcr.io/nacre-work/nacre-parser:latest
