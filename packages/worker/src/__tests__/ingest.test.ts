@@ -243,4 +243,64 @@ describe('ingest', () => {
     const again = await ingest({ ...request, title: 'A different title' }, p)
     expect(again.unchanged).toBe(true)
   })
+
+  // `request` without its text content, for the tests that supply bytes
+  // instead. Built explicitly rather than by rest-destructuring, so the source
+  // exclusivity check sees exactly one source.
+  const bare = {
+    orgId: request.orgId,
+    collection: request.collection,
+    metadata: request.metadata,
+    layerId: request.layerId,
+    vectorName: request.vectorName,
+    externalId: request.externalId,
+  }
+
+  it('a binary source is hashed over its bytes, never over the extracted text', async () => {
+    // The API stored sha256 of the uploaded bytes when it accepted the file.
+    // If the worker overwrote that with a hash of the extracted text, the next
+    // upload of the identical file could never match the row — idempotent
+    // retries would re-embed forever.
+    const bytes = new TextEncoder().encode('%PDF-1.4 pretend')
+    const seen: unknown[] = []
+    const p = ports({
+      parser: {
+        parse: async (s) => {
+          seen.push(s)
+          return { text: 'Extracted text, deliberately different from the bytes.', metadata: {} }
+        },
+      },
+    })
+
+    await ingest({ ...bare, bytes, contentType: 'application/pdf' }, p)
+
+    // The parser received the bytes form untouched.
+    expect(seen[0]).toMatchObject({ contentType: 'application/pdf' })
+    expect((seen[0] as { bytes: Uint8Array }).bytes).toBe(bytes)
+
+    // The stored hash is over the bytes, so re-sending the same file is a no-op
+    // even though the parser was asked again.
+    const again = await ingest({ ...bare, bytes, contentType: 'application/pdf' }, p)
+    expect(again.unchanged).toBe(true)
+
+    const expected = contentHash('Extracted text, deliberately different from the bytes.')
+    const stored = await p.documents.find(bare.orgId, bare.layerId, bare.externalId)
+    expect(stored?.contentHash).not.toBe(expected)
+    expect(stored?.contentHash).toMatch(/^sha256:/)
+  })
+
+  it('bytes without a content type are refused, not guessed at', async () => {
+    await expect(
+      ingest({ ...bare, bytes: new Uint8Array([1, 2, 3]) }, ports()),
+    ).rejects.toThrow(/contentType/)
+  })
+
+  it('bytes and content together are refused, like every double source', async () => {
+    await expect(
+      ingest(
+        { ...request, bytes: new Uint8Array([1]), contentType: 'application/pdf' },
+        ports(),
+      ),
+    ).rejects.toThrow(/exactly one/)
+  })
 })

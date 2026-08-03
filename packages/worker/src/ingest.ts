@@ -16,7 +16,19 @@ export interface ParsedDocument {
 }
 
 export interface Parser {
-  parse(source: { content?: string; url?: string }): Promise<ParsedDocument>
+  /**
+   * Exactly one of three mutually exclusive forms: inline text, a URL to
+   * fetch, or raw bytes with the type that says what they are. The bytes form
+   * exists for binary ingest — the sidecar receives them as a raw body with
+   * that content type, extracts, and answers the same ParsedDocument shape as
+   * the other two.
+   */
+  parse(source: {
+    content?: string
+    url?: string
+    bytes?: Uint8Array
+    contentType?: string
+  }): Promise<ParsedDocument>
 }
 
 export interface Embedder {
@@ -103,6 +115,9 @@ export interface IngestRequest {
   readonly title?: string
   readonly content?: string
   readonly url?: string
+  /** Raw document bytes, for binary formats. Requires `contentType`. */
+  readonly bytes?: Uint8Array
+  readonly contentType?: string
   readonly chunkConfig?: ChunkConfig
 }
 
@@ -139,16 +154,32 @@ export function contentHash(text: string): string {
  * silently, and the choice would differ from whatever the caller assumed.
  */
 export async function ingest(request: IngestRequest, ports: IngestPorts): Promise<IngestResult> {
-  const sources = [request.content, request.url].filter((s) => s !== undefined)
+  const sources = [request.content, request.url, request.bytes].filter((s) => s !== undefined)
   if (sources.length !== 1) {
-    throw new Error('exactly one of content or url is required')
+    throw new Error('exactly one of content, url or bytes is required')
+  }
+  if (request.bytes !== undefined && request.contentType === undefined) {
+    throw new Error('bytes require a contentType; without one the parser would have to guess')
   }
 
   const parsed = await ports.parser.parse(
-    request.content !== undefined ? { content: request.content } : { url: request.url as string },
+    request.bytes !== undefined
+      ? { bytes: request.bytes, contentType: request.contentType as string }
+      : request.content !== undefined
+        ? { content: request.content }
+        : { url: request.url as string },
   )
 
-  const hash = contentHash(parsed.text)
+  // For a binary source the hash is over the uploaded bytes, matching what the
+  // API stored when it accepted the file — the extracted text is a derivative,
+  // and hashing it here would overwrite the row's hash with a value the next
+  // identical upload can never match, turning idempotent retries into a
+  // re-embedding bill. Text sources keep the text hash, which for them is the
+  // same statement.
+  const hash =
+    request.bytes !== undefined
+      ? `sha256:${createHash('sha256').update(request.bytes).digest('hex')}`
+      : contentHash(parsed.text)
   const existing = await ports.documents.find(request.orgId, request.layerId, request.externalId)
   // `indexed` and not just the hash. The REST layer inserts the row with its
   // content hash and status 'pending' — that row *is* the work order — so a
