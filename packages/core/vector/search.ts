@@ -234,6 +234,70 @@ export class VectorStore {
   }
 
   /**
+   * Recreate a collection from a schema Postgres still has.
+   *
+   * `ensureCollection` cannot serve the one case this is for: the collection is
+   * gone — the Qdrant volume was lost, or a reindex left an orphaned name — and
+   * Postgres is the only surviving record of what it was. `ensureCollection`
+   * derives the name from the slug and gives it a single slot from the process
+   * configuration, and after a reindex neither is right: the name lives in
+   * `organizations.vector_collection` and no longer follows the slug, and the
+   * slots are one per embedding model the organization's layers use, not the one
+   * the process happens to be configured with. So both come from the caller,
+   * which read them from the database.
+   *
+   * It **refuses a collection that already exists** rather than replacing it: the
+   * whole point is one that is not there, and a rebuild over a live collection
+   * would delete every vector it holds. Recreating the schema is all this does —
+   * the points are the worker's to re-embed once the documents are requeued,
+   * because a vector is the one thing Postgres does not keep. The payload indexes
+   * are the two sets `copyWithNewVector` carries across, for the same reason it
+   * carries them: a rebuilt collection missing the caller's metadata indexes
+   * would send every metadata filter back to a scan. The caller's keys go
+   * through the same `MetadataIndexer` ingest uses, so the `meta.` namespacing
+   * and the 64-index bound live in one place rather than being reimplemented
+   * here.
+   */
+  async rebuildCollection(
+    collection: string,
+    slots: readonly { name: string; size: number }[],
+    metadataKeys: readonly string[],
+  ): Promise<void> {
+    if (slots.length === 0) {
+      throw new Error(
+        `refusing to rebuild ${collection} with no vector slots — the organization's layers name none`,
+      )
+    }
+
+    const present = await this.#client.getCollections()
+    if (present.collections.some((c) => c.name === collection)) {
+      throw new Error(
+        `${collection} already exists. Rebuild is for a lost collection and will not replace a live ` +
+          'one, because that would delete every vector it holds. Drop it first if that is what you mean.',
+      )
+    }
+
+    const vectors: Record<string, unknown> = {}
+    for (const slot of slots) vectors[slot.name] = vectorParams(slot.size)
+
+    await this.#client.createCollection(collection, {
+      vectors: vectors as never,
+      sparse_vectors: { bm25: {} },
+      optimizers_config: { default_segment_number: 4 },
+      on_disk_payload: true,
+    } as never)
+
+    for (const index of PAYLOAD_INDEXES) {
+      await this.#client.createPayloadIndex(collection, {
+        field_name: index.field_name,
+        field_schema: index.field_schema as never,
+        wait: true,
+      })
+    }
+    await this.#metadataIndexes.ensure(collection, [...metadataKeys])
+  }
+
+  /**
    * Mark every point of a document deleted.
    *
    * A payload write, not a removal: physical deletion is the collector's job

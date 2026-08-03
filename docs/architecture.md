@@ -292,6 +292,38 @@ Every step of the sequence above is built. What a deployment still has to
 supply is the reference query set the gate at step 5 scores against, and until
 it does that layer migrates without one.
 
+### Rebuilding a lost collection
+
+The window above protects a collection a migration replaced. It does nothing for
+a collection that is simply **gone** — a lost Qdrant volume, a restore that
+brought Postgres back and not Qdrant, an operator who dropped the wrong name.
+Postgres survives that and Qdrant does not, and Postgres is where the collection
+is described: its name in `organizations.vector_collection`, its slots in the
+`vector_name` of each layer and the `dimensions` of the provider behind it.
+
+`node packages/api/dist/rebuild-collection.js --org {slug}` is the command that
+reads that description and puts the collection back. `init` cannot: it names the
+collection `org_{slug}` and gives it one slot from the process configuration, and
+after a reindex the name no longer follows the slug and the slots are one per
+model the layers use — both of which are in the database and neither of which is
+in `init`'s arguments. So this reads the real name and the real slots, recreates
+the collection with the permission indexes and the caller's metadata indexes
+(the two sets a reindex carries across, for the same reason), and **requeues
+every live document** — `status = 'pending'`, the lease reset with it — so the
+worker re-embeds them into it. The documents are requeued rather than copied
+because the vectors are the one thing Postgres does not keep; everything else it
+does.
+
+Two refusals make it safe to reach for. It **will not run over a collection that
+still exists**, because a rebuild is a create and would delete every vector in a
+live one — drop it first if it is corrupt rather than missing. And it leaves
+tombstoned documents alone: `deleted_at IS NULL` is on the requeue, so a document
+that was on its way out of the index does not come back into it. It is a
+one-shot command run where the operator already has credentials, the same shape
+as `init` and `migrate` and for the same reason — recreating a collection and
+requeuing an organization's documents is not a request the API takes from the
+network.
+
 The alternative was a collection per layer, which keeps a reindex local but
 turns an unscoped search into one Qdrant query per layer — ten to twenty in the
 ordinary case, against a p95 under 200 ms. Declaring spare vector slots at

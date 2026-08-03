@@ -120,4 +120,32 @@ say "search as the service account — expect nothing"
 BODY=$(search_as "$SA_KEY"); say "  response: ${BODY}"
 [ "$(printf '%s' "$BODY" | count_hits)" -eq 0 ] || die "the service account still saw the document after its grant was revoked — a leak"
 
-say "the loop ran: init, layer, ingest→indexed, grant, search-hit, revoke, search-miss"
+# ── disaster recovery: lose the collection, rebuild it from Postgres ────────
+# The Qdrant volume is gone — dropped here directly to stand in for it — and
+# Postgres is the only record of what the collection was. `rebuild-collection`
+# recreates it with the slots the layers name and requeues every document; the
+# worker re-embeds them into it. The admin sees the document by role, so this
+# asserts it comes back without touching a grant. The collection is `org_acme`
+# because this organization has never been reindexed; after a reindex the name
+# is the one in `organizations.vector_collection`, which the command reads.
+say "the admin can see the document before the collection is lost"
+BODY=$(search_as "$TOKEN"); say "  response: ${BODY}"
+[ "$(printf '%s' "$BODY" | count_hits)" -ge 1 ] || die "the admin could not see the indexed document before the rebuild"
+
+say "drop the Qdrant collection to stand in for a lost volume"
+${COMPOSE} run --rm -T api node -e "(async () => { const r = await fetch(process.env.NACRE_QDRANT_URL + '/collections/org_acme', { method: 'DELETE' }); if (!r.ok) { console.error('drop failed:', r.status); process.exit(1); } console.log('dropped org_acme'); })()"
+
+say "rebuild the collection from Postgres and requeue the documents"
+${COMPOSE} run --rm -T api node packages/api/dist/rebuild-collection.js --org acme
+
+say "wait for the worker to re-index into the rebuilt collection"
+for i in $(seq 1 60); do
+  BODY=$(search_as "$TOKEN")
+  if [ "$(printf '%s' "$BODY" | count_hits)" -ge 1 ]; then break; fi
+  say "  not re-indexed yet"
+  if [ "$i" = 60 ]; then die "the document never came back after the rebuild"; fi
+  sleep 2
+done
+say "the document is searchable again after the rebuild"
+
+say "the loop ran: init, layer, ingest→indexed, grant, search-hit, revoke, search-miss, rebuild→search-hit"
