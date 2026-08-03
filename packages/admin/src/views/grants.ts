@@ -123,7 +123,7 @@ function confirmRevoke(grant: Grant, root: HTMLElement): void {
       h('p', { class: 'hint' },
         'The row is removed rather than flipped to deny — a deny beats an allow at any depth and would also suppress access held through a group or a parent scope.'),
       h('p', { class: 'hint' },
-        'Search stops returning the affected documents within the propagation SLA, not instantly: the worker recomputes the tags on the vectors, and nacre_acl_propagation_lag_seconds says how far behind it is.'),
+        'Search stops returning the affected documents on the next request. The permitted set is computed per request from the grants, so revocation is immediate — there is nothing to propagate and nothing to wait on.'),
       message,
       h('div', { class: 'dialog-actions' },
         h('button', { type: 'button', class: 'btn', onclick: () => dialog.close() }, 'Cancel'),

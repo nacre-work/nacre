@@ -137,18 +137,19 @@ export function buildHybridQuery(options: HybridQueryOptions): HybridQuery {
  *
  * Without them the filter is evaluated by scanning, which does not fail a test
  * — it just gets slow enough to matter at a customer's volume, which is the
- * worst way to find out. `acl_tags` stays in memory because it participates in
- * every single query.
+ * worst way to find out.
+ *
+ * `acl_tags` used to be here, as a keyword index the propagation cache filtered
+ * on. Migration 0016 removed that whole subsystem — nothing writes `acl_tags`
+ * to a point and `buildFilter` never emits a clause on it — so the index was
+ * being built, and kept in memory, for a field that is never present and never
+ * queried. It is gone with the rest of the cache.
  */
 export const PAYLOAD_INDEXES = [
   { field_name: 'layer_id', field_schema: 'uuid' },
   { field_name: 'doc_id', field_schema: 'uuid' },
   { field_name: 'org_id', field_schema: 'uuid' },
   { field_name: 'deleted', field_schema: 'bool' },
-  {
-    field_name: 'acl_tags',
-    field_schema: { type: 'keyword', is_tenant: false, on_disk: false },
-  },
 ] as const
 
 /**

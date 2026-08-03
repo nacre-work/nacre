@@ -68,10 +68,10 @@ describe('MetadataIndexer', () => {
   })
 
   it('ignores fields outside the namespace when counting what is indexed', async () => {
-    // acl_tags, org_id and the rest are indexed too, and they are not metadata.
+    // layer_id, org_id and the rest are indexed too, and they are not metadata.
     // Counting them would spend the budget on fields that never came from a
     // caller, and would make a collection look full when it is not.
-    const s = stub({ existing: ['acl_tags', 'org_id', 'deleted', 'meta.source'] })
+    const s = stub({ existing: ['layer_id', 'org_id', 'deleted', 'meta.source'] })
     await indexerFor(s, 2).ensure('org_x', ['team'])
 
     expect(s.created.map((c) => c.field_name)).toEqual(['meta.team'])

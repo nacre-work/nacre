@@ -258,7 +258,7 @@ export class VectorStore {
    * Replace the caller's metadata on every point of a document.
    *
    * `setPayload` under the reserved key, which merges at the top level and so
-   * leaves `org_id`, `deleted`, `acl_tags` and the rest exactly as they were —
+   * leaves `org_id`, `deleted`, `doc_id` and the rest exactly as they were —
    * the namespace is what makes that safe rather than a list of fields to
    * preserve.
    *
