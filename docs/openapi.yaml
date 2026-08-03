@@ -1367,3 +1367,82 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+  /health:
+    get:
+      summary: Liveness. Touches no dependency.
+      description: >
+        `200` whenever the process is running. It calls neither Postgres, Qdrant
+        nor Redis, deliberately: a liveness check that queried a dependency would
+        turn one slow database into a cascading restart loop, which is the
+        failure a liveness probe exists to avoid rather than cause. Point a
+        Kubernetes `livenessProbe` here; the chart does.
+      security: []
+      responses:
+        '200':
+          description: The process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+  /ready:
+    get:
+      summary: Readiness. Touches everything a request needs.
+      description: >
+        The opposite of liveness: it checks Postgres, Qdrant, object storage and
+        the embedder — everything this process cannot serve a request without —
+        and answers `503` until all of them are reachable. An orchestrator reads
+        the status code and holds traffic off a replica whose dependencies are
+        not up yet. Unauthenticated, because a probe has no credential to
+        present, and the body names which dependency is unhappy and never why.
+        Point a Kubernetes `readinessProbe` here.
+      security: []
+      responses:
+        '200':
+          description: Every dependency is reachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, checks]
+                properties:
+                  status: { type: string, enum: [ready] }
+                  checks:
+                    type: object
+                    additionalProperties: { type: boolean }
+        '503':
+          description: At least one dependency is not reachable; `checks` says which.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, checks]
+                properties:
+                  status: { type: string, enum: ['not ready'] }
+                  checks:
+                    type: object
+                    additionalProperties: { type: boolean }
+  /metrics:
+    get:
+      summary: Prometheus exposition. Scraped, not called.
+      description: >
+        The metrics `docs/config.md` names, in Prometheus text format, served at
+        the root rather than under `/v1` because that is where a scraper expects
+        them. Open by default; set `NACRE_METRICS_TOKEN` and it requires that
+        bearer, answering `404` — not `401` — to a request without it, so an
+        unauthenticated scrape of a hardened deployment reveals not even that the
+        endpoint exists. The MCP transport serves its own `nacre_mcp_*` metrics
+        on its own port; this is the API's.
+      security: []
+      responses:
+        '200':
+          description: The exposition.
+          content:
+            text/plain:
+              schema: { type: string }
+        '404':
+          description: >
+            `NACRE_METRICS_TOKEN` is set and the request did not present it —
+            deliberately indistinguishable from an unconfigured endpoint.

@@ -108,6 +108,15 @@ const COVERAGE: Record<string, string | null> = {
   // Same, and more so: whoever reads this holds no Nacre credential at all.
   // That is what a JWKS is for.
   'GET /.well-known/jwks.json': null,
+
+  // Operational endpoints, in the contract because they are served, but not
+  // this client's job. Liveness and readiness are probed by an orchestrator,
+  // metrics scraped by Prometheus — none of them is an application calling the
+  // API through the SDK, and two are unauthenticated, which is the one thing
+  // this client exists to attach a credential to.
+  'GET /health': null,
+  'GET /ready': null,
+  'GET /metrics': null,
 }
 
 /** Walk `a.b` on the client instance, so the map names something real. */
@@ -169,6 +178,9 @@ describe('the client covers the contract', () => {
     expect(uncovered.sort()).toEqual([
       'GET /.well-known/jwks.json',
       'GET /.well-known/oauth-protected-resource',
+      'GET /health',
+      'GET /metrics',
+      'GET /ready',
     ])
   })
 })
