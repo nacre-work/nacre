@@ -52,25 +52,18 @@ WORKSPACE=$(printf '%s\n' "$INIT" | grep -oiE 'Workspace id[[:space:]]+[0-9a-f-]
 [ -n "$WORKSPACE" ] || die "init printed no workspace id"
 say "workspace ${WORKSPACE}"
 
-# The admin's user id is the token's subject.
-ADMIN=$(python3 -c "import sys,base64,json; p=sys.argv[1].split('.')[1]; p+='='*(-len(p)%4); print(json.loads(base64.urlsafe_b64decode(p))['sub'])" "$TOKEN")
-say "admin user ${ADMIN}"
-
-# ── a layer, and the admin allowed to use it ───────────────────────────────
+# ── a layer ────────────────────────────────────────────────────────────────
 say "create a layer"
 LAYER=$(req POST /v1/layers "$TOKEN" \
   "{\"workspace_id\":\"${WORKSPACE}\",\"slug\":\"handbook\",\"name\":\"Handbook\"}")
 LAYER_ID=$(printf '%s' "$LAYER" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 say "layer ${LAYER_ID}"
 
-# Nothing is readable by default, not even to the admin who made it. Grant admin
-# on the layer to the admin user — admin implies read and write, so this one
-# grant covers ingest and search.
-say "grant admin on the layer"
-GRANT=$(req POST /v1/grants "$TOKEN" \
-  "{\"principal_type\":\"user\",\"principal_id\":\"${ADMIN}\",\"scope_type\":\"layer\",\"scope_id\":\"${LAYER_ID}\",\"permission\":\"admin\"}")
-GRANT_ID=$(printf '%s' "$GRANT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-say "grant ${GRANT_ID}"
+# The admin is org_admin, which resolves to every scope in the organization
+# (rule 3), so it ingests and searches by role and needs no grant. That also
+# means the admin is the wrong principal to test a revoke with — its access does
+# not come from a grant. The grant/revoke below is against a service account,
+# which has no role and resolves purely from its grants.
 
 # ── ingest, and wait for it to reach indexed ───────────────────────────────
 say "ingest a document"
@@ -90,20 +83,41 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
-# ── search returns it, and a revoke removes it ─────────────────────────────
-say "search — expect a hit"
-HITS=$(req POST /v1/search "$TOKEN" '{"query":"when do new hires get access","top_k":5}' \
-  | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d if isinstance(d,list) else d.get('items',d.get('hits',[]))))")
-say "  hits: ${HITS}"
-[ "$HITS" -ge 1 ] || die "search returned no permitted hit while the grant was in place"
+# ── a service account, a grant, and the revoke that removes it ─────────────
+# The document is indexed and the admin can already see it by role. The ACL
+# assertion is against a fresh service account: it sees nothing until granted,
+# the document once granted, and nothing again once revoked — the last step
+# being the invariant that matters.
+say "create a service account"
+SA=$(req POST /v1/service-accounts "$TOKEN" '{"name":"smoke-agent"}')
+SA_ID=$(printf '%s' "$SA" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+SA_KEY=$(printf '%s' "$SA" | python3 -c "import sys,json; print(json.load(sys.stdin)['key'])")
+say "service account ${SA_ID}"
+
+count_hits() { python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('items',[])) if isinstance(d,dict) else len(d))"; }
+search_as() {
+  req POST /v1/search "$1" '{"query":"when do new hires get access","top_k":5}'
+}
+
+say "search as the service account before any grant — expect nothing"
+BODY=$(search_as "$SA_KEY"); say "  response: ${BODY}"
+[ "$(printf '%s' "$BODY" | count_hits)" -eq 0 ] || die "the service account saw the document with no grant"
+
+say "grant the service account read on the layer"
+GRANT=$(req POST /v1/grants "$TOKEN" \
+  "{\"principal_type\":\"service_account\",\"principal_id\":\"${SA_ID}\",\"scope_type\":\"layer\",\"scope_id\":\"${LAYER_ID}\",\"permission\":\"read\"}")
+GRANT_ID=$(printf '%s' "$GRANT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+say "grant ${GRANT_ID}"
+
+say "search as the service account — expect a hit"
+BODY=$(search_as "$SA_KEY"); say "  response: ${BODY}"
+[ "$(printf '%s' "$BODY" | count_hits)" -ge 1 ] || die "the service account got no hit while its grant was in place"
 
 say "revoke the grant"
 req DELETE "/v1/grants/${GRANT_ID}" "$TOKEN" >/dev/null
 
-say "search — expect nothing"
-HITS=$(req POST /v1/search "$TOKEN" '{"query":"when do new hires get access","top_k":5}' \
-  | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d if isinstance(d,list) else d.get('items',d.get('hits',[]))))")
-say "  hits: ${HITS}"
-[ "$HITS" -eq 0 ] || die "search still returned a hit after the grant was revoked — a leak"
+say "search as the service account — expect nothing"
+BODY=$(search_as "$SA_KEY"); say "  response: ${BODY}"
+[ "$(printf '%s' "$BODY" | count_hits)" -eq 0 ] || die "the service account still saw the document after its grant was revoked — a leak"
 
-say "the loop ran: init, layer, grant, ingest→indexed, search-hit, revoke, search-miss"
+say "the loop ran: init, layer, ingest→indexed, grant, search-hit, revoke, search-miss"

@@ -178,7 +178,9 @@ jobs:
         run: bash scripts/ci/e2e-smoke.sh
       - name: logs on failure
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile minimal logs --no-color
+        # api and worker only, and tailed — the datastore init banners drown the
+        # two logs that say why the loop stopped.
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile minimal logs --no-color --tail 40 api worker
       - name: tear down
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile minimal down -v
