@@ -188,6 +188,12 @@ services:
     restart: unless-stopped
     command: ["--model-id", "BAAI/bge-m3"]
     volumes: ["models:/data"]
+    # Off by default so `full` fetches the weights on first boot as it should.
+    # An airgapped install seeds the models volume once from a connected machine
+    # and sets HF_HUB_OFFLINE=1, so these read the cache and never reach the Hub;
+    # with it set and the cache empty they fail at startup rather than downloading.
+    environment:
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
     expose: ["80"]
 
   reranker:
@@ -196,10 +202,17 @@ services:
     restart: unless-stopped
     command: ["--model-id", "BAAI/bge-reranker-base"]
     volumes: ["models:/data"]
+    environment:
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
     expose: ["80"]
 
   # ───────────────────────── airgapped ─────────────────────────
 
+  # A placeholder for the commercial `sso` module, not something the open core
+  # uses: sign-in here is email and password, and nothing in this repository
+  # accepts a token Keycloak issues (OIDC verification is `sso`, which is
+  # commercial). It runs so an airgapped install that later adds `sso` has the
+  # identity provider already local; on the open product it consumes nothing.
   keycloak:
     profiles: [airgapped]
     image: quay.io/keycloak/keycloak:26.0
