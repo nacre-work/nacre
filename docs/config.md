@@ -542,6 +542,15 @@ so two processes agree on it without anyone keeping two settings in step.
 MinIO appears only in `full`, and that is a licensing decision as much as a
 packaging one — see [licensing.md](./licensing.md).
 
+Two variables belong to the Compose file rather than to the product:
+**`NACRE_API_HOST_PORT`** (default 8080) and **`NACRE_MCP_HOST_PORT`** (default
+8081) are the host-side ports `docker compose` publishes the two surfaces on.
+They are read by Compose during interpolation — from the shell or from `.env` —
+and never by `loadConfig`: inside the network the ports stay 8080 and 8081
+whatever these say, so probes, `PORT` and every in-network reference are
+unaffected. They exist because a host with something already on 8080 or 8081
+should be a one-line `.env` entry, not an override file.
+
 ## Health and observability
 
 - `/v1/health` — liveness, touching no dependency.
