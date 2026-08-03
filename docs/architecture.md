@@ -391,3 +391,69 @@ with no credential parses and then fails later, as a deployment that accepts
 documents and cannot store them.
 
 Rehearse the restore quarterly, at real volume.
+
+## Binary ingest — specified for 0.4.0, not built
+
+This section is normative and ahead of the code, and says so — the gap is
+named here on purpose, because a contract that ships silently unimplemented is
+the drift this repository keeps finding. Today an uploaded file must be UTF-8
+text and a binary one is refused at the edge; lifting that is the following
+design, in this order, and nothing else.
+
+**Binary enters through the multipart upload only.** The file part is already
+held outside the JSON-shaped body — a document's bytes do not belong in the
+object that gets scanned, logged and quoted into error messages — and that
+stays. A base64 field in the JSON body is deliberately not offered: it would
+carry the same bytes at four-thirds the size through every intermediary that
+handles the body as text.
+
+**PDF first, and both signals must agree.** The part must declare
+`application/pdf` **and** the bytes must begin with the `%PDF-` magic; either
+alone is a refusal that names the other. A declared type the bytes contradict
+is exactly the disagreement the multipart parser's strictness doctrine exists
+to refuse, and sniffing alone would turn the declared type into decoration.
+Other formats are added by extending this table, never by falling through to a
+guess.
+
+**Binary requires object storage, at the edge.** The bytes' only home is the
+bucket: `documents.source_ref` is text and stays text. A binary upload on a
+deployment without `NACRE_S3_*` is refused immediately, naming the variables —
+the caller learns on the request, not from a `failed` row. The write order is
+the existing one: bucket before row. The bytes go up with their real
+`Content-Type`, and `content_hash` is `sha256:` **over the uploaded bytes** —
+for text sources it stays over the text — so the upsert's idempotency semantics
+are unchanged: re-sending the same file is a no-op, a changed file re-indexes.
+
+**The schema records what the bytes are.** Migration 0020 adds
+`documents.content_type text NOT NULL DEFAULT 'text/plain'` — Postgres is the
+source of truth, and inferring the type from object metadata would make a
+bucket restore load-bearing for correctness. Forward-only, no RLS change: it is
+a column on a table whose policies already exist.
+
+**The worker dispatches on it.** The `s3` branch reads `content_type`:
+`text/plain` decodes UTF-8 with `fatal: true`, exactly as today;
+`application/pdf` passes the bytes through the parser port untouched. The port
+grows a third mutually exclusive form —
+`parse({ content } | { url } | { bytes, contentType })` — and the sidecar
+transport for the third form is a raw body with the real `Content-Type` header
+on the existing `POST /parse`, so the JSON contract the deployed sidecars
+already answer is unchanged.
+
+**The sidecar takes its first dependency, and that is the decision.** It is
+stdlib-only on purpose — it runs hostile input through whatever it depends on —
+so the extractor is chosen for dependency surface first: pure-Python `pypdf`,
+no native parsers, pinned. An extraction failure is a `ParseError` with the
+reason, landing the document in `failed` where an operator can see it; text
+comes out concatenated per page with `metadata.pages`, and `blocks` stays
+empty rather than fabricated. The URL ingest path stays text-only in 0.4.0:
+a response's declared type is an attacker's field, and extending the magic
+check to fetched bytes is its own change with its own tests, listed here so it
+is a decision rather than a leftover.
+
+**What falls out for free, and what proves it.** `GET /v1/documents/{id}`
+already presigns `source_url` for `s3` documents, so the original PDF becomes
+retrievable by exactly the callers rule 6 allows, with no new code. The
+collector already removes the object when it purges the vectors. The proof is
+the same bar every ingest change has met: the compose e2e gains MinIO in its
+CI overlay, uploads a real small PDF, drives it to `indexed`, and finds its
+text through search — asserted against the running stack, not against a mock.
