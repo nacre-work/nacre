@@ -17,7 +17,13 @@ license and are not distributed with this one:
 
 multi-tenancy and collection isolation · SSO (OIDC/SAML) and SCIM ·
 document-level ACLs with deny rules · Enterprise-Managed Authorization and
-ID-JAG · audit log and SIEM export · global admin · quotas · HA Helm charts.
+ID-JAG · SIEM forwarding · global admin · quotas · HA Helm charts.
+
+The audit log itself is **not** on that list: writing it, reading it back at
+`GET /v1/audit`, and its JSONL and CSV export are all in this repository (see
+`docs/audit.md`). What a security team pays for is *forwarding* those events to a
+SIEM, not the events — the log a developer needs to investigate an incident is
+here.
 
 The line between the two is one question: **does a security team pay for it, or
 a developer?** If a single developer on a laptop needs it, it belongs here. The

@@ -634,7 +634,13 @@ report, and inventing a zero for it would make every layer in the installation
 read "reindex started, gone nowhere". It reads 0 for the whole `copying` phase,
 which computes no embeddings, and only moves during `embedding`.
 
-Specified and not registered: `nacre_vectors_total{org}`.
+`nacre_vectors_total{org}` is **not** exposed, and deliberately so rather than as
+a gap left open. A per-organization vector count has no cheap source on the
+scrape path: Postgres does not hold it, and asking Qdrant per organization on
+every scrape is the shape of the per-tenant `/metrics` query this project already
+treats as a denial of service dressed as monitoring. If a deployment needs the
+number it reads it from Qdrant directly, out of band. The metric is off the
+required set, not owed.
 
 **The MCP server has its own `/metrics`**, on its own port, with its own
 registry:

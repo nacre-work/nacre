@@ -29,9 +29,13 @@ whole-index rebuild.
 ## Vector storage
 
 **One collection per organization**, named `org_{slug}`. Offboarding a tenant is
-then a single delete, with no rows to forget. Installations with hundreds of
-small tenants can instead share a collection with a mandatory `org_id` payload
-filter — `NACRE_VECTOR_TENANCY=collection|shared`, defaulting to `collection`.
+then a single delete, with no rows to forget. A shared-collection mode for
+installations with hundreds of small tenants — one collection with a mandatory
+`org_id` payload filter — was designed as `NACRE_VECTOR_TENANCY=shared`, but no
+code path shares a collection, so the value is **refused at startup** rather than
+accepted: taking it would hand you a single-collection deployment that believes
+it is isolated. The only mode is `collection`, which is the default. `docs/config.md`
+says the same where the variable is listed.
 
 **Named vectors inside the collection**, one per active layer model, so layers
 of different dimensions coexist: `v_bge_m3_1024`, `v_e5_large_1024`. The name
