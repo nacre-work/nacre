@@ -7,7 +7,7 @@ import {
   loadConfig,
   loadedExtensions,
   loadModules,
-  loadJwtKeys,
+  loadJwtVerification,
   keyFingerprint,
   onListenError,
   protectedResourceMetadata,
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   // same `NACRE_MODULES`.
   await loadModules(config.modules)
 
-  const jwt = loadJwtKeys()
+  const jwt = loadJwtVerification()
   // The one Redis this process opens, shared by the rate limiter and the
   // effective-principals cache. Two connections for two uses of the same server
   // is a connection to leak on shutdown, and `close()` below only knows about
@@ -164,13 +164,15 @@ async function main(): Promise<void> {
   const port = Number(process.env.PORT ?? 8081)
   server.listen(port, () => {
     // The fingerprint, never the secret, and for a sharper reason here than on
-    // the API. This process and the API verify tokens with the *same* symmetric
-    // secret, and there is no dual-key window — so a rotation that reaches one
-    // of them and not the other produces 401s on part of the traffic and not
-    // the rest, which is the hardest failure of the set to read from the
-    // outside. Comparing two printed fingerprints is how an operator sees it in
-    // one line. The API has printed its own since it existed; this one did not,
-    // which made the comparison impossible from the half that needed it.
+    // the API. This process verifies tokens the API signed, so the two must
+    // agree on which key is current — on a shared secret they hold the same one
+    // and there is no dual-key window, and on Ed25519 this process holds only
+    // the public half (or, during a rotation, the current and previous public
+    // halves). Either way a rotation that reaches one process and not the other
+    // produces 401s on part of the traffic and not the rest, the hardest
+    // failure of the set to read from outside. Comparing two printed
+    // fingerprints is how an operator sees it in one line; the API has printed
+    // its own since it existed, this one did not.
     logger.info('mcp listening', { port,
         env: config.env,
         jwt_alg: jwt.algorithm,

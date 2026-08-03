@@ -46,6 +46,13 @@ NACRE_JWT_SECRET=                      # >= 32 bytes; a secret-store reference i
 NACRE_JWT_SECRET_PREVIOUS=             # set only while rotating; see below
 NACRE_JWT_PRIVATE_KEY_REF=             # file:// to an Ed25519 PEM; the asymmetric mode
 NACRE_JWT_PREVIOUS_KEY_REF=            # set only while rotating an asymmetric key
+# On a process that only VERIFIES (the MCP transport is a resource server), the
+# public key alone. It holds no secret and no private key, so reading its
+# environment gets an attacker to "can check tokens" and no further — which is
+# the whole reason the asymmetric mode is worth having. The API, which signs,
+# takes NACRE_JWT_PRIVATE_KEY_REF above; a verifier takes one of these instead.
+NACRE_JWT_PUBLIC_KEY_REF=              # file:// to an Ed25519 PEM public key; verify-only
+NACRE_JWT_PREVIOUS_PUBLIC_KEY_REF=     # set only while rotating; the retired public key
 NACRE_JWT_ISSUER=https://api.nacre.work   # must match NACRE_CANONICAL_URL in production
 NACRE_JWT_AUDIENCE=nacre
 NACRE_ACCESS_TOKEN_TTL=900
