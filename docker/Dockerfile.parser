@@ -7,6 +7,11 @@
 FROM python:3.13-slim
 WORKDIR /app
 
+# The one dependency, installed from the pinned manifest before the user
+# drops privileges. Pure Python on purpose — see services/parser/app.py.
+COPY services/parser/requirements.txt services/parser/requirements.txt
+RUN pip install --no-cache-dir -r services/parser/requirements.txt
+
 RUN adduser --system --group nacre
 USER nacre
 
