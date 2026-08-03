@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   activeResolver,
+  admitIngest,
   adminRoutes,
   auditSinks,
   authProviders,
@@ -11,10 +12,13 @@ import {
   registerAuditSink,
   registerAuthProvider,
   registerAuthzResolver,
+  registerIngestGate,
   resetExtensionsForTests,
   withLoadingModuleForTests,
   type AdminRoute,
   type AuthzResolver,
+  type IngestContext,
+  type IngestGate,
 } from '../extensions.js'
 import type { AccessPlan, ResolveInput } from '../authz/resolve.js'
 import { MemoryScopeTree } from '../authz/scope-tree.js'
@@ -52,6 +56,23 @@ function ordinaryInput(): ResolveInput {
 
 const READ: Permission = 'read'
 
+function ingestContext(): IngestContext {
+  return {
+    orgId: '00000000-0000-0000-0000-0000000000aa',
+    layerId: '00000000-0000-0000-0000-0000000000bb',
+    principal: { type: 'user', id: '00000000-0000-0000-0000-0000000000cc' },
+    role: 'member',
+    externalId: 'doc-1',
+    bytes: 42,
+  }
+}
+
+const admitGate = (name: string): IngestGate => ({ name, admit: async () => ({ admit: true }) })
+const denyGate = (name: string, reason: string, status?: number): IngestGate => ({
+  name,
+  admit: async () => ({ admit: false, reason, ...(status === undefined ? {} : { status }) }),
+})
+
 describe('the default registry', () => {
   it('is the built-in resolver, so the core is complete with nothing plugged in', () => {
     expect(activeResolver().resolve(ordinaryInput(), READ)).toEqual(NOTHING)
@@ -61,7 +82,11 @@ describe('the default registry', () => {
     expect(authProviders()).toEqual([])
     expect(auditSinks()).toEqual([])
     expect(adminRoutes()).toEqual([])
-    expect(loadedExtensions()).toEqual({ resolver: null, providers: [], sinks: [], routes: 0 })
+    expect(loadedExtensions()).toEqual({ resolver: null, providers: [], sinks: [], routes: 0, gates: [] })
+  })
+
+  it('admits every ingest, so the open core accepts what a caller may write', async () => {
+    expect(await admitIngest(ingestContext())).toBeUndefined()
   })
 })
 
@@ -261,7 +286,7 @@ describe('loadModules', () => {
     await loadModules([], async () => {
       throw new Error('should not be called')
     })
-    expect(loadedExtensions()).toEqual({ resolver: null, providers: [], sinks: [], routes: 0 })
+    expect(loadedExtensions()).toEqual({ resolver: null, providers: [], sinks: [], routes: 0, gates: [] })
   })
 
   it('imports each name in order', async () => {
@@ -295,7 +320,10 @@ describe('loadModules', () => {
 
   it('attributes each registration to the module that made it', async () => {
     await loadModules(['tenancy', 'sso', 'audit'], async (name) => {
-      if (name === 'tenancy') registerAuthzResolver(denyAll)
+      if (name === 'tenancy') {
+        registerAuthzResolver(denyAll)
+        registerIngestGate(admitGate('quota'))
+      }
       if (name === 'sso') registerAuthProvider({ name: 'oidc', authenticate: async () => undefined })
       if (name === 'audit') registerAuditSink({ name: 'siem', write: async () => {} })
     })
@@ -304,6 +332,56 @@ describe('loadModules', () => {
       providers: ['sso:oidc'],
       sinks: ['audit:siem'],
       routes: 0,
+      gates: ['tenancy:quota'],
     })
+  })
+})
+
+describe('ingest gates', () => {
+  it('refuses a gate registered outside loading, like every other point', () => {
+    expect(() => registerIngestGate(admitGate('late'))).toThrow('registered outside module loading')
+  })
+
+  it('admits when every gate admits', async () => {
+    withLoadingModuleForTests('tenancy', () => registerIngestGate(admitGate('quota')))
+    expect(await admitIngest(ingestContext())).toBeUndefined()
+  })
+
+  it('refuses with the gate’s reason and status when one denies', async () => {
+    withLoadingModuleForTests('tenancy', () => registerIngestGate(denyGate('quota', 'over the document quota', 402)))
+    expect(await admitIngest(ingestContext())).toEqual({
+      module: 'quota',
+      status: 402,
+      reason: 'over the document quota',
+    })
+  })
+
+  it('defaults a refusal to 403 — a caller with write is entitled to an answer, not a 404', async () => {
+    withLoadingModuleForTests('tenancy', () => registerIngestGate(denyGate('quota', 'suspended')))
+    expect((await admitIngest(ingestContext()))?.status).toBe(403)
+  })
+
+  it('stops at the first deny, so a refused document does not pay for the rest', async () => {
+    const asked: string[] = []
+    const watch = (name: string, verdict: boolean): IngestGate => ({
+      name,
+      admit: async () => {
+        asked.push(name)
+        return verdict ? { admit: true } : { admit: false, reason: name }
+      },
+    })
+    withLoadingModuleForTests('m', () => {
+      registerIngestGate(watch('first', true))
+      registerIngestGate(watch('second', false))
+      registerIngestGate(watch('third', true))
+    })
+    const refusal = await admitIngest(ingestContext())
+    expect(refusal?.module).toBe('second')
+    expect(asked).toEqual(['first', 'second'])
+  })
+
+  it('reports its gates on the startup line', () => {
+    withLoadingModuleForTests('tenancy', () => registerIngestGate(admitGate('quota')))
+    expect(loadedExtensions().gates).toEqual(['tenancy:quota'])
   })
 })

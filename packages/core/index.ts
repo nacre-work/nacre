@@ -14,6 +14,7 @@ export { loadConfig, loadJwtKeys, loadJwtVerification, keyFingerprint, ConfigErr
 export { protectedResourceMetadata, PROTECTED_RESOURCE_PATH, JWKS_PATH } from './oauth.js'
 export {
   activeResolver,
+  admitIngest,
   ADMIN_PREFIX,
   adminRoutes,
   auditSinks,
@@ -24,6 +25,7 @@ export {
   registerAuditSink,
   registerAuthProvider,
   registerAuthzResolver,
+  registerIngestGate,
   resetExtensionsForTests,
   withAuditSinks,
   withLoadingModuleForTests,
@@ -37,6 +39,10 @@ export type {
   AuditWriter,
   AuthProvider,
   AuthzResolver,
+  IngestContext,
+  IngestGate,
+  IngestRefusal,
+  IngestVerdict,
   ResolvedPrincipal,
 } from './extensions.js'
 export type { ProtectedResourceMetadata } from './oauth.js'

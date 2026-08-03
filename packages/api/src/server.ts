@@ -203,16 +203,33 @@ export interface IngestOutcome {
   readonly unchanged: boolean
 }
 
+/**
+ * A module's ingest gate refused the document.
+ *
+ * Distinct from `undefined`, which is the write check declining and must stay a
+ * `404`: by the time a gate runs the caller has been shown to hold `write`, so a
+ * quota or a suspension is a real answer they are entitled to, with the 4xx the
+ * gate chose. Discriminated by `refused` so the handler can tell it from an
+ * accepted document without a second field on the happy path.
+ */
+export interface IngestRefused {
+  readonly refused: true
+  readonly status: number
+  readonly reason: string
+}
+
 export interface Ingest {
   /**
-   * Queue a document, or refuse.
+   * Queue a document, refuse it, or decline it as unwritable.
    *
    * `undefined` means the caller may not write to that layer — and it must mean
    * the same for a layer that does not exist. Ingest is the cheapest oracle in
    * the system otherwise: a caller with no read access could enumerate layer
-   * names by watching which ones accept a document.
+   * names by watching which ones accept a document. An `IngestRefused` is a
+   * module gate declining a document the caller *may* write, which is a
+   * different answer and carries its own 4xx.
    */
-  queue(auth: AuthContext, request: IngestRequest): Promise<IngestOutcome | undefined>
+  queue(auth: AuthContext, request: IngestRequest): Promise<IngestOutcome | IngestRefused | undefined>
   /** Tombstone. `false` for absent and for not-permitted alike. */
   remove(auth: AuthContext, documentId: string): Promise<boolean>
 }
@@ -1875,6 +1892,33 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         })
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      if ('refused' in outcome) {
+        // A module's ingest gate declined a document the caller may write — a
+        // quota, a suspension. Not a 404: the layer is not being hidden, the
+        // caller was allowed to write against it. Recorded as a denial so an
+        // operator can see quota-refused ingests; the gate's reason is the
+        // detail, and the gate chose the status.
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `${auth.principal.type}:${auth.principal.id}`,
+          action: 'ingest',
+          result: 'deny',
+          target: { layer },
+          detail: { layer, reason: outcome.reason },
+          requestId,
+        })
+        const problem = new Problem({
+          type: 'https://nacre.work/errors/ingest-refused',
+          title: outcome.status === 429 ? 'Too many requests' : 'Forbidden',
+          status: outcome.status,
+          detail: outcome.reason,
+          instance,
+          requestId,
+        })
+        send(res, outcome.status, problem.toJSON(), requestId)
         return
       }
 

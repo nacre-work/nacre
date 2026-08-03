@@ -3,8 +3,15 @@ import type { AccessPlan, ResolveInput } from './authz/resolve.js'
 import { resolve as builtInResolve } from './authz/resolve.js'
 
 /**
- * The four points a commercial module plugs into, and the loader that lets one
- * do so without this repository knowing it exists.
+ * The points a commercial module plugs into, and the loader that lets one do so
+ * without this repository knowing it exists.
+ *
+ * Four of them — `registerAuthProvider`, `registerAuthzResolver`,
+ * `registerAuditSink`, `mountAdminRoutes` — `nacre-enterprise` named before
+ * there was a module to write. The fifth, `registerIngestGate`, is the other
+ * direction: a point the core declares for a capability the schema always had
+ * and nothing enforced (`max_documents`), designed so the open half is complete
+ * and correct with no gate registered.
  *
  * `nacre-enterprise` has named these since before there was a module to write —
  * `registerAuthProvider`, `registerAuthzResolver`, `registerAuditSink`,
@@ -152,14 +159,70 @@ export interface AdminRoute {
   handle(request: AdminRequest): Promise<AdminResponse>
 }
 
+/**
+ * What an ingest gate is told about a document before it is stored.
+ *
+ * Metadata, never the bytes. The gate decides whether this document may be
+ * accepted at all — a quota, a suspension, a per-source rule — and for that it
+ * needs to know the tenant, the layer and how big the thing is, not its
+ * content. Keeping the content out is the same discipline `rejectTenantOverride`
+ * follows: a document body does not belong in something that gets passed around,
+ * logged and put into a refusal message.
+ */
+export interface IngestContext {
+  /** From the credential. Invariant 1. */
+  readonly orgId: string
+  readonly layerId: string
+  readonly principal: Principal
+  readonly role: OrgRole
+  readonly externalId: string
+  /** The document's size in bytes, for a gate that bounds volume. */
+  readonly bytes: number
+}
+
+/**
+ * A gate's answer. Admit, or refuse with a reason and the 4xx to answer with.
+ *
+ * A refusal is **not** a `404`: the caller has already been shown to hold
+ * `write` on the layer by the time a gate runs, so the layer's existence is not
+ * a secret this hides — unlike the write check itself, which returns `404` for
+ * absent and unpermitted alike. A quota or a suspension is a real answer a
+ * caller with access is entitled to, so it defaults to `403` and carries a
+ * reason.
+ */
+export type IngestVerdict =
+  | { readonly admit: true }
+  | { readonly admit: false; readonly status?: number; readonly reason: string }
+
+/**
+ * A check run before a document is accepted, in addition to the permission
+ * check the core already does.
+ *
+ * A list, and every gate must admit — one deny refuses the ingest, with that
+ * gate's reason. Gates decide admission, not access: a gate cannot *grant* an
+ * ingest the permission model would refuse, because it runs only after
+ * `write` has been established. It can only subtract, which is why more than one
+ * is coherent and why the default — no gates — is the open core accepting every
+ * document a caller may write, exactly as it did before this point existed.
+ *
+ * `max_documents`, which the schema has carried since 0001 and nothing enforced,
+ * is the first user: a commercial `tenancy` gate that counts a tenant's live
+ * documents and refuses over the quota.
+ */
+export interface IngestGate {
+  readonly name: string
+  admit(context: IngestContext): Promise<IngestVerdict>
+}
+
 interface Registry {
   resolver: { readonly module: string; readonly value: AuthzResolver } | undefined
   readonly providers: { module: string; value: AuthProvider }[]
   readonly sinks: { module: string; value: AuditSink }[]
   readonly routes: { module: string; value: AdminRoute }[]
+  readonly gates: { module: string; value: IngestGate }[]
 }
 
-const registry: Registry = { resolver: undefined, providers: [], sinks: [], routes: [] }
+const registry: Registry = { resolver: undefined, providers: [], sinks: [], routes: [], gates: [] }
 
 /** Which module is registering, or `undefined` when registration is closed. */
 let loading: string | undefined
@@ -203,6 +266,10 @@ export function registerAuthProvider(provider: AuthProvider): void {
 
 export function registerAuditSink(sink: AuditSink): void {
   registry.sinks.push({ module: mustBeLoading('an audit sink'), value: sink })
+}
+
+export function registerIngestGate(gate: IngestGate): void {
+  registry.gates.push({ module: mustBeLoading('an ingest gate'), value: gate })
 }
 
 export const ADMIN_PREFIX = '/v1/admin/'
@@ -328,6 +395,34 @@ export const authProviders = (): readonly AuthProvider[] => registry.providers.m
 export const auditSinks = (): readonly AuditSink[] => registry.sinks.map((s) => s.value)
 export const adminRoutes = (): readonly AdminRoute[] => registry.routes.map((r) => r.value)
 
+/** A refused ingest, as `admitIngest` reports it. */
+export interface IngestRefusal {
+  readonly module: string
+  readonly status: number
+  readonly reason: string
+}
+
+/**
+ * Run every gate, in order, and report the first refusal.
+ *
+ * `undefined` is admission: no gates registered, or every one admitted, which
+ * is why the open core accepts what a caller may write. The first deny stops the
+ * rest — a document refused by one gate is refused, and asking the others would
+ * be work whose answer cannot change the outcome. The default status is `403`,
+ * so a gate that only sets a reason still refuses with a status a caller with
+ * access can act on rather than a `404` that would hide the layer it just wrote
+ * a check against.
+ */
+export async function admitIngest(context: IngestContext): Promise<IngestRefusal | undefined> {
+  for (const gate of registry.gates) {
+    const verdict = await gate.value.admit(context)
+    if (!verdict.admit) {
+      return { module: gate.value.name, status: verdict.status ?? 403, reason: verdict.reason }
+    }
+  }
+  return undefined
+}
+
 /** Anything that records an event. Structurally the API's `audit` port. */
 export interface AuditWriter {
   write(event: AuditEvent): Promise<void>
@@ -381,12 +476,14 @@ export function loadedExtensions(): {
   providers: string[]
   sinks: string[]
   routes: number
+  gates: string[]
 } {
   return {
     resolver: registry.resolver?.module ?? null,
     providers: registry.providers.map((p) => `${p.module}:${p.value.name}`),
     sinks: registry.sinks.map((s) => `${s.module}:${s.value.name}`),
     routes: registry.routes.length,
+    gates: registry.gates.map((g) => `${g.module}:${g.value.name}`),
   }
 }
 
@@ -403,6 +500,7 @@ export function resetExtensionsForTests(): void {
   registry.providers.length = 0
   registry.sinks.length = 0
   registry.routes.length = 0
+  registry.gates.length = 0
   loading = undefined
 }
 

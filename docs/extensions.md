@@ -182,6 +182,55 @@ without the module is not distinguishable from one where the path is wrong.
 Every call is journalled as `admin.<method>` with `surface: 'admin'`, by the
 dispatcher rather than by the module.
 
+## `registerIngestGate(gate)`
+
+A check run before a document is accepted, in addition to the permission check
+the core already does.
+
+```ts
+interface IngestContext {
+  readonly orgId: string
+  readonly layerId: string
+  readonly principal: Principal
+  readonly role: OrgRole
+  readonly externalId: string
+  readonly bytes: number
+}
+
+type IngestVerdict =
+  | { readonly admit: true }
+  | { readonly admit: false; readonly status?: number; readonly reason: string }
+
+interface IngestGate {
+  readonly name: string
+  admit(context: IngestContext): Promise<IngestVerdict>
+}
+```
+
+A list, and every gate must admit — one deny refuses the ingest with that gate's
+reason. It runs **after** `write` on the layer has been established and **before**
+anything is stored, so a refusal leaves neither a row nor an object behind, and a
+gate cannot grant an ingest the permission model would refuse — it can only
+subtract. It is handed metadata, never the bytes, the same discipline
+`rejectTenantOverride` follows.
+
+A refusal is **not** a `404`. The write check returns `404` for a layer that is
+absent and one that is unpermitted alike, because telling them apart is an
+enumeration oracle. By the time a gate runs the caller has been shown to hold
+`write`, so the layer's existence is not a secret the gate hides — a quota or a
+suspension is a real answer they are entitled to. It defaults to `403` and
+carries a reason; a gate may choose another 4xx (`429` for a rate-shaped limit).
+
+It runs in the **shared** ingest path, so it holds on REST and on MCP both — a
+quota a caller could dodge by switching ports would be the shape of hole the rate
+limiter and the metrics each had when MCP became a second surface.
+
+The first user is `max_documents`, which the schema has carried since `0001` and
+nothing enforced: a commercial `tenancy` gate that counts a tenant's live
+documents and refuses over the quota. With no module loaded there are no gates,
+and the open core accepts every document a caller may write, exactly as it did
+before this point existed.
+
 ## Testing a module against these rules
 
 The T1–T15 suite in `docs/authz.md` is written against the model, not against
