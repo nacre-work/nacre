@@ -624,6 +624,27 @@ export class NacreClient {
     },
 
     /**
+     * Delete a layer and everything in it.
+     *
+     * Returns as soon as the layer stops resolving and its documents stop
+     * matching — the points and any stored bytes are reclaimed by the
+     * collector afterwards, and nothing depends on when. `false` for absent,
+     * for another organization's, and for one this token may not administer.
+     */
+    remove: async (layerId: string): Promise<boolean> => {
+      try {
+        await this.#request({
+          method: 'DELETE',
+          path: `/v1/layers/${encodeURIComponent(layerId)}`,
+        })
+        return true
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return false
+        throw error
+      }
+    },
+
+    /**
      * Move the layer onto a different embedding model.
      *
      * Returns immediately with the state to poll; the work happens in the

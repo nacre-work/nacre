@@ -33,20 +33,31 @@ export async function layersView(root: HTMLElement): Promise<void> {
   try {
     const layers = await client().layers.list()
     clear(body)
-    body.append(layers.length === 0 ? empty() : table(layers, root))
+    body.append(layers.length === 0 ? empty(root) : table(layers, root))
   } catch (error) {
     clear(body)
     body.append(h('div', { class: 'error' }, explain(error)))
   }
 }
 
-const empty = () =>
+const empty = (root: HTMLElement) =>
   h('div', { class: 'empty' },
     h('h2', {}, 'No layers you can read'),
     // Not "no layers". The catalog is permission data, so an empty list means
     // this token reaches nothing — which for a fresh install and for a
     // misconfigured grant look the same from here, and both are worth saying.
     h('p', {}, 'Either none exist yet, or this token has no grant reaching one. Both look the same from here, by design.'),
+    // The screen said what the emptiness means and not what to do about it,
+    // and this is where somebody arrives on a first run. Naming the order —
+    // layer, then documents, then a grant — is the piece nobody has been told
+    // and the piece the quickstart holds hostage.
+    //
+    // It describes the model rather than this installation, so it is equally
+    // true of the token that reaches nothing, and gives that token's holder
+    // nothing it could not already work out.
+    h('p', {}, 'A layer is what documents are ingested into and what a grant is issued on: '
+      + 'make one, ingest into it, then grant a principal read on it.'),
+    h('button', { class: 'btn btn-primary', onclick: () => openCreate(root) }, 'New layer'),
   )
 
 function table(layers: readonly Layer[], root: HTMLElement): HTMLElement {
@@ -74,6 +85,7 @@ function table(layers: readonly Layer[], root: HTMLElement): HTMLElement {
           // On the layer rather than a screen of its own: there is at most one
           // migration running, and the layer is what an operator navigates by.
           h('button', { class: 'btn btn-quiet', onclick: () => void migratePanel(l) }, 'Model'),
+          h('button', { class: 'btn btn-quiet btn-danger', onclick: () => confirmDelete(l, root) }, 'Delete'),
         ),
       ),
     )),
@@ -121,6 +133,61 @@ function rename(layer: Layer, root: HTMLElement): void {
       h('div', { class: 'dialog-actions' },
         h('button', { type: 'button', class: 'btn', onclick: () => dialog.close() }, 'Cancel'),
         h('button', { type: 'submit', class: 'btn btn-primary' }, 'Save'),
+      ),
+    ),
+  )
+
+  document.body.append(dialog)
+  dialog.addEventListener('close', () => dialog.remove())
+  dialog.showModal()
+}
+
+/**
+ * Deleting a layer takes its documents with it and there is no undelete, so
+ * the confirmation asks for the slug rather than for a click. The other
+ * destructive action on these screens — revoking a grant — is a click, and the
+ * difference is deliberate: a grant re-issues, a layer's documents do not come
+ * back.
+ */
+function confirmDelete(layer: Layer, root: HTMLElement): void {
+  const typed = h('input', { class: 'input', placeholder: layer.slug, required: true })
+  const message = h('p', { class: 'form-message' })
+
+  const dialog = h('dialog', { class: 'dialog' },
+    h('form', { method: 'dialog', onsubmit: async (e: Event) => {
+      e.preventDefault()
+      if (typed.value.trim() !== layer.slug) {
+        message.className = 'form-message error'
+        message.textContent = `Type ${layer.slug} to confirm.`
+        return
+      }
+      message.className = 'form-message'
+      message.textContent = 'Deleting…'
+      try {
+        const done = await client().layers.remove(layer.id)
+        if (!done) {
+          message.className = 'form-message error'
+          message.textContent = 'No such layer, or this token may not administer it.'
+          return
+        }
+        dialog.close()
+        void layersView(root)
+      } catch (error) {
+        message.className = 'form-message error'
+        message.textContent = explain(error)
+      }
+    } },
+      h('h2', {}, 'Delete layer'),
+      h('p', {}, `${layer.name} holds ${String(layer.documentCount)} document(s). All of them go with it, and there is no undelete.`),
+      h('p', { class: 'hint' },
+        'Search stops returning them on the next request. Reclaiming the vectors, the chunk rows and anything in object storage is the collector\'s, on its own clock — nothing a caller sees waits for it.'),
+      h('p', { class: 'hint' },
+        'Grants naming this layer are removed with it: they would resolve to nothing, and leaving them would list rows pointing at something no reader can look up.'),
+      h('label', { class: 'field' }, h('span', {}, `Type ${layer.slug} to confirm`), typed),
+      message,
+      h('div', { class: 'dialog-actions' },
+        h('button', { type: 'button', class: 'btn', onclick: () => dialog.close() }, 'Cancel'),
+        h('button', { type: 'submit', class: 'btn btn-danger' }, 'Delete'),
       ),
     ),
   )

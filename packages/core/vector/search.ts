@@ -319,6 +319,28 @@ export class VectorStore {
   }
 
   /**
+   * The same flag, over every point of a layer, in one request.
+   *
+   * Deleting a layer is deleting everything in it, and doing that by calling
+   * `tombstone` per document would put a loop over an unbounded collection on
+   * the request path — a layer with ten thousand documents is ten thousand
+   * round trips before the caller hears anything, and a failure halfway leaves
+   * a layer that is half invisible.
+   *
+   * `setPayload` already takes a filter, so `layer_id` costs exactly what
+   * `doc_id` does. The Postgres side still tombstones each document row,
+   * because that is what the collector's queue is built from — but that is one
+   * statement, not one round trip per document.
+   */
+  async tombstoneLayer(collection: string, layerId: string): Promise<void> {
+    await this.#client.setPayload(collection, {
+      wait: true,
+      payload: { deleted: true },
+      filter: { must: [{ key: 'layer_id', match: { value: layerId } }] },
+    } as never)
+  }
+
+  /**
    * Replace the caller's metadata on every point of a document.
    *
    * `setPayload` under the reserved key, which merges at the top level and so

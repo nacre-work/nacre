@@ -203,6 +203,10 @@ a { color: var(--n-accent); }
 }
 .empty h2 { color: var(--n-text); margin-bottom: 6px; }
 .empty p { margin: 0 auto; max-width: 56ch; }
+/* Only bites where an empty state has more than one paragraph, or an action —
+   neither existed until the layers one started saying what to do next. */
+.empty p + p { margin-top: 10px; }
+.empty .btn { margin-top: 18px; }
 
 .error {
   border: 1px solid var(--n-deny);

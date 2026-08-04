@@ -372,6 +372,31 @@ export interface Layers {
     layerId: string,
     input: { name?: string; description?: string },
   ): Promise<boolean>
+  /**
+   * Delete a layer, and everything in it.
+   *
+   * A tombstone, like a document's, and for the same reason: the cascade
+   * underneath — points, chunk rows, bucket objects — is bounded by how much
+   * the layer holds, and that does not belong on a request. What happens
+   * synchronously is what correctness needs: the points stop matching, every
+   * document row is tombstoned so the collector has a queue, and the layer
+   * stops resolving. The collector reclaims the rest on its own clock, and
+   * nothing depends on when.
+   *
+   * `admin` on the layer's workspace — the same check renaming makes, for the
+   * same reason it makes it, and deleting is the more dangerous of the two so
+   * it does not get a lower bar. Never `write`: an ingest-only service account
+   * holds that, and it must not be able to remove what it fills.
+   *
+   * Grants naming the layer go with it. A grant on a scope that no longer
+   * exists resolves to nothing already, so leaving them changes no answer —
+   * but it leaves rows in `GET /v1/grants` that name something a reader cannot
+   * look up, which is the kind of debris that gets mistaken for a leak.
+   *
+   * `false` for absent, for another organization's, and for one this caller may
+   * not administer. One answer for all three.
+   */
+  remove?(auth: AuthContext, layerId: string): Promise<boolean>
 }
 
 export interface GrantInput {
@@ -2504,6 +2529,41 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       })
 
       if (!updated) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      send(res, 204, null, requestId)
+      return
+    }
+
+    if (req.method === 'DELETE' && layerMatch !== null) {
+      const layerId = layerMatch[1] as string
+
+      if (options.layers?.remove === undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const removed = await options.layers.remove(auth, layerId)
+
+      // Recorded whichever way it went, and before the answer. Deleting a layer
+      // takes every document in it out of every answer at once, which is the
+      // largest single thing a caller can do here — a refused attempt is worth
+      // as much to an investigation as a successful one.
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'delete_layer',
+        result: removed ? 'allow' : 'deny',
+        target: { layer_id: layerId },
+        detail: { layer_id: layerId },
+        requestId,
+      })
+
+      if (!removed) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return

@@ -152,6 +152,10 @@ describe('the administrative surface', () => {
                     createdAt: '2026-01-01T00:00:00.000Z',
                   },
                 },
+        // Deleting the one layer this caller administers succeeds; anything
+        // else is the same `false` the port owes an absent layer and an
+        // unadministrable one alike.
+        remove: async (_a: AuthContext, layerId: string) => layerId === LAYER,
       },
       serviceAccounts: {
         list: async () => ({
@@ -228,6 +232,36 @@ describe('the administrative surface', () => {
     const body = (await res.json()) as { items: { slug: string; workspace_id: string }[] }
     expect(body.items).toHaveLength(1)
     expect(body.items[0]?.slug).toBe('handbook')
+  })
+
+  it('deleting a layer answers 204 and records the attempt', async () => {
+    const res = await fetch(`${base}/v1/layers/${LAYER}`, {
+      method: 'DELETE',
+      headers: await auth(),
+    })
+    expect(res.status).toBe(204)
+
+    // Deleting a layer removes every document in it from every answer at once,
+    // which is the largest single act on this surface. The journal has to carry
+    // it whichever way it went.
+    const recorded = audited.find((e) => e.action === 'delete_layer')
+    expect(recorded?.result).toBe('allow')
+    expect(recorded?.target).toMatchObject({ layer_id: LAYER })
+  })
+
+  it('deleting a layer the caller may not administer is 404, and is still recorded', async () => {
+    // Same answer as one that does not exist — invariant I4 does not stop
+    // applying because the verb is destructive. A refused attempt is worth as
+    // much to an investigation as a successful one, so it is journalled too.
+    const other = '99999999-9999-4999-8999-999999999999'
+    const res = await fetch(`${base}/v1/layers/${other}`, {
+      method: 'DELETE',
+      headers: await auth(),
+    })
+    expect(res.status).toBe(404)
+
+    const recorded = audited.filter((e) => e.action === 'delete_layer').at(-1)
+    expect(recorded?.result).toBe('deny')
   })
 
   it('creating a layer in a workspace the caller may not administer is 404, not 403', async () => {

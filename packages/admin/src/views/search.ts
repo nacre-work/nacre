@@ -55,7 +55,15 @@ export function searchView(root: HTMLElement): void {
               ? 'Nothing this token may see matches.'
               : `${hits.length} permitted result${hits.length === 1 ? '' : 's'}.`,
             hits.length === 0
-              ? null
+              // What is missing on a first run is not a hint about *this*
+              // installation — it is the order of the model, which nobody has
+              // been told. Stated as the model rather than as the state, on
+              // purpose: "no layers exist yet" and "this token reaches none"
+              // must stay indistinguishable, and a sentence that is true of
+              // both leaks neither.
+              ? h('span', { class: 'muted' },
+                  ' Documents live in a layer, and a token reaches one only through a grant.'
+                  + ' On a new installation the first step is a layer.')
               : h('span', { class: 'muted' },
                   ' The filter runs inside the index traversal, so this is the count, not what survived a trim.'),
           ),
