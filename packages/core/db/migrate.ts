@@ -26,10 +26,16 @@ export interface Migration {
 }
 
 /**
- * Migrations in filename order. Numbered prefixes are compared as numbers, so
- * `0010` sorts after `0009` rather than between `0001` and `0002`.
+ * The migration file names, in order, without reading a byte of their contents.
+ *
+ * Split out from `loadMigrations` because the readiness check asks this
+ * question on every probe and does not want the SQL — twenty-odd file reads
+ * every few seconds, per replica, to compare a list of names.
+ *
+ * Numbered prefixes are compared as numbers, so `0010` sorts after `0009`
+ * rather than between `0001` and `0002`.
  */
-export function loadMigrations(dir: string = MIGRATIONS_DIR): readonly Migration[] {
+export function migrationNames(dir: string = MIGRATIONS_DIR): readonly string[] {
   let entries: string[]
   try {
     entries = readdirSync(dir)
@@ -51,9 +57,14 @@ export function loadMigrations(dir: string = MIGRATIONS_DIR): readonly Migration
     throw new Error(`no .sql files in ${dir}; there is nothing to apply and that is not "already migrated"`)
   }
 
-  return migrations
-    .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10) || a.localeCompare(b))
-    .map((name) => ({ name, sql: readFileSync(join(dir, name), 'utf8') }))
+  return migrations.sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10) || a.localeCompare(b))
+}
+
+/**
+ * Migrations in filename order, with their SQL. What the migrator applies.
+ */
+export function loadMigrations(dir: string = MIGRATIONS_DIR): readonly Migration[] {
+  return migrationNames(dir).map((name) => ({ name, sql: readFileSync(join(dir, name), 'utf8') }))
 }
 
 const LEDGER = `
@@ -303,8 +314,18 @@ export async function pendingMigrations(
   client: LedgerReader,
   dir: string = MIGRATIONS_DIR,
 ): Promise<readonly string[]> {
-  const shipped = loadMigrations(dir).map((m) => m.name)
+  // Read from disk once per directory and kept. The files ship inside the image
+  // and cannot change under a running process, so re-reading them on every
+  // probe would be disk traffic that can only ever produce the same answer.
+  let shipped = SHIPPED.get(dir)
+  if (shipped === undefined) {
+    shipped = migrationNames(dir)
+    SHIPPED.set(dir, shipped)
+  }
+
   const { rows } = await client.query('SELECT name FROM schema_migrations')
   const applied = new Set(rows.map((r) => r.name))
   return shipped.filter((name) => !applied.has(name))
 }
+
+const SHIPPED = new Map<string, readonly string[]>()
