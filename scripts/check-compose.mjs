@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process'
 
 const EXPECTED = {
   minimal: ['api', 'mcp', 'migrate', 'parser', 'postgres', 'qdrant', 'redis', 'web', 'worker'],
-  full: ['api', 'embedder', 'mcp', 'migrate', 'minio', 'parser', 'postgres', 'qdrant', 'redis', 'reranker', 'web', 'worker'],
+  full: ['api', 'embedder', 'mcp', 'migrate', 'minio', 'minio-init', 'parser', 'postgres', 'qdrant', 'redis', 'reranker', 'web', 'worker'],
   airgapped: ['api', 'embedder', 'keycloak', 'mcp', 'migrate', 'parser', 'postgres', 'qdrant', 'redis', 'reranker', 'web', 'worker'],
 }
 

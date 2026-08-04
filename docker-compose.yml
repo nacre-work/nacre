@@ -68,6 +68,8 @@ services:
       postgres: { condition: service_healthy }
       qdrant: { condition: service_started }
       redis: { condition: service_healthy }
+      # See the worker's copy: `full` only, so it has to be optional.
+      minio-init: { condition: service_completed_successfully, required: false }
 
   mcp:
     <<: *app
@@ -122,6 +124,10 @@ services:
       postgres: { condition: service_healthy }
       qdrant: { condition: service_started }
       redis: { condition: service_healthy }
+      # `required: false` because this service exists only in `full`. Without
+      # it, naming a profiled service here would break every profile that does
+      # not start one.
+      minio-init: { condition: service_completed_successfully, required: false }
 
   postgres:
     image: postgres:17-alpine
@@ -198,6 +204,42 @@ services:
     # AGPLv3, which is why it is here and not in minimal. The default is an
     # external S3-compatible endpoint; see docs/licensing.md before making this
     # part of the standard install.
+
+  # The bucket, which MinIO does not create and the S3 client does not either.
+  #
+  # Without it the first ingest on a deployment that turned object storage on
+  # fails with `NoSuchBucket`, and the caller sees `500 Internal error` —
+  # bytes go to the bucket before the row, so nothing is stored and the reason
+  # is only in the API's log. Found by someone following docs/config.md to set
+  # `NACRE_S3_*` and posting their first document.
+  #
+  # The CI overlay has had exactly this since binary ingest landed. That it was
+  # not here is the gap: CI got a bucket and every real `full` deployment did
+  # not, so the one arrangement nobody ran was the one people would.
+  #
+  # Only for the MinIO this profile starts. A deployment pointing NACRE_S3_* at
+  # somebody else's S3 owns its own bucket, and this creates one here that
+  # nothing reads — harmless, and better than a one-shot holding credentials
+  # for an endpoint it was not given.
+  minio-init:
+    profiles: [full]
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      minio: { condition: service_started }
+    environment:
+      MC_HOST_local: http://${NACRE_S3_ACCESS_KEY:-minioadmin}:${NACRE_S3_SECRET_KEY:-minioadmin}@minio:9000
+    # The retry loop is the healthcheck MinIO's image cannot easily carry here:
+    # `mc` waits for the server by trying the thing it came to do.
+    entrypoint:
+      - sh
+      - -c
+      - >
+        for i in $$(seq 1 30); do
+          mc mb --ignore-existing "local/${NACRE_S3_BUCKET:-nacre}" && exit 0;
+          sleep 2;
+        done;
+        echo "the bucket was never created" >&2; exit 1
 
   embedder:
     profiles: [full, airgapped]
