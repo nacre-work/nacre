@@ -1,6 +1,6 @@
 {
   "name": "@nacre.work/admin",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Community admin UI — single organization",
   "type": "module",
   "scripts": {

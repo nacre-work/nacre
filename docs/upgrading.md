@@ -240,7 +240,10 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
-### Unreleased
+### 0.5.1 — what a real client and a real operator ran into
+
+Fixes only. No schema change, no new required configuration, and 0.5.0 runs
+unchanged against this database — so rolling back is safe.
 
 **The MCP transport was not reachable by a real client.** Four things, all found
 by pointing one at it:
