@@ -244,10 +244,59 @@ Everything above has a screen — search, layers, grants and service accounts, f
 one organization — and the stack already serves it. Open
 [http://localhost:8082](http://localhost:8082).
 
+![The sign-in screen, with tabs for a password and for a pasted token](./assets/admin/sign-in.png)
+
 Sign in with the address and password `init` printed. The session renews itself,
-so it outlives the hour that token above has. Pasting the token works too, and
-so does a service account key — which is how you look at exactly what an agent
-can see, from the other side of this page.
+so it outlives the hour that token above has. **Leave `API` as it is** — it is
+already the origin serving this page, which is what keeps the browser's requests
+same-origin. `ORGANIZATION` stays empty unless one address has accounts in more
+than one of them.
+
+Pasting the token works too, on the second tab, and so does a service account
+key — which is how you look at exactly what an agent can see, from the other
+side of this page.
+
+### Layers
+
+![The layers list, with two layers and their document counts](./assets/admin/layers.png)
+
+`New layer` asks for the workspace, and the picker is filled from the ones this
+token may administer — there is exactly one after `init`, and it is selected
+already. The id below it stays editable, for pasting the one `init` printed.
+
+![The new-layer dialog, with the workspace picker showing one workspace](./assets/admin/new-layer.png)
+
+### Search
+
+The screen that answers the question this project exists for: **it runs as the
+token you signed in with**, with no administrative bypass. What you see here is
+what the same credential gets over REST and over MCP — so signing in as a
+service account is how you check what an agent can actually reach.
+
+![Search results, two permitted chunks with their layer and score](./assets/admin/search.png)
+
+The count says *permitted results*, not *results*, and the difference is the
+whole design: the filter runs inside the index traversal, so `top_k` returns k
+things you may see rather than k things trimmed down to whatever survived.
+
+### Grants, and service accounts
+
+![The grants list, showing a service account and a group grant](./assets/admin/grants.png)
+
+Issuing a grant asks for a principal, a scope and a permission. The scope
+shortcut follows the scope type — layers when the scope is a layer, workspaces
+when it is a workspace — so an id is something you can paste rather than
+something you have to know.
+
+Two rules surprise people, and the screen says both rather than assuming:
+`write` does not imply `read`, and a deny beats an allow at any depth.
+
+![The service accounts list, with key prefixes and last use](./assets/admin/accounts.png)
+
+A key is shown once, when the account is made. What is stored is a hash, so it
+cannot be read back from the API, the database or a backup — losing one means
+minting another, which is the trade for a key that a leaked backup does not
+carry.
 
 The screen is `packages/admin`, a static bundle the `web` service serves on its
 own origin while proxying `/v1` to the API — so the browser makes same-origin
