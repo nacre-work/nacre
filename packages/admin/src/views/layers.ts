@@ -33,20 +33,31 @@ export async function layersView(root: HTMLElement): Promise<void> {
   try {
     const layers = await client().layers.list()
     clear(body)
-    body.append(layers.length === 0 ? empty() : table(layers, root))
+    body.append(layers.length === 0 ? empty(root) : table(layers, root))
   } catch (error) {
     clear(body)
     body.append(h('div', { class: 'error' }, explain(error)))
   }
 }
 
-const empty = () =>
+const empty = (root: HTMLElement) =>
   h('div', { class: 'empty' },
     h('h2', {}, 'No layers you can read'),
     // Not "no layers". The catalog is permission data, so an empty list means
     // this token reaches nothing — which for a fresh install and for a
     // misconfigured grant look the same from here, and both are worth saying.
     h('p', {}, 'Either none exist yet, or this token has no grant reaching one. Both look the same from here, by design.'),
+    // The screen said what the emptiness means and not what to do about it,
+    // and this is where somebody arrives on a first run. Naming the order —
+    // layer, then documents, then a grant — is the piece nobody has been told
+    // and the piece the quickstart holds hostage.
+    //
+    // It describes the model rather than this installation, so it is equally
+    // true of the token that reaches nothing, and gives that token's holder
+    // nothing it could not already work out.
+    h('p', {}, 'A layer is what documents are ingested into and what a grant is issued on: '
+      + 'make one, ingest into it, then grant a principal read on it.'),
+    h('button', { class: 'btn btn-primary', onclick: () => openCreate(root) }, 'New layer'),
   )
 
 function table(layers: readonly Layer[], root: HTMLElement): HTMLElement {

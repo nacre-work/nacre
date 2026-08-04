@@ -256,7 +256,22 @@ Pasting the token works too, on the second tab, and so does a service account
 key — which is how you look at exactly what an agent can see, from the other
 side of this page.
 
-### Layers
+### Layers, and what a fresh installation looks like
+
+This is the screen a new installation actually shows, and the first step nobody
+guesses:
+
+![The layers screen on a fresh install: no layers, an explanation, and a New layer button](./assets/admin/layers-empty.png)
+
+**A layer comes first.** Documents are ingested into one and grants are issued
+on one, so until there is a layer there is nothing to ingest into and nothing to
+grant on — which is why search on a new installation returns nothing and cannot
+say more than that.
+
+The heading says "no layers **you can read**" rather than "no layers", and that
+is deliberate rather than cautious: the catalog is permission data, so a fresh
+installation and a token with no grant reaching anything have to look the same
+from here. Both are worth the same sentence.
 
 ![The layers list, with two layers and their document counts](./assets/admin/layers.png)
 

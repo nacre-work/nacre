@@ -146,7 +146,7 @@ const browser = await chromium.launch(executablePath === undefined ? {} : { exec
 
 const failures = []
 
-async function shot(name, { hash = '', signedIn = true, prepare } = {}) {
+async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} } = {}) {
   // Short viewport plus `fullPage`, so each image is exactly as tall as its
   // screen rather than carrying a band of empty background.
   const page = await browser.newPage({ viewport: { width: 1280, height: 640 }, deviceScaleFactor: 2 })
@@ -173,7 +173,9 @@ async function shot(name, { hash = '', signedIn = true, prepare } = {}) {
   await page.route('**/v1/**', async (route) => {
     const request = route.request()
     const key = `${request.method()} ${new URL(request.url()).pathname}`
-    const body = FIXTURES[key]
+    // Per-shot overrides, for the screens that are worth photographing in a
+    // state the default fixtures do not have — an empty one, most of all.
+    const body = key in fixtures ? fixtures[key] : FIXTURES[key]
     if (body === undefined) {
       // Loud rather than an empty screen: an unstubbed call means the UI asks
       // for something this file does not know about, and the picture would be
@@ -198,6 +200,15 @@ async function shot(name, { hash = '', signedIn = true, prepare } = {}) {
 console.log(`rendering ${BUNDLE} into ${OUT}/`)
 
 await shot('sign-in', { signedIn: false })
+
+// What a fresh installation actually shows, which is where a first-time
+// reader is and which no screenshot covered — the state somebody said they
+// would never have guessed their way out of.
+await shot('layers-empty', {
+  hash: '#/layers',
+  fixtures: { 'GET /v1/layers': { items: [], next_cursor: null } },
+})
+
 await shot('layers', { hash: '#/layers' })
 await shot('new-layer', {
   hash: '#/layers',
