@@ -23,40 +23,11 @@ services:
   minio:
     profiles: [minimal, full]
 
-  # The bucket, which MinIO does not create and the S3 client does not either:
-  # a PUT into a bucket that is not there is a 404 the API would report as a
-  # failed ingest. One shot, and the API and the worker wait for it to finish.
-  #
-  # The retry loop is the healthcheck MinIO's image cannot easily carry here —
-  # `mc` is the only client in this overlay that can speak to it, so it waits
-  # for the server by trying the thing it came to do.
+  # The bucket-creating one-shot now lives in the base file, in `full`, because
+  # a real deployment needs it for the same reason CI does. Only its profile
+  # moves here — same as minio above, and for the same merge reason.
   minio-init:
-    image: minio/mc:latest
-    restart: "no"
-    depends_on:
-      minio: { condition: service_started }
-    environment:
-      MC_HOST_ci: http://${NACRE_S3_ACCESS_KEY:-minioadmin}:${NACRE_S3_SECRET_KEY:-minioadmin}@minio:9000
-    entrypoint:
-      - sh
-      - -c
-      - >
-        for i in $$(seq 1 30); do
-          mc mb --ignore-existing "ci/${NACRE_S3_BUCKET:-nacre}" && exit 0;
-          sleep 2;
-        done;
-        echo "the bucket was never created" >&2; exit 1
-
-  # Both write to the bucket — the API on ingest, the worker when it reads the
-  # bytes back — so neither may start before it exists. The base file's
-  # conditions are kept: depends_on is a mapping, and mappings merge.
-  api:
-    depends_on:
-      minio-init: { condition: service_completed_successfully }
-
-  worker:
-    depends_on:
-      minio-init: { condition: service_completed_successfully }
+    profiles: [minimal, full]
 
   stub-embedder:
     image: node:22-alpine

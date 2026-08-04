@@ -755,6 +755,16 @@ access key and secret key, or none of them. Half is refused rather than
 accepted, because an endpoint with no credential parses fine and fails later, as
 a deployment that accepts documents and cannot store them.
 
+**The bucket has to exist, and on `--profile full` it is created for you.** A
+complete configuration is not a usable one: MinIO does not create a bucket
+because a client named it, and neither does the client. Ingest writes the bytes
+before the row, so a missing bucket is a `NoSuchBucket` on the first document
+and the caller sees `500` — the reason is in the API's log and nowhere else.
+`/v1/ready` reports `s3: false` first, because it HEADs the bucket rather than
+the endpoint. Compose's `full` profile runs a `minio-init` one-shot that creates
+`NACRE_S3_BUCKET` beside MinIO; pointing these variables at any other S3 makes
+the bucket yours to create.
+
 **Binary ingest requires it.** A PDF's bytes have exactly one home — the
 bucket; `documents.source_ref` is text and stays text. A PDF uploaded to a
 deployment without `NACRE_S3_*` is refused at the edge with a `400` naming
