@@ -130,6 +130,20 @@ const FIXTURES = {
     ],
     next_cursor: null,
   },
+  'GET /v1/groups/8e1a7c34-2b09-4d56-af73-6c0e5b9d2a41/members': {
+    items: [
+      { type: 'user', id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', label: 'dana@example.com' },
+      { type: 'group', id: '3c9f5b28-4d71-4e06-b28a-7f1c0e6d9a53', label: 'engineering' },
+    ],
+    next_cursor: null,
+  },
+  // The one irreversible moment on the People screen, and the reason it gets a
+  // picture: a password exists in this response and nowhere else, ever again.
+  'POST /v1/users': {
+    id: '6a4e2c98-3b17-4f50-9d82-0c7b5e1a4f26', email: 'kim@example.com', role: 'member',
+    created_at: '2026-03-14T09:00:00.000Z', disabled_at: null, has_password: true,
+    password: 'aragonite-tide-ledger-shoal-prism-keel-37',
+  },
   'POST /v1/search': {
     items: [
       { chunk_id: '1f4d8b03-5a29-4e71-9c86-7b2e0d5a3f19', doc_id: DOC, layer: 'handbook',
@@ -248,6 +262,40 @@ await shot('search', {
 })
 await shot('grants', { hash: '#/grants' })
 await shot('people', { hash: '#/people' })
+await shot('new-user', {
+  hash: '#/people',
+  prepare: async (page) => {
+    await page.getByRole('button', { name: 'New user' }).click()
+    await page.waitForTimeout(150)
+  },
+})
+// The step somebody can click past without noticing, which is why it is its own
+// screen in the product and its own picture here.
+await shot('new-user-password', {
+  hash: '#/people',
+  prepare: async (page) => {
+    await page.getByRole('button', { name: 'New user' }).click()
+    await page.getByPlaceholder('dana@example.com').fill('kim@example.com')
+    await page.getByRole('button', { name: 'Create' }).click()
+    await page.waitForTimeout(250)
+  },
+})
+await shot('group-members', {
+  hash: '#/people',
+  prepare: async (page) => {
+    await page.getByRole('row', { name: /legal/ }).getByRole('button', { name: 'Members' }).click()
+    await page.waitForTimeout(250)
+  },
+})
+// Deleting a layer asks for the slug rather than for a click: a grant
+// re-issues, and a layer's documents do not come back.
+await shot('delete-layer', {
+  hash: '#/layers',
+  prepare: async (page) => {
+    await page.getByRole('row', { name: /handbook/ }).getByRole('button', { name: 'Delete' }).click()
+    await page.waitForTimeout(150)
+  },
+})
 await shot('accounts', { hash: '#/accounts' })
 
 await browser.close()
