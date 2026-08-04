@@ -240,7 +240,11 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
-### Unreleased
+### 0.5.0 — onboarding a team, and a readiness probe that means it
+
+**Nothing removed and nothing renamed**, so rolling the code back to 0.4.x is
+safe: both migrations here are additive, and 0.4.x runs unchanged against this
+schema. No new environment variables.
 
 **`/v1/ready` now reports the schema.** A pod on a database this build's
 migrations have not reached answers `503` rather than reporting ready and
