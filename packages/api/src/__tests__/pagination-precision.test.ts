@@ -169,7 +169,7 @@ when('a cursor built from a truncated timestamp', () => {
   })
 
   it('walks every layer once', async () => {
-    const layers = new PostgresLayers(pool, { vectorsOf: async () => ({ v1: 8 }) }, APP_ROLE)
+    const layers = new PostgresLayers(pool, { vectorsOf: async () => ({ v1: 8 }), tombstoneLayer: async () => undefined }, APP_ROLE)
     const seen = await walk((page) => layers.list(auth, page))
     expect(seen).toHaveLength(layerIds.length)
     expect(new Set(seen).size).toBe(layerIds.length)

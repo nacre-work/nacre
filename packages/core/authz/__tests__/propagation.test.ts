@@ -173,7 +173,7 @@ when('adversarial · revocation under load', () => {
       set: (key: string, value: string, ttl: number) => counting.set(key, value, ttl),
     }
 
-    const layers = new PostgresLayers(pool, { vectorsOf: async () => ({}) }, 'nacre_app', {
+    const layers = new PostgresLayers(pool, { vectorsOf: async () => ({}), tombstoneLayer: async () => undefined }, 'nacre_app', {
       store,
       ttlSeconds: 60,
     })
@@ -192,7 +192,7 @@ when('adversarial · revocation under load', () => {
     await join()
     const cache = new MemoryCache()
     const principals = { store: cache, ttlSeconds: 60 }
-    const layers = new PostgresLayers(pool, { vectorsOf: async () => ({}) }, 'nacre_app', principals)
+    const layers = new PostgresLayers(pool, { vectorsOf: async () => ({}), tombstoneLayer: async () => undefined }, 'nacre_app', principals)
     const auth = { orgId: ORG, principal: alice, role: 'member' as const }
 
     const before = await layers.list(auth)

@@ -15,6 +15,7 @@ DELETE /v1/documents/{id}            tombstone
 POST   /v1/search
 GET    /v1/workspaces    POST /v1/workspaces
 GET    /v1/layers        POST /v1/layers        PATCH /v1/layers/{id}
+DELETE /v1/layers/{id}            tombstone, and every document in it
 GET    /v1/layers/{id}/reindex             POST /v1/layers/{id}/reindex
 GET    /v1/layers/{id}/reference-queries   PUT  /v1/layers/{id}/reference-queries
 GET    /v1/grants        POST /v1/grants        DELETE /v1/grants/{id}
@@ -245,6 +246,30 @@ grants are, because who may see one is decided by walking the scope tree —
 `next_cursor` is taken from the last row *fetched*, not the last one returned.
 It is the only signal that more exist.
 
+### Deleting a layer
+
+`DELETE /v1/layers/{id}` needs `admin` on the layer's **workspace** — the same
+check `PATCH` makes, and never `write`. Deleting is the more dangerous of the
+two, so it does not get the lower bar, and an ingest-only service account is
+exactly the principal that holds `write` and must not be able to remove the
+layer it writes into.
+
+The answer is `204` once the layer stops resolving and its documents stop
+matching a search, which is the same promise `DELETE /v1/documents/{id}` makes
+and for the same reason: invariant 5 is about what a query returns, not about
+what is still on disk. The index goes first — one `setPayload` over the whole
+layer, so the cost does not grow with the number of documents — then the
+document rows, then the layer. Reversing that order would leave a window where
+the rows say deleted and the index still answers.
+
+The cascade underneath is the collector's, on its own clock: the points, the
+chunk rows and any object in the bucket. Nothing a caller sees waits for it,
+and there is no undelete.
+
+Grants naming the layer are removed with it. They would resolve to nothing
+anyway, so no permission answer changes — what it avoids is `GET /v1/grants`
+listing rows that point at a scope no reader can look up.
+
 ## Asynchrony
 
 Ingest returns `202` with a `job_id`. Status at `GET /v1/jobs/{id}`:
@@ -310,6 +335,7 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 | `GET /v1/documents/{id}`, `GET /v1/jobs/{id}` | resolved per caller |
 | `GET`/`POST /v1/workspaces` | a layer needs a workspace id, and until this existed the only way to have one was the line `init` printed |
 | `GET`/`POST /v1/layers`, `PATCH /v1/layers/{id}` | `provider_id` optional on create; PATCH takes name and description and nothing that decides how the vectors were built |
+| `DELETE /v1/layers/{id}` | `admin` on the workspace; one `setPayload` over the layer's points, then the rows, then the grants naming it |
 | `GET`/`POST /v1/layers/{id}/reindex` | `202` and a path to poll; `copying` then `embedding`, and a `check` once the recall gate has run |
 | `GET`/`PUT /v1/layers/{id}/reference-queries` | the query set the gate scores against; `admin`, replaced whole |
 | `GET /v1/audit` | newest first, cursor-paged, JSON/JSONL/CSV by content negotiation |

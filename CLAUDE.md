@@ -230,6 +230,25 @@ retagging pass costs. It answers `204` and
 never the document, because rule 6 means a caller may hold `write` without
 `read`.
 
+**A layer can be deleted, and it takes its documents with it.** Everything else
+on the layers screen edits one — there was no way to remove a layer at all, so a
+slug typed wrong was permanent and the only correction was a second layer beside
+it. `DELETE /v1/layers/{id}` needs `admin` on the *workspace*, the same check
+renaming makes and never `write`: an ingest-only service account is exactly the
+principal that holds `write` into a layer and must not be able to remove it.
+
+The index goes first and it is **one** call — a `setPayload` over a filter on
+`layer_id`, so the cost does not grow with the number of documents — then the
+document rows, then the layer, then the grants naming it. That order is the
+document delete's order for the same reason: the reverse leaves a window where
+the rows say deleted and the index still answers, and invariant 5 is about what
+a query returns rather than about what is still on disk. The cascade underneath
+is the collector's, on its own clock, and nothing a caller sees waits for it.
+
+Removing the grants is the part that is not about permission. They would resolve
+to nothing anyway, so no answer changes — what it avoids is `GET /v1/grants`
+listing rows pointing at a scope no reader can look up.
+
 `GET`/`POST /v1/workspaces` and `PATCH /v1/layers/{id}` close the last two paths
 the contract described and the server answered `404` for. The workspace listing
 is the one that mattered: creating a layer takes a `workspace_id` and the only

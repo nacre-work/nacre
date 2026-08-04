@@ -83,6 +83,7 @@ const COVERAGE: Record<string, string | null> = {
   'GET /layers': 'layers.list',
   'POST /layers': 'layers.create',
   'PATCH /layers/{id}': 'layers.update',
+  'DELETE /layers/{id}': 'layers.remove',
   'POST /layers/{id}/reindex': 'layers.reindex',
   'GET /layers/{id}/reindex': 'layers.reindexStatus',
   'GET /layers/{id}/reference-queries': 'layers.referenceQueries',

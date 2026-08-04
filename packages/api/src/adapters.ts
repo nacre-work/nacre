@@ -1339,7 +1339,11 @@ export class PostgresLayers implements Layers {
      * answered 202 and the row says `pending`. Checking here is what turns that
      * into a collection rebuild instead.
      */
-    private readonly vectors: { vectorsOf(collection: string): Promise<Record<string, number>> },
+    private readonly vectors: {
+      vectorsOf(collection: string): Promise<Record<string, number>>
+      /** Deleting a layer needs its points to stop matching; see `remove`. */
+      tombstoneLayer(collection: string, layerId: string): Promise<void>
+    },
     private readonly role?: string,
     /** See `principalsFor`. Absent means recompute the closure every time. */
     private readonly principalsCache?: PrincipalsCache,
@@ -1435,6 +1439,77 @@ export class PostgresLayers implements Layers {
     input: { name?: string; description?: string },
   ): Promise<boolean> {
     return updateLayer(this.pool, auth, layerId, input, this.role, this.principalsCache)
+  }
+
+  async remove(auth: AuthContext, layerId: string): Promise<boolean> {
+    if (!/^[0-9a-f-]{36}$/i.test(layerId)) return false
+
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        // The collection from the column that owns it, in the same transaction
+        // as the check — the same reason the document delete reads it here
+        // rather than deriving `org_${slug}`. A tombstone we cannot mirror into
+        // the index is a layer that stays searchable while the API says it is
+        // gone.
+        const { rows: orgs } = await client.query<{ vector_collection: string }>(
+          'SELECT vector_collection FROM organizations WHERE id = $1 AND deleted_at IS NULL',
+          [auth.orgId],
+        )
+        const collection = orgs[0]?.vector_collection
+        if (collection === undefined) return false
+
+        const context = await contextFor(client, auth, this.principalsCache)
+
+        const { rows } = await client.query<{ workspace_id: string }>(
+          `SELECT workspace_id FROM layers
+            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+          [auth.orgId, layerId],
+        )
+        const workspaceId = rows[0]?.workspace_id
+        if (workspaceId === undefined) return false
+
+        // Admin on the workspace, exactly as renaming asks. Checked after the
+        // lookup so a caller who may not administer it gets the same answer
+        // whether or not the layer exists.
+        if (!referenceAllows(context, { type: 'workspace', id: workspaceId }, 'admin')) return false
+
+        // The index first, then the rows — the same order the document delete
+        // uses and for the same reason. One `setPayload` filtered on layer_id,
+        // not a loop: a layer holds an unbounded number of documents, and a
+        // per-document round trip would put that count on the request and
+        // leave a half-invisible layer if it failed partway.
+        await this.vectors.tombstoneLayer(collection, layerId)
+
+        // Every document row, so the collector has its queue — it claims on
+        // `documents.deleted_at`, which is what turns this into reclaimed
+        // points and reclaimed bucket objects later. One statement.
+        await client.query(
+          `UPDATE documents SET deleted_at = now(), updated_at = now()
+            WHERE org_id = $1 AND layer_id = $2 AND deleted_at IS NULL`,
+          [auth.orgId, layerId],
+        )
+
+        await client.query(
+          `UPDATE layers SET deleted_at = now() WHERE org_id = $1 AND id = $2`,
+          [auth.orgId, layerId],
+        )
+
+        // Grants naming this layer. They resolve to nothing once the scope is
+        // gone, so this changes no answer — it stops `GET /v1/grants` listing
+        // rows that point at something a reader cannot look up. The trigger on
+        // `grants` bumps `groups_version`, so the principals cache invalidates
+        // itself rather than needing to be told.
+        await client.query(
+          `DELETE FROM grants WHERE org_id = $1 AND scope_type = 'layer' AND scope_id = $2`,
+          [auth.orgId, layerId],
+        )
+
+        return true
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
   }
 
   async create(

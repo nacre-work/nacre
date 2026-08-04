@@ -896,6 +896,27 @@ paths:
         '204': { description: Updated }
         '400': { description: 'Neither name nor description was given, or one is not a string' }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+    delete:
+      summary: Delete a layer, and every document in it
+      description: >
+        `admin` on the layer's workspace — the same check renaming makes, and
+        deleting is the more dangerous of the two so it does not get a lower
+        bar. Never `write`: an ingest-only service account holds that.
+
+
+        Returns as soon as the layer stops resolving and its documents stop
+        matching a search. The cascade underneath — points, chunk rows, bucket
+        objects — is the collector's, on its own clock, and nothing a caller
+        sees depends on when it runs. There is no undelete.
+
+
+        Grants naming the layer are removed with it. They would resolve to
+        nothing anyway, so no answer changes; what it avoids is
+        `GET /v1/grants` listing rows that point at something a reader cannot
+        look up.
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /layers:
     get:
       summary: Accessible layers. Narrowed by the caller's read plan, not filtered afterwards.
