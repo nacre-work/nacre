@@ -63,6 +63,39 @@ export const shortId = (id: string): HTMLElement =>
   h('code', { class: 'id', title: id }, `${id.slice(0, 6)}…${id.slice(-4)}`)
 
 /**
+ * A truncated id with a button that copies the whole one.
+ *
+ * `shortId` alone puts the full value in a `title`, which shows on hover and
+ * cannot be selected — so every id on these screens was readable and none was
+ * usable. That is fine where the id is decoration and wrong wherever another
+ * screen asks for it: issuing a grant takes a principal id, and a service
+ * account's was not displayed at all.
+ *
+ * The clipboard can be refused, so the fallback says what actually happened
+ * rather than claiming a copy that did not occur.
+ */
+export const copyableId = (id: string): HTMLElement => {
+  const note = h('span', { class: 'copied' })
+  return h('span', { class: 'idcopy' },
+    shortId(id),
+    h('button', {
+      type: 'button',
+      class: 'btn btn-quiet',
+      title: `Copy ${id}`,
+      onclick: async () => {
+        try {
+          await navigator.clipboard.writeText(id)
+          note.textContent = 'copied'
+        } catch {
+          note.textContent = id
+        }
+      },
+    }, 'copy'),
+    note,
+  )
+}
+
+/**
  * A permission chip.
  *
  * The one place a pill radius is allowed, and the colours carry information

@@ -205,6 +205,13 @@ a { color: var(--n-accent); }
 }
 .section:first-child { margin-top: 0; }
 
+/* An id with a copy button. The button stays quiet until the row is hovered,
+   because the id is reference material on most screens and a call to action on
+   only one of them. */
+.idcopy { display: inline-flex; align-items: center; gap: 6px; }
+.idcopy .btn { padding: 0 6px; font-size: 11px; opacity: 0; transition: opacity 80ms; }
+tr:hover .idcopy .btn, .idcopy .btn:focus-visible { opacity: 1; }
+
 /* ─── Empty and error states ──────────────────────────────────────────── */
 .empty {
   border: 1px dashed var(--n-rule); border-radius: var(--n-radius);

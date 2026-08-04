@@ -1251,7 +1251,25 @@ paths:
             docs/licensing.md. 400 rather than 404 because the caller is an
             administrator asking for a feature, not asking whether an object
             exists.
-        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+
+
+            Also a `principal_id` or `scope_id` that is not a uuid, naming the
+            one that is wrong. A malformed value is a fact about the caller's
+            own request and discloses nothing, so it gets a specific answer;
+            once the shape is right, whether the thing exists is `404` and is
+            deliberately not specific.
+        '404':
+          description: >
+            The principal or the scope is not in this organization, or the
+            caller may not administer the scope. One answer for all three, which
+            is invariant 4: a caller who cannot list principals must not be able
+            to use grant issuance to find out which uuids are ones.
+
+
+            Both ends are checked. A grant naming a principal that is not here
+            would permit nothing and could never begin to — so it would sit in
+            `GET /v1/grants` looking like access somebody has, on an id nobody
+            can look up.
   /grants/{id}:
     parameters:
       - name: id

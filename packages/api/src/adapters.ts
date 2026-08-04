@@ -2078,6 +2078,36 @@ export class PostgresGrants implements Grants {
         )
         if (exists.rowCount !== 1) return undefined
 
+        // And the principal, for the same reason and on the same argument.
+        //
+        // The check above was added because an `org_admin` could name any uuid
+        // as a scope; the other half of the row went on accepting any uuid as a
+        // principal, which produces exactly the failure that comment describes
+        // and is harder to notice. A grant to a principal that is not here
+        // permits nothing and can never begin to — `effectivePrincipals` walks
+        // from the caller, and nobody resolves to an id that names no row — so
+        // it sits in `GET /v1/grants` forever looking like access somebody has.
+        //
+        // The mistake it catches is not hypothetical: `principal_type` and
+        // `principal_id` are two fields, and picking `user` while pasting a
+        // service account's id is a row that inserts cleanly and does nothing.
+        //
+        // Written out per table rather than assembled, like the scope check —
+        // `principalType` is a checked union and this keeps it structural.
+        const principalExists = await client.query(
+          input.principalType === 'user'
+            ? `SELECT 1 FROM users WHERE org_id = $1 AND id = $2`
+            : input.principalType === 'group'
+              ? `SELECT 1 FROM groups WHERE org_id = $1 AND id = $2`
+              : `SELECT 1 FROM service_accounts WHERE org_id = $1 AND id = $2 AND revoked_at IS NULL`,
+          [auth.orgId, input.principalId],
+        )
+        // A revoked service account is refused rather than accepted: its key
+        // stopped working and is never reissued, so a grant to it is a row that
+        // can never be exercised. A *disabled* user is accepted — disabling is
+        // reversible and the grant is meant to survive it.
+        if (principalExists.rowCount !== 1) return undefined
+
         const { rows } = await client.query<{ id: string; effect: string; source: string }>(
           `INSERT INTO grants
              (org_id, principal_type, principal_id, scope_type, scope_id, permission, effect, source)

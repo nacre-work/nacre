@@ -1,4 +1,4 @@
-import type { Grant, Layer, Workspace } from '@nacre.work/sdk'
+import type { Grant, Group, Layer, ServiceAccount, User, Workspace } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { chip, clear, h, shortId } from '../dom.js'
@@ -184,6 +184,57 @@ function openIssue(root: HTMLElement): void {
   scopeType.addEventListener('change', fillScopePicker)
   fillScopePicker()
 
+  // The same shortcut for the principal, which had none — so the scope could be
+  // picked from a list and the principal had to be a uuid somebody carried by
+  // hand. Somebody typed a service account's *name* into it, and the only
+  // answer was about the field that was correct.
+  //
+  // It could not have been built until all three types were listable: service
+  // accounts always were, users and groups only since `/v1/users` and
+  // `/v1/groups` landed. Before that this picker would have had one working
+  // option out of three, which is worse than none.
+  const principalPicker = h('select', { class: 'input', onchange: (e: Event) => {
+    const value = (e.target as HTMLSelectElement).value
+    if (value !== '') principalId.value = value
+  } })
+
+  const fillPrincipalPicker = (): void => {
+    const type = principalType.value
+    const label = type === 'service_account' ? 'service account' : type
+    principalPicker.replaceChildren(h('option', { value: '' }, `pick a ${label}…`))
+    // Listing users and groups needs org_admin, and admin on a scope is not
+    // that — so this can legitimately fail for a caller who may nonetheless
+    // issue the grant. The field behind it still takes an id, which is why the
+    // failure is silent here rather than an error on a form that is fine.
+    if (type === 'user') {
+      void client().users.list().then((users: readonly User[]) => {
+        for (const u of users) {
+          principalPicker.append(h('option', { value: u.id },
+            u.disabledAt === null ? u.email : `${u.email} (disabled)`))
+        }
+      }).catch(() => undefined)
+    } else if (type === 'group') {
+      void client().groups.list().then((groups: readonly Group[]) => {
+        for (const g of groups) {
+          principalPicker.append(h('option', { value: g.id }, `${g.name} — ${String(g.memberCount)} member(s)`))
+        }
+      }).catch(() => undefined)
+    } else {
+      void client().serviceAccounts.list().then((accounts: readonly ServiceAccount[]) => {
+        // A revoked account is not offered: its key stopped working and is
+        // never reissued, so a grant to it can never be exercised — and the
+        // server refuses one now rather than storing a row that does nothing.
+        for (const a of accounts) {
+          if (a.revokedAt !== null) continue
+          principalPicker.append(h('option', { value: a.id }, `${a.name} — ${a.keyPrefix}…`))
+        }
+      }).catch(() => undefined)
+    }
+  }
+
+  principalType.addEventListener('change', fillPrincipalPicker)
+  fillPrincipalPicker()
+
   const dialog = h('dialog', { class: 'dialog' },
     h('form', { method: 'dialog', onsubmit: async (e: Event) => {
       e.preventDefault()
@@ -216,6 +267,7 @@ function openIssue(root: HTMLElement): void {
         h('label', { class: 'field' }, h('span', {}, 'Principal type'), principalType),
         h('label', { class: 'field grow' }, h('span', {}, 'Principal'), principalId),
       ),
+      h('label', { class: 'field' }, h('span', {}, 'Principal shortcut'), principalPicker),
       h('div', { class: 'row' },
         h('label', { class: 'field' }, h('span', {}, 'Scope type'), scopeType),
         h('label', { class: 'field grow' }, h('span', {}, 'Scope'), scopeId),
@@ -224,6 +276,10 @@ function openIssue(root: HTMLElement): void {
       h('label', { class: 'field' }, h('span', {}, 'Permission'), permission),
       h('p', { class: 'hint' },
         'Requires admin on the scope being granted, not admin in general. Document scope and deny effect are commercial capabilities and are refused here.'),
+      h('p', { class: 'hint' },
+        'The three permissions are not a ladder. write does not imply read — an agent that only ingests '
+        + 'cannot search what it ingested — so both means two grants on the same scope. admin implies both, '
+        + 'and also lets the principal rename or delete the scope and issue grants on it.'),
       message,
       h('div', { class: 'dialog-actions' },
         h('button', { type: 'button', class: 'btn', onclick: () => dialog.close() }, 'Cancel'),

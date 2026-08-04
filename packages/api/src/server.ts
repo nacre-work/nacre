@@ -844,6 +844,9 @@ function grantJson(g: GrantRecord): Record<string, unknown> {
  * this build does not have, which is not a question about whether an object
  * exists, so invariant I4 has no bearing and saying so plainly is right.
  */
+/** Shape only. Existence is the adapter's, and answers `404` rather than `400`. */
+const UUID_SHAPE = /^[0-9a-f-]{36}$/i
+
 function parseGrant(body: Record<string, unknown>): GrantInput | string {
   const principalType = body.principal_type
   const principalId = body.principal_id
@@ -854,6 +857,24 @@ function parseGrant(body: Record<string, unknown>): GrantInput | string {
 
   if (typeof principalId !== 'string' || typeof scopeId !== 'string') {
     return "'principal_id' and 'scope_id' are required."
+  }
+  // Shape, here, and existence in the adapter — because the two answers are
+  // different and only one of them is allowed to be specific.
+  //
+  // A value that is not a uuid is a fact about the caller's own request: it
+  // discloses nothing, so it gets a `400` naming the field they got wrong.
+  // A well-formed uuid that names nothing is `404`, indistinguishable from one
+  // they may not administer, which is invariant 4.
+  //
+  // Collapsing the two is what sent somebody looking at the wrong half of a
+  // form: they typed a service account's *name* into `principal_id`, and the
+  // only answer was "no such scope" — about the field that was correct.
+  if (!UUID_SHAPE.test(principalId)) {
+    return "'principal_id' must be a uuid. It is the principal's id, not its name — " +
+      'a service account, a user or a group listed in this organization.'
+  }
+  if (!UUID_SHAPE.test(scopeId)) {
+    return "'scope_id' must be a uuid — the id of the workspace or layer being granted on."
   }
   if (typeof principalType !== 'string' || !PRINCIPAL_TYPES.includes(principalType as never)) {
     return `'principal_type' must be one of ${PRINCIPAL_TYPES.join(', ')}.`
@@ -1532,6 +1553,33 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   // from the row that authenticated, never from the request.
   if (instance.startsWith('/v1/auth/')) {
     await handleAuth(req, res, instance, requestId, options)
+    return
+  }
+
+  // A path this server does not route is `404`, and it says so **before**
+  // asking for a credential.
+  //
+  // Everything unauthenticated is already handled above — `/metrics`, the two
+  // `/.well-known` documents, health, readiness, sign-in. So anything left that
+  // is not under `/v1/` is not part of this API at all, and answering `401`
+  // for it claims a path exists and is merely gated.
+  //
+  // That is not a hypothetical reading. A client pointed at this port looking
+  // for an MCP endpoint probed `/.well-known/oauth-authorization-server`,
+  // `/.well-known/openid-configuration` and `/register`, got `401 "A bearer
+  // token is required"` from each, and concluded the deployment had OAuth
+  // discovery behind a middleware that needed lifting. There is no such
+  // middleware and there are no such routes: this is a resource server and
+  // declines the authorization-server role — see docs/mcp.md. An afternoon
+  // went into un-gating endpoints that do not exist.
+  //
+  // Unknown paths *under* `/v1/` still answer `401`, and that is the line
+  // rather than an omission: they are inside the authenticated surface, where
+  // presenting a credential is the price of being told anything. Nothing is
+  // concealed by it — every route this API serves is in docs/openapi.yaml.
+  if (!instance.startsWith('/v1/')) {
+    const problem = notFound(instance, requestId)
+    send(res, problem.status, problem.toJSON(), requestId)
     return
   }
 
