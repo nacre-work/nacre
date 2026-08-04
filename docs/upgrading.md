@@ -248,14 +248,21 @@ runs unchanged against this database — so rolling back is safe.
 **The images are built for linux/arm64 as well as linux/amd64.** Every tag up to
 and including 0.5.1 carried one architecture, checked against the registry
 rather than inferred: `ghcr.io/nacre-work/nacre:0.5.1` and `-parser:0.5.1` are
-`linux/amd64` and nothing else. On an Apple Silicon Mac and on an arm64 node,
-Docker pulled that manifest and ran it emulated — which is a slow container, not
+`linux/amd64` and nothing else. Anything that *pulls* one on arm64 ran it
+emulated — a Helm deployment, whose chart names those tags in its defaults; a
+`docker pull`; an arm64 node or CI runner. That is a slow container rather than
 an error, so nothing reported it.
 
-Nothing to do beyond moving the tag. A pod or a Compose stack already running
-0.5.1 on arm64 keeps running the emulated image until it pulls the new one;
-`image.tag` (or `:latest`) forward is the whole action, and the improvement is
-latency rather than behaviour.
+**Compose is not affected and never was.** No service in `docker-compose.yml`
+has an `image:` key: all six build from the Dockerfiles into locally tagged
+images, and a local build is a build for the machine doing it. `docker compose
+up` on an Apple Silicon Mac has always produced arm64. Saying otherwise is a
+correction to the first version of these notes.
+
+Nothing to do beyond moving the tag, and only where a tag is what you run. A pod
+already running 0.5.1 on arm64 keeps the emulated image until it pulls the new
+one; `image.tag` (or `:latest`) forward is the whole action, and the improvement
+is latency rather than behaviour.
 
 If you pin digests, note that a multi-architecture tag's digest is an index and
 not an image — pin the index digest and the node resolves its own architecture
