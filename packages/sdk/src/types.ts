@@ -164,6 +164,45 @@ export interface CreatedServiceAccount extends ServiceAccount {
   readonly key: string
 }
 
+// ─── principals: the users and groups a grant is issued to ─────────────────
+
+export type UserRole = 'platform_admin' | 'org_admin' | 'member'
+
+export interface User {
+  readonly id: string
+  readonly email: string
+  readonly role: UserRole
+  readonly createdAt: string
+  /** When sign-in stopped working. The row is kept — the audit log names this id. */
+  readonly disabledAt: string | null
+  /** Whether a local password is set at all. False is an SSO-only account. */
+  readonly hasPassword: boolean
+}
+
+export interface CreatedUser extends User {
+  /**
+   * The password, in this response and nowhere else, ever again. It is stored
+   * as a scrypt hash, so it cannot be recovered from the database or from a
+   * backup — issue a new one with `users.resetPassword` instead.
+   */
+  readonly password: string
+}
+
+export interface Group {
+  readonly id: string
+  readonly name: string
+  readonly createdAt: string
+  /** Direct members. A nested group counts as one, not as its members. */
+  readonly memberCount: number
+}
+
+export interface GroupMember {
+  readonly type: 'user' | 'group'
+  readonly id: string
+  /** The email for a user, the name for a nested group. */
+  readonly label: string
+}
+
 // ─── the reindex, and the gate in front of it ──────────────────────────────
 
 export type ReindexStatusName = 'running' | 'complete' | 'failed'

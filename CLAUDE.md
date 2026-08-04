@@ -230,6 +230,52 @@ retagging pass costs. It answers `204` and
 never the document, because rule 6 means a caller may hold `write` without
 `read`.
 
+**A team can be onboarded.** `grants.principal_type` has admitted `user`,
+`group` and `service_account` since migration 0001, and only the third could be
+created through the API — so the documented way to give a colleague access was
+to insert into `users` by hand, and the documented way to give a team access was
+to insert into `groups` and `group_members` by hand. The same shape of hole the
+workspace listing had: the model offers something the product gives no route to,
+and the route people find instead is `psql`.
+
+`/v1/users` and `/v1/groups` close it, at `org_admin` — not "admin on a scope",
+because a principal belongs to the organization rather than to a workspace
+inside it, and someone holding `admin` on one layer must not be able to mint one
+any more than they can mint a key. Migration 0021 is the only schema change and
+it is small: `groups` and `group_members` had no `created_at`, and every paged
+collection here seeks on `(created_at, id)`, so neither could be listed by the
+shared machinery at all.
+
+A password is **generated and never accepted**, on `init`'s argument — an
+argument ends up in a shell history — plus one more: a password an
+administrator chose is one they know. `POST /v1/users/{id}/password` exists
+because without it an administrator whose colleague lost theirs had no route
+that did not go through the database, which is the gap this whole surface is
+about. `platform_admin` is refused rather than downgraded: it spans tenants in
+the multi-tenancy module, so minting one from an endpoint scoped to a single
+organization would be an escalation out of it.
+
+A user is **disabled** and a group is **deleted**, and the asymmetry is
+structural rather than stylistic. The audit log names a user id and
+`grants.created_by` references `users(id)` with no cascade, so a deleted
+administrator is a foreign key violation and a deleted anyone is an
+unresolvable reference in the one record that must not have them. Nothing
+points at a group that way — but nothing removes its *grants* either, since
+`principal_id` addresses three tables and is a bare uuid, so deleting one takes
+them in the same transaction.
+
+`DELETE` and `PATCH {"disabled": true}` go through one call, which is what makes
+the last-administrator guard hold: an organization with no active `org_admin`
+has no route back, because every endpoint that could appoint one is behind the
+role that was just given up. Two entry points with one check between them is how
+the guarded one gets walked around, and the count runs in the same transaction
+as the update it guards, behind a `FOR UPDATE` — two administrators demoting
+each other concurrently would otherwise both read a count of two.
+
+The refusal that surfaces as `404` for a caller who is not an `org_admin`
+writes a `deny` event. It is the easiest one to miss, because the code path
+producing it is an early return that reads like routing.
+
 **A layer can be deleted, and it takes its documents with it.** Everything else
 on the layers screen edits one — there was no way to remove a layer at all, so a
 slug typed wrong was permanent and the only correction was a second layer beside

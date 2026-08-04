@@ -93,6 +93,19 @@ const COVERAGE: Record<string, string | null> = {
   'POST /grants': 'grants.issue',
   'DELETE /grants/{id}': 'grants.revoke',
 
+  'GET /users': 'users.list',
+  'POST /users': 'users.create',
+  'PATCH /users/{id}': 'users.update',
+  'DELETE /users/{id}': 'users.disable',
+  'POST /users/{id}/password': 'users.resetPassword',
+
+  'GET /groups': 'groups.list',
+  'POST /groups': 'groups.create',
+  'DELETE /groups/{id}': 'groups.remove',
+  'GET /groups/{id}/members': 'groups.members',
+  'POST /groups/{id}/members': 'groups.addMember',
+  'DELETE /groups/{id}/members/{type}/{memberId}': 'groups.removeMember',
+
   'GET /service-accounts': 'serviceAccounts.list',
   'POST /service-accounts': 'serviceAccounts.create',
   'DELETE /service-accounts/{id}': 'serviceAccounts.revoke',

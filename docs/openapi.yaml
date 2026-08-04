@@ -351,6 +351,47 @@ components:
         created_at:    { type: string, format: date-time }
         last_used_at:  { type: [string, 'null'], format: date-time }
         revoked_at:    { type: [string, 'null'], format: date-time }
+    User:
+      type: object
+      required: [id, email, role, created_at, disabled_at, has_password]
+      properties:
+        id:         { type: string, format: uuid }
+        email:      { type: string, format: email }
+        role:       { type: string, enum: [platform_admin, org_admin, member] }
+        created_at: { type: string, format: date-time }
+        disabled_at:
+          type: [string, 'null']
+          format: date-time
+          description: >
+            When sign-in stopped working. Set rather than the row being removed:
+            the audit log names this id, and grants.created_by references it.
+        has_password:
+          type: boolean
+          description: >
+            Whether a local password is set at all — false is an SSO-only
+            account. Never the hash, and never anything derived from it.
+        password:
+          type: string
+          description: >
+            Only on creation and on reset. Generated, shown once, and not
+            recoverable from anywhere — issue a new one instead.
+    Group:
+      type: object
+      required: [id, name, created_at, member_count]
+      properties:
+        id:         { type: string, format: uuid }
+        name:       { type: string }
+        created_at: { type: string, format: date-time }
+        member_count:
+          type: integer
+          description: 'Direct members. A nested group counts as one, not as its members.'
+    GroupMember:
+      type: object
+      required: [type, id, label]
+      properties:
+        type:  { type: string, enum: [user, group] }
+        id:    { type: string, format: uuid }
+        label: { type: string, description: 'The email for a user, the name for a nested group.' }
     TokenPair:
       type: object
       required: [access_token, token_type, expires_in, refresh_token]
@@ -1292,6 +1333,285 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '204': { description: Revoked }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /users:
+    get:
+      summary: >
+        Users in the organization. Requires org_admin — a user is a principal in
+        the organization rather than an object in a workspace, so there is no
+        scope to check admin against.
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '200':
+          description: >
+            The page. Disabled accounts are listed rather than hidden: "disabled
+            on Tuesday" is the answer an operator is asking for, and a row that
+            vanishes looks like one that never existed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/User' } }
+                  next_cursor: { type: [string, 'null'] }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+    post:
+      summary: Create a user. The password is in the response and nowhere else, ever again.
+      description: >
+        The password is generated rather than accepted. An argument ends up in a
+        shell history and in `ps`, which is the reason `init` gives; and a
+        password an administrator chose is one they know, so "whoever onboarded
+        you can sign in as you" would be a property of the product rather than
+        an accident.
+
+
+        `role` is `member` or `org_admin`. `platform_admin` is deliberately not
+        issuable here: it administers the installation and spans tenants in the
+        multi-tenancy module, so minting one from an endpoint scoped to a single
+        organization would be an escalation out of it.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                role:  { type: string, enum: [member, org_admin], default: member }
+      responses:
+        '201':
+          description: Created. The only time the password exists outside this process.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/User' }
+                  - type: object
+                    required: [password]
+                    properties:
+                      password: { type: string, description: 'Shown once. Not recoverable — reset it instead.' }
+        '400': { description: "'email' is missing or is not an address, or 'role' is not one of the two" }
+        '409':
+          description: >
+            The address is already in use in this organization. Deliberately not
+            a 404: the caller has proved they administer the organization, so
+            this is a fact about the resource rather than about what they can
+            see.
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /users/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      summary: Change a user's role, or disable and re-enable them
+      description: >
+        One operation for both, because the last-administrator guard has to see
+        both: demoting the only `org_admin` and disabling them leave the
+        organization in the same place, and two entry points with one check
+        between them is how the guarded one gets routed around.
+
+
+        `disabled: false` is the only way back from `DELETE`, which is why this
+        exists beside it rather than instead of it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                role:     { type: string, enum: [member, org_admin] }
+                disabled: { type: boolean }
+      responses:
+        '204': { description: Updated }
+        '400': { description: 'Neither field was given, or one is the wrong type' }
+        '409':
+          description: >
+            The change would leave the organization with no active org_admin.
+            Not a 404: the caller is looking straight at this user, so the
+            answer is about the organization's state rather than about what they
+            can see.
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+    delete:
+      summary: Disable a user. The row is kept.
+      description: >
+        Disabled, never deleted, which is what `DELETE` means on everything
+        removable here. The audit log names this id, and `grants.created_by`
+        references `users(id)` with no cascade — so a row that disappeared would
+        turn every past event into an unresolvable reference and would fail
+        outright for anyone who has ever issued a grant.
+
+
+        Sign-in and refresh both stop immediately. An access token already
+        issued keeps verifying until it expires, which is a property of a JWT
+        and not of this endpoint; `NACRE_JWT_TTL` is that window.
+
+
+        Exactly `PATCH {"disabled": true}`, spelled the way the rest of this API
+        spells removal.
+      responses:
+        '204': { description: Disabled }
+        '409': { description: 'This is the only active org_admin — promote another first' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /users/{id}/password:
+    post:
+      summary: Issue a new password for a user, shown once
+      description: >
+        Without this an administrator whose colleague lost their password has no
+        route that does not go through the database, which is the gap this whole
+        surface exists to close.
+
+
+        A disabled account is still resettable on purpose: re-enabling and
+        resetting are two decisions, and making the second depend on the first
+        would be an ordering nothing asked for.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The new password. It replaces the old one immediately.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [password]
+                properties:
+                  password: { type: string }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /groups:
+    get:
+      summary: Groups in the organization. Requires org_admin.
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '200':
+          description: The page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Group' } }
+                  next_cursor: { type: [string, 'null'] }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+    post:
+      summary: Create a group
+      description: >
+        A group is what makes a grant survive staff turnover: grant the group
+        once, and joining the team is a membership change rather than a new
+        grant nobody remembers to revoke.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, description: Unique within the organization }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Group' }
+        '400': { description: "'name' is missing or empty" }
+        '409': { description: 'The name is already in use in this organization' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /groups/{id}:
+    delete:
+      summary: Delete a group, and the grants issued to it
+      description: >
+        Really deleted, unlike a user: nothing references a group id the way the
+        audit log references a user's, and "the team no longer exists" is a
+        different statement from "this person has left".
+
+
+        Grants naming the group go with it. There is no foreign key from
+        `grants` — `principal_id` addresses three tables, so it is a bare uuid —
+        and a grant to a principal that does not exist is a row `GET /v1/grants`
+        lists and nobody can resolve. No permission answer changes either way:
+        the resolver walks membership from the caller, and a deleted group has
+        no members to walk from.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /groups/{id}/members:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Direct members of a group — users and nested groups
+      description: >
+        Direct only. A nested group is one member, not its members: flattening
+        here would answer a different question from the one the row holds, and
+        the transitive closure is the resolver's and is computed per request.
+      parameters:
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Cursor' }
+      responses:
+        '200':
+          description: The page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/GroupMember' } }
+                  next_cursor: { type: [string, 'null'] }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+    post:
+      summary: Add a user or a nested group
+      description: >
+        `204` whether the member was added or was already there. The request
+        asked for a state and that state holds either way, and distinguishing
+        them would report whether somebody is in a group — a fact about the
+        group rather than about this request.
+
+
+        A cycle is not refused. `group_members` says so in its own comment:
+        cycles are the resolver's problem to terminate on rather than the
+        schema's to prevent, `effectivePrincipals` walks into a set, and T14 in
+        docs/authz.md is what pins that.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, id]
+              properties:
+                type: { type: string, enum: [user, group] }
+                id:   { type: string, format: uuid }
+      responses:
+        '204': { description: 'The member is in the group' }
+        '400': { description: "'type' is not one of the two, or 'id' is missing" }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /groups/{id}/members/{type}/{memberId}:
+    delete:
+      summary: Remove a member from a group
+      description: >
+        The type is in the path because the edge is keyed by which member column
+        it uses — a bare uuid does not identify one. The same shape `grants`
+        uses for the other end of the same relationship.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: type, in: path, required: true, schema: { type: string, enum: [user, group] } }
+        - { name: memberId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Removed }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /jobs/{id}:
     get:

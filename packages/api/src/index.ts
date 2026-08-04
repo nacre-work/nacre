@@ -56,6 +56,8 @@ export type {
   PrincipalsCache,
   SearchDeps,
 } from './adapters.js'
+export { PostgresGroups, PostgresUsers, generatePassword, looksLikeEmail } from './principals.js'
+export type { GroupMember, Groups, GroupView, Users, UserView } from './principals.js'
 export { applyRanking, HttpReranker, rerankerFor } from './rerank.js'
 export type { Reranker } from './rerank.js'
 export {

@@ -39,6 +39,7 @@ import { Idempotency } from './idempotency.js'
 import { Login } from './login.js'
 import { rerankerFor } from './rerank.js'
 import { RateLimiter, type LimitPolicy, type Resource } from './limits.js'
+import { PostgresGroups, PostgresUsers } from './principals.js'
 import { PostgresServiceAccounts, PostgresServiceKeys } from './service-keys.js'
 import { createApi } from './server.js'
 
@@ -268,6 +269,8 @@ async function main(): Promise<void> {
     workspaces: new PostgresWorkspaces(pool, APP_ROLE, principalsCache),
     grants: new PostgresGrants(pool, APP_ROLE, principalsCache),
     serviceAccounts: new PostgresServiceAccounts(pool, APP_ROLE),
+    users: new PostgresUsers(pool, APP_ROLE),
+    groups: new PostgresGroups(pool, APP_ROLE),
   })
 
   const port = Number(process.env.PORT ?? 8080)

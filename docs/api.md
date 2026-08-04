@@ -19,6 +19,12 @@ DELETE /v1/layers/{id}            tombstone, and every document in it
 GET    /v1/layers/{id}/reindex             POST /v1/layers/{id}/reindex
 GET    /v1/layers/{id}/reference-queries   PUT  /v1/layers/{id}/reference-queries
 GET    /v1/grants        POST /v1/grants        DELETE /v1/grants/{id}
+GET    /v1/users         POST /v1/users         PATCH /v1/users/{id}
+DELETE /v1/users/{id}                             tombstone: disabled, row kept
+POST   /v1/users/{id}/password                    a new one, shown once
+GET    /v1/groups        POST /v1/groups        DELETE /v1/groups/{id}
+GET    /v1/groups/{id}/members     POST /v1/groups/{id}/members
+DELETE /v1/groups/{id}/members/{type}/{memberId}
 GET    /v1/service-accounts  POST  /v1/service-accounts  DELETE /v1/service-accounts/{id}
 GET    /v1/jobs/{id}
 GET    /v1/health        GET /v1/ready           GET /metrics
@@ -270,6 +276,64 @@ Grants naming the layer are removed with it. They would resolve to nothing
 anyway, so no permission answer changes — what it avoids is `GET /v1/grants`
 listing rows that point at a scope no reader can look up.
 
+### Users and groups
+
+Every path under `/v1/users` and `/v1/groups` needs `org_admin`, and anyone
+else gets `404` — the same answer an unknown path gets, because whether this
+organization keeps a user directory is not something a member is told.
+
+Not "admin on a scope", which is the check layers and workspaces take. A user
+is a principal *in the organization* rather than an object inside a workspace,
+so there is nothing to check `admin` against, and someone holding `admin` on
+one layer must not be able to mint a principal any more than they can mint a
+service account key.
+
+**A password is generated, never accepted.** `POST /v1/users` returns one and
+`POST /v1/users/{id}/password` returns another; both are shown once and stored
+as a scrypt hash, so neither is recoverable from the database or from a backup.
+Accepting one as input would mean the administrator who onboarded somebody
+knows their password, and would put it in a shell history on the way.
+
+**`platform_admin` is not issuable here.** It administers the installation and
+spans tenants in the multi-tenancy module, so minting one through an endpoint
+scoped to a single organization would be an escalation out of it. `role` takes
+`member` or `org_admin`, and anything else is a `400` that says so rather than
+a silent downgrade.
+
+**A user is disabled; a group is deleted.** `DELETE /v1/users/{id}` sets
+`disabled_at` and keeps the row, because the audit log names the id and
+`grants.created_by` references `users(id)` with no cascade — a row that
+disappeared would turn every past event into an unresolvable reference and
+would fail outright for anyone who has ever issued a grant. `PATCH` with
+`disabled: false` is the way back, and it is the same call, so the
+last-administrator guard covers both spellings: a change that would leave the
+organization with no active `org_admin` is a `409`, because every endpoint that
+could appoint one is behind the role being given up.
+
+Disabling stops sign-in and refresh immediately. It does **not** revoke grants,
+and an access token already issued keeps verifying until it expires — that is a
+property of a JWT and `NACRE_ACCESS_TOKEN_TTL` is the window.
+
+`DELETE /v1/groups/{id}` removes the group and the grants naming it. There is
+no foreign key to remove them — `principal_id` addresses three tables, so it is
+a bare uuid — and a grant to a principal that does not exist is a row
+`GET /v1/grants` lists and nobody can resolve. No permission answer changes:
+the resolver walks membership from the caller, and a deleted group has no
+members to walk from.
+
+**Membership is direct, and a nested group is one member.** `GET
+/v1/groups/{id}/members` returns the rows, not the closure; the transitive
+closure is the resolver's and is recomputed per request. Adding a member
+answers `204` whether it was already there or not — the request asked for a
+state and that state holds either way, and distinguishing them would report a
+fact about the group rather than about the request. A cycle is not refused:
+`group_members` says cycles are the resolver's problem to terminate on rather
+than the schema's to prevent, and T14 in `docs/authz.md` is what pins that.
+
+Removing one takes the type in the path — `/members/{type}/{memberId}` —
+because the edge is keyed by which member column it uses, so a bare uuid does
+not identify one.
+
 ## Asynchrony
 
 Ingest returns `202` with a `job_id`. Status at `GET /v1/jobs/{id}`:
@@ -340,6 +404,10 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 | `GET`/`PUT /v1/layers/{id}/reference-queries` | the query set the gate scores against; `admin`, replaced whole |
 | `GET /v1/audit` | newest first, cursor-paged, JSON/JSONL/CSV by content negotiation |
 | `GET`/`POST /v1/grants`, `DELETE /v1/grants/{id}` | |
+| `GET`/`POST /v1/users`, `PATCH`/`DELETE /v1/users/{id}` | `org_admin`; password generated and shown once; disable keeps the row |
+| `POST /v1/users/{id}/password` | a new one, shown once |
+| `GET`/`POST /v1/groups`, `DELETE /v1/groups/{id}` | delete takes the grants naming the group with it |
+| `GET`/`POST /v1/groups/{id}/members`, `DELETE .../{type}/{memberId}` | direct membership; a nested group is one member |
 | `GET`/`POST /v1/service-accounts`, `DELETE /v1/service-accounts/{id}` | |
 | `GET /v1/health`, `GET /v1/ready`, `GET /metrics` | |
 | `Idempotency-Key` on unsafe methods | 24 hours, `409` on reuse, service accounts excluded |

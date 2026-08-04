@@ -69,7 +69,7 @@ const LAYER = '3a6b1e28-77c4-4f0d-8b19-2d5e9a03c7f1'
 const ACCOUNT = 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55'
 const DOC = 'e77a3c10-9d42-4b86-8f51-0a4c7e93b2d6'
 
-/** Everything the four views ask for, in the shapes the SDK parses. */
+/** Everything the five views ask for, in the shapes the SDK parses. */
 const FIXTURES = {
   // Polled by the header to show whether the API is reachable.
   'GET /v1/health': { status: 'ok' },
@@ -106,6 +106,27 @@ const FIXTURES = {
       { id: 'a93c7e15-8d40-4b62-9f81-2c6a4e0b7d93', name: 'nightly-indexer',
         key_prefix: 'nacre_sk_Lp9Vt1Ka', created_at: '2026-02-18T11:02:00.000Z',
         last_used_at: null, revoked_at: null },
+    ],
+    next_cursor: null,
+  },
+  'GET /v1/users': {
+    items: [
+      { id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', email: 'dana@example.com', role: 'org_admin',
+        created_at: '2026-01-12T08:30:00.000Z', disabled_at: null, has_password: true },
+      { id: '4f2c8e61-7a95-4d13-9b60-2e8a5c0f7b34', email: 'sam@example.com', role: 'member',
+        created_at: '2026-02-03T14:05:00.000Z', disabled_at: null, has_password: true },
+      { id: '9d7b3f04-6c28-4a51-8e93-1b5f0a2c6d78', email: 'alex@example.com', role: 'member',
+        created_at: '2026-02-20T10:11:00.000Z', disabled_at: '2026-03-08T09:00:00.000Z',
+        has_password: true },
+    ],
+    next_cursor: null,
+  },
+  'GET /v1/groups': {
+    items: [
+      { id: '8e1a7c34-2b09-4d56-af73-6c0e5b9d2a41', name: 'legal',
+        created_at: '2026-01-12T08:31:00.000Z', member_count: 2 },
+      { id: '3c9f5b28-4d71-4e06-b28a-7f1c0e6d9a53', name: 'engineering',
+        created_at: '2026-01-19T12:44:00.000Z', member_count: 5 },
     ],
     next_cursor: null,
   },
@@ -226,6 +247,7 @@ await shot('search', {
   },
 })
 await shot('grants', { hash: '#/grants' })
+await shot('people', { hash: '#/people' })
 await shot('accounts', { hash: '#/accounts' })
 
 await browser.close()

@@ -306,6 +306,34 @@ something you have to know.
 Two rules surprise people, and the screen says both rather than assuming:
 `write` does not imply `read`, and a deny beats an allow at any depth.
 
+### People — onboarding a colleague
+
+`init` makes one administrator, and until this screen existed everybody else
+had to be inserted into `users` by hand. Nothing about the model required that:
+`grants.principal_type` has admitted `user` and `group` since the first
+migration.
+
+![The people screen, with three users and two groups](./assets/admin/people.png)
+
+Creating a user generates a password and shows it once — it is not accepted as
+input, because a password an administrator chose is one they know, and an
+argument ends up in a shell history. Losing it is a reset, not a recovery.
+
+**A new member reaches nothing.** The role decides whether they can administer
+the organization, never what they can read: that is entirely the grants, which
+is why an `org_admin` who has issued themselves no grant sees an empty search.
+
+Grant the **group** rather than the person, wherever there is more than one of
+them. Adding somebody to a group gives them everything it holds and removing
+them takes it back on their next request — the permitted set is computed per
+request, so there is nothing to wait for. Granting each person individually is
+what leaves an ex-colleague with access nobody remembers to revoke.
+
+Disabling a user stops sign-in and refresh, and keeps the row: the access log
+names it. It does **not** revoke their grants, and an access token already
+issued keeps working until it expires — `NACRE_ACCESS_TOKEN_TTL` is that
+window.
+
 ![The service accounts list, with key prefixes and last use](./assets/admin/accounts.png)
 
 A key is shown once, when the account is made. What is stored is a hash, so it

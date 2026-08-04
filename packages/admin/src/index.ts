@@ -12,6 +12,7 @@ import { clear, h } from './dom.js'
 import { accountsView } from './views/accounts.js'
 import { grantsView } from './views/grants.js'
 import { layersView } from './views/layers.js'
+import { peopleView } from './views/people.js'
 import { searchView } from './views/search.js'
 
 /**
@@ -35,6 +36,7 @@ const ROUTES = [
   { hash: '#/search', label: 'Search', render: (root: HTMLElement) => searchView(root) },
   { hash: '#/layers', label: 'Layers', render: (root: HTMLElement) => void layersView(root) },
   { hash: '#/grants', label: 'Grants', render: (root: HTMLElement) => void grantsView(root) },
+  { hash: '#/people', label: 'People', render: (root: HTMLElement) => void peopleView(root) },
   { hash: '#/accounts', label: 'Service accounts', render: (root: HTMLElement) => void accountsView(root) },
 ]
 
