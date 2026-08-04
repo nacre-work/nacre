@@ -161,13 +161,19 @@ class ParseSourceTests(unittest.TestCase):
                 app.parse_source({"url": "http://example.com/doc"})
 
 
-def minimal_pdf(text: str) -> bytes:
+def minimal_pdf(text: str, extra_objects: list = None, trailer_extra: str = "") -> bytes:
     """A real, valid, one-page PDF carrying `text` — built by hand.
 
     Hand-built so the fixture is legible and carries nothing but what the test
     put there. The xref offsets are computed, not guessed, because a PDF with a
     wrong xref is exactly the kind of almost-valid input these tests must not
     accidentally depend on.
+
+    `extra_objects` and `trailer_extra` exist for the encrypted variant, which
+    is the same document plus an /Encrypt entry. Building it here rather than
+    with pypdf's own writer keeps the fixture independent of the library under
+    test and of `cryptography`, which this parser deliberately does not
+    install — see requirements.txt.
     """
     stream = f"BT /F1 12 Tf 72 712 Td ({text}) Tj ET".encode("latin-1")
     objects = [
@@ -177,6 +183,7 @@ def minimal_pdf(text: str) -> bytes:
         b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
         b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        *(extra_objects or []),
     ]
 
     out = bytearray(b"%PDF-1.4\n")
@@ -191,10 +198,19 @@ def minimal_pdf(text: str) -> bytes:
     for offset in offsets:
         out += f"{offset:010d} 00000 n \n".encode()
     out += (
-        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R{trailer_extra} >>\n"
         f"startxref\n{xref_at}\n%%EOF\n"
     ).encode()
     return bytes(out)
+
+
+def encrypted_pdf() -> bytes:
+    """The same document, declared encrypted in its trailer."""
+    return minimal_pdf(
+        "a secret",
+        extra_objects=[b"<< /Filter /Standard /V 1 /R 2 /O <> /U <> /P -1 >>"],
+        trailer_extra=" /Encrypt 6 0 R",
+    )
 
 
 class ParsePdfTests(unittest.TestCase):
@@ -218,6 +234,17 @@ class ParsePdfTests(unittest.TestCase):
             app.parse_pdf(payload)
         self.assertNotIn("\\x00", str(caught.exception))
         self.assertNotIn("xff", str(caught.exception))
+
+    def test_an_encrypted_pdf_is_refused_rather_than_guessed_at(self) -> None:
+        # `parse_pdf` branches on reader.is_encrypted, and nothing asserted
+        # that branch until the pin moved a major version. It is the kind of
+        # thing a library is entitled to change the spelling of, and if it
+        # ever stops being true the failure is silent: pypdf would hand back
+        # the undecrypted content streams and the document would index as
+        # whatever those decode to.
+        with self.assertRaises(app.ParseError) as caught:
+            app.parse_pdf(encrypted_pdf())
+        self.assertIn("encrypted", str(caught.exception))
 
 
 if __name__ == "__main__":

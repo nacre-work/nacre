@@ -2,4 +2,19 @@
 # process runs hostile input through whatever it depends on, so the extractor
 # is chosen for dependency surface first. Anything added here is a decision
 # about that surface, not a convenience; see the module docstring in app.py.
-pypdf==5.1.0
+#
+# Pinning it exactly means the pin has to be *moved*, and a security release
+# here is not an optional upgrade: the whole reason this dependency was
+# argued about is that it is the code that reads attacker-supplied bytes.
+# Everything between 5.1.0 and 6.14.2 that matters to this process is a
+# denial-of-service fix in exactly that path — infinite loops on incomplete
+# ASCII85 and ASCIIHex inline images, a SIGSEGV on multi-hop cyclic /Pages
+# trees, an unbounded declared stream length, an unbounded requested image
+# size. A worker is strictly serial, so any one of those is indexing stopped
+# for every tenant by one uploaded file.
+#
+# `cryptography` is deliberately not added alongside it. pypdf uses it for
+# AES-encrypted documents and falls back without it; this parser refuses an
+# encrypted PDF outright, so the fallback is the whole of what it needs and
+# the native dependency stays off the hostile-input path.
+pypdf==6.14.2
