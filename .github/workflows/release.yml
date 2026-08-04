@@ -102,6 +102,12 @@ jobs:
       # and every commit on it arrived green, but a release is the one artifact
       # nobody can take back and the cost of proving it again is minutes.
       - run: pnpm lint:publish
+      # The version being published has a section in docs/upgrading.md.
+      # A release body is a list of pull request titles, which is the right
+      # thing for a changelog and not what an operator opens a release to
+      # find out — whether this version wants a variable, a service, or a
+      # backup first. "Nothing to do" is a section too; silence is not.
+      - run: pnpm lint:upgrading
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm lint:openapi
@@ -217,6 +223,32 @@ jobs:
           else
             gh release create "v$VERSION" --title "v$VERSION" --generate-notes
           fi
+
+          # The generated notes are the pull request titles, and they stay —
+          # they are the changelog. What goes above them is the line an operator
+          # came for: where to read what this version asks of them.
+          # `lint:upgrading` has already refused a version with no section, so
+          # the document it points at has one.
+          #
+          # A second step rather than a flag on the first, because how
+          # --notes-file and --generate-notes combine is a detail of the CLI and
+          # this does not need to know. Idempotent on the marker, like
+          # everything else here, so re-running a finished release is a no-op.
+          #
+          # The link carries no anchor: the per-version headings end in a
+          # summary, so the fragment is not derivable from the number, and a
+          # link that always resolves beats a clever one that might not.
+          body="$(gh release view "v$VERSION" --json body -q .body)"
+          case "$body" in
+            *'### Upgrading'*)
+              echo "v$VERSION notes already carry the upgrade pointer"
+              ;;
+            *)
+              gh release edit "v$VERSION" --notes "$(printf \
+                '### Upgrading\n\nRead [docs/upgrading.md](https://github.com/%s/blob/v%s/docs/upgrading.md) before upgrading — the procedure, and what this version asks of you.\n\n%s' \
+                "$GITHUB_REPOSITORY" "$VERSION" "$body")"
+              ;;
+          esac
 
   # The container images the Helm chart names in its defaults —
   # ghcr.io/nacre-work/nacre and -parser. Nothing built them: this workflow
