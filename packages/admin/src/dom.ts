@@ -63,6 +63,108 @@ export const shortId = (id: string): HTMLElement =>
   h('code', { class: 'id', title: id }, `${id.slice(0, 6)}…${id.slice(-4)}`)
 
 /**
+ * Copy text, on an origin that is not `https:` as well as one that is.
+ *
+ * `navigator.clipboard` exists **only in a secure context** — HTTPS, or
+ * `localhost`. A self-hosted admin UI is very often neither: it is reached at
+ * `http://10.8.0.1:8082` or some other address on a private network, and there
+ * the property is simply `undefined`. Every copy button here awaited
+ * `navigator.clipboard.writeText(…)`, which threw a `TypeError` before it
+ * reached a clipboard, and each caller caught it and fell back — so the buttons
+ * were dead for exactly the deployments this product is for, and worked
+ * perfectly in development, where the address is `localhost`.
+ *
+ * That is the same shape as the two subsystems that only ever worked because
+ * development connects to Postgres as a superuser: a capability the developer's
+ * environment grants for free and the operator's does not.
+ *
+ * So there are two paths and the older one is not a courtesy. A hidden
+ * `<textarea>` plus `document.execCommand('copy')` is deprecated, and it is
+ * also the only thing that copies on a plain-HTTP origin — no permission, no
+ * secure context, just a selection and a user gesture.
+ *
+ * Returns what actually happened, because a button that says "copied" when
+ * nothing was copied is worse than one that does nothing: the person closes the
+ * dialog holding a key that is shown once.
+ */
+export type CopyResult = 'copied' | 'blocked'
+
+interface CopyIo {
+  /** `navigator.clipboard.writeText`, when this origin has one. */
+  readonly writeToClipboard: ((text: string) => Promise<void>) | undefined
+  /** The selection-and-execCommand path. `false` when the browser refused. */
+  readonly selectAndCopy: (text: string) => boolean
+}
+
+/**
+ * The `<textarea>` is positioned by a class, never by a style attribute.
+ *
+ * `index.html` sets `style-src 'self'` with no `'unsafe-inline'`, and the
+ * migration progress bar is the scar: it rendered full for every migration
+ * because the browser dropped its inline `style="width:…"`. Off-screen also has
+ * to mean *off-screen and still selectable* — `display:none`, `hidden` and
+ * `visibility:hidden` all make `select()` a no-op.
+ */
+const selectAndCopy = (text: string): boolean => {
+  const area = document.createElement('textarea')
+  area.value = text
+  area.className = 'clipfield'
+  area.setAttribute('readonly', '')
+  document.body.append(area)
+
+  // Whatever the person had selected is put back. Copying an id should not
+  // silently destroy the sentence they had highlighted.
+  const selection = document.getSelection()
+  const previous = selection !== null && selection.rangeCount > 0 ? selection.getRangeAt(0) : null
+
+  area.select()
+  // Safari on iOS ignores `select()` on a readonly field and needs the range.
+  area.setSelectionRange(0, text.length)
+
+  let ok: boolean
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    // Deprecated, and a browser is entitled to refuse it outright. The caller
+    // is told, rather than shown "copied" over an empty clipboard.
+    ok = false
+  }
+
+  area.remove()
+  if (selection !== null) {
+    selection.removeAllRanges()
+    if (previous !== null) selection.addRange(previous)
+  }
+  return ok
+}
+
+/** Exported for the test; the default is built from the real globals. */
+export async function copyWith(text: string, io: CopyIo): Promise<CopyResult> {
+  if (io.writeToClipboard !== undefined) {
+    try {
+      await io.writeToClipboard(text)
+      return 'copied'
+    } catch {
+      // Refused rather than absent — a denied permission, or a document that
+      // was not focused. The fallback is worth trying and usually fails too,
+      // because the gesture is over by the time this rejects.
+    }
+  }
+  return io.selectAndCopy(text) ? 'copied' : 'blocked'
+}
+
+export const copyText = (text: string): Promise<CopyResult> =>
+  copyWith(text, {
+    // Bound, not passed as a method reference: `writeText` throws
+    // "Illegal invocation" when it is called with the wrong receiver.
+    writeToClipboard:
+      typeof navigator !== 'undefined' && navigator.clipboard !== undefined
+        ? (t: string) => navigator.clipboard.writeText(t)
+        : undefined,
+    selectAndCopy,
+  })
+
+/**
  * A truncated id with a button that copies the whole one.
  *
  * `shortId` alone puts the full value in a `title`, which shows on hover and
@@ -83,12 +185,11 @@ export const copyableId = (id: string): HTMLElement => {
       class: 'btn btn-quiet',
       title: `Copy ${id}`,
       onclick: async () => {
-        try {
-          await navigator.clipboard.writeText(id)
-          note.textContent = 'copied'
-        } catch {
-          note.textContent = id
-        }
+        // On failure the whole id is put on the page rather than into the
+        // clipboard: it is the one thing this control exists to hand over, and
+        // a selectable line of text is a worse answer than a copy and a much
+        // better one than nothing.
+        note.textContent = (await copyText(id)) === 'copied' ? 'copied' : id
       },
     }, 'copy'),
     note,

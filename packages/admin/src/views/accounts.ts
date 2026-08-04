@@ -1,7 +1,7 @@
 import type { ServiceAccount } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
-import { ago, clear, copyableId, h } from '../dom.js'
+import { ago, clear, copyableId, copyText, h } from '../dom.js'
 
 /**
  * Service accounts.
@@ -180,10 +180,13 @@ function showKey(dialog: HTMLDialogElement, key: string, name: string, root: HTM
         field,
         h('button', { type: 'button', class: 'btn', onclick: async () => {
           field.select()
-          try {
-            await navigator.clipboard.writeText(key)
+          // `copyText` falls back to the selection-and-execCommand path, which
+          // is the only one that works on a plain-HTTP origin. The field stays
+          // selected either way, so even a refusal leaves the person one
+          // keystroke from the value they cannot ask for again.
+          if (await copyText(key) === 'copied') {
             copied.textContent = 'copied'
-          } catch {
+          } else {
             // Clipboard access can be refused, and the field is selected
             // anyway — saying "copied" when nothing was would be worse.
             copied.textContent = 'selected — copy it now'

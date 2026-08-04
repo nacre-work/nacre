@@ -1,7 +1,7 @@
 import type { Group, GroupMember, User } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
-import { ago, clear, copyableId, h, shortId } from '../dom.js'
+import { ago, clear, copyableId, copyText, h, shortId } from '../dom.js'
 
 /**
  * People: the users and groups a grant is issued to.
@@ -532,10 +532,13 @@ function showSecret(dialog: HTMLDialogElement, secret: string, title: string, ro
         field,
         h('button', { type: 'button', class: 'btn', onclick: async () => {
           field.select()
-          try {
-            await navigator.clipboard.writeText(secret)
+          // `copyText` falls back to the selection-and-execCommand path, which
+          // is the only one that works on a plain-HTTP origin. The field stays
+          // selected either way, so even a refusal leaves the person one
+          // keystroke from the value they cannot ask for again.
+          if (await copyText(secret) === 'copied') {
             copied.textContent = 'copied'
-          } catch {
+          } else {
             copied.textContent = 'selected — copy it now'
           }
         } }, 'Copy'),
