@@ -83,16 +83,20 @@ The MCP server is a **resource server**, not an authorization server.
   notification: one the server does not understand is by definition one it may
   ignore.
 - **The 2026-07-28 mirrored headers are validated when present and never
-  demanded**, which is a deliberate deviation from the revision and is stated
-  here rather than hidden. Requiring `MCP-Protocol-Version` on every POST could
+  demanded**, which is the branch the binding sanctions and not a deviation: a
+  server that supports clients implementing revisions earlier than 2025-06-18
+  **MAY** treat a request that omits `MCP-Protocol-Version` as `2025-03-26`,
+  and only a server declining those clients must reject it. This one supports
+  them. Requiring `MCP-Protocol-Version` on every POST could
   not be satisfied at all: the first request a client makes is `initialize`,
   and at that moment no version is negotiated — it travels in
   `params.protocolVersion`, because that request is what negotiates it. So the
   server demanded a header the client is not able to send, and every real
   client bounced off `-32020` on its first POST. `Mcp-Method` and `Mcp-Name`
   are the same generation and no shipping client sends those either.
-  A conformance stance no existing client can satisfy is not conformance, it is
-  a transport nobody can reach. The protection those headers buy is in the
+  Taking the other branch made the transport unreachable by every shipping
+  client. The full reading is in [mcp-conformance.md](./mcp-conformance.md),
+  which also names the two places this server does not yet meet the binding. The protection those headers buy is in the
   *comparison* — an intermediary must not route on one instruction while the
   server executes another — and that check is unchanged: present and
   disagreeing is still `-32020`.
