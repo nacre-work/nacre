@@ -2,7 +2,7 @@ import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
 import type { AuthContext } from '@nacre.work/api'
-import { createMcpServer, searchDescription, TOOLS_TTL_MS, type Layer } from '@nacre.work/mcp'
+import { createMcpServer, PROTOCOL_VERSIONS, searchDescription, TOOLS_TTL_MS, type Layer } from '@nacre.work/mcp'
 import { SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -116,6 +116,37 @@ async function rpc(
     method: 'POST',
     headers: { ...(headers ?? mirrored(method, params)), authorization: `Bearer ${await token(orgId)}` },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  })
+}
+
+/**
+ * A request with a `Host` this test chooses.
+ *
+ * `fetch` forbids setting `Host` — undici writes it from the URL — and `Host`
+ * is the entire input to the behaviour under test, so these go out over
+ * `node:http` instead.
+ */
+async function withHost(
+  port: number,
+  path: string,
+  host: string,
+  extra: Record<string, string> = {},
+  body?: string,
+): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }> {
+  const { request } = await import('node:http')
+  return new Promise((resolve, reject) => {
+    const req = request(
+      { host: '127.0.0.1', port, path, method: body === undefined ? 'GET' : 'POST', headers: { host, ...extra } },
+      (res) => {
+        let text = ''
+        res.setEncoding('utf8')
+        res.on('data', (c) => (text += c))
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text }))
+      },
+    )
+    req.on('error', reject)
+    if (body !== undefined) req.write(body)
+    req.end()
   })
 }
 
@@ -284,19 +315,104 @@ describe('baseline · the MCP surface', () => {
     }
   })
 
-  it('refuses a request whose mirrored headers do not describe it', async () => {
-    // The two required of every request.
-    for (const missing of ['mcp-protocol-version', 'mcp-method']) {
+  /**
+   * The handshake, sent the way a real client sends it — no 2026-07-28 headers
+   * on any of the three legs.
+   *
+   * This is the case the suite could not see. Every other test here calls
+   * `tools/list`, which is the *second* request a client makes; the first is
+   * `initialize`, it carried no `MCP-Protocol-Version` because none is
+   * negotiated yet, and the server refused it with -32020. So no standard
+   * client had ever reached this transport, and 179 green tests said otherwise.
+   */
+  it('completes the handshake a real client performs, with no mirrored headers', async () => {
+    const plain = { 'content-type': 'application/json' }
+
+    const hello = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {} }, ORG_A, plain)
+    expect(hello.status, 'initialize with no MCP-Protocol-Version').toBe(200)
+    const greeting = (await hello.json()) as {
+      result: { protocolVersion: string; capabilities: Record<string, unknown>; serverInfo: { name: string } }
+    }
+    // Echoed, because this server speaks it. A counter-offer here would be
+    // correct too but is a different case, below.
+    expect(greeting.result.protocolVersion).toBe('2025-06-18')
+    expect(greeting.result.capabilities).toHaveProperty('tools')
+    // Nothing this server does not serve: a declared capability is a promise a
+    // client will come back and call.
+    expect(Object.keys(greeting.result.capabilities)).toEqual(['tools'])
+    expect(greeting.result.serverInfo.name).toBe('nacre')
+
+    // Leg two. A notification: no id, no result, and 202 with an empty body.
+    const ack = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { ...plain, authorization: `Bearer ${await token(ORG_A)}` },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    })
+    expect(ack.status, 'notifications/initialized').toBe(202)
+    expect(await ack.text()).toBe('')
+
+    // Leg three, still with no mirrored headers, and it has to answer.
+    const listed = await rpc('tools/list', {}, ORG_A, plain)
+    expect(listed.status, 'tools/list with no mirrored headers').toBe(200)
+    const tools = (await listed.json()) as { result: { tools: { name: string }[] } }
+    expect(tools.result.tools.length).toBeGreaterThan(0)
+
+    // And a tool actually runs, which is the thing the whole transport is for.
+    const called = await rpc('tools/call', { name: 'search', arguments: { query: 'anything' } }, ORG_A, plain)
+    expect(called.status, 'tools/call with no mirrored headers').toBe(200)
+  })
+
+  it('answers an unknown protocol version with one it speaks', async () => {
+    const res = await rpc(
+      'initialize',
+      { protocolVersion: '1999-01-01', capabilities: {} },
+      ORG_A,
+      { 'content-type': 'application/json' },
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { result: { protocolVersion: string } }
+    // A version this server cannot speak is answered with one it can, and the
+    // client decides. The alternative — an error — is what it used to send, and
+    // it leaves the client with nothing to do.
+    expect(body.result.protocolVersion).toBe(PROTOCOL_VERSIONS[0])
+    expect(PROTOCOL_VERSIONS).toContain(body.result.protocolVersion)
+  })
+
+  it('ignores a notification it does not know rather than refusing it', async () => {
+    const res = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${await token(ORG_A)}` },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } }),
+    })
+    // A notification is by definition one the receiver may ignore, and an error
+    // is something the sender cannot act on — it has no id to correlate.
+    expect(res.status).toBe(202)
+  })
+
+  it('accepts a request with no mirrored headers and still refuses one that lies', async () => {
+    // Absent is fine: no shipping client sends these, and demanding them is
+    // what made the transport unreachable.
+    for (const missing of ['mcp-protocol-version', 'mcp-method', 'mcp-name']) {
       const headers: Record<string, string> = { ...mirrored('tools/list', {}) }
       delete headers[missing]
       const res = await rpc('tools/list', {}, ORG_A, headers)
-      expect(res.status, `without ${missing}`).toBe(400)
-      const body = (await res.json()) as { error: { code: number } }
-      // -32020 HeaderMismatch, the code the specification allocates. -32600
-      // read as "not a modern server" and sent a client into a fallback this
-      // transport does not speak.
-      expect(body.error.code, `without ${missing}`).toBe(-32020)
+      expect(res.status, `without ${missing}`).toBe(200)
     }
+
+    // Present and disagreeing is still refused, because the comparison is the
+    // entire reason the headers exist: an intermediary routes on the header
+    // while this server executes the body, and two different instructions is
+    // the thing to stop.
+    const lying = await rpc('tools/list', {}, ORG_A, {
+      ...mirrored('tools/list', {}),
+      'mcp-method': 'tools/call',
+    })
+    expect(lying.status, 'mcp-method disagreeing with the body').toBe(400)
+    const body = (await lying.json()) as { error: { code: number } }
+    // -32020 HeaderMismatch, the code the specification allocates. -32600
+    // read as "not a modern server" and sent a client into a fallback this
+    // transport does not speak.
+    expect(body.error.code).toBe(-32020)
 
     // `Mcp-Name` is required only on the three methods that name something.
     // Demanding it on `tools/list` refused a request no client can make any
@@ -309,14 +425,26 @@ describe('baseline · the MCP surface', () => {
     })
     expect(listed.status).toBe(200)
 
-    // And it *is* required on one that does.
+    // And on one that does name something it is **still not demanded**, because
+    // no shipping client sends it — that requirement is what made this
+    // transport unreachable in the first place, one method further along.
     const unnamed = await rpc('tools/call', { name: 'search', arguments: { query: 'x' } }, ORG_A, {
       'mcp-protocol-version': '2026-07-28',
       'mcp-method': 'tools/call',
       'content-type': 'application/json',
     })
-    expect(unnamed.status).toBe(400)
-    expect(((await unnamed.json()) as { error: { code: number } }).error.code).toBe(-32020)
+    expect(unnamed.status).toBe(200)
+
+    // Sent and wrong is a different thing, and is refused: that comparison is
+    // the whole protection the header buys.
+    const misnamed = await rpc('tools/call', { name: 'search', arguments: { query: 'x' } }, ORG_A, {
+      'mcp-protocol-version': '2026-07-28',
+      'mcp-method': 'tools/call',
+      'mcp-name': 'delete_document',
+      'content-type': 'application/json',
+    })
+    expect(misnamed.status).toBe(400)
+    expect(((await misnamed.json()) as { error: { code: number } }).error.code).toBe(-32020)
   })
 
   it('refuses a header that contradicts the body', async () => {
@@ -426,12 +554,92 @@ describe('baseline · the MCP surface', () => {
     expect(body.authorization_servers).toBeUndefined()
   })
 
-  it('there is no session to establish', async () => {
-    // The 2026-07-28 revision has no initialize and no Mcp-Session-Id. If this
-    // ever succeeds, state has crept into the transport and the round-robin
-    // deployment stops being safe.
+  /**
+   * The identifier follows the request when no deployment pinned one.
+   *
+   * This is the second half of the failure a real client hit. Compose defaulted
+   * `NACRE_MCP_CANONICAL_URL` to `http://localhost:8081`, so a client reaching
+   * the stack at `http://10.8.0.1:8081/mcp` read a document naming localhost,
+   * and RFC 9728 has it compare the two and refuse **before sending a token**:
+   *
+   *     Protected resource http://localhost:8081 does not match
+   *     expected http://10.8.0.1:8081/mcp (or origin)
+   *
+   * A default that quietly names localhost is the failure `loadConfig` refuses
+   * for every other URL in this product, and it had been introduced here by the
+   * fix for the previous version of this same bug.
+   */
+  it('names the origin the client actually reached when nothing is pinned', async () => {
+    const derived = createMcpServer({
+      verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE, serviceKeys },
+      resourceMetadataUrl: METADATA,
+      resourceMetadata: protectedResourceMetadata({ canonicalUrl: 'http://localhost:8081' }),
+      resourceFromRequest: (origin: string) => protectedResourceMetadata({ canonicalUrl: origin }),
+      layers: { forCaller: async () => [] },
+      tools: { call: async () => ({ content: [] }) },
+    })
+    await new Promise<void>((r) => derived.listen(0, '127.0.0.1', r))
+    const port = (derived.address() as AddressInfo).port
+
+    try {
+      // Reached by IP, exactly as the operator does. `Host` carries what the
+      // client put in its configuration, which is what the identifier has to
+      // match.
+      const res = await withHost(port, '/.well-known/oauth-protected-resource', '10.8.0.1:8081')
+      const body = JSON.parse(res.body) as { resource: string }
+      expect(body.resource).toBe('http://10.8.0.1:8081')
+      expect(body.resource).not.toContain('localhost')
+
+      // A proxy terminating TLS is the one case Host cannot express.
+      const behindTls = await withHost(port, '/.well-known/oauth-protected-resource', 'nacre.example.com', {
+        'x-forwarded-proto': 'https',
+      })
+      expect((JSON.parse(behindTls.body) as { resource: string }).resource).toBe('https://nacre.example.com')
+
+      // And the 401 points at a metadata URL on the same origin, or the client
+      // is sent somewhere it cannot compare either.
+      const denied = await withHost(
+        port,
+        '/mcp',
+        '10.8.0.1:8081',
+        { 'content-type': 'application/json' },
+        JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      )
+      expect(denied.status).toBe(401)
+      expect(String(denied.headers['www-authenticate'])).toContain(
+        'http://10.8.0.1:8081/.well-known/oauth-protected-resource',
+      )
+    } finally {
+      await new Promise<void>((r) => derived.close(() => r()))
+    }
+  })
+
+  it('a pinned canonical URL wins over the request', async () => {
+    // Behind a proxy that rewrites Host, the operator is the only one who knows
+    // the public name — so setting NACRE_MCP_CANONICAL_URL has to be final.
+    // This fixture passes no resourceFromRequest, which is what main.ts does
+    // when the variable is set.
+    const res = await withHost(
+      (server.address() as AddressInfo).port,
+      '/.well-known/oauth-protected-resource',
+      'somewhere.else:9999',
+    )
+    expect((JSON.parse(res.body) as { resource: string }).resource).toBe('https://api.example.test')
+  })
+
+  it('initialize is answered and establishes no session', async () => {
+    // This test used to assert `initialize` answers 404, on the stated grounds
+    // that "the 2026-07-28 revision has no initialize". That is simply untrue —
+    // `initialize` is in every revision — and the belief was load-bearing: it
+    // is why the handshake was never built and why no client could connect. A
+    // test can hold a bug in place as firmly as any code, and this one did.
+    //
+    // The property that was actually worth protecting is the second line, and
+    // it still holds: the transport is stateless, so no session id comes back
+    // and nothing about this request is kept. If `Mcp-Session-Id` ever appears
+    // here, state has crept in and the round-robin deployment stops being safe.
     const res = await rpc('initialize', {}, ORG_A)
-    expect(res.status).toBe(404)
+    expect(res.status).toBe(200)
     expect(res.headers.get('mcp-session-id')).toBeNull()
   })
 

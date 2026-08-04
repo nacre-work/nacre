@@ -72,6 +72,40 @@ The MCP server is a **resource server**, not an authorization server.
   not pointed at Nacre: this is a resource server, and sending a client here
   for a token endpoint would be the same dead end as not serving the document
   at all.
+- **`initialize` is answered**, statelessly. It had never been implemented:
+  the dispatcher knew `tools/list` and `tools/call` and nothing else, and a
+  comment justified the absence as a consequence of having no session. Those
+  are two different things. Statelessness is real and is what lets any replica
+  serve any request; `initialize` is not state — it is how a client learns the
+  protocol version and what this server can do, and it is answered without
+  remembering anything. No `Mcp-Session-Id` is issued, then or ever.
+  `notifications/initialized` is accepted with `202`, as is any other
+  notification: one the server does not understand is by definition one it may
+  ignore.
+- **The 2026-07-28 mirrored headers are validated when present and never
+  demanded**, which is a deliberate deviation from the revision and is stated
+  here rather than hidden. Requiring `MCP-Protocol-Version` on every POST could
+  not be satisfied at all: the first request a client makes is `initialize`,
+  and at that moment no version is negotiated — it travels in
+  `params.protocolVersion`, because that request is what negotiates it. So the
+  server demanded a header the client is not able to send, and every real
+  client bounced off `-32020` on its first POST. `Mcp-Method` and `Mcp-Name`
+  are the same generation and no shipping client sends those either.
+  A conformance stance no existing client can satisfy is not conformance, it is
+  a transport nobody can reach. The protection those headers buy is in the
+  *comparison* — an intermediary must not route on one instruction while the
+  server executes another — and that check is unchanged: present and
+  disagreeing is still `-32020`.
+- **The resource identifier follows the request** unless
+  `NACRE_MCP_CANONICAL_URL` pins one. RFC 9728 has the client compare the
+  identifier against the URL it reached, so a document built at startup from a
+  hostname the operator did not choose refuses every client that used a
+  different one — which is what a `localhost` default did to everybody not on
+  the server's own machine. `Host` is what the client wrote, and
+  `X-Forwarded-Proto` supplies the scheme behind a TLS-terminating proxy.
+  Deriving it is not a trust decision: the identifier is not an authorization
+  input, and a token is still checked against `NACRE_JWT_AUDIENCE` and
+  `NACRE_JWT_ISSUER`, neither of which comes from the request.
 - **Client registration is not ours.** CIMD and DCR are both transactions
   between a client and an *authorization server*, and the line above says which
   one of those Nacre is. There is no registration endpoint here, no client

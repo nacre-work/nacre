@@ -159,6 +159,20 @@ async function main(): Promise<void> {
         ? {}
         : { authorizationServer: config.oauthAuthorizationServer }),
     }),
+    // Unpinned, the identifier follows the request. The Compose default named
+    // localhost, which is the right answer only for a client on the server's
+    // own machine and a refusal before the first token for everyone else.
+    ...(config.mcpCanonicalUrlPinned
+      ? {}
+      : {
+          resourceFromRequest: (origin: string) =>
+            protectedResourceMetadata({
+              canonicalUrl: origin,
+              ...(config.oauthAuthorizationServer === ''
+                ? {}
+                : { authorizationServer: config.oauthAuthorizationServer }),
+            }),
+        }),
     allowedOrigins: config.mcpAllowedOrigins,
     limits,
     limitPolicies,
