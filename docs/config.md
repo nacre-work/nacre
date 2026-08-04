@@ -576,11 +576,24 @@ ports should be a one-line `.env` entry, not an override file.
 ## Health and observability
 
 - `/v1/health` — liveness, touching no dependency.
-- `/v1/ready` — readiness: postgres, qdrant, redis. `200 {status, checks}` or
-  `503` with the same shape, so an orchestrator can read the status code and a
-  human can read the body. Unauthenticated, like `/metrics`, because a probe has
-  no credential to present — so it says which dependency is unhappy and never
-  why.
+- `/v1/ready` — readiness: postgres, qdrant, redis, and **schema**.
+  `200 {status, checks}` or `503` with the same shape, so an orchestrator can
+  read the status code and a human can read the body. Unauthenticated, like
+  `/metrics`, because a probe has no credential to present — so it says which
+  dependency is unhappy and never why.
+
+  `schema` is the one that is not a dependency. It compares the migrations this
+  build ships against `schema_migrations`, and is `false` while the database is
+  **behind** — so a pod started before the migrator has run answers `503` and
+  never enters rotation, rather than reporting ready and failing every request.
+  A database that is *ahead* is `true`: that is the middle of a rolling upgrade
+  and the old replica has to keep serving. The missing migration's name goes to
+  the log, never into this response.
+
+  It needs `SELECT` on `schema_migrations`, which migration `0022` grants to
+  `nacre_app` — the ledger is created by the migrator, so before that the
+  application role held no privilege on it at all and the check would have
+  reported every correctly-split deployment as not ready.
 
   `s3` appears only when a deployment configured object storage, and then it is
   checked: ingest writes the bytes before it writes the row, so an unreachable

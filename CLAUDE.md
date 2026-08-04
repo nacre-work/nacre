@@ -230,6 +230,36 @@ retagging pass costs. It answers `204` and
 never the document, because rule 6 means a caller may hold `write` without
 `read`.
 
+**`/v1/ready` refuses while the schema is behind the image.** It reported that
+Postgres, Qdrant, Redis and the bucket answer and said nothing about whether the
+schema matches the code — so a pod started against a database the migrator had
+not reached reported ready and then failed every request. Under an orchestrator
+that is worse than an error: the rollout believes the answer and carries on
+replacing working pods with broken ones. Found by writing `docs/upgrading.md`,
+which is the second time an operator document has turned up a defect the tests
+could not see — the first was the Helm chart's provisioning and the
+superuser-only migrator.
+
+A database that is **ahead** stays ready, which is the middle of a rolling
+upgrade: the migrator has run for the newer build and the old replica has to
+keep serving. Reporting it behind would take every old pod out of rotation at
+the moment the schema moved.
+
+Migration 0022 is what makes the check possible, and finding that out is the
+part worth keeping. `schema_migrations` is created by the migrator and therefore
+owned by the owning role, and `nacre_app` held **no privilege on it at all** —
+so a readiness probe written without the grant would have reported every
+correctly-split deployment as not ready, and worked fine in development, where
+the connection is a superuser. That is the same defect as the two subsystems
+found this way before, arriving from the other side. Checked against a real
+PostgreSQL before a line of the check was written.
+
+`SELECT` only: a process that could write the ledger could tell the next
+migrator a migration had already run. And deliberately not granted to
+`nacre_worker` — the worker has the same question and no surface to answer it
+on, so the grant would be a privilege nothing reads, which is the shape this
+repository keeps removing.
+
 **A team can be onboarded.** `grants.principal_type` has admitted `user`,
 `group` and `service_account` since migration 0001, and only the third could be
 created through the API — so the documented way to give a colleague access was

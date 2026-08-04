@@ -1,0 +1,3 @@
+-- Migration 0001, by name only. This directory models an *older build*:
+-- fewer migrations than the database carries, which is what the old replica in
+-- a rolling upgrade looks like. Never run.

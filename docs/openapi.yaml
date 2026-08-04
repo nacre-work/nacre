@@ -1738,13 +1738,27 @@ paths:
     get:
       summary: Readiness. Touches everything a request needs.
       description: >
-        The opposite of liveness: it checks Postgres, Qdrant, object storage and
-        the embedder — everything this process cannot serve a request without —
-        and answers `503` until all of them are reachable. An orchestrator reads
-        the status code and holds traffic off a replica whose dependencies are
-        not up yet. Unauthenticated, because a probe has no credential to
-        present, and the body names which dependency is unhappy and never why.
-        Point a Kubernetes `readinessProbe` here.
+        The opposite of liveness: it checks Postgres, Qdrant, Redis and object
+        storage — everything this process cannot serve a request without — and
+        answers `503` until all of them are reachable. An orchestrator reads the
+        status code and holds traffic off a replica whose dependencies are not
+        up yet. Unauthenticated, because a probe has no credential to present,
+        and the body names which dependency is unhappy and never why. Point a
+        Kubernetes `readinessProbe` here.
+
+
+        `schema` is in there too and is not a dependency: it is `false` while
+        the database is behind the migrations this build ships, so a replica
+        started before the migrator has run never enters rotation instead of
+        reporting ready and failing every request. A database that is *ahead*
+        is `true` — that is the middle of a rolling upgrade. Which migration is
+        missing goes to the log and never into this body.
+
+
+        The embedder is deliberately **not** checked. It is an endpoint the
+        operator supplies, a search fails loudly without it, and making
+        readiness depend on somebody else's uptime turns their outage into a
+        rollout that never completes.
       security: []
       responses:
         '200':

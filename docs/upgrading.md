@@ -71,18 +71,27 @@ Both deployment shapes enforce the order structurally:
   an upgrade is not blocked by an immutable object; a **failed** Job is
   deliberately kept, because `kubectl logs` on it is the whole diagnosis.
 
-Outside those two shapes, the order is yours to enforce, and there is no
+Outside those two shapes the order is yours to enforce, and there is now one
 safety net:
 
-> **Nothing in the running processes checks the schema.** No startup assertion,
-> no version probe, nothing reads `schema_migrations` outside the migrator.
-> `/v1/ready` reports whether Postgres, Qdrant, Redis and the bucket answer —
-> it says nothing about whether the schema matches the code. A pod started
-> against an unmigrated database **reports ready and then fails per request.**
+> **`/v1/ready` refuses while the schema is behind the image.** It compares the
+> migrations this build ships against `schema_migrations` and reports
+> `schema: false` — so a pod started against an unmigrated database is `503`
+> and never enters rotation, instead of reporting ready and failing every
+> request. Under an orchestrator that is the difference between a rollout that
+> halts and one that replaces working pods with broken ones.
 
-That is a deliberate consequence of having no schema-version handshake, not an
-oversight to route around: the fix is to run the migrator before the new code,
-which both supported shapes already do for you.
+A database that is **ahead** stays ready, which is the middle of a rolling
+upgrade: the migrator has run for the newer build and the old replica has to
+keep serving. Only what the running build ships and the database lacks counts.
+
+The missing migration's name goes to the log and never into the response —
+`/v1/ready` is unauthenticated, and a probe does not need to be told which
+migration a deployment is missing.
+
+This is a check, not a handshake: it says the schema is at least as new as the
+code, and nothing stops you starting an old build against a new schema. The
+per-version notes below say which releases that is safe for.
 
 ## What the migrator does
 
@@ -219,8 +228,10 @@ a known document, and an ingest that reaches `indexed`. Both surfaces —
 `/v1/search` and the MCP tool — because they are two code paths and a release
 has broken one of them before.
 
-`/v1/ready` returning 200 is the weakest of these. It says the dependencies
-answer, not that the schema matches the code.
+`/v1/ready` returning 200 now covers the schema as well as the dependencies,
+which is most of what used to make it weak. It still cannot tell you that a
+release behaves the way you expect — that is what driving one real search and
+one real ingest is for.
 
 ---
 
@@ -230,6 +241,17 @@ Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
 ### Unreleased
+
+**`/v1/ready` now reports the schema.** A pod on a database this build's
+migrations have not reached answers `503` rather than reporting ready and
+failing per request. Nothing to do — but if a readiness probe starts failing
+right after an upgrade with every dependency healthy, this is what it is telling
+you, and `migrate` is the answer.
+
+Migration `0022` grants the application role `SELECT` on `schema_migrations`,
+which is what makes that check possible: the ledger is created by the migrator
+and `nacre_app` held no privilege on it at all. Read-only, and it is not tenant
+data.
 
 Migration `0021` adds `created_at` to `groups` and `group_members`. It
 **rewrites both tables** — `now()` is volatile, so the column is not a
