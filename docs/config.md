@@ -121,9 +121,13 @@ each fails with `unrecognized configuration parameter "app.current_org"` — the
 same error, and the same root cause, as the two subsystems below.
 
 Verified by provisioning a plain owner and running the migrator: `0001`–`0005`
-applied and `0006` failed. With `BYPASSRLS` on the same role, all eighteen
+applied and `0006` failed. With `BYPASSRLS` on the same role, every migration
 applied and `nacre_app` remained unable to create a table, unable to bypass a
 policy, and holding only `INSERT, SELECT` on `audit_events`.
+
+A count rather than "every" used to stand here, and it went stale on the next
+migration — which is the same shape as anything else in this repository that
+records a number the tree keeps changing.
 
 Provisioning, run once as a superuser:
 

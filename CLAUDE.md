@@ -671,9 +671,10 @@ text is checksummed, so the correct remedy could only go in the runner.
 
 Verified by provisioning each shape against a real PostgreSQL and running the
 real migrator: a plain owner refused before touching the schema, a superuser
-applying all 18, a `BYPASSRLS` owner applying all 18, and `nacre_app` afterwards
-still unable to create a table, still subject to every policy, and still holding
-only `INSERT, SELECT` on `audit_events`.
+applying every migration, a `BYPASSRLS` owner applying every migration, and
+`nacre_app` afterwards still unable to create a table, still subject to every
+policy, and still holding only `INSERT, SELECT` on `audit_events`. Counts stood
+here and in two other files, and each went stale on the next migration.
 
 Two more, found by reading rather than by running, and both invisible to a green
 suite for the same reason: they are about *scale*, and the suite runs one of
