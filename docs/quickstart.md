@@ -23,6 +23,11 @@
 - An embedding endpoint. Any OpenAI-compatible one will do; the `full` profile
   brings its own.
 
+On an **Apple Silicon Mac**, go through [apple-silicon.md](./apple-silicon.md)
+instead of this section and come back at "After startup". Everything here works
+there — the images carry arm64 — but the embedder is not something the `full`
+profile can bring on that architecture, and that page has the arrangement.
+
 ## First run
 
 ```bash

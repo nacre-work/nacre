@@ -6,6 +6,7 @@ import {
   acrossOrganizations,
   ConfigError,
   createPool,
+  endpointUrl,
   installGuards,
   logger,
   S3,
@@ -387,7 +388,7 @@ async function main(): Promise<void> {
     if (provider === undefined) throw new Error(`no embedding provider ${providerId}`)
 
     const embed = async (texts: readonly string[]) => {
-      const endpoint = new URL('/embeddings', provider.endpoint)
+      const endpoint = endpointUrl(provider.endpoint, 'embeddings')
 
       let response: Response
       try {

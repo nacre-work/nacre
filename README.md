@@ -50,6 +50,10 @@ docker compose --profile minimal up -d
 
 Full walkthrough: [docs/quickstart.md](./docs/quickstart.md).
 
+On an Apple Silicon Mac, read
+[docs/apple-silicon.md](./docs/apple-silicon.md) first — the images are arm64 and
+the stack is native, but the embedder is the one piece you run on the host.
+
 ## Layout
 
 ```

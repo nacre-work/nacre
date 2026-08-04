@@ -16,6 +16,7 @@ import {
   VectorStore,
   vectorName,
   withOrg,
+  endpointUrl,
   type CacheStore,
   type Hit,
   type Metadata,
@@ -830,7 +831,7 @@ export class HttpEmbedder implements Embedder {
     // waiting. Without any bound a wedged embedder held every search open for
     // undici's 300 s default, which exhausts the connection pool long before
     // anyone sees an error.
-    const response = await fetch(new URL('/embeddings', this.endpoint), {
+    const response = await fetch(endpointUrl(this.endpoint, 'embeddings'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: this.model, input: texts }),
