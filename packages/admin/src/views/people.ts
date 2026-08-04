@@ -1,7 +1,7 @@
 import type { Group, GroupMember, User } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
-import { ago, clear, h, shortId } from '../dom.js'
+import { ago, clear, copyableId, h, shortId } from '../dom.js'
 
 /**
  * People: the users and groups a grant is issued to.
@@ -87,7 +87,7 @@ function userTable(users: readonly User[], root: HTMLElement): HTMLElement {
         ),
         h('td', {}, h('span', { class: 'slug' }, u.role)),
         // The id, because issuing a grant to one person takes it.
-        h('td', {}, shortId(u.id)),
+        h('td', {}, copyableId(u.id)),
         h('td', { class: 'muted' }, ago(u.createdAt)),
         h('td', { class: 'right' },
           h('button', { class: 'btn btn-quiet', onclick: () => void editUser(u, root) }, 'Edit'),
@@ -117,7 +117,7 @@ function groupTable(groups: readonly Group[], root: HTMLElement): HTMLElement {
     h('tbody', {}, ...groups.map((g) =>
       h('tr', {},
         h('td', {}, g.name),
-        h('td', {}, shortId(g.id)),
+        h('td', {}, copyableId(g.id)),
         h('td', { class: 'num tabular' }, String(g.memberCount)),
         h('td', { class: 'right' },
           h('button', { class: 'btn btn-quiet', onclick: () => void membersPanel(g, root) }, 'Members'),

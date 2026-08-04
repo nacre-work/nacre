@@ -1,7 +1,7 @@
 import type { ServiceAccount } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
-import { ago, clear, h } from '../dom.js'
+import { ago, clear, copyableId, h } from '../dom.js'
 
 /**
  * Service accounts.
@@ -52,6 +52,7 @@ function table(accounts: readonly ServiceAccount[], root: HTMLElement): HTMLElem
       h('tr', {},
         h('th', {}, 'Name'),
         h('th', {}, 'Key'),
+        h('th', {}, 'Id'),
         h('th', {}, 'Created'),
         h('th', {}, 'Last used'),
         h('th', { class: 'right' }, ''),
@@ -64,6 +65,10 @@ function table(accounts: readonly ServiceAccount[], root: HTMLElement): HTMLElem
         // The prefix, which is all the database holds. Enough to tell two keys
         // apart in a log and useless to anyone who reads it.
         h('td', {}, h('code', { class: 'id' }, `${a.keyPrefix}…`)),
+        // The id, and copyable — issuing a grant to this account takes it, and
+        // until now this screen did not show it at all, so the only route was
+        // the API.
+        h('td', {}, copyableId(a.id)),
         h('td', { class: 'muted' }, ago(a.createdAt)),
         h('td', { class: 'muted' }, ago(a.lastUsedAt)),
         h('td', { class: 'right' },

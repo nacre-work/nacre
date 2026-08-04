@@ -234,6 +234,90 @@ describe('the administrative surface', () => {
     expect(body.items[0]?.slug).toBe('handbook')
   })
 
+  it('a principal that is not a uuid is 400 naming that field, not 404 naming the scope', async () => {
+    const res = await fetch(`${base}/v1/grants`, {
+      method: 'POST',
+      headers: await auth(),
+      body: JSON.stringify({
+        // A service account's *name*, which is what somebody typed into a form
+        // whose only shortcut was on the other field.
+        principal_type: 'service_account',
+        principal_id: 't',
+        scope_type: 'layer',
+        scope_id: LAYER,
+        permission: 'read',
+      }),
+    })
+
+    // 400 and not 404: a value that is not a uuid is a fact about the caller's
+    // own request and discloses nothing. Collapsing it into the `404` that
+    // means "no such scope, or you may not administer it" is what sent
+    // somebody looking at the half of the form that was correct.
+    expect(res.status).toBe(400)
+    const detail = ((await res.json()) as { detail: string }).detail
+    expect(detail).toContain('principal_id')
+    // And it says which field, rather than leaving them to guess between two.
+    expect(detail).not.toContain('scope_id')
+  })
+
+  it('a scope that is not a uuid is 400 naming the scope', async () => {
+    const res = await fetch(`${base}/v1/grants`, {
+      method: 'POST',
+      headers: await auth(),
+      body: JSON.stringify({
+        principal_type: 'user',
+        principal_id: PRINCIPAL,
+        scope_type: 'layer',
+        scope_id: 'handbook',
+        permission: 'read',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { detail: string }).detail).toContain('scope_id')
+  })
+
+  it('a well-formed uuid that names nothing is still 404, and says so about both', async () => {
+    const res = await fetch(`${base}/v1/grants`, {
+      method: 'POST',
+      headers: await auth(),
+      body: JSON.stringify({
+        principal_type: 'user',
+        principal_id: PRINCIPAL,
+        scope_type: 'layer',
+        scope_id: WS_THEIRS,
+        permission: 'read',
+      }),
+    })
+
+    // The other half of the same rule. Once the shape is right, "does not
+    // exist" and "you may not administer it" are one answer — invariant 4 —
+    // and naming which would be an oracle for a caller who cannot list
+    // principals.
+    expect(res.status).toBe(404)
+  })
+
+  it('answers 404 without asking for a credential on a path it does not serve', async () => {
+    // What an MCP client probing for OAuth discovery meets. Every one of these
+    // used to answer `401 "A bearer token is required"`, which reads as "the
+    // endpoint is there and gated" — and cost an afternoon of un-gating routes
+    // that do not exist. This is a resource server; it declines the
+    // authorization-server role.
+    for (const path of [
+      '/.well-known/oauth-authorization-server',
+      '/.well-known/openid-configuration',
+      '/register',
+      '/mcp',
+    ]) {
+      const res = await fetch(`${base}${path}`)
+      expect(res.status, `${path} should be 404`).toBe(404)
+    }
+
+    // The two documents this server does serve stay served, unauthenticated.
+    const served = await fetch(`${base}/.well-known/oauth-protected-resource`)
+    expect([200, 404]).toContain(served.status)
+  })
+
   it('deleting a layer answers 204 and records the attempt', async () => {
     const res = await fetch(`${base}/v1/layers/${LAYER}`, {
       method: 'DELETE',

@@ -334,6 +334,51 @@ Removing one takes the type in the path — `/members/{type}/{memberId}` —
 because the edge is keyed by which member column it uses, so a bare uuid does
 not identify one.
 
+### Issuing a grant names two things, and both are checked
+
+`POST /v1/grants` refuses a `principal_id` or a `scope_id` that is not in this
+organization — **both ends**, which was not always true. The scope was checked
+and the principal was not, so a grant could name any uuid as its principal: a
+row that permits nothing, can never begin to, and sits in `GET /v1/grants`
+looking like access somebody has, on an id nobody can look up.
+
+That is not a mistake somebody has to reach for. `principal_type` and
+`principal_id` are two fields, and choosing `user` while pasting a service
+account's id inserts cleanly and does nothing.
+
+A revoked service account is refused with it: its key stopped working and is
+never reissued, so a grant to it can never be exercised. A **disabled user** is
+accepted, because disabling is reversible and the grant is meant to survive it.
+
+**Malformed is `400`; absent is `404`.** A value that is not a uuid is a fact
+about the caller's own request and discloses nothing, so the answer names the
+field that is wrong. Once the shape is right, "no such principal", "no such
+scope" and "you may not administer that scope" are one `404` — invariant 4, and
+a caller who cannot list principals must not be able to use grant issuance to
+find out which uuids are ones.
+
+Those two used to be one answer, and the cost was concrete: somebody typed a
+service account's *name* into `principal_id` and the only thing the API said was
+"no such scope" — about the field that was correct.
+
+### Paths this API does not serve
+
+`404`, and without asking for a credential first. Everything unauthenticated is
+routed before the authenticator — `/metrics`, the two `/.well-known` documents,
+health, readiness, sign-in — so anything left outside `/v1/` is not part of this
+API and says so.
+
+It used to answer `401`, which reads as "the endpoint is there and gated". A
+client looking for MCP OAuth discovery probed
+`/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration`
+and `/register`, got a bearer-token demand from each, and concluded there was a
+middleware to lift. There is not: this is a resource server and declines the
+authorization-server role — see [mcp.md](./mcp.md).
+
+Unknown paths *under* `/v1/` still answer `401`. That is the line rather than an
+oversight: they are inside the authenticated surface, and nothing is concealed
+by it — every route this API serves is in [openapi.yaml](./openapi.yaml).
+
 ## Asynchrony
 
 Ingest returns `202` with a `job_id`. Status at `GET /v1/jobs/{id}`:

@@ -9,6 +9,8 @@ Plaintext values are acceptable in the development profile and nowhere else.
 # ─── base ───
 NACRE_ENV=production                   # development | production
 NACRE_CANONICAL_URL=https://nacre.work # OAuth issuer, well-known base, links in configs
+NACRE_MCP_CANONICAL_URL=               # only when MCP is on a different origin
+NACRE_MCP_ALLOWED_ORIGINS=             # browser origins MCP answers; empty refuses all
 NACRE_LOG_LEVEL=info
 NACRE_LOG_FORMAT=json
 
@@ -572,6 +574,42 @@ from `.env` — and never by `loadConfig`: inside the network the ports stay 808
 8081 and 80 whatever these say, so probes, `PORT` and every in-network reference
 are unaffected. They exist because a host with something already on one of those
 ports should be a one-line `.env` entry, not an override file.
+
+## Two origins, or one
+
+`/.well-known/oauth-protected-resource` names a **resource identifier**, and
+RFC 9728 has the client compare it against the URL it actually reached. The API
+and the MCP transport serve one document, built once, so the two can never
+disagree about the audience a token is bound to — which is right, and which
+makes the identifier wrong for whichever of them is not at
+`NACRE_CANONICAL_URL`.
+
+Behind one origin — a proxy in front of both, which is what a real deployment
+has — there is nothing to set. `docker compose up` is the other case: it
+publishes 8080 and 8081 with nothing in front, so a client pointed at the MCP
+port is told the resource is the API's URL and refuses to authenticate before it
+sends a single request. That is not a misconfiguration the operator made; it is
+the default shape.
+
+`NACRE_MCP_CANONICAL_URL` on the **mcp** process is the answer for that shape:
+
+```yaml
+mcp:
+  environment:
+    NACRE_MCP_CANONICAL_URL: http://10.8.0.1:8081
+```
+
+It moves the discovery document and nothing else. What a token is checked
+against is `NACRE_JWT_ISSUER` and `NACRE_JWT_AUDIENCE`, and **those stay
+identical on both processes** — the MCP transport verifies what the API signed,
+so a difference there is 401s on part of the traffic and not the rest.
+
+`NACRE_MCP_ALLOWED_ORIGINS` is a comma-separated allow-list of browser origins.
+Empty is the default and refuses every browser and no agent: validating `Origin`
+is required of an MCP server to stop DNS rebinding — a page in somebody's
+browser reaching a server on their network — and an agent sends no `Origin` at
+all, so it is unaffected. Set it only if a browser talks to this transport
+directly.
 
 ## Health and observability
 
