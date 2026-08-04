@@ -1,4 +1,4 @@
-import type { Grant, Layer } from '@nacre.work/sdk'
+import type { Grant, Layer, Workspace } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { chip, clear, h, shortId } from '../dom.js'
@@ -154,16 +154,35 @@ function openIssue(root: HTMLElement): void {
   )
   const message = h('p', { class: 'form-message' })
 
-  // A convenience only. Picking a layer fills the id in; the field stays
-  // editable because a workspace has no list on this screen.
-  const layerPicker = h('select', { class: 'input', onchange: (e: Event) => {
+  // A convenience only. Picking fills the id in, and the field stays editable
+  // because either list is permission data and can legitimately be empty.
+  //
+  // It follows the scope type rather than only listing layers. Workspaces had
+  // no list on this screen — which was once true of the API as well — so
+  // granting on one meant knowing a uuid, the same hole the layer dialog had.
+  const scopePicker = h('select', { class: 'input', onchange: (e: Event) => {
     const value = (e.target as HTMLSelectElement).value
     if (value !== '') scopeId.value = value
-  } }, h('option', { value: '' }, 'pick a layer…'))
+  } })
 
-  void client().layers.list().then((layers: readonly Layer[]) => {
-    for (const l of layers) layerPicker.append(h('option', { value: l.id }, `${l.slug} — ${l.name}`))
-  })
+  const fillScopePicker = (): void => {
+    const type = scopeType.value
+    scopePicker.replaceChildren(h('option', { value: '' }, `pick a ${type}…`))
+    if (type === 'workspace') {
+      void client().workspaces.list().then((workspaces: readonly Workspace[]) => {
+        for (const w of workspaces) {
+          scopePicker.append(h('option', { value: w.id }, `${w.slug} — ${w.name}`))
+        }
+      })
+    } else {
+      void client().layers.list().then((layers: readonly Layer[]) => {
+        for (const l of layers) scopePicker.append(h('option', { value: l.id }, `${l.slug} — ${l.name}`))
+      })
+    }
+  }
+
+  scopeType.addEventListener('change', fillScopePicker)
+  fillScopePicker()
 
   const dialog = h('dialog', { class: 'dialog' },
     h('form', { method: 'dialog', onsubmit: async (e: Event) => {
@@ -201,7 +220,7 @@ function openIssue(root: HTMLElement): void {
         h('label', { class: 'field' }, h('span', {}, 'Scope type'), scopeType),
         h('label', { class: 'field grow' }, h('span', {}, 'Scope'), scopeId),
       ),
-      h('label', { class: 'field' }, h('span', {}, 'Layer shortcut'), layerPicker),
+      h('label', { class: 'field' }, h('span', {}, 'Scope shortcut'), scopePicker),
       h('label', { class: 'field' }, h('span', {}, 'Permission'), permission),
       h('p', { class: 'hint' },
         'Requires admin on the scope being granted, not admin in general. Document scope and deny effect are commercial capabilities and are refused here.'),

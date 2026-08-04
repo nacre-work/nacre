@@ -1,4 +1,4 @@
-import type { Layer } from '@nacre.work/sdk'
+import type { Layer, Workspace } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { clear, h, shortId } from '../dom.js'
@@ -136,6 +136,37 @@ function openCreate(root: HTMLElement): void {
   const name = h('input', { class: 'input', placeholder: 'Handbook', required: true })
   const message = h('p', { class: 'form-message' })
 
+  // A layer needs a workspace *id*, and this asked an administrator to know one
+  // — so the field took a name, the server answered the 404 it owes an
+  // unreachable object, and the screen said "no such workspace" to someone
+  // looking straight at it. `GET /v1/workspaces` exists precisely so the id
+  // does not have to be carried by hand; it closed that gap in the API and
+  // this screen kept it open.
+  //
+  // The field stays editable behind the picker, which is the same shape the
+  // grants screen uses: the list is permission data and can legitimately be
+  // empty, and pasting an id from `init` must keep working.
+  const picker = h('select', { class: 'input', onchange: (e: Event) => {
+    const value = (e.target as HTMLSelectElement).value
+    if (value !== '') workspace.value = value
+  } }, h('option', { value: '' }, 'pick a workspace…'))
+
+  void client()
+    .workspaces.list()
+    .then((workspaces: readonly Workspace[]) => {
+      for (const w of workspaces) {
+        picker.append(h('option', { value: w.id }, `${w.slug} — ${w.name}`))
+      }
+      // One workspace is the common case — `init` creates exactly one — and
+      // making someone choose from a list of one is asking a question with a
+      // single answer.
+      const only = workspaces[0]
+      if (workspaces.length === 1 && only !== undefined) {
+        picker.value = only.id
+        workspace.value = only.id
+      }
+    })
+
   const dialog = h('dialog', { class: 'dialog' },
     h('form', { method: 'dialog', onsubmit: async (e: Event) => {
       e.preventDefault()
@@ -162,7 +193,7 @@ function openCreate(root: HTMLElement): void {
       }
     } },
       h('h2', {}, 'New layer'),
-      h('label', { class: 'field' }, h('span', {}, 'Workspace'), workspace),
+      h('label', { class: 'field' }, h('span', {}, 'Workspace'), picker, workspace),
       h('label', { class: 'field' }, h('span', {}, 'Slug'), slug),
       h('label', { class: 'field' }, h('span', {}, 'Name'), name),
       h('p', { class: 'hint' },
