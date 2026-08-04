@@ -76,19 +76,45 @@ const serviceKeys = {
 const MCP_HEADERS = {
   'mcp-protocol-version': '2026-07-28',
   'mcp-method': 'tools/list',
-  'mcp-name': 'nacre',
   'content-type': 'application/json',
+}
+
+/** The three methods that name something, and where the name lives. */
+const NAMED: Record<string, 'name' | 'uri'> = {
+  'tools/call': 'name',
+  'prompts/get': 'name',
+  'resources/read': 'uri',
+}
+
+/**
+ * The mirrored headers for a call, derived from it.
+ *
+ * The harness used to send a fixed `mcp-method: tools/list` whatever it was
+ * calling, and an `mcp-name` on every request — which is what a client does
+ * *not* do, and is why the transport requiring one everywhere went unnoticed.
+ * Deriving them is the point: a header that does not describe the body is
+ * exactly what the server now refuses.
+ */
+function mirrored(method: string, params: unknown): Record<string, string> {
+  const field = NAMED[method]
+  const value = field === undefined ? undefined : (params as Record<string, unknown>)?.[field]
+  return {
+    'mcp-protocol-version': '2026-07-28',
+    'mcp-method': method,
+    ...(typeof value === 'string' ? { 'mcp-name': value } : {}),
+    'content-type': 'application/json',
+  }
 }
 
 async function rpc(
   method: string,
   params: unknown,
   orgId: string,
-  headers: Record<string, string> = MCP_HEADERS,
+  headers?: Record<string, string>,
 ): Promise<Response> {
   return fetch(`${base}/mcp`, {
     method: 'POST',
-    headers: { ...headers, authorization: `Bearer ${await token(orgId)}` },
+    headers: { ...(headers ?? mirrored(method, params)), authorization: `Bearer ${await token(orgId)}` },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
   })
 }
@@ -258,13 +284,109 @@ describe('baseline · the MCP surface', () => {
     }
   })
 
-  it('the required transport headers are required', async () => {
-    for (const missing of ['mcp-protocol-version', 'mcp-method', 'mcp-name']) {
-      const headers: Record<string, string> = { ...MCP_HEADERS }
+  it('refuses a request whose mirrored headers do not describe it', async () => {
+    // The two required of every request.
+    for (const missing of ['mcp-protocol-version', 'mcp-method']) {
+      const headers: Record<string, string> = { ...mirrored('tools/list', {}) }
       delete headers[missing]
       const res = await rpc('tools/list', {}, ORG_A, headers)
       expect(res.status, `without ${missing}`).toBe(400)
+      const body = (await res.json()) as { error: { code: number } }
+      // -32020 HeaderMismatch, the code the specification allocates. -32600
+      // read as "not a modern server" and sent a client into a fallback this
+      // transport does not speak.
+      expect(body.error.code, `without ${missing}`).toBe(-32020)
     }
+
+    // `Mcp-Name` is required only on the three methods that name something.
+    // Demanding it on `tools/list` refused a request no client can make any
+    // other way, which is how this was found: a real client could not list
+    // tools at all.
+    const listed = await rpc('tools/list', {}, ORG_A, {
+      'mcp-protocol-version': '2026-07-28',
+      'mcp-method': 'tools/list',
+      'content-type': 'application/json',
+    })
+    expect(listed.status).toBe(200)
+
+    // And it *is* required on one that does.
+    const unnamed = await rpc('tools/call', { name: 'search', arguments: { query: 'x' } }, ORG_A, {
+      'mcp-protocol-version': '2026-07-28',
+      'mcp-method': 'tools/call',
+      'content-type': 'application/json',
+    })
+    expect(unnamed.status).toBe(400)
+    expect(((await unnamed.json()) as { error: { code: number } }).error.code).toBe(-32020)
+  })
+
+  it('refuses a header that contradicts the body', async () => {
+    // The reason the headers exist: an intermediary routes on the header while
+    // the server executes the body, so two halves that disagree are two
+    // components acting on different instructions. The transport demanded these
+    // headers and never compared them, which bought the incompatibility and
+    // none of the protection.
+    const wrongMethod = await rpc('tools/list', {}, ORG_A, {
+      'mcp-protocol-version': '2026-07-28',
+      'mcp-method': 'tools/call',
+      'content-type': 'application/json',
+    })
+    expect(wrongMethod.status).toBe(400)
+    expect(((await wrongMethod.json()) as { error: { code: number } }).error.code).toBe(-32020)
+
+    const wrongName = await rpc('tools/call', { name: 'search', arguments: { query: 'x' } }, ORG_A, {
+      'mcp-protocol-version': '2026-07-28',
+      'mcp-method': 'tools/call',
+      'mcp-name': 'list_layers',
+      'content-type': 'application/json',
+    })
+    expect(wrongName.status).toBe(400)
+  })
+
+  it('accepts an Mcp-Name carried in the Base64 sentinel', async () => {
+    // A name that is not header-safe travels encoded, and the server decodes
+    // before comparing — otherwise every such call is a false mismatch.
+    const encoded = `=?base64?${Buffer.from('search', 'utf8').toString('base64')}?=`
+    const res = await rpc('tools/call', { name: 'search', arguments: { query: 'x' } }, ORG_A, {
+      'mcp-protocol-version': '2026-07-28',
+      'mcp-method': 'tools/call',
+      'mcp-name': encoded,
+      'content-type': 'application/json',
+    })
+    expect(res.status).not.toBe(400)
+  })
+
+  it('answers 405 on the verbs this revision removed, and 404 elsewhere', async () => {
+    for (const method of ['GET', 'DELETE']) {
+      const res = await fetch(`${base}/mcp`, { method })
+      // Not 404: that is one of the signals that sends a client down the
+      // deprecated HTTP+SSE path, and this server does not speak it.
+      expect(res.status, method).toBe(405)
+      expect(res.headers.get('allow'), method).toContain('POST')
+    }
+
+    expect((await fetch(`${base}/nothing-here`)).status).toBe(404)
+  })
+
+  it('refuses a browser origin that is not allowed, and lets an agent through', async () => {
+    // Validating Origin is required to stop DNS rebinding — a page in
+    // somebody's browser reaching a server on their network. An agent sends
+    // none, so an absent header must not be refused or this transport would
+    // reject everything it exists for.
+    const fromBrowser = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { ...mirrored('tools/list', {}), origin: 'https://evil.test' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    })
+    expect(fromBrowser.status).toBe(403)
+
+    // No Origin, no credential: it gets as far as authentication, which is the
+    // proof it was not turned away for the missing header.
+    const fromAgent = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: mirrored('tools/list', {}),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    })
+    expect(fromAgent.status).toBe(401)
   })
 
   it('a 401 points the client at the protected-resource metadata', async () => {

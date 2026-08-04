@@ -23,6 +23,38 @@ export interface Config {
   readonly env: 'development' | 'production'
   readonly canonicalUrl: string
   /**
+   * What the MCP transport calls itself, when it is not behind the same origin
+   * as the API.
+   *
+   * `/.well-known/oauth-protected-resource` names a resource identifier, and
+   * RFC 9728 has the client check it against the URL it actually reached. The
+   * API and the MCP transport serve **one** document so the two can never
+   * disagree about the audience a token is bound to — which is right, and which
+   * makes the identifier wrong for whichever of them is not at
+   * `NACRE_CANONICAL_URL`.
+   *
+   * A deployment behind one origin needs nothing here. One publishing two ports
+   * — which is what `docker compose up` does — sets this on the MCP process to
+   * the URL clients use for it, and a client connecting there stops being told
+   * the resource is somewhere else.
+   *
+   * It moves *only* the discovery document. The audience a token must carry is
+   * `NACRE_JWT_AUDIENCE` and the issuer is `NACRE_JWT_ISSUER`; both stay
+   * identical across the processes, because this one verifies what the other
+   * signed.
+   */
+  readonly mcpCanonicalUrl: string
+  /**
+   * Browser origins the MCP transport answers.
+   *
+   * Empty by default and that is the safe default: validating `Origin` is a
+   * MUST in the specification and the attack it names is DNS rebinding, where
+   * a page in somebody's browser reaches an MCP server on their network. An
+   * agent sends no `Origin` and is unaffected, so an empty list refuses
+   * browsers and nothing else.
+   */
+  readonly mcpAllowedOrigins: readonly string[]
+  /**
    * The identity provider in front of this installation, if there is one.
    *
    * Optional and empty by default, because a self-hosted Nacre usually has no
@@ -679,6 +711,21 @@ class Reader {
     return fallback
   }
 
+  /**
+   * A comma-separated list, trimmed, with empty entries dropped.
+   *
+   * Absent and empty are the same answer — an empty list — because the one
+   * consumer so far is an allow-list where "not set" and "set to nothing" both
+   * mean "allow nothing", and inventing a difference between them would be a
+   * distinction nobody could act on.
+   */
+  stringList(key: string): readonly string[] {
+    return (this.optional(key) ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== '')
+  }
+
   url(key: string, { required = true } = {}): string {
     const raw = required ? this.required(key) : (this.optional(key) ?? '')
     if (raw === '') return ''
@@ -772,6 +819,11 @@ export function loadConfig(env: Env = process.env): Config {
   const config: Config = {
     env: r.oneOf('NACRE_ENV', ['development', 'production'] as const, 'development'),
     canonicalUrl: r.url('NACRE_CANONICAL_URL'),
+    // Defaults to the canonical URL, which is correct for every deployment
+    // behind a single origin and is what this was before the variable existed.
+    mcpCanonicalUrl:
+      r.url('NACRE_MCP_CANONICAL_URL', { required: false }) || r.url('NACRE_CANONICAL_URL'),
+    mcpAllowedOrigins: r.stringList('NACRE_MCP_ALLOWED_ORIGINS'),
     oauthAuthorizationServer: r.url('NACRE_OAUTH_AUTHORIZATION_SERVER', { required: false }),
     logLevel: r.oneOf('NACRE_LOG_LEVEL', ['debug', 'info', 'warn', 'error'] as const, 'info'),
     logFormat: r.oneOf('NACRE_LOG_FORMAT', ['json', 'text'] as const, 'json'),

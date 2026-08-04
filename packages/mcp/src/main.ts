@@ -147,13 +147,19 @@ async function main(): Promise<void> {
     tools,
     // Discovery lives on the API host, never on the apex — static hosting there
     // intercepts /.well-known/* before the API sees it.
-    resourceMetadataUrl: new URL(PROTECTED_RESOURCE_PATH, config.canonicalUrl).toString(),
+    // This transport's own URL, which is the canonical one unless a deployment
+    // publishes the two on different origins — as `docker compose up` does.
+    // RFC 9728 has the client compare the identifier against where it actually
+    // connected, so a document naming the API refuses every client that came
+    // here instead.
+    resourceMetadataUrl: new URL(PROTECTED_RESOURCE_PATH, config.mcpCanonicalUrl).toString(),
     resourceMetadata: protectedResourceMetadata({
-      canonicalUrl: config.canonicalUrl,
+      canonicalUrl: config.mcpCanonicalUrl,
       ...(config.oauthAuthorizationServer === ''
         ? {}
         : { authorizationServer: config.oauthAuthorizationServer }),
     }),
+    allowedOrigins: config.mcpAllowedOrigins,
     limits,
     limitPolicies,
     metrics: registry,

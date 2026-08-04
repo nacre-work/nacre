@@ -240,6 +240,54 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### Unreleased
+
+**The MCP transport was not reachable by a real client.** Four things, all found
+by pointing one at it:
+
+- `Mcp-Name` was required on every request. The specification requires it only
+  on `tools/call`, `resources/read` and `prompts/get` — so `tools/list` was
+  refused, and no client can list tools any other way.
+- A missing or wrong header answered JSON-RPC `-32600` instead of `-32020`
+  (`HeaderMismatch`). A client reads that code to decide whether it is talking
+  to a modern server; the wrong one sends it into a fallback this transport does
+  not speak.
+- The mirrored headers were demanded and never compared with the body — which
+  is the entire reason they exist, and is a stated security property.
+- `GET` and `DELETE` on the endpoint answered `404`; the specification says
+  `405`, and `404` is another signal that sends a client to the deprecated
+  transport.
+
+**`Origin` is now validated**, which is a MUST and was absent. A present origin
+outside `NACRE_MCP_ALLOWED_ORIGINS` is `403`; an absent one is allowed, because
+an agent sends none and the attack — DNS rebinding — is by definition a browser.
+**The default list is empty**, so a browser that talks to this transport
+directly stops working until you name its origin. Nothing that sends no `Origin`
+is affected.
+
+**`NACRE_MCP_CANONICAL_URL`**, for a deployment that publishes the API and MCP
+on different origins. The discovery document names one resource identifier and
+RFC 9728 has the client check it against the URL it reached — so a client
+pointed at the MCP port was told the resource was the API's and refused before
+sending a request. That was the Compose default, and Compose now sets this. It
+moves the discovery document only; `NACRE_JWT_ISSUER` and `NACRE_JWT_AUDIENCE`
+decide what a token is checked against and must stay identical on both
+processes.
+
+**A grant now names two things that both have to exist.** Issuance checked the
+scope and not the principal, so a grant could name any uuid as its principal — a
+row that permits nothing and never can. `principal_type` and `principal_id` are
+two fields, and choosing `user` while pasting a service account's id inserted
+cleanly and did nothing. A revoked service account is refused too; a disabled
+user is not, because disabling is reversible.
+
+Nothing to do for either. If a grant in `GET /v1/grants` names a principal you
+cannot look up, it was already inert — this stops more being written.
+
+**The API answers `404` on paths it does not serve**, instead of demanding a
+credential first. `/register` and the OAuth discovery documents an MCP client
+probes for are not routes here; `401` said they were.
+
 ### 0.5.0 — onboarding a team, and a readiness probe that means it
 
 **Nothing removed and nothing renamed**, so rolling the code back to 0.4.x is

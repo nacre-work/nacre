@@ -8,7 +8,33 @@ deprecated in favour of CIMD.
 ## Transport
 
 - Streamable HTTP, one endpoint: `POST /mcp`.
-- Required request headers: `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`.
+- Required request headers: `MCP-Protocol-Version` and `Mcp-Method` on every
+  request; `Mcp-Name` **only** on `tools/call`, `resources/read` and
+  `prompts/get` — the three that name something. Requiring it everywhere is a
+  server that refuses `tools/list`, which no client can make any other way, and
+  that is what this did until it was pointed at a real one.
+- **The headers are validated against the body**, which is the whole reason
+  they exist: an intermediary routes and rate-limits on the header while the
+  server executes the body, so a request whose halves disagree is one where the
+  two acted on different instructions. A missing or contradicting header is
+  `400` with JSON-RPC code **`-32020` (`HeaderMismatch`)**, the code the
+  specification allocates. It used to answer `-32600`, which a client reads as
+  "not a modern server" and follows into a fallback this transport does not
+  speak.
+- `Mcp-Name` may arrive Base64-encoded in the `=?base64?…?=` sentinel when the
+  value is not header-safe, and is decoded before it is compared.
+- **`Origin` is validated.** A present origin that is not in
+  `NACRE_MCP_ALLOWED_ORIGINS` is `403`; an absent one is allowed, because an
+  agent sends none and the attack the rule exists for — DNS rebinding — is by
+  definition a browser. The default list is empty, which refuses every browser
+  and no agent.
+- `GET` and `DELETE` on the endpoint answer **`405`**, not `404`. Both belonged
+  to the revisions with sessions and a standalone SSE stream; `404` is one of
+  the signals that sends a client down the deprecated HTTP+SSE path, and this
+  server is not that.
+- `Mcp-Session-Id` and `Last-Event-ID` are **ignored** rather than refused,
+  which is what the specification asks of a server implementing only this
+  revision.
 - No state between requests. Any request is served by any replica behind a
   round-robin balancer; there is no shared session store.
 - A tool that needs state between calls returns an explicit descriptor in its
@@ -17,6 +43,21 @@ deprecated in favour of CIMD.
 - `server/discover` is supported but not required of clients.
 - `tools/list` returns `ttlMs: 300000` and `cacheScope: "user"` — the catalog
   depends on the caller's permissions, so the cache is per user, never global.
+
+## The resource identifier, when the ports are split
+
+This transport serves `/.well-known/oauth-protected-resource` itself, from the
+same document the API serves, so the two can never disagree about the audience a
+token is bound to. That is right, and it has a consequence: the document names
+one resource identifier, and RFC 9728 has the client check it against the URL it
+reached.
+
+Behind one origin there is no problem. Two published ports — the Compose default
+— is the case where a client pointed at the MCP port is told the resource is the
+API's URL and refuses before sending a request. `NACRE_MCP_CANONICAL_URL` on the
+MCP process is what that shape needs; see
+[config.md](./config.md). It moves the discovery document only, and never what a
+token is checked against.
 
 ## Authorization
 

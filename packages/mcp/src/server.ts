@@ -67,6 +67,16 @@ export interface McpOptions {
   readonly resourceMetadataUrl: string
   /** The document that URL resolves to. Built once, in main, and shared with the API. */
   readonly resourceMetadata: ProtectedResourceMetadata
+  /**
+   * Browser origins this transport answers, from `NACRE_MCP_ALLOWED_ORIGINS`.
+   *
+   * Validating `Origin` is a MUST in the specification and the attack it names
+   * is DNS rebinding: a page in somebody's browser reaching an MCP server on
+   * their network. Absent means no browser origin is allowed, which is the
+   * right default for a transport built for agents — an agent sends no
+   * `Origin` and is unaffected.
+   */
+  readonly allowedOrigins?: readonly string[]
 
   /**
    * The same limiter and the same policies the REST surface uses.
@@ -169,6 +179,74 @@ export function createMcpServer(options: McpOptions): Server {
   })
 }
 
+/**
+ * `HeaderMismatch`, from the sub-range the specification reserves for
+ * protocol-defined errors. It covers a missing required header as well as one
+ * that disagrees with the body — both are "the headers do not describe this
+ * request", and a client reads the code to tell a modern server from a legacy
+ * one before deciding whether to fall back.
+ */
+const HEADER_MISMATCH = -32020
+
+/** The three methods that name something, and where the name lives. */
+const NAMED_METHODS: Record<string, 'name' | 'uri'> = {
+  'tools/call': 'name',
+  'prompts/get': 'name',
+  'resources/read': 'uri',
+}
+
+/**
+ * Decode the Base64 sentinel a client uses for a value that is not header-safe.
+ *
+ * `=?base64?…?=`, lower case and exact — a value that merely looks like one is
+ * required to be encoded too, so treating the markers as a hint rather than a
+ * format would let a plain string impersonate an encoded one.
+ */
+function decodeHeaderValue(value: string): string {
+  if (!value.startsWith('=?base64?') || !value.endsWith('?=')) return value
+  const inner = value.slice('=?base64?'.length, -'?='.length)
+  try {
+    return Buffer.from(inner, 'base64').toString('utf8')
+  } catch {
+    return value
+  }
+}
+
+/**
+ * Whether the mirrored headers describe this body, and what is wrong if not.
+ *
+ * `Mcp-Method` on every request; `Mcp-Name` only on the three that name
+ * something, because requiring it everywhere refuses a `tools/list` that no
+ * client can make any other way.
+ */
+function headerMismatch(
+  headers: IncomingMessage['headers'],
+  rpc: { method: string; params?: unknown },
+): string | undefined {
+  const declared = headers['mcp-method']
+  if (typeof declared === 'string' && declared !== rpc.method) {
+    return `Header mismatch: Mcp-Method header value '${declared}' does not match body value '${rpc.method}'`
+  }
+
+  const field = NAMED_METHODS[rpc.method]
+  if (field === undefined) return undefined
+
+  const params = (rpc.params ?? {}) as Record<string, unknown>
+  const expected = params[field]
+  // Absent in the body means the call is malformed rather than the header
+  // wrong; dispatch answers that with the error the method owes.
+  if (typeof expected !== 'string') return undefined
+
+  const presented = headers['mcp-name']
+  if (typeof presented !== 'string') {
+    return `Header mismatch: Mcp-Name is required for ${rpc.method} and is missing`
+  }
+  if (decodeHeaderValue(presented) !== expected) {
+    return `Header mismatch: Mcp-Name header value does not match body value '${expected}'`
+  }
+  return undefined
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse, options: McpOptions): Promise<void> {
   const requestId = randomUUID()
 
@@ -211,14 +289,57 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
     return
   }
 
+  // `Origin`, before anything else. The specification makes validating it a
+  // MUST and names the attack: without it a page in somebody's browser can
+  // reach an MCP server on their network by rebinding DNS, and this transport
+  // listens on a network interface rather than a socket.
+  //
+  // A browser sends `Origin`; an agent does not, and must not be refused for
+  // it. So an absent header is allowed through and only a *present and
+  // unrecognised* one is refused — which is the distinction the rule is about,
+  // because a rebinding attack is by definition a browser.
+  //
+  // `403`, per the specification, and never `404`: unlike the paths this
+  // server does not route, an origin refusal is about the caller rather than
+  // about what exists.
+  const origin = req.headers.origin
+  if (origin !== undefined && !(options.allowedOrigins ?? []).includes(origin)) {
+    send(res, 403, rpcError(null, -32600, 'Origin not allowed'))
+    return
+  }
+
+  // GET and DELETE reached the endpoint in the revisions that had sessions and
+  // a standalone SSE stream. This one has neither, and the specification says
+  // what to answer: `405`, not `404`. The difference is load-bearing for a
+  // client deciding which era this server speaks — a `404` is one of the
+  // signals that sends it down the legacy HTTP+SSE path.
+  if (path === '/mcp' && (req.method === 'GET' || req.method === 'DELETE')) {
+    send(res, 405, rpcError(null, -32601, 'Method Not Allowed'), { allow: 'POST' })
+    return
+  }
+
   if (req.method !== 'POST' || path !== '/mcp') {
     send(res, 404, rpcError(null, -32601, 'Not found'))
     return
   }
 
-  for (const header of ['mcp-protocol-version', 'mcp-method', 'mcp-name']) {
+  // `Mcp-Session-Id` and `Last-Event-ID` are ignored rather than refused, which
+  // is what the specification asks of a server that implements only this
+  // revision: an older client sending them gets an answer about the request
+  // rather than about its framing.
+
+  // The two headers required of *every* request. `Mcp-Name` is not one of them
+  // — it is required only for the three methods that name something, and
+  // demanding it on `tools/list` refused a request no client can make
+  // correctly. Checked after the body is parsed, with the rest of the
+  // header-to-body validation.
+  for (const header of ['mcp-protocol-version', 'mcp-method']) {
     if (req.headers[header] === undefined) {
-      send(res, 400, rpcError(null, -32600, `Missing required header: ${header}`))
+      // -32020 HeaderMismatch, which the specification allocates for exactly
+      // this and which a client reads to decide whether it is talking to a
+      // modern server. -32600 said "invalid request", and a client that gets
+      // it falls back to a transport this server does not speak.
+      send(res, 400, rpcError(null, HEADER_MISMATCH, `Missing required header: ${header}`))
       return
     }
   }
@@ -260,6 +381,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   const id = rpc?.id ?? null
   if (rpc?.jsonrpc !== '2.0' || typeof rpc.method !== 'string') {
     send(res, 400, rpcError(id, -32600, 'Invalid request'))
+    return
+  }
+
+  // The headers have to agree with the body, which is the whole reason they
+  // exist and was the half that was missing.
+  //
+  // The specification is explicit about why: intermediaries route and rate-limit
+  // on the header while the server executes the body, so a request whose two
+  // halves disagree is one where the balancer and the server acted on different
+  // instructions. Demanding the headers and never comparing them bought the
+  // incompatibility and none of the protection.
+  const mismatch = headerMismatch(req.headers, { method: rpc.method, params: rpc.params })
+  if (mismatch !== undefined) {
+    send(res, 400, rpcError(id, HEADER_MISMATCH, mismatch))
     return
   }
 

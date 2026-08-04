@@ -77,6 +77,16 @@ services:
     ports: ["${NACRE_MCP_HOST_PORT:-8081}:8081"]
     environment:
       PORT: 8081
+      # This stack publishes two ports with nothing in front, so the discovery
+      # document the API serves names the wrong resource for a client that came
+      # here. RFC 9728 has the client compare the identifier against the URL it
+      # reached, and it refuses before sending a request — which is the default
+      # shape failing, not an operator's mistake.
+      #
+      # Points at the *host* port, because that is the URL a client outside the
+      # network uses. Behind a single origin this is unset and the canonical URL
+      # is right for both.
+      NACRE_MCP_CANONICAL_URL: "${NACRE_MCP_CANONICAL_URL:-http://localhost:${NACRE_MCP_HOST_PORT:-8081}}"
     depends_on:
       migrate: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
