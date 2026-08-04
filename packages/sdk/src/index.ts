@@ -42,6 +42,7 @@
 export { NacreClient, type ClientOptions } from './client.js'
 export { NacreError, NacreTransportError, type Problem } from './errors.js'
 export type {
+  Self,
   AuditPage,
   AuditQuery,
   AuditRecord,

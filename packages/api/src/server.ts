@@ -2271,6 +2271,53 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       return
     }
 
+    /**
+     * Who the caller is — and nothing about anyone else.
+     *
+     * There was no way to ask. The admin UI signed in, got a pair of tokens,
+     * and had no idea whether the person holding them was an `org_admin` or a
+     * `member` — so it drew every screen and every button for everybody. A
+     * member then pressed "New user" and got a `404`, because invariant 4 makes
+     * a refusal indistinguishable from a missing object. That is right for the
+     * API and unusable as a product: to the person it reads as a broken
+     * application rather than as a permission they do not hold.
+     *
+     * Telling a caller their own role is not a leak and is not in tension with
+     * invariant 4. Rule 4 is about *objects* being invisible; this discloses
+     * nothing except what the presented token already asserts, which the caller
+     * necessarily has. Nothing here can name another principal.
+     *
+     * A service account gets an answer too, which the "sign in as an agent to
+     * see what it sees" flow needs: the UI accepts a `nacre_sk_` key and could
+     * not previously say which account it belonged to.
+     */
+    if (instance === '/v1/me') {
+      // 404 for another method, the same as every other path here: invariant 4
+      // reserves the distinction for objects, and a 405 on a path that answers
+      // one verb tells a caller nothing they can act on.
+      if (req.method !== 'GET') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      // Composed from the token and nothing else — no query, so this cannot
+      // grow a way to name somebody else. `organization` is included because a
+      // UI showing "you are an administrator" has to say of what, and it is the
+      // same value invariant 1 already took from the token.
+      send(
+        res,
+        200,
+        {
+          organization: auth.orgId,
+          principal_type: auth.principal.type,
+          principal_id: auth.principal.id,
+          role: auth.role,
+        },
+        requestId,
+      )
+      return
+    }
+
     if (instance === '/v1/workspaces' && options.workspaces !== undefined) {
       if (req.method === 'GET') {
         const page = readPage(url.searchParams, instance, requestId)

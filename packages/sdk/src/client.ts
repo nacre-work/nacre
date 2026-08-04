@@ -23,6 +23,7 @@ import type {
   Workspace,
   SearchHit,
   SearchOptions,
+  Self,
   ServiceAccount,
   User,
   UserRole,
@@ -510,6 +511,25 @@ export class NacreClient {
   }
 
   // ─── layers ──────────────────────────────────────────────────────────────
+
+  /**
+   * Who this token belongs to.
+   *
+   * The one call a client can make before it knows anything: it composes its
+   * answer from the presented token and names no other principal. A UI needs it
+   * to know which controls to offer — without it the admin UI drew every button
+   * for everybody, and a member pressing one got the `404` invariant 4 requires,
+   * which reads as a broken application rather than as a permission they lack.
+   */
+  readonly me = async (): Promise<Self> => {
+    const body = (await this.#request({ method: 'GET', path: '/v1/me', retryable: true })) as Record<string, unknown>
+    return {
+      organization: String(body.organization),
+      principalType: body.principal_type === 'service_account' ? 'service_account' : 'user',
+      principalId: String(body.principal_id),
+      role: String(body.role) as Self['role'],
+    }
+  }
 
   /**
    * Workspaces. A layer needs one, and until this endpoint existed the only

@@ -77,6 +77,7 @@ const COVERAGE: Record<string, string | null> = {
   'PATCH /documents/{id}': 'documents.setMetadata',
   'DELETE /documents/{id}': 'documents.remove',
 
+  'GET /me': 'me',
   'GET /workspaces': 'workspaces.list',
   'POST /workspaces': 'workspaces.create',
 

@@ -351,6 +351,26 @@ components:
         created_at:    { type: string, format: date-time }
         last_used_at:  { type: [string, 'null'], format: date-time }
         revoked_at:    { type: [string, 'null'], format: date-time }
+    Self:
+      type: object
+      required: [organization, principal_type, principal_id, role]
+      properties:
+        organization:
+          type: string
+          format: uuid
+          description: The organization the token names. Never taken from anywhere else.
+        principal_type:
+          type: string
+          enum: [user, service_account]
+          description: |
+            `group` cannot appear: a group is granted to, never authenticated as.
+        principal_id: { type: string, format: uuid }
+        role:
+          type: string
+          enum: [platform_admin, org_admin, member]
+          description: |
+            What this principal may do organization-wide. A service account is
+            always `member`; anything it reaches, it reaches through a grant.
     User:
       type: object
       required: [id, email, role, created_at, disabled_at, has_password]
@@ -849,6 +869,39 @@ paths:
             know this answer is possible rather than treating it as a transport
             fault.
 
+  /me:
+    get:
+      operationId: describeSelf
+      summary: Who the caller is
+      description: |
+        The caller's own identity, composed from the presented token and nothing
+        else. It names no other principal and reads no table, so there is no
+        path here by which it could.
+
+        This is not in tension with the rule that a refusal is indistinguishable
+        from a missing object. That rule is about *objects*; this discloses only
+        what the token the caller is already holding asserts.
+
+        It exists because a client had no way to ask. The admin UI signed in and
+        could not tell an `org_admin` from a `member`, so it offered every
+        control to everybody — and a member pressing one got a `404`, which
+        reads as a broken application rather than as a permission they do not
+        hold.
+
+        A service account gets an answer too: signing in as one is how an
+        administrator checks what an agent can actually see.
+      tags: [auth]
+      responses:
+        '200':
+          description: The caller
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Self' }
+        '401':
+          description: No token, or one this deployment cannot verify.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
   /workspaces:
     get:
       summary: >

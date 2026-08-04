@@ -32,12 +32,31 @@ import { searchView } from './views/search.js'
  * hands out rather than an application to deploy.
  */
 
+/**
+ * `adminOnly` is what a `member` may not reach.
+ *
+ * Not a second permission model — the API decides, and every one of these
+ * screens is behind `org_admin` there. This is the UI declining to *offer* what
+ * it knows will be refused, which is a different job: the refusal is a `404` by
+ * invariant 4, and a `404` under a button reads as a broken application rather
+ * than as a permission the person does not hold. That is exactly what happened
+ * — a member saw "New user", pressed it, and got nothing with no explanation.
+ *
+ * Search and Layers stay for everybody: both answer with whatever the caller
+ * has been granted, which for a member with no grants is an empty list and an
+ * honest one.
+ */
 const ROUTES = [
-  { hash: '#/search', label: 'Search', render: (root: HTMLElement) => searchView(root) },
-  { hash: '#/layers', label: 'Layers', render: (root: HTMLElement) => void layersView(root) },
-  { hash: '#/grants', label: 'Grants', render: (root: HTMLElement) => void grantsView(root) },
-  { hash: '#/people', label: 'People', render: (root: HTMLElement) => void peopleView(root) },
-  { hash: '#/accounts', label: 'Service accounts', render: (root: HTMLElement) => void accountsView(root) },
+  { hash: '#/search', label: 'Search', render: (root: HTMLElement) => searchView(root), adminOnly: false },
+  { hash: '#/layers', label: 'Layers', render: (root: HTMLElement) => void layersView(root), adminOnly: false },
+  { hash: '#/grants', label: 'Grants', render: (root: HTMLElement) => void grantsView(root), adminOnly: true },
+  { hash: '#/people', label: 'People', render: (root: HTMLElement) => void peopleView(root), adminOnly: true },
+  {
+    hash: '#/accounts',
+    label: 'Service accounts',
+    render: (root: HTMLElement) => void accountsView(root),
+    adminOnly: true,
+  },
 ]
 
 function mark(): SVGElement {
@@ -114,12 +133,15 @@ function shell(): { main: HTMLElement; nav: HTMLElement } {
   return { main, nav }
 }
 
-function route(main: HTMLElement, nav: HTMLElement): void {
-  const hash = location.hash === '' ? ROUTES[0]!.hash : location.hash
-  const current = ROUTES.find((r) => r.hash === hash) ?? ROUTES[0]!
+function route(main: HTMLElement, nav: HTMLElement, isAdmin: boolean): void {
+  const allowed = ROUTES.filter((r) => isAdmin || !r.adminOnly)
+  const hash = location.hash === '' ? allowed[0]!.hash : location.hash
+  // A member who follows a bookmark to #/people lands on the first screen they
+  // can use rather than on an empty one that keeps 404ing in the background.
+  const current = allowed.find((r) => r.hash === hash) ?? allowed[0]!
 
   clear(nav)
-  for (const r of ROUTES) {
+  for (const r of allowed) {
     nav.append(
       h('a', {
         href: r.hash,
@@ -277,8 +299,27 @@ function start(): void {
     return
   }
   const { main, nav } = shell()
-  route(main, nav)
-  window.onhashchange = () => route(main, nav)
+
+  // Drawn as a member until the answer arrives, never the other way round: a
+  // nav that shows administrative screens and then removes them is a flicker
+  // that invites a click in between, and the failure mode of guessing low is a
+  // menu that grows.
+  let isAdmin = false
+  const draw = (): void => route(main, nav, isAdmin)
+  draw()
+  window.onhashchange = draw
+
+  void client()
+    .me()
+    .then((me) => {
+      isAdmin = me.role === 'org_admin' || me.role === 'platform_admin'
+      draw()
+    })
+    .catch(() => {
+      // Left as a member. An older API with no /v1/me answers 404, and a
+      // console that shows less than it could is a better failure than one
+      // offering controls that cannot work.
+    })
 }
 
 start()
