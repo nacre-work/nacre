@@ -69,7 +69,7 @@ const LAYER = '3a6b1e28-77c4-4f0d-8b19-2d5e9a03c7f1'
 const ACCOUNT = 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55'
 const DOC = 'e77a3c10-9d42-4b86-8f51-0a4c7e93b2d6'
 
-/** Everything the four views ask for, in the shapes the SDK parses. */
+/** Everything the five views ask for, in the shapes the SDK parses. */
 const FIXTURES = {
   // Polled by the header to show whether the API is reachable.
   'GET /v1/health': { status: 'ok' },
@@ -108,6 +108,41 @@ const FIXTURES = {
         last_used_at: null, revoked_at: null },
     ],
     next_cursor: null,
+  },
+  'GET /v1/users': {
+    items: [
+      { id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', email: 'dana@example.com', role: 'org_admin',
+        created_at: '2026-01-12T08:30:00.000Z', disabled_at: null, has_password: true },
+      { id: '4f2c8e61-7a95-4d13-9b60-2e8a5c0f7b34', email: 'sam@example.com', role: 'member',
+        created_at: '2026-02-03T14:05:00.000Z', disabled_at: null, has_password: true },
+      { id: '9d7b3f04-6c28-4a51-8e93-1b5f0a2c6d78', email: 'alex@example.com', role: 'member',
+        created_at: '2026-02-20T10:11:00.000Z', disabled_at: '2026-03-08T09:00:00.000Z',
+        has_password: true },
+    ],
+    next_cursor: null,
+  },
+  'GET /v1/groups': {
+    items: [
+      { id: '8e1a7c34-2b09-4d56-af73-6c0e5b9d2a41', name: 'legal',
+        created_at: '2026-01-12T08:31:00.000Z', member_count: 2 },
+      { id: '3c9f5b28-4d71-4e06-b28a-7f1c0e6d9a53', name: 'engineering',
+        created_at: '2026-01-19T12:44:00.000Z', member_count: 5 },
+    ],
+    next_cursor: null,
+  },
+  'GET /v1/groups/8e1a7c34-2b09-4d56-af73-6c0e5b9d2a41/members': {
+    items: [
+      { type: 'user', id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', label: 'dana@example.com' },
+      { type: 'group', id: '3c9f5b28-4d71-4e06-b28a-7f1c0e6d9a53', label: 'engineering' },
+    ],
+    next_cursor: null,
+  },
+  // The one irreversible moment on the People screen, and the reason it gets a
+  // picture: a password exists in this response and nowhere else, ever again.
+  'POST /v1/users': {
+    id: '6a4e2c98-3b17-4f50-9d82-0c7b5e1a4f26', email: 'kim@example.com', role: 'member',
+    created_at: '2026-03-14T09:00:00.000Z', disabled_at: null, has_password: true,
+    password: 'aragonite-tide-ledger-shoal-prism-keel-37',
   },
   'POST /v1/search': {
     items: [
@@ -226,6 +261,41 @@ await shot('search', {
   },
 })
 await shot('grants', { hash: '#/grants' })
+await shot('people', { hash: '#/people' })
+await shot('new-user', {
+  hash: '#/people',
+  prepare: async (page) => {
+    await page.getByRole('button', { name: 'New user' }).click()
+    await page.waitForTimeout(150)
+  },
+})
+// The step somebody can click past without noticing, which is why it is its own
+// screen in the product and its own picture here.
+await shot('new-user-password', {
+  hash: '#/people',
+  prepare: async (page) => {
+    await page.getByRole('button', { name: 'New user' }).click()
+    await page.getByPlaceholder('dana@example.com').fill('kim@example.com')
+    await page.getByRole('button', { name: 'Create' }).click()
+    await page.waitForTimeout(250)
+  },
+})
+await shot('group-members', {
+  hash: '#/people',
+  prepare: async (page) => {
+    await page.getByRole('row', { name: /legal/ }).getByRole('button', { name: 'Members' }).click()
+    await page.waitForTimeout(250)
+  },
+})
+// Deleting a layer asks for the slug rather than for a click: a grant
+// re-issues, and a layer's documents do not come back.
+await shot('delete-layer', {
+  hash: '#/layers',
+  prepare: async (page) => {
+    await page.getByRole('row', { name: /handbook/ }).getByRole('button', { name: 'Delete' }).click()
+    await page.waitForTimeout(150)
+  },
+})
 await shot('accounts', { hash: '#/accounts' })
 
 await browser.close()

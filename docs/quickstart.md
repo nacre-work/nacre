@@ -275,6 +275,14 @@ from here. Both are worth the same sentence.
 
 ![The layers list, with two layers and their document counts](./assets/admin/layers.png)
 
+Deleting one takes its documents with it, so the confirmation asks for the slug
+rather than for a click — a grant re-issues, and a layer's documents do not come
+back. It needs `admin` on the layer's workspace, never `write`: an ingest-only
+service account is exactly the principal that holds `write` into a layer and
+must not be able to remove it.
+
+![The delete-layer confirmation, asking for the slug to be typed](./assets/admin/delete-layer.png)
+
 `New layer` asks for the workspace, and the picker is filled from the ones this
 token may administer — there is exactly one after `init`, and it is selected
 already. The id below it stays editable, for pasting the one `init` printed.
@@ -305,6 +313,43 @@ something you have to know.
 
 Two rules surprise people, and the screen says both rather than assuming:
 `write` does not imply `read`, and a deny beats an allow at any depth.
+
+### People — onboarding a colleague
+
+`init` makes one administrator, and until this screen existed everybody else
+had to be inserted into `users` by hand. Nothing about the model required that:
+`grants.principal_type` has admitted `user` and `group` since the first
+migration.
+
+![The people screen, with three users and two groups](./assets/admin/people.png)
+
+![The new-user dialog, with the role picker and what a new member reaches](./assets/admin/new-user.png)
+
+Creating a user generates a password and shows it once — it is not accepted as
+input, because a password an administrator chose is one they know, and an
+argument ends up in a shell history. Losing it is a reset, not a recovery.
+
+![The password, shown once, with a copy button and a deliberate confirmation](./assets/admin/new-user-password.png)
+
+The same treatment the service account key gets, and for the same reason: it is
+stored as a scrypt hash, so there is no path from this screen that recovers it.
+
+**A new member reaches nothing.** The role decides whether they can administer
+the organization, never what they can read: that is entirely the grants, which
+is why an `org_admin` who has issued themselves no grant sees an empty search.
+
+![A group's direct members: one user and one nested group](./assets/admin/group-members.png)
+
+Grant the **group** rather than the person, wherever there is more than one of
+them. Adding somebody to a group gives them everything it holds and removing
+them takes it back on their next request — the permitted set is computed per
+request, so there is nothing to wait for. Granting each person individually is
+what leaves an ex-colleague with access nobody remembers to revoke.
+
+Disabling a user stops sign-in and refresh, and keeps the row: the access log
+names it. It does **not** revoke their grants, and an access token already
+issued keeps working until it expires — `NACRE_ACCESS_TOKEN_TTL` is that
+window.
 
 ![The service accounts list, with key prefixes and last use](./assets/admin/accounts.png)
 

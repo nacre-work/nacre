@@ -31,6 +31,7 @@ import { badRequest, internal, notFound, Problem } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
 import type { Login, Tokens } from './login.js'
+import { looksLikeEmail, type GroupMember, type Groups, type GroupView, type Users, type UserView } from './principals.js'
 import { clientSource } from './source.js'
 import {
   auditFormat,
@@ -723,6 +724,10 @@ export interface ApiOptions {
   readonly layers?: Layers
   readonly grants?: Grants
   readonly serviceAccounts?: ServiceAccountPort
+  /** Absent means `/v1/users` answers 404, like any capability a surface lacks. */
+  readonly users?: Users
+  /** Absent means `/v1/groups` and its membership paths answer 404. */
+  readonly groups?: Groups
   /** `NACRE_MAX_DOCUMENT_BYTES`. Over it is `413`, not `400`. */
   readonly maxBodyBytes?: number
   /**
@@ -788,6 +793,28 @@ function accountJson(a: ServiceAccountView): Record<string, unknown> {
     last_used_at: a.lastUsedAt,
     revoked_at: a.revokedAt,
   }
+}
+
+function userJson(u: UserView): Record<string, unknown> {
+  return {
+    id: u.id,
+    email: u.email,
+    role: u.role,
+    created_at: u.createdAt,
+    disabled_at: u.disabledAt,
+    // Whether one is set, never anything derived from it. False is an SSO-only
+    // account, which is a fact an administrator needs and which says nothing
+    // about the credential.
+    has_password: u.hasPassword,
+  }
+}
+
+function groupJson(g: GroupView): Record<string, unknown> {
+  return { id: g.id, name: g.name, created_at: g.createdAt, member_count: g.memberCount }
+}
+
+function memberJson(m: GroupMember): Record<string, unknown> {
+  return { type: m.type, id: m.id, label: m.label }
 }
 
 function grantJson(g: GrantRecord): Record<string, unknown> {
@@ -3000,6 +3027,458 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       })
 
       if (!revoked) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      send(res, 204, null, requestId)
+      return
+    }
+
+    // ───────────────────────────── principals ─────────────────────────────
+    //
+    // Users and groups. `org_admin`, on the same argument service accounts
+    // make: a principal belongs to the organization rather than to a scope
+    // inside it, so there is nothing to check `admin` against — and someone
+    // holding admin on one layer must not be able to mint one.
+    //
+    // The refusal writes a `deny` event. It surfaces as `404`, which is what
+    // makes it easy to miss: an early return that answers "no such path" is
+    // still a refusal, and `docs/audit.md` counts every one.
+    const principalPath = /^\/v1\/(users|groups)(\/.*)?$/.exec(instance)
+    if (principalPath !== null) {
+      const port = principalPath[1] === 'users' ? options.users : options.groups
+      if (port !== undefined && auth.role !== 'org_admin') {
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `${auth.principal.type}:${auth.principal.id}`,
+          action: 'administer_principals',
+          result: 'deny',
+          detail: { path: instance, method: req.method ?? 'GET', reason: 'not an org_admin' },
+          requestId,
+        })
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+    }
+
+    if (instance === '/v1/users' && options.users !== undefined) {
+      if (req.method === 'GET') {
+        const page = readPage(url.searchParams, instance, requestId)
+        if (page instanceof Problem) {
+          send(res, page.status, page.toJSON(), requestId)
+          return
+        }
+
+        const { items, nextCursor } = await options.users.list(auth, page)
+        send(res, 200, { items: items.map(userJson), next_cursor: nextCursor }, requestId)
+        return
+      }
+
+      if (req.method === 'POST') {
+        const fields = (body ?? {}) as Record<string, unknown>
+        const email = typeof fields.email === 'string' ? fields.email.trim() : ''
+        if (!looksLikeEmail(email)) {
+          const problem = badRequest(instance, requestId, "'email' is required and must be an address.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        const role = fields.role ?? 'member'
+        // `platform_admin` is deliberately not creatable here, and this is the
+        // one refusal in this block that is about the model rather than about
+        // input. That role administers the *installation* and spans tenants in
+        // the multi-tenancy module; an org_admin minting one would be
+        // escalating out of their own organization through an endpoint scoped
+        // to it. It is set by whoever runs `init`, and stays there.
+        if (role !== 'member' && role !== 'org_admin') {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "'role' must be 'member' or 'org_admin'. 'platform_admin' administers the " +
+              'installation rather than this organization and is not issued here.',
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        const created = await options.users.create(auth, email, role)
+
+        if (created === undefined) {
+          await options.audit.write({
+            orgId: auth.orgId,
+            actor: `${auth.principal.type}:${auth.principal.id}`,
+            action: 'create_user',
+            result: 'deny',
+            detail: { email, reason: 'address taken' },
+            requestId,
+          })
+          const problem = new Problem({
+            type: 'https://nacre.work/errors/conflict',
+            title: 'Conflict',
+            status: 409,
+            detail: `A user with the address '${email}' already exists in this organization.`,
+            instance,
+            requestId,
+          })
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `${auth.principal.type}:${auth.principal.id}`,
+          action: 'create_user',
+          result: 'allow',
+          // The address and the role. Never the password — this row is readable
+          // by anyone with the audit log, and the password is not recoverable
+          // from anywhere else by design.
+          detail: { user_id: created.user.id, email, role },
+          requestId,
+        })
+
+        // The only time the password exists outside the caller's process.
+        send(res, 201, { ...userJson(created.user), password: created.password }, requestId)
+        return
+      }
+    }
+
+    const userMatch = /^\/v1\/users\/([^/]+)$/.exec(instance)
+    if (userMatch && options.users !== undefined) {
+      const id = decodeURIComponent(userMatch[1] as string)
+
+      if (req.method === 'DELETE') {
+        // Disabled, never deleted, which is what `DELETE` means on every
+        // removable thing here: a document is tombstoned, a key is revoked, and
+        // a user keeps their row because the audit log names its id and
+        // `grants.created_by` references it with no cascade. `PATCH` with
+        // `disabled: false` is how somebody comes back.
+        //
+        // Through the same call `PATCH` makes rather than a second statement,
+        // so the last-administrator guard covers both spellings. Two removals
+        // with one check between them is how the guarded one gets routed
+        // around.
+        const disabled = await options.users.update(auth, id, { disabled: true })
+
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `${auth.principal.type}:${auth.principal.id}`,
+          action: 'disable_user',
+          result: disabled === 'updated' ? 'allow' : 'deny',
+          detail: { user_id: id, ...(disabled === 'updated' ? {} : { reason: disabled }) },
+          requestId,
+        })
+
+        if (disabled === 'last-admin') {
+          const problem = new Problem({
+            type: 'https://nacre.work/errors/conflict',
+            title: 'Conflict',
+            status: 409,
+            detail:
+              'This is the only active org_admin in the organization. Promote another user ' +
+              'first — an organization with none has no route back through the API.',
+            instance,
+            requestId,
+          })
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        if (disabled === 'no-user') {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        send(res, 204, null, requestId)
+        return
+      }
+
+      if (req.method === 'PATCH') {
+        const fields = (body ?? {}) as Record<string, unknown>
+        const wantsRole = 'role' in fields
+        const wantsDisabled = 'disabled' in fields
+        if (!wantsRole && !wantsDisabled) {
+          const problem = badRequest(instance, requestId, "Give at least one of 'role' or 'disabled'.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        if (wantsRole && fields.role !== 'member' && fields.role !== 'org_admin') {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "'role' must be 'member' or 'org_admin'. 'platform_admin' administers the " +
+              'installation rather than this organization and is not issued here.',
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        if (wantsDisabled && typeof fields.disabled !== 'boolean') {
+          const problem = badRequest(instance, requestId, "'disabled' must be a boolean.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        // The last administrator cannot demote or disable themselves through
+        // this path. Not paternalism: an organization with no `org_admin` has
+        // no route back — every endpoint that could restore one is behind the
+        // role that was just given up, and the remedy would be SQL. The check
+        // is in the adapter, where it can count in the same transaction.
+        const changed = await options.users.update(auth, id, {
+          ...(wantsRole ? { role: fields.role as 'member' | 'org_admin' } : {}),
+          ...(wantsDisabled ? { disabled: fields.disabled as boolean } : {}),
+        })
+
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `${auth.principal.type}:${auth.principal.id}`,
+          action: 'update_user',
+          result: changed === 'updated' ? 'allow' : 'deny',
+          detail: {
+            user_id: id,
+            ...(wantsRole ? { role: fields.role } : {}),
+            ...(wantsDisabled ? { disabled: fields.disabled } : {}),
+            ...(changed === 'updated' ? {} : { reason: changed }),
+          },
+          requestId,
+        })
+
+        if (changed === 'last-admin') {
+          // 409 rather than 404: the caller is looking straight at this user —
+          // it is their own account or one they just listed — so the answer is
+          // about the organization's state and not about what they can see.
+          // Invariant 4 is about invisibility, and nothing here is invisible.
+          const problem = new Problem({
+            type: 'https://nacre.work/errors/conflict',
+            title: 'Conflict',
+            status: 409,
+            detail:
+              'This is the only active org_admin in the organization. Promote another user ' +
+              'first — an organization with none has no route back through the API.',
+            instance,
+            requestId,
+          })
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        if (changed === 'no-user') {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        send(res, 204, null, requestId)
+        return
+      }
+    }
+
+    const passwordMatch = /^\/v1\/users\/([^/]+)\/password$/.exec(instance)
+    if (req.method === 'POST' && passwordMatch && options.users !== undefined) {
+      const id = decodeURIComponent(passwordMatch[1] as string)
+      const password = await options.users.resetPassword(auth, id)
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'reset_password',
+        result: password === undefined ? 'deny' : 'allow',
+        // That it happened and to whom. Never the value.
+        detail: { user_id: id },
+        requestId,
+      })
+
+      if (password === undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      // Generated rather than chosen, for the reason `init` gives: an argument
+      // ends up in a shell history, and a password an administrator picked is
+      // one they know. This is the only time it exists outside the process.
+      send(res, 200, { password }, requestId)
+      return
+    }
+
+    if (instance === '/v1/groups' && options.groups !== undefined) {
+      if (req.method === 'GET') {
+        const page = readPage(url.searchParams, instance, requestId)
+        if (page instanceof Problem) {
+          send(res, page.status, page.toJSON(), requestId)
+          return
+        }
+
+        const { items, nextCursor } = await options.groups.list(auth, page)
+        send(res, 200, { items: items.map(groupJson), next_cursor: nextCursor }, requestId)
+        return
+      }
+
+      if (req.method === 'POST') {
+        const name = ((body ?? {}) as Record<string, unknown>).name
+        if (typeof name !== 'string' || name.trim().length === 0) {
+          const problem = badRequest(instance, requestId, "'name' is required.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        const created = await options.groups.create(auth, name.trim())
+
+        if (created === undefined) {
+          await options.audit.write({
+            orgId: auth.orgId,
+            actor: `${auth.principal.type}:${auth.principal.id}`,
+            action: 'create_group',
+            result: 'deny',
+            detail: { name: name.trim(), reason: 'name taken' },
+            requestId,
+          })
+          const problem = new Problem({
+            type: 'https://nacre.work/errors/conflict',
+            title: 'Conflict',
+            status: 409,
+            detail: `A group named '${name.trim()}' already exists in this organization.`,
+            instance,
+            requestId,
+          })
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `${auth.principal.type}:${auth.principal.id}`,
+          action: 'create_group',
+          result: 'allow',
+          detail: { group_id: created.id, name: created.name },
+          requestId,
+        })
+
+        send(res, 201, groupJson(created), requestId)
+        return
+      }
+    }
+
+    const groupMatch = /^\/v1\/groups\/([^/]+)$/.exec(instance)
+    if (req.method === 'DELETE' && groupMatch && options.groups !== undefined) {
+      const id = decodeURIComponent(groupMatch[1] as string)
+      const removed = await options.groups.remove(auth, id)
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'delete_group',
+        result: removed ? 'allow' : 'deny',
+        detail: { group_id: id },
+        requestId,
+      })
+
+      if (!removed) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      send(res, 204, null, requestId)
+      return
+    }
+
+    const membersMatch = /^\/v1\/groups\/([^/]+)\/members$/.exec(instance)
+    if (membersMatch && options.groups !== undefined) {
+      const groupId = decodeURIComponent(membersMatch[1] as string)
+
+      if (req.method === 'GET') {
+        const page = readPage(url.searchParams, instance, requestId)
+        if (page instanceof Problem) {
+          send(res, page.status, page.toJSON(), requestId)
+          return
+        }
+
+        const result = await options.groups.members(auth, groupId, page)
+        if (result === undefined) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        send(
+          res,
+          200,
+          { items: result.items.map(memberJson), next_cursor: result.nextCursor },
+          requestId,
+        )
+        return
+      }
+
+      if (req.method === 'POST') {
+        const fields = (body ?? {}) as Record<string, unknown>
+        const type = fields.type
+        const memberId = fields.id
+        if ((type !== 'user' && type !== 'group') || typeof memberId !== 'string') {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "'type' must be 'user' or 'group', and 'id' is required.",
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        const outcome = await options.groups.addMember(auth, groupId, { type, id: memberId })
+
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `${auth.principal.type}:${auth.principal.id}`,
+          action: 'add_group_member',
+          result: outcome === 'no-group' || outcome === 'no-member' ? 'deny' : 'allow',
+          detail: {
+            group_id: groupId,
+            member_type: type,
+            member_id: memberId,
+            ...(outcome === 'already' ? { note: 'already a member' } : {}),
+            ...(outcome === 'no-group' || outcome === 'no-member' ? { reason: outcome } : {}),
+          },
+          requestId,
+        })
+
+        if (outcome === 'no-group' || outcome === 'no-member') {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        // 204 for both `added` and `already`. The request asked for a state and
+        // that state holds either way, and distinguishing them would tell a
+        // caller whether somebody was already in a group — which is a fact
+        // about the group and not about their request.
+        send(res, 204, null, requestId)
+        return
+      }
+    }
+
+    // `{type}/{id}` rather than `{id}` alone: the edge is keyed by which member
+    // column it uses, so a bare uuid does not identify one. Same shape `grants`
+    // uses for the other end of the same relationship.
+    const memberMatch = /^\/v1\/groups\/([^/]+)\/members\/(user|group)\/([^/]+)$/.exec(instance)
+    if (req.method === 'DELETE' && memberMatch && options.groups !== undefined) {
+      const groupId = decodeURIComponent(memberMatch[1] as string)
+      const type = memberMatch[2] as 'user' | 'group'
+      const memberId = decodeURIComponent(memberMatch[3] as string)
+
+      const removed = await options.groups.removeMember(auth, groupId, { type, id: memberId })
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'remove_group_member',
+        result: removed ? 'allow' : 'deny',
+        detail: { group_id: groupId, member_type: type, member_id: memberId },
+        requestId,
+      })
+
+      if (!removed) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return

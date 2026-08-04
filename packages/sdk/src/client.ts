@@ -4,9 +4,12 @@ import type {
   AuditQuery,
   AuditRecord,
   CreatedServiceAccount,
+  CreatedUser,
   Document,
   Grant,
   GrantInput,
+  Group,
+  GroupMember,
   IngestOutcome,
   IngestRequest,
   Job,
@@ -21,6 +24,8 @@ import type {
   SearchHit,
   SearchOptions,
   ServiceAccount,
+  User,
+  UserRole,
 } from './types.js'
 
 /**
@@ -813,6 +818,168 @@ export class NacreClient {
     },
   }
 
+  // ─── users and groups ────────────────────────────────────────────────────
+
+  /**
+   * The people in the organization.
+   *
+   * Every one of these needs `org_admin`, and a caller without it gets the same
+   * `404` an unknown path gets — so `list` throwing `isNotFound` means "not an
+   * administrator" as readily as it means anything else, which is invariant 4
+   * working as intended rather than a shortcoming of this client.
+   */
+  readonly users = {
+    list: async (): Promise<readonly User[]> => {
+      const body = (await this.#request({
+        method: 'GET',
+        path: '/v1/users',
+        retryable: true,
+      })) as { items?: unknown[] }
+      return (body.items ?? []).map((u) => userFrom(u as Record<string, unknown>))
+    },
+
+    /** The response carries the password. It is not recoverable afterwards. */
+    create: async (email: string, role: 'member' | 'org_admin' = 'member'): Promise<CreatedUser> => {
+      const body = (await this.#request({
+        method: 'POST',
+        path: '/v1/users',
+        body: { email, role },
+      })) as Record<string, unknown>
+
+      return { ...userFrom(body), password: String(body.password) }
+    },
+
+    /** Change the role, the disabled state, or both. False when there is no such user. */
+    update: async (
+      id: string,
+      change: { role?: 'member' | 'org_admin'; disabled?: boolean },
+    ): Promise<boolean> => {
+      try {
+        await this.#request({
+          method: 'PATCH',
+          path: `/v1/users/${encodeURIComponent(id)}`,
+          body: change,
+        })
+        return true
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return false
+        throw error
+      }
+    },
+
+    /**
+     * Disable. The row is kept — see the endpoint's own note on why.
+     *
+     * `409` is not swallowed: refusing to strand an organization with no
+     * administrator is a different answer from "no such user", and a caller
+     * that cannot tell them apart would report the wrong one.
+     */
+    disable: async (id: string): Promise<boolean> => {
+      try {
+        await this.#request({ method: 'DELETE', path: `/v1/users/${encodeURIComponent(id)}` })
+        return true
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return false
+        throw error
+      }
+    },
+
+    /** A new password, shown once. `undefined` when there is no such user. */
+    resetPassword: async (id: string): Promise<string | undefined> => {
+      try {
+        const body = (await this.#request({
+          method: 'POST',
+          path: `/v1/users/${encodeURIComponent(id)}/password`,
+        })) as Record<string, unknown>
+        return String(body.password)
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return undefined
+        throw error
+      }
+    },
+  }
+
+  readonly groups = {
+    list: async (): Promise<readonly Group[]> => {
+      const body = (await this.#request({
+        method: 'GET',
+        path: '/v1/groups',
+        retryable: true,
+      })) as { items?: unknown[] }
+      return (body.items ?? []).map((g) => groupFrom(g as Record<string, unknown>))
+    },
+
+    create: async (name: string): Promise<Group> => {
+      const body = (await this.#request({
+        method: 'POST',
+        path: '/v1/groups',
+        body: { name },
+      })) as Record<string, unknown>
+      return groupFrom(body)
+    },
+
+    remove: async (id: string): Promise<boolean> => {
+      try {
+        await this.#request({ method: 'DELETE', path: `/v1/groups/${encodeURIComponent(id)}` })
+        return true
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return false
+        throw error
+      }
+    },
+
+    /** Direct members. `undefined` when there is no such group — distinct from an empty one. */
+    members: async (id: string): Promise<readonly GroupMember[] | undefined> => {
+      try {
+        const body = (await this.#request({
+          method: 'GET',
+          path: `/v1/groups/${encodeURIComponent(id)}/members`,
+          retryable: true,
+        })) as { items?: unknown[] }
+        return (body.items ?? []).map((m) => memberFrom(m as Record<string, unknown>))
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return undefined
+        throw error
+      }
+    },
+
+    /** True once the member is in the group, whether this call is what put them there. */
+    addMember: async (
+      id: string,
+      member: { type: 'user' | 'group'; id: string },
+    ): Promise<boolean> => {
+      try {
+        await this.#request({
+          method: 'POST',
+          path: `/v1/groups/${encodeURIComponent(id)}/members`,
+          body: { type: member.type, id: member.id },
+        })
+        return true
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return false
+        throw error
+      }
+    },
+
+    removeMember: async (
+      id: string,
+      member: { type: 'user' | 'group'; id: string },
+    ): Promise<boolean> => {
+      try {
+        await this.#request({
+          method: 'DELETE',
+          path:
+            `/v1/groups/${encodeURIComponent(id)}/members/` +
+            `${member.type}/${encodeURIComponent(member.id)}`,
+        })
+        return true
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return false
+        throw error
+      }
+    },
+  }
+
   // ─── sign-in ─────────────────────────────────────────────────────────────
 
   /**
@@ -1035,6 +1202,34 @@ function grantFrom(g: Record<string, unknown>): Grant {
     permission: g.permission as Grant['permission'],
     effect: g.effect as Grant['effect'],
     source: String(g.source ?? ''),
+  }
+}
+
+function userFrom(u: Record<string, unknown>): User {
+  return {
+    id: String(u.id),
+    email: String(u.email ?? ''),
+    role: (u.role as UserRole | undefined) ?? 'member',
+    createdAt: String(u.created_at ?? ''),
+    disabledAt: (u.disabled_at as string | null) ?? null,
+    hasPassword: u.has_password === true,
+  }
+}
+
+function groupFrom(g: Record<string, unknown>): Group {
+  return {
+    id: String(g.id),
+    name: String(g.name ?? ''),
+    createdAt: String(g.created_at ?? ''),
+    memberCount: Number(g.member_count ?? 0),
+  }
+}
+
+function memberFrom(m: Record<string, unknown>): GroupMember {
+  return {
+    type: m.type === 'group' ? 'group' : 'user',
+    id: String(m.id),
+    label: String(m.label ?? ''),
   }
 }
 

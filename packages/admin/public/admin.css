@@ -196,6 +196,15 @@ a { color: var(--n-accent); }
 .chip-admin { background: var(--n-admin); }
 .chip-deny { background: var(--n-deny); }
 
+/* A heading inside a view that holds two collections — People is the only one
+   so far, and both halves belong on one screen because a group exists for what
+   it does to a grant. */
+.section {
+  margin: 28px 0 10px; font-size: 13px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--n-text-muted);
+}
+.section:first-child { margin-top: 0; }
+
 /* ─── Empty and error states ──────────────────────────────────────────── */
 .empty {
   border: 1px dashed var(--n-rule); border-radius: var(--n-radius);

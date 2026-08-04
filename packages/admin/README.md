@@ -1,8 +1,8 @@
 # @nacre.work/admin
 
-The community admin UI. One organization, four screens, no framework.
+The community admin UI. One organization, five screens, no framework.
 
-Search · Layers · Grants · Service accounts. The Layers screen carries the
+Search · Layers · Grants · People · Service accounts. The Layers screen carries the
 embedding model too: what a migration is doing, the reference queries the recall
 gate scores it against, and starting one.
 
@@ -23,7 +23,7 @@ screen. That is a real deployment and a slightly worse one.
 
 ## What is deliberately missing
 
-**A framework.** Four screens, no client-side state worth reconciling, and a
+**A framework.** Five screens, no client-side state worth reconciling, and a
 container whose selling point is that it has no supply chain to speak of. React
 here would be the largest dependency in the repository, and it would be carrying
 four tables. `esbuild` is the only build dependency and exists solely because a
