@@ -15,6 +15,7 @@ import {
   Registry,
   S3,
   VectorStore,
+  pendingMigrations,
   withOrg,
   ConfigError,
   installGuards,
@@ -172,7 +173,7 @@ async function main(): Promise<void> {
   // somebody else's uptime turns their outage into a rollout that never
   // completes.
   const ready = async (): Promise<Record<string, boolean>> => {
-    const [postgres, qdrant, redisUp, s3Up] = await Promise.all([
+    const [postgres, qdrant, redisUp, s3Up, schema] = await Promise.all([
       withOrg(pool, '00000000-0000-0000-0000-000000000000', async (c) => {
         await c.query('SELECT 1')
         return true
@@ -180,11 +181,50 @@ async function main(): Promise<void> {
       vectors.ready().catch(() => false),
       redis.ping().catch(() => false),
       objects === undefined ? Promise.resolve(undefined) : objects.ready().catch(() => false),
+      // Does this database carry every migration this build ships?
+      //
+      // Everything above asks whether a dependency answers. None of them asks
+      // the question that actually decides whether this process can serve: a
+      // pod started against a database the migrator has not reached reports
+      // ready and then fails every request — and under an orchestrator that is
+      // worse than an error, because the rollout believes the answer and
+      // carries on replacing working pods with broken ones.
+      //
+      // A database that is *ahead* stays ready. That is the middle of a
+      // rolling upgrade, where the old replica has to keep serving.
+      //
+      // Outside `withOrg`, and allowed to be: `schema_migrations` is not a
+      // tenant table. It has no `org_id`, no policy and nothing to scope to —
+      // its rows are the file names and checksums of SQL that ships in a
+      // public repository. The rule that raw queries must say what permits
+      // them is why this paragraph exists; migration 0022 is what grants the
+      // application role the SELECT, because before it there was none.
+      //
+      // The name is logged and never sent: the body of this endpoint is
+      // unauthenticated, and which migration a deployment is missing is more
+      // than a probe needs to be told.
+      pendingMigrations(pool)
+        .then((pending) => {
+          if (pending.length === 0) return true
+          logger.warn('schema is behind this build', {
+            pending: pending.length,
+            next: pending[0],
+          })
+          return false
+        })
+        .catch((error: unknown) => {
+          // No table, no privilege, no connection — the same conclusion by a
+          // different route, and the right one: a database whose ledger cannot
+          // be read is not one to serve against.
+          logger.warn('could not read the migration ledger', { error: String(error) })
+          return false
+        }),
     ])
     return {
       postgres,
       qdrant,
       redis: redisUp,
+      schema,
       ...(s3Up === undefined ? {} : { s3: s3Up }),
     }
   }

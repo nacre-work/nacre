@@ -264,3 +264,47 @@ export async function migrate(
 
   return { applied, skipped }
 }
+
+/**
+ * Whatever can run one query, which is a `Pool`, a `PoolClient` or a test's
+ * double. Deliberately not the `pg` types: this is the readiness path, and
+ * nothing about it needs a connection of its own.
+ */
+export interface LedgerReader {
+  query(text: string): Promise<{ rows: { name: string }[] }>
+}
+
+/**
+ * Does this database carry every migration this build ships?
+ *
+ * `/v1/ready` used to report that Postgres, Qdrant, Redis and the bucket
+ * answer, and say nothing about whether the schema matches the code. A process
+ * started against a database the migrator has not reached reports ready and
+ * then fails every request — and under an orchestrator that is worse than an
+ * error, because the rollout believes the answer and carries on replacing
+ * working pods with broken ones.
+ *
+ * **A database that is ahead is current.** Extra rows mean the migrator has run
+ * for a newer build, which is exactly the middle of a rolling upgrade: the old
+ * pod is still serving and must stay ready, or a normal upgrade would take
+ * every old replica out of rotation at the moment the schema moved. Only what
+ * this build ships and the database lacks makes it behind.
+ *
+ * Returns the missing names rather than a boolean, because a readiness body
+ * that says "false" and a log line that says which migration is missing are two
+ * different jobs and only one of them is the operator's answer.
+ *
+ * Throws where the ledger cannot be read at all — no table, no privilege, no
+ * connection. The caller turns that into "not ready", which is the same
+ * conclusion by a different route and the right one: a database whose ledger is
+ * unreadable is not one this process should be serving against.
+ */
+export async function pendingMigrations(
+  client: LedgerReader,
+  dir: string = MIGRATIONS_DIR,
+): Promise<readonly string[]> {
+  const shipped = loadMigrations(dir).map((m) => m.name)
+  const { rows } = await client.query('SELECT name FROM schema_migrations')
+  const applied = new Set(rows.map((r) => r.name))
+  return shipped.filter((name) => !applied.has(name))
+}

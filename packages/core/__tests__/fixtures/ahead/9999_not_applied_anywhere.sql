@@ -1,0 +1,2 @@
+-- A migration no database has ever applied. It exists so the readiness
+-- check has something to be missing; it is never run.
