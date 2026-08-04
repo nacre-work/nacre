@@ -43,6 +43,8 @@
  * line rather than a silent fallback.
  */
 
+import { endpointUrl } from '@nacre.work/core'
+
 export interface Reranker {
   /**
    * Score each text against the query. One score per input, **in input order**.
@@ -76,7 +78,7 @@ export class HttpReranker implements Reranker {
     // server is wedged; the caller treats a timeout as a degradation.
     const abort = AbortSignal.timeout(this.timeoutMs)
 
-    const response = await fetch(new URL('/rerank', this.endpoint), {
+    const response = await fetch(endpointUrl(this.endpoint, 'rerank'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query, texts: [...texts], raw_scores: false }),

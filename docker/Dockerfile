@@ -4,7 +4,17 @@
 # images would mean three things to keep in step and three chances for one of
 # them to lag a security fix. The command decides which one runs.
 
-FROM node:22-alpine AS build
+# Pinned to the platform doing the building, never the one being built for.
+#
+# This stage installs, compiles TypeScript and bundles the admin UI, and every
+# one of its outputs is JavaScript — the production dependency tree is `pg`,
+# `jose` and the Qdrant client, none of which carry a native binary, and the
+# compilers that do (esbuild, lightningcss) are development dependencies the
+# `--prod` install below removes. So there is nothing here for an architecture
+# to disagree about, and running it under emulation would buy a slower build and
+# an identical result. The runtime stage stays on the target platform, which is
+# what makes the image actually arm64.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS build
 WORKDIR /app
 RUN corepack enable
 

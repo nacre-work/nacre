@@ -38,6 +38,11 @@ NACRE_RERANKER_ENDPOINT=http://reranker:80
 NACRE_RERANKER_ENABLED=false          # true needs an endpoint; minimal has none
 NACRE_RERANK_CANDIDATES=50            # fetched from the index, cut to top_k after scoring
 NACRE_PARSER_ENDPOINT=http://parser:8090
+# Both model endpoints are base URLs and **a path on one is kept**: the route is
+# resolved under it, so `https://api.openai.com/v1` calls /v1/embeddings and
+# `http://embedder:80` calls /embeddings. Until 0.5.2 the route was appended from
+# the root, which discarded the path — so every hosted OpenAI-compatible API, and
+# Ollama and LM Studio, answered 404 while the profiles' own TEI worked.
 
 # ─── authorization ───
 # Exactly one of these two, and setting both is refused at startup — they are
@@ -547,6 +552,15 @@ so two processes agree on it without anyone keeping two settings in step.
 
 MinIO appears only in `full`, and that is a licensing decision as much as a
 packaging one — see [licensing.md](./licensing.md).
+
+**On arm64 the embedder and the reranker are the exception, and only those two.**
+Text Embeddings Inference publishes no arm64 image, so `full` and `airgapped`
+run those containers emulated on an Apple Silicon Mac or an arm64 node;
+everything else in every profile — this repository's two images since 0.5.2,
+Postgres, Qdrant, Redis, nginx, MinIO and Keycloak — is native. The arrangement
+that avoids the emulation is `minimal` with an embedder on the host, and
+[apple-silicon.md](./apple-silicon.md) has it, along with
+`docker-compose.apple-silicon.yml`.
 
 **`airgapped` is airgapped only after two one-time steps, and the profile now
 says so rather than implying it happens by itself.**

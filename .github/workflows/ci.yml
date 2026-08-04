@@ -127,29 +127,73 @@ jobs:
             exit 1
           fi
 
-  # The two images the Helm chart names in its defaults must actually build.
-  # "This image could not be built by anyone" was a real state once — a pnpm
-  # step that needs a TTY, in a `docker build` that never has one — and the only
-  # place that surfaces is a build. Built here on every pull request, not pushed;
-  # the release workflow pushes the same Dockerfiles to ghcr on a version bump.
+  # The two images the Helm chart names in its defaults must actually build,
+  # **on both architectures the release publishes**. "This image could not be
+  # built by anyone" was a real state once — a pnpm step that needs a TTY, in a
+  # `docker build` that never has one — and the only place that surfaces is a
+  # build. Built here on every pull request, not pushed; the release workflow
+  # pushes the same Dockerfiles to ghcr on a version bump.
+  #
+  # arm64 is not decoration. It is what an Apple Silicon laptop and an arm64
+  # node pull, and building it only at release time means the first person to
+  # find a cross-build broken is whoever ran `docker compose up` on a Mac.
   docker:
     name: docker
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - name: nacre (api, mcp, worker)
+
+      - name: nacre (api, mcp, worker) — both architectures
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
           push: false
-      - name: nacre-parser
+          platforms: linux/amd64,linux/arm64
+      - name: nacre-parser — both architectures
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.parser
           push: false
+          platforms: linux/arm64,linux/amd64
+
+      # Building is not running, and for a cross-built image those are further
+      # apart than usual: the node image's build stage is pinned to
+      # $BUILDPLATFORM, so a production dependency that did carry a native
+      # binary would be compiled for the *builder* and copied into an arm64
+      # runtime that cannot execute it. That produces an image which builds
+      # cleanly and dies on its first import.
+      #
+      # So start the arm64 image under emulation and let it reach configuration
+      # validation. Exit 2 is `ConfigError` — the process loaded every module in
+      # the graph (pg, jose, the Qdrant client) and got as far as complaining
+      # about an empty environment, which is the whole assertion. An
+      # architecture fault, a missing module or a broken binary is any other
+      # code.
+      - name: the arm64 image runs
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/arm64 --load -f docker/Dockerfile -t nacre:arm64 .
+          docker buildx build --platform linux/arm64 --load -f docker/Dockerfile.parser -t nacre-parser:arm64 .
+
+          set +e
+          out="$(docker run --rm --platform linux/arm64 nacre:arm64 node packages/api/dist/main.js 2>&1)"
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" != 2 ]; then
+            echo "::error::the arm64 api exited $code; a configuration refusal is 2"
+            exit 1
+          fi
+
+          # The sidecar's only dependency, imported on the architecture it will
+          # run on. pypdf is pure Python and so is meant to be portable — this
+          # is what turns that into something checked rather than believed.
+          docker run --rm --platform linux/arm64 nacre-parser:arm64 \
+            python -c "import pypdf, platform; print('pypdf', pypdf.__version__, 'on', platform.machine())"
 
   # The whole loop, booted from the Compose file the quickstart hands out. Every
   # other job asserts on a part; this one starts the parts together and runs a

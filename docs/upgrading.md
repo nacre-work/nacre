@@ -240,6 +240,57 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.5.2 — arm64, and an endpoint that keeps its path
+
+Fixes and packaging. No schema change, no new required configuration, and 0.5.1
+runs unchanged against this database — so rolling back is safe.
+
+**The images are built for linux/arm64 as well as linux/amd64.** Every tag up to
+and including 0.5.1 carried one architecture, checked against the registry
+rather than inferred: `ghcr.io/nacre-work/nacre:0.5.1` and `-parser:0.5.1` are
+`linux/amd64` and nothing else. On an Apple Silicon Mac and on an arm64 node,
+Docker pulled that manifest and ran it emulated — which is a slow container, not
+an error, so nothing reported it.
+
+Nothing to do beyond moving the tag. A pod or a Compose stack already running
+0.5.1 on arm64 keeps running the emulated image until it pulls the new one;
+`image.tag` (or `:latest`) forward is the whole action, and the improvement is
+latency rather than behaviour.
+
+If you pin digests, note that a multi-architecture tag's digest is an index and
+not an image — pin the index digest and the node resolves its own architecture
+from it.
+
+**A path on a model endpoint is no longer discarded.** The embedder and reranker
+calls built their route with `new URL('/embeddings', endpoint)`, which is
+origin-relative, so everything after the host was thrown away:
+`https://api.openai.com/v1` called `https://api.openai.com/embeddings` and got a
+404 that named no cause. The route resolves under the configured path now.
+
+**Check this before upgrading if you worked around it**, because the workaround
+becomes the bug. A deployment that stripped the `/v1` to make the old code reach
+the right route — configuring `https://api.openai.com` and relying on the append
+— now calls `https://api.openai.com/embeddings` for real, and gets the 404 it
+was avoiding. Put the path back:
+
+```sql
+SELECT id, name, endpoint FROM embedding_providers;
+```
+
+An endpoint with no path that worked before still works: `http://embedder:80`
+resolves to `/embeddings` exactly as it did, which is why the `full` and
+`airgapped` profiles are unaffected and why this went unnoticed.
+
+`NACRE_DEFAULT_EMBEDDING_ENDPOINT` seeds `embedding_providers` at `init` and is
+not read again, so for an installation past its first run the row is what
+matters and the variable is not.
+
+**[apple-silicon.md](./apple-silicon.md)** is new, with
+`docker-compose.apple-silicon.yml` beside it. The one part of the stack that is
+still not arm64 is the embedder and reranker image — Text Embeddings Inference
+publishes no arm64 build — so `full` and `airgapped` run those two emulated on
+that architecture, and the page has the arrangement that avoids it.
+
 ### 0.5.1 — what a real client and a real operator ran into
 
 Fixes only. No schema change, no new required configuration, and 0.5.0 runs

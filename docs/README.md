@@ -14,6 +14,7 @@ model, and reworking it after search is written is expensive.
 | [extensions.md](./extensions.md) | The points a commercial module plugs into, and what the core refuses |
 | [licensing.md](./licensing.md) | Open/commercial boundary, third-party licenses |
 | [quickstart.md](./quickstart.md) | First run, first document, first search |
+| [apple-silicon.md](./apple-silicon.md) | Running on an M-series Mac: what is native, and the one thing that is not |
 | [upgrading.md](./upgrading.md) | What an operator does when a release comes out |
 
 ## Order of work
