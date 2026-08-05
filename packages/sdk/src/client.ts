@@ -23,6 +23,7 @@ import type {
   Workspace,
   SearchHit,
   SearchOptions,
+  Self,
   ServiceAccount,
   User,
   UserRole,
@@ -512,6 +513,25 @@ export class NacreClient {
   // ─── layers ──────────────────────────────────────────────────────────────
 
   /**
+   * Who this token belongs to.
+   *
+   * The one call a client can make before it knows anything: it composes its
+   * answer from the presented token and names no other principal. A UI needs it
+   * to know which controls to offer — without it the admin UI drew every button
+   * for everybody, and a member pressing one got the `404` invariant 4 requires,
+   * which reads as a broken application rather than as a permission they lack.
+   */
+  readonly me = async (): Promise<Self> => {
+    const body = (await this.#request({ method: 'GET', path: '/v1/me', retryable: true })) as Record<string, unknown>
+    return {
+      organization: String(body.organization),
+      principalType: body.principal_type === 'service_account' ? 'service_account' : 'user',
+      principalId: String(body.principal_id),
+      role: String(body.role) as Self['role'],
+    }
+  }
+
+  /**
    * Workspaces. A layer needs one, and until this endpoint existed the only
    * way to have its id was the line `init` printed.
    */
@@ -782,6 +802,41 @@ export class NacreClient {
   }
 
   // ─── service accounts ────────────────────────────────────────────────────
+
+  /**
+   * Approve an OAuth request, naming the agent the client will act as.
+   *
+   * The one call in the flow that creates authority, and the reason it lives on
+   * an authenticated client: a signed-in person is choosing which **service
+   * account** a client gets to be. The token that comes back to the client acts
+   * as that account and never as them.
+   *
+   * Returns where the browser should go — the redirect is the page's to perform,
+   * not the API's, because this is an XHR from a screen the person is looking
+   * at.
+   */
+  readonly consent = async (input: {
+    clientId: string
+    redirectUri: string
+    codeChallenge: string
+    serviceAccountId: string
+    state?: string
+    resource?: string
+  }): Promise<string> => {
+    const body = (await this.#request({
+      method: 'POST',
+      path: '/v1/oauth/consent',
+      body: {
+        client_id: input.clientId,
+        redirect_uri: input.redirectUri,
+        code_challenge: input.codeChallenge,
+        service_account_id: input.serviceAccountId,
+        ...(input.state === undefined ? {} : { state: input.state }),
+        ...(input.resource === undefined ? {} : { resource: input.resource }),
+      },
+    })) as { redirect_to?: unknown }
+    return String(body.redirect_to)
+  }
 
   readonly serviceAccounts = {
     list: async (): Promise<readonly ServiceAccount[]> => {

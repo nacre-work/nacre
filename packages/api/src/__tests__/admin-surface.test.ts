@@ -206,6 +206,41 @@ describe('the administrative surface', () => {
     await new Promise<void>((resolve) => server.close(() => resolve()))
   })
 
+  /**
+   * Who the caller is.
+   *
+   * There was no way to ask, and the consequence was a UI that offered every
+   * control to everybody: it could not tell an `org_admin` from a `member`, so
+   * a member pressed "New user" and got the `404` invariant 4 requires — which
+   * reads as a broken application rather than as a permission they lack.
+   *
+   * The property to hold onto is that this composes its answer from the token
+   * and nothing else. It cannot name another principal because it never asks
+   * anything about one.
+   */
+  it('describes the caller and nobody else', async () => {
+    for (const [who, headers, role] of [
+      ['a member', await auth(), 'member'],
+      ['an administrator', await adminAuth(), 'org_admin'],
+    ] as const) {
+      const res = await fetch(`${base}/v1/me`, { headers })
+      expect(res.status, who).toBe(200)
+      const body = (await res.json()) as Record<string, unknown>
+      expect(body.role, who).toBe(role)
+      expect(body.organization, who).toBe(ORG_A)
+      expect(body.principal_type, who).toBe('user')
+      expect(typeof body.principal_id, who).toBe('string')
+      // Nothing about anybody else, and nothing that is not in the token.
+      expect(Object.keys(body).sort()).toEqual(['organization', 'principal_id', 'principal_type', 'role'])
+    }
+  })
+
+  it('needs a token like everything else, and answers no other method', async () => {
+    expect((await fetch(`${base}/v1/me`)).status).toBe(401)
+    // 404 rather than 405: invariant 4 reserves the distinction for objects.
+    expect((await fetch(`${base}/v1/me`, { method: 'POST', headers: await auth(), body: '{}' })).status).toBe(404)
+  })
+
   it('a job reports its status', async () => {
     const res = await fetch(`${base}/v1/jobs/${DOC}`, { headers: await auth() })
     expect(res.status).toBe(200)

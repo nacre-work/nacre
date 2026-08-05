@@ -155,10 +155,29 @@ async function main(): Promise<void> {
     resourceMetadataUrl: new URL(PROTECTED_RESOURCE_PATH, config.mcpCanonicalUrl).toString(),
     resourceMetadata: protectedResourceMetadata({
       canonicalUrl: config.mcpCanonicalUrl,
-      ...(config.oauthAuthorizationServer === ''
-        ? {}
-        : { authorizationServer: config.oauthAuthorizationServer }),
+      // The authorization server is the **API's** origin, never this one: the
+      // transport verifies tokens and issues none, and the consent flow lives
+      // where sign-in does.
+      authorizationServer:
+        config.oauthAuthorizationServer === ''
+          ? config.canonicalUrl.replace(/\/+$/, '')
+          : config.oauthAuthorizationServer,
     }),
+    // Unpinned, the identifier follows the request. The Compose default named
+    // localhost, which is the right answer only for a client on the server's
+    // own machine and a refusal before the first token for everyone else.
+    ...(config.mcpCanonicalUrlPinned
+      ? {}
+      : {
+          resourceFromRequest: (origin: string) =>
+            protectedResourceMetadata({
+              canonicalUrl: origin,
+              authorizationServer:
+                config.oauthAuthorizationServer === ''
+                  ? config.canonicalUrl.replace(/\/+$/, '')
+                  : config.oauthAuthorizationServer,
+            }),
+        }),
     allowedOrigins: config.mcpAllowedOrigins,
     limits,
     limitPolicies,

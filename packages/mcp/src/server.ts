@@ -21,7 +21,7 @@ import {
 
 import { catalog, type Layer, type ToolDefinition } from './tools.js'
 
-/** The protocol revision this server implements. */
+/** The revision this server prefers — the head of PROTOCOL_VERSIONS. */
 export const PROTOCOL_VERSION = '2026-07-28'
 
 /** tools/list is cached per user for five minutes — see cacheScope below. */
@@ -67,6 +67,34 @@ export interface McpOptions {
   readonly resourceMetadataUrl: string
   /** The document that URL resolves to. Built once, in main, and shared with the API. */
   readonly resourceMetadata: ProtectedResourceMetadata
+  /**
+   * What `initialize` reports as `serverInfo.version`.
+   *
+   * Informational, and passed in rather than read from a manifest here: this
+   * module is imported by tests and by the STDIO entry point as well as by the
+   * server, and a file read at import time is the shape that threw ENOENT from
+   * the built package once already.
+   */
+  readonly serverVersion?: string
+  /**
+   * Build the discovery document from the origin the client actually reached,
+   * rather than from one baked in at startup.
+   *
+   * Set only when the deployment has **not** pinned `NACRE_MCP_CANONICAL_URL`.
+   * RFC 9728 has the client compare the `resource` identifier against the URL
+   * it used, so a document naming anything else is refused before a token is
+   * ever sent — and the Compose default named `http://localhost:8081`, which is
+   * wrong for every client that is not on the server's own machine. A default
+   * that quietly points at localhost is the failure `loadConfig` refuses for
+   * every other URL in this product, and it had been introduced here.
+   *
+   * Deriving from `Host` is not a trust decision: the identifier is not an
+   * authorization input. A token is still checked against `NACRE_JWT_AUDIENCE`
+   * and `NACRE_JWT_ISSUER`, neither of which comes from the request, so the
+   * worst a forged `Host` achieves is a document naming a resource whose tokens
+   * this server will not accept.
+   */
+  readonly resourceFromRequest?: (origin: string) => ProtectedResourceMetadata
   /**
    * Browser origins this transport answers, from `NACRE_MCP_ALLOWED_ORIGINS`.
    *
@@ -137,6 +165,12 @@ interface JsonRpcRequest {
   readonly id?: unknown
   readonly method?: unknown
   readonly params?: unknown
+  /**
+   * Request metadata, where the binding carries the protocol version under
+   * `io.modelcontextprotocol/protocolVersion`. Read only to compare against the
+   * header; nothing dispatches on it.
+   */
+  readonly _meta?: unknown
 }
 
 const MAX_BODY_BYTES = 1_000_000
@@ -196,6 +230,27 @@ const NAMED_METHODS: Record<string, 'name' | 'uri'> = {
 }
 
 /**
+ * The revisions this transport can speak, newest first.
+ *
+ * The list is short because the surface is: `tools/list` and `tools/call` are
+ * shaped the same in all three, and nothing here uses a feature that moved.
+ * The first entry is what an `initialize` gets when the client asks for
+ * something not on the list — a version this server cannot speak is answered
+ * with one it can, which is what the handshake is for.
+ */
+export const PROTOCOL_VERSIONS = [PROTOCOL_VERSION, '2025-06-18', '2025-03-26'] as const
+
+/**
+ * `UnsupportedProtocolVersionError`, which the schema pins at -32022 and
+ * requires to carry both halves of the disagreement.
+ *
+ * Listing what this server *does* speak is the part that matters: a bare
+ * refusal leaves a client with nothing to retry, and the whole point of naming
+ * a version is that the other side can pick another one.
+ */
+const UNSUPPORTED_VERSION = -32022
+
+/**
  * Decode the Base64 sentinel a client uses for a value that is not header-safe.
  *
  * `=?base64?…?=`, lower case and exact — a value that merely looks like one is
@@ -215,14 +270,39 @@ function decodeHeaderValue(value: string): string {
 /**
  * Whether the mirrored headers describe this body, and what is wrong if not.
  *
- * `Mcp-Method` on every request; `Mcp-Name` only on the three that name
- * something, because requiring it everywhere refuses a `tools/list` that no
- * client can make any other way.
+ * Three comparisons: the protocol version against `_meta`, `Mcp-Method` against
+ * the method, and `Mcp-Name` against the field the method names — the last only
+ * on the three methods that name something, because requiring it everywhere
+ * refuses a `tools/list` no client can make any other way.
+ *
+ * Every one is "when present". Absent is not a mismatch, and that is the branch
+ * the binding sanctions for a server supporting clients older than 2025-06-18;
+ * see docs/mcp-conformance.md. What is refused is a header that *disagrees*.
  */
 function headerMismatch(
   headers: IncomingMessage['headers'],
-  rpc: { method: string; params?: unknown },
+  rpc: { method: string; params?: unknown; _meta?: unknown },
 ): string | undefined {
+  // The version the body carries, when it carries one. The binding puts it in
+  // `_meta` under a reversed-domain key and requires the header to agree — the
+  // same rule as `Mcp-Method`, and it was the one comparison still missing
+  // after the others went in. A header that says one revision while the body
+  // says another is two components acting on different instructions, which is
+  // the entire reason any of these are mirrored.
+  const declaredVersion = headers['mcp-protocol-version']
+  const meta = (rpc._meta ?? {}) as Record<string, unknown>
+  const bodyVersion = meta['io.modelcontextprotocol/protocolVersion']
+  if (
+    typeof declaredVersion === 'string' &&
+    typeof bodyVersion === 'string' &&
+    declaredVersion !== bodyVersion
+  ) {
+    return (
+      `Header mismatch: MCP-Protocol-Version header value '${declaredVersion}' does not match ` +
+      `body value '${bodyVersion}'`
+    )
+  }
+
   const declared = headers['mcp-method']
   if (typeof declared === 'string' && declared !== rpc.method) {
     return `Header mismatch: Mcp-Method header value '${declared}' does not match body value '${rpc.method}'`
@@ -238,13 +318,39 @@ function headerMismatch(
   if (typeof expected !== 'string') return undefined
 
   const presented = headers['mcp-name']
-  if (typeof presented !== 'string') {
-    return `Header mismatch: Mcp-Name is required for ${rpc.method} and is missing`
-  }
+  // Absent is not a mismatch. See the note on the required-header check: these
+  // headers arrived in 2026-07-28 and no shipping client sends them yet, so
+  // demanding one refuses the request instead of protecting it. Present and
+  // disagreeing is still refused, which is the property they exist for.
+  if (typeof presented !== 'string') return undefined
   if (decodeHeaderValue(presented) !== expected) {
     return `Header mismatch: Mcp-Name header value does not match body value '${expected}'`
   }
   return undefined
+}
+
+/**
+ * The origin this request arrived on, as the client wrote it.
+ *
+ * `Host` is what the client put in the URL bar or the config file, which is
+ * exactly what RFC 9728 asks the identifier to match. Behind a proxy that
+ * terminates TLS the scheme is the one thing `Host` cannot carry, so
+ * `X-Forwarded-Proto` decides it — and only `https` is honoured from that
+ * header, because anything else is the default already.
+ */
+function originOf(req: IncomingMessage): string | undefined {
+  const host = req.headers.host
+  if (typeof host !== 'string' || host === '') return undefined
+  const forwarded = req.headers['x-forwarded-proto']
+  const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim()
+  return `${first === 'https' ? 'https' : 'http'}://${host}`
+}
+
+/** Where this request should be told to read the protected-resource document. */
+function metadataUrlFor(req: IncomingMessage, options: McpOptions): string {
+  const origin = originOf(req)
+  if (options.resourceFromRequest === undefined || origin === undefined) return options.resourceMetadataUrl
+  return new URL(PROTECTED_RESOURCE_PATH, origin).toString()
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, options: McpOptions): Promise<void> {
@@ -285,7 +391,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // RPC envelope would make it unreadable to every client that follows RFC 9728.
   if (req.method === 'GET' && path === PROTECTED_RESOURCE_PATH) {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify(options.resourceMetadata))
+    // Per request when the deployment did not pin one. Built here rather than
+    // cached: the answer depends on the `Host` this request carried, and two
+    // clients reaching the same replica on two names are both entitled to a
+    // document that matches the URL they used.
+    const origin = originOf(req)
+    const metadata =
+      options.resourceFromRequest !== undefined && origin !== undefined
+        ? options.resourceFromRequest(origin)
+        : options.resourceMetadata
+    res.end(JSON.stringify(metadata))
     return
   }
 
@@ -328,21 +443,25 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // revision: an older client sending them gets an answer about the request
   // rather than about its framing.
 
-  // The two headers required of *every* request. `Mcp-Name` is not one of them
-  // — it is required only for the three methods that name something, and
-  // demanding it on `tools/list` refused a request no client can make
-  // correctly. Checked after the body is parsed, with the rest of the
-  // header-to-body validation.
-  for (const header of ['mcp-protocol-version', 'mcp-method']) {
-    if (req.headers[header] === undefined) {
-      // -32020 HeaderMismatch, which the specification allocates for exactly
-      // this and which a client reads to decide whether it is talking to a
-      // modern server. -32600 said "invalid request", and a client that gets
-      // it falls back to a transport this server does not speak.
-      send(res, 400, rpcError(null, HEADER_MISMATCH, `Missing required header: ${header}`))
-      return
-    }
-  }
+  // The 2026-07-28 mirrored headers are **validated when present and never
+  // demanded**, and that is a deliberate deviation stated rather than hidden.
+  //
+  // Demanding `MCP-Protocol-Version` on every POST could not be satisfied at
+  // all. The first request a client makes is `initialize`, and at that moment
+  // no version is negotiated — it travels in `params.protocolVersion`, because
+  // that request is what negotiates it. So the header this server insisted on
+  // is one the client is not able to send, and every real client bounced off
+  // `-32020 Missing required header: mcp-protocol-version` on its very first
+  // POST. `Mcp-Method` and `Mcp-Name` are the same generation and no shipping
+  // client sends those either.
+  //
+  // A conformance stance that no existing client can satisfy is not
+  // conformance, it is a transport nobody can reach — and this product exists
+  // to be reached by agents. The protection those headers buy is in the
+  // *comparison*, not in the demand: an intermediary that routes on a header
+  // while the server executes a body must not see two different instructions.
+  // That check is below and is unchanged. Refusing the request when the header
+  // is absent bought the incompatibility and none of the protection.
 
   const auth = await authenticate(req.headers.authorization, options.verify, '/mcp', requestId)
   if (auth instanceof Problem) {
@@ -364,7 +483,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
     // how a client discovers where to get a token. It lives on the API host,
     // never on the apex — static hosting there intercepts /.well-known/*.
     send(res, 401, rpcError(null, -32001, 'Unauthorized'), {
-      'www-authenticate': `Bearer resource_metadata="${options.resourceMetadataUrl}"`,
+      // The same rule as the document itself: a 401 that points at a metadata
+      // URL on another host sends the client somewhere it cannot compare.
+      'www-authenticate': `Bearer resource_metadata="${metadataUrlFor(req, options)}"`,
     })
     return
   }
@@ -392,9 +513,48 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // halves disagree is one where the balancer and the server acted on different
   // instructions. Demanding the headers and never comparing them bought the
   // incompatibility and none of the protection.
-  const mismatch = headerMismatch(req.headers, { method: rpc.method, params: rpc.params })
+  const mismatch = headerMismatch(req.headers, { method: rpc.method, params: rpc.params, _meta: rpc._meta })
   if (mismatch !== undefined) {
     send(res, 400, rpcError(id, HEADER_MISMATCH, mismatch))
+    return
+  }
+
+  // A revision this server does not speak is refused with the list of the ones
+  // it does — `400` and -32022, both pinned by the schema.
+  //
+  // The *header* only. `initialize`'s `params.protocolVersion` is a proposal
+  // and is answered by counter-offering, which is what the handshake is for;
+  // refusing it there would turn a negotiation into a failure. The header is a
+  // different statement: it says which revision's transport rules this request
+  // was framed by, and if that is one we cannot read then nothing below can be
+  // trusted to mean what it appears to.
+  const framing = req.headers['mcp-protocol-version']
+  if (typeof framing === 'string' && !(PROTOCOL_VERSIONS as readonly string[]).includes(framing)) {
+    send(res, 400, {
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: UNSUPPORTED_VERSION,
+        message: 'Unsupported protocol version',
+        data: { supported: [...PROTOCOL_VERSIONS], requested: framing },
+      },
+    })
+    return
+  }
+
+  // A notification has no `id` and takes no result. `notifications/initialized`
+  // is the third leg of the handshake and every client sends it immediately
+  // after `initialize`; answering it with `-32601` makes a client that just
+  // connected believe it did not.
+  //
+  // 202 with an empty body is what the specification asks for, and it is
+  // returned for any `notifications/*` rather than for a list of known ones: a
+  // notification this server does not understand is by definition one it may
+  // ignore, and refusing it would be inventing an error the sender cannot act
+  // on.
+  if (rpc.method.startsWith('notifications/')) {
+    res.writeHead(202)
+    res.end()
     return
   }
 
@@ -408,6 +568,44 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   }
 
   switch (rpc.method) {
+    // The handshake. It had never been implemented, and the comment above this
+    // server said so as though it were a consequence of being stateless: "there
+    // is no `initialize`, no `Mcp-Session-Id`, and nothing kept between
+    // requests". Two different things got removed together. Statelessness is
+    // real and is what lets any replica serve any request. `initialize` is not
+    // state — it is how a client learns the protocol version and what this
+    // server can do, and it is answered here without remembering anything: no
+    // session id is issued, and nothing about this request is kept.
+    //
+    // Without it every client failed on its first POST, so **no standard MCP
+    // client had ever connected over Streamable HTTP**. The suite could not see
+    // it because the suite called `tools/list` directly, which is the second
+    // request a client makes and never the first.
+    case 'initialize': {
+      const asked = (rpc.params as { protocolVersion?: unknown } | undefined)?.protocolVersion
+      // Echo what the client asked for when this server speaks it, and answer
+      // with the newest one it does otherwise. Negotiation is the client's to
+      // conclude: it may accept the counter-offer or disconnect, and either is
+      // a better outcome than the error it used to get.
+      const agreed =
+        typeof asked === 'string' && (PROTOCOL_VERSIONS as readonly string[]).includes(asked)
+          ? asked
+          : PROTOCOL_VERSIONS[0]
+      send(res, 200, {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          protocolVersion: agreed,
+          // Tools and nothing else, which is the whole surface: no resources,
+          // no prompts, no sampling. Declaring a capability this server does
+          // not serve is how a client comes back with a call that 404s.
+          capabilities: { tools: {} },
+          serverInfo: { name: 'nacre', version: options.serverVersion ?? '0.0.0' },
+        },
+      })
+      return
+    }
+
     case 'tools/list': {
       const layers = await options.layers.forCaller(auth)
       const tools: ToolDefinition[] = [...catalog(layers)]

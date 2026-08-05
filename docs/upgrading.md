@@ -240,6 +240,57 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.5.3 — an MCP client can connect, and consent names an agent
+
+**Migration 0023, and it is the first schema change since 0.5.0.** It adds
+`service_accounts.created_by`, two tables for the authorization server, and a
+unique constraint on `service_accounts (id, org_id)` so a cross-tenant foreign
+key can reference it. Nothing is dropped and nothing is rewritten, so 0.5.2 runs
+unchanged against the upgraded database and rolling back is safe.
+
+One thing to know before you run it: **`created_by` references `users(id)`, so
+whoever creates a service account must be a real user row.** In a deployment
+that is always true — the id comes from a token's subject. It is worth stating
+because a fixture or a script that fabricates a principal id will now be refused
+by the database rather than quietly writing a row nobody owns.
+
+**No standard MCP client had ever connected over Streamable HTTP**, and two
+defects on the first POST are why. There was no `initialize` — the dispatcher
+knew `tools/list` and `tools/call` and nothing else — and the required-header
+check demanded `MCP-Protocol-Version` on a request that cannot carry one,
+because that request is what negotiates the version. Both are fixed; see
+[mcp-conformance.md](./mcp-conformance.md) for the full reading against the
+2026-07-28 binding.
+
+**The mirrored headers are no longer demanded, only compared.** If you have a
+client that was sending them, nothing changes. If you have an intermediary that
+*strips* them, requests now succeed where they used to fail with `-32020`.
+
+**There is an authorization server.** A client discovers it, registers, and
+completes the authorization code flow with PKCE — and the token it gets acts as
+a **service account**, never as the person who approved it. `/oauth/consent` is
+the only part inside the authenticated surface, because that is where a
+signed-in person picks the agent.
+
+Two consequences for an existing deployment:
+
+- **`authorization_servers` in the RFC 9728 document now names your API**, where
+  before it was absent. If you had already set `NACRE_OAUTH_AUTHORIZATION_SERVER`
+  to your own identity provider, that still wins and nothing changes for you.
+- **`NACRE_OAUTH_CONSENT_URL`** defaults to `/#/consent` on
+  `NACRE_CANONICAL_URL`, which is right wherever an ingress serves the admin
+  bundle on the API's origin. Set it if your admin UI is somewhere else — the
+  Compose stack publishes it on its own port and sets this for you.
+
+**`GET /v1/me`** is new and needs nothing from an operator. The admin UI uses it
+to stop offering administrative screens to a member: there was no way to ask who
+the caller was, so it drew everything and a member pressing a button got the
+`404` invariant 4 requires, which reads as a broken application.
+
+**The copy buttons in the admin UI work on a plain-HTTP origin now.**
+`navigator.clipboard` exists only in a secure context, so every one of them was
+dead at `http://10.8.0.1:8082` and fine at `localhost`.
+
 ### 0.5.2 — arm64, and an endpoint that keeps its path
 
 Fixes and packaging. No schema change, no new required configuration, and 0.5.1
@@ -248,14 +299,21 @@ runs unchanged against this database — so rolling back is safe.
 **The images are built for linux/arm64 as well as linux/amd64.** Every tag up to
 and including 0.5.1 carried one architecture, checked against the registry
 rather than inferred: `ghcr.io/nacre-work/nacre:0.5.1` and `-parser:0.5.1` are
-`linux/amd64` and nothing else. On an Apple Silicon Mac and on an arm64 node,
-Docker pulled that manifest and ran it emulated — which is a slow container, not
+`linux/amd64` and nothing else. Anything that *pulls* one on arm64 ran it
+emulated — a Helm deployment, whose chart names those tags in its defaults; a
+`docker pull`; an arm64 node or CI runner. That is a slow container rather than
 an error, so nothing reported it.
 
-Nothing to do beyond moving the tag. A pod or a Compose stack already running
-0.5.1 on arm64 keeps running the emulated image until it pulls the new one;
-`image.tag` (or `:latest`) forward is the whole action, and the improvement is
-latency rather than behaviour.
+**Compose is not affected and never was.** No service in `docker-compose.yml`
+has an `image:` key: all six build from the Dockerfiles into locally tagged
+images, and a local build is a build for the machine doing it. `docker compose
+up` on an Apple Silicon Mac has always produced arm64. Saying otherwise is a
+correction to the first version of these notes.
+
+Nothing to do beyond moving the tag, and only where a tag is what you run. A pod
+already running 0.5.1 on arm64 keeps the emulated image until it pulls the new
+one; `image.tag` (or `:latest`) forward is the whole action, and the improvement
+is latency rather than behaviour.
 
 If you pin digests, note that a multi-architecture tag's digest is an index and
 not an image — pin the index digest and the node resolves its own architecture

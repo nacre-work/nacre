@@ -1,4 +1,4 @@
-export { createMcpServer, PROTOCOL_VERSION, TOOLS_TTL_MS } from './server.js'
+export { createMcpServer, PROTOCOL_VERSION, PROTOCOL_VERSIONS, TOOLS_TTL_MS } from './server.js'
 export type { Layers, McpOptions, ToolRunner } from './server.js'
 export { catalog, searchDescription } from './tools.js'
 export type { Layer, ToolContext, ToolDefinition, ToolPermission } from './tools.js'

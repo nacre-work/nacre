@@ -433,3 +433,20 @@ tr:hover .idcopy .btn, .idcopy .btn:focus-visible { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* The scratch textarea `copyText` uses on an origin with no
+   `navigator.clipboard` — that is, any plain-HTTP address, which is most
+   self-hosted installs. It has to be off-screen and still selectable:
+   `display:none`, `hidden` and `visibility:hidden` each make `select()` a
+   no-op, so it is moved rather than hidden. Here rather than in a style
+   attribute because index.html sets `style-src 'self'`. */
+.clipfield {
+  position: fixed;
+  top: 0;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+}

@@ -311,3 +311,16 @@ export interface AuditPage {
   /** Absent on the last page. Pass it back as `cursor`. */
   readonly nextCursor?: string
 }
+
+/**
+ * The caller, as the server sees them.
+ *
+ * `group` is deliberately not a principal type here: a group is granted to and
+ * never authenticated as, so nothing can present a token that is one.
+ */
+export interface Self {
+  readonly organization: string
+  readonly principalType: 'user' | 'service_account'
+  readonly principalId: string
+  readonly role: UserRole
+}

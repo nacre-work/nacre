@@ -76,6 +76,16 @@ when('issuing a grant, against the database', () => {
          ON CONFLICT DO NOTHING`,
         [WORKSPACE, ORG],
       )
+      // The caller has to exist. `service_accounts.created_by` references
+      // `users(id)` since 0023, so an admin context naming an id with no row
+      // behind it can no longer create one — which is the constraint working,
+      // not a fixture inconvenience: in a deployment the id comes from a
+      // token's subject and the row is always there.
+      await c.query(
+        `INSERT INTO users (id, org_id, email, role) VALUES ($1,$2,'admin@example.test','org_admin')
+         ON CONFLICT DO NOTHING`,
+        [ADMIN_ID, ORG],
+      )
     } finally {
       c.release()
     }

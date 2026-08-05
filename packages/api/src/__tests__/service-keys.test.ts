@@ -33,7 +33,12 @@ const when = url ? describe : describe.skip
 const ORG = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
 const OTHER = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
 
-const admin = { orgId: ORG, principal: { type: 'user' as const, id: 'u1' }, role: 'org_admin' as const }
+// A real uuid with a real row behind it. `service_accounts.created_by`
+// references `users(id)` since 0023, so a placeholder principal is no longer
+// something the database will accept — which is the constraint doing its job:
+// in a deployment this id is a token's subject and the row always exists.
+const ADMIN_ID = 'cccccccc-cccc-4ccc-8ccc-ccccccccc0a1'
+const admin = { orgId: ORG, principal: { type: 'user' as const, id: ADMIN_ID }, role: 'org_admin' as const }
 
 let pool: Pool
 let accounts: PostgresServiceAccounts
@@ -89,6 +94,12 @@ when('service accounts, against the database', () => {
         )
       }
       await c.query(`DELETE FROM service_accounts WHERE org_id IN ($1,$2)`, [ORG, OTHER])
+      // The caller needs a row: `created_by` references `users(id)` since 0023.
+      await c.query(
+        `INSERT INTO users (id, org_id, email, role) VALUES ($1,$2,'fixture-admin@example.test','org_admin')
+         ON CONFLICT DO NOTHING`,
+        [ADMIN_ID, ORG],
+      )
     } finally {
       c.release()
     }

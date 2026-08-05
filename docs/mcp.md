@@ -72,10 +72,72 @@ The MCP server is a **resource server**, not an authorization server.
   not pointed at Nacre: this is a resource server, and sending a client here
   for a token endpoint would be the same dead end as not serving the document
   at all.
-- **Client registration is not ours.** CIMD and DCR are both transactions
-  between a client and an *authorization server*, and the line above says which
-  one of those Nacre is. There is no registration endpoint here, no client
-  record to create, and nothing to enable — a deployment that wants either gets
+- **`initialize` is answered**, statelessly. It had never been implemented:
+  the dispatcher knew `tools/list` and `tools/call` and nothing else, and a
+  comment justified the absence as a consequence of having no session. Those
+  are two different things. Statelessness is real and is what lets any replica
+  serve any request; `initialize` is not state — it is how a client learns the
+  protocol version and what this server can do, and it is answered without
+  remembering anything. No `Mcp-Session-Id` is issued, then or ever.
+  `notifications/initialized` is accepted with `202`, as is any other
+  notification: one the server does not understand is by definition one it may
+  ignore.
+- **The 2026-07-28 mirrored headers are validated when present and never
+  demanded**, which is the branch the binding sanctions and not a deviation: a
+  server that supports clients implementing revisions earlier than 2025-06-18
+  **MAY** treat a request that omits `MCP-Protocol-Version` as `2025-03-26`,
+  and only a server declining those clients must reject it. This one supports
+  them. Requiring `MCP-Protocol-Version` on every POST could
+  not be satisfied at all: the first request a client makes is `initialize`,
+  and at that moment no version is negotiated — it travels in
+  `params.protocolVersion`, because that request is what negotiates it. So the
+  server demanded a header the client is not able to send, and every real
+  client bounced off `-32020` on its first POST. `Mcp-Method` and `Mcp-Name`
+  are the same generation and no shipping client sends those either.
+  Taking the other branch made the transport unreachable by every shipping
+  client. The full reading is in [mcp-conformance.md](./mcp-conformance.md).
+  A header that is *sent* and disagrees is still `-32020`, and that now covers
+  three fields rather than two: `Mcp-Method`, `Mcp-Name`, and the protocol
+  version against `_meta`. A framing revision this server does not speak is
+  `400` with `-32022` and the list of the ones it does. The protection those headers buy is in the
+  *comparison* — an intermediary must not route on one instruction while the
+  server executes another — and that check is unchanged: present and
+  disagreeing is still `-32020`.
+- **The resource identifier follows the request** unless
+  `NACRE_MCP_CANONICAL_URL` pins one. RFC 9728 has the client compare the
+  identifier against the URL it reached, so a document built at startup from a
+  hostname the operator did not choose refuses every client that used a
+  different one — which is what a `localhost` default did to everybody not on
+  the server's own machine. `Host` is what the client wrote, and
+  `X-Forwarded-Proto` supplies the scheme behind a TLS-terminating proxy.
+  Deriving it is not a trust decision: the identifier is not an authorization
+  input, and a token is still checked against `NACRE_JWT_AUDIENCE` and
+  `NACRE_JWT_ISSUER`, neither of which comes from the request.
+- **There is an authorization server now, and it is ours.** A client that gets
+  a `401` reads the RFC 9728 document, finds `authorization_servers` naming this
+  installation's API, discovers `/oauth/authorize` and `/oauth/token` through
+  RFC 8414, registers itself with RFC 7591, and completes the authorization
+  code flow with PKCE S256. That is the whole connect sequence an MCP client
+  already performs, and until it existed the documented alternative was "create
+  a service account by hand, copy its key, paste it into a config file".
+
+  **The token it receives acts as a service account, never as the person who
+  approved it.** A consent screen normally mints the approver's own authority,
+  and that is the wrong answer for this product by a wide margin: an agent is a
+  principal with its own grants, so "what may this agent read" is a different
+  question from "what may you read", and collapsing the two throws away what
+  the permission model is for. The screen a browser is sent to asks *which
+  agent*; revoking that agent stops the client and touches nobody else.
+
+  A deployment that would rather use its own identity provider names it in
+  `NACRE_OAUTH_AUTHORIZATION_SERVER`, and then the document points there and
+  this flow is simply not the one clients take.
+- **Client registration is not ours** — where "ours" meant the MCP transport.
+ CIMD and DCR are both transactions
+  between a client and an *authorization server*, and this transport is not
+  one: it verifies tokens and issues none. `/oauth/register` lives on the API,
+  beside the endpoints it belongs with. There is no registration endpoint on
+  this port, no client record to create here, and nothing to enable — a deployment that wants either gets
   it from the identity provider it names in
   `NACRE_OAUTH_AUTHORIZATION_SERVER`. This document said the opposite until it
   was read next to the sentence three lines above it.

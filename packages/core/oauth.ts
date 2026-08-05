@@ -15,17 +15,20 @@
  * `/v1/auth/login` is email and password, and a service account key is a random
  * string matched against a hash — neither is an OAuth grant.
  *
- * So `authorization_servers` is **absent unless an operator names one**. The
- * field is optional in RFC 9728, and an installation that has not put an
- * identity provider in front of Nacre has no authorization server to name.
- * Pointing the field at ourselves would be the same lie the 404 was, one
- * redirect further along: a client would fetch our metadata, learn we are our
- * own issuer, ask us for a token endpoint, and find nothing again.
+ * `authorization_servers` names one, and which one is a deployment's choice:
+ * an identity provider if it has configured one, and otherwise this
+ * installation's own API, which since the consent flow landed *is* an
+ * authorization server.
  *
- * What the document is still worth without that field is the part clients
- * actually need first: the canonical resource identifier every token must be
- * audience-bound to, and where to read about the credential that does work
- * today.
+ * This field used to be absent by default, on the argument that pointing a
+ * client at a token endpoint that did not exist would be the same dead end the
+ * missing document was, one redirect further along. That argument was correct
+ * and it is not what changed — the endpoint changed. It exists now, and it
+ * mints a token bound to a **service account** rather than to the person who
+ * approved it, which is the part worth knowing before reading the flow.
+ *
+ * A deployment that wants neither sets `NACRE_OAUTH_AUTHORIZATION_SERVER` to
+ * its own provider; the field then names that and nothing here is consulted.
  */
 
 export interface ProtectedResourceMetadata {

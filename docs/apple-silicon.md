@@ -4,6 +4,12 @@ An M-series Mac — M1 through M4 — is arm64, and running an amd64 container o
 one means emulation. This page is the arrangement that avoids it, and an honest
 account of the one part that cannot.
 
+Most of the stack was never the problem: Compose builds this repository's images
+locally, so they have always been native here, and every third-party image in
+every profile ships arm64 except one. The two things this page is actually for
+are that one exception — the embedder — and the published images, which a Helm
+deployment pulls and which were amd64-only until 0.5.2.
+
 > **What has been checked, and how.** Every architecture claim below was read
 > off the registry with `docker buildx imagetools inspect`, not from a README —
 > the table is a transcript. The images this repository publishes are built for
@@ -20,8 +26,8 @@ account of the one part that cannot.
 
 | Image | Architectures | On an M-series Mac |
 |---|---|---|
-| `ghcr.io/nacre-work/nacre` | amd64, arm64 | native, from 0.5.2 |
-| `ghcr.io/nacre-work/nacre-parser` | amd64, arm64 | native, from 0.5.2 |
+| `ghcr.io/nacre-work/nacre` | amd64, arm64 | native, from 0.5.2 — and see below |
+| `ghcr.io/nacre-work/nacre-parser` | amd64, arm64 | native, from 0.5.2 — and see below |
 | `postgres:17-alpine` | 386, amd64, arm, **arm64**, ppc64le, riscv64, s390x | native |
 | `qdrant/qdrant:v1.18.3` | amd64, **arm64** | native |
 | `redis:7-alpine` | 386, amd64, arm, **arm64**, ppc64le, riscv64, s390x | native |
@@ -37,11 +43,20 @@ serves both. Text Embeddings Inference publishes no arm64 build: not for
 Silicon is to build it from source with `--features metal`, which is a Rust
 toolchain on your laptop rather than something to pull.
 
-**Through 0.5.1 the first two rows were emulated as well** — the release
-workflow built with no `platforms` key, so both images were amd64-only, and
-Docker Desktop pulled them and started them under emulation without saying much
-about it. That is fixed rather than documented around; the failure it produced
-was a slow container, which is the kind nobody reports.
+**Compose does not use the first two rows at all**, and that is worth being
+exact about because the first version of this page was not. No service in
+`docker-compose.yml` carries an `image:` key — all six of `api`, `mcp`,
+`migrate`, `parser`, `web` and `worker` have a `build:` and are compiled from
+the Dockerfiles into locally tagged images (`nacre-api`, `nacre-mcp`, …). A
+local build is a build for the machine doing it, so **`docker compose up` has
+always produced arm64 images on an M-series Mac**, before 0.5.2 and after it.
+
+What was amd64-only through 0.5.1 is the *published* image, and it is emulated
+wherever something actually pulls it: the Helm chart, which names those tags in
+its defaults; a `docker pull ghcr.io/nacre-work/nacre`; an arm64 node in a
+cluster or a CI runner. That is the defect 0.5.2 fixes, and the failure it
+produced was a slow container rather than an error, which is the kind nobody
+reports. It is not a defect the Compose path here ever had.
 
 ## The arrangement: `minimal`, with the embedder on the host
 
