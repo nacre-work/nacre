@@ -137,7 +137,8 @@ done
 # ── a PDF, all the way through ─────────────────────────────────────────────
 # The one path no unit test can prove: the edge accepts the bytes, the bucket
 # holds them, the worker fetches them back and hands them to the sidecar as a
-# raw body, pypdf extracts the text, and that text comes back out of a search.
+# raw body, the extractor pulls the text out, and that text comes back out of a
+# search.
 # Every stage of binary ingest was tested against a mock of the next one; this
 # is the first time they are asked to agree with each other.
 PDF_TEXT="Espresso machine refills happen every Tuesday"
@@ -206,6 +207,42 @@ say "the document carries a presigned source_url"
 req GET "/v1/documents/${PDF_DOC}" "$TOKEN" \
   | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('source_url') else 1)" \
   || die "an s3-stored document carried no source_url"
+
+# ── a scan, which must fail rather than succeed at nothing ────────────────
+# The other half of extraction, and the one that used to pass silently. A PDF
+# whose only content is an image extracted to `""`, chunked to nothing, wrote no
+# points and reported `indexed`: accepted, returned by no search, and visible
+# only as a `chunk_count` of zero that nothing reads.
+#
+# The whole chain has to be exercised for this, which is why it is here rather
+# than in the sidecar's unit tests: the edge accepts the bytes, the bucket holds
+# them, the worker fetches them back, and the refusal has to travel all the way
+# to the job's status. A unit test proves the sidecar raises; only this proves
+# an operator sees it.
+say "upload a scan — expect the job to fail, naming the reason"
+python3 scripts/ci/make-pdf.py /tmp/scan.pdf --scan
+SCAN=$(curl -sS -X POST "${API}/v1/documents" \
+  -H "authorization: Bearer ${TOKEN}" -H 'accept: application/json' \
+  -F 'layer=handbook' -F 'external_id=a-scan' -F 'title=A scan' \
+  -F 'file=@/tmp/scan.pdf;type=application/pdf')
+SCAN_JOB=$(printf '%s' "$SCAN" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+
+for i in $(seq 1 60); do
+  SCAN_BODY=$(req GET "/v1/jobs/${SCAN_JOB}" "$TOKEN")
+  STATUS=$(printf '%s' "$SCAN_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  case "$STATUS" in
+    failed) break ;;
+    indexed) die "a scan reported indexed; it has no text and no search will ever return it" ;;
+  esac
+  if [ "$i" = 60 ]; then die "the scan job never settled: ${SCAN_BODY}"; fi
+  sleep 2
+done
+# The status alone is not enough. "failed" with an unhelpful reason sends an
+# operator looking for a corrupt file; the remedy here is OCR, and only the
+# message can say so.
+printf '%s' "$SCAN_BODY" | grep -qi 'scan' \
+  || die "the scan failed without saying it was a scan: ${SCAN_BODY}"
+say "  refused, and the reason names it as a scan"
 
 # ── a service account, a grant, and the revoke that removes it ─────────────
 # The document is indexed and the admin can already see it by role. The ACL

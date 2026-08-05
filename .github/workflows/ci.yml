@@ -105,9 +105,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      # One pinned, pure-Python dependency (pypdf), and everything else stays
-      # standard library: this process runs hostile input through whatever it
-      # depends on, so it depends on as little as possible.
+      # One pinned dependency, and everything else stays standard library: this
+      # process runs hostile input through whatever it depends on, so it depends
+      # on as little as possible. The one it has is now a compiled extension
+      # rather than a pure-Python package — see requirements.txt for why that
+      # was decided rather than drifted into.
       - run: pip install -r services/parser/requirements.txt
       - run: python -m unittest discover -s services/parser -t . -v
 
@@ -203,11 +205,28 @@ jobs:
             exit 1
           fi
 
-          # The sidecar's only dependency, imported on the architecture it will
-          # run on. pypdf is pure Python and so is meant to be portable — this
-          # is what turns that into something checked rather than believed.
-          docker run --rm --platform linux/arm64 nacre-parser:arm64 \
-            python -c "import pypdf, platform; print('pypdf', pypdf.__version__, 'on', platform.machine())"
+          # The sidecar's only dependency, imported and *used* on the
+          # architecture it will run on.
+          #
+          # This step used to import a pure-Python package, where portability
+          # was close to a formality. `pdf-inspector` is a compiled Rust
+          # extension, so this is now the check that the aarch64 wheel exists,
+          # was installed rather than built from the sdist, and loads — a
+          # missing wheel is a parser image that builds and then dies on its
+          # first PDF, on one architecture only.
+          #
+          # It extracts from a real PDF rather than importing the module: a
+          # PyO3 extension that imports has proved almost nothing, because the
+          # symbols resolve when a function is called. The generator is the one
+          # the compose smoke already uses, mounted in.
+          python3 scripts/ci/make-pdf.py /tmp/arm64.pdf "extraction works on arm64"
+          docker run --rm --platform linux/arm64 -v /tmp/arm64.pdf:/tmp/in.pdf:ro \
+            nacre-parser:arm64 python -c "
+          import platform, pdf_inspector
+          text = pdf_inspector.extract_text_bytes(open('/tmp/in.pdf', 'rb').read())
+          assert 'arm64' in text, 'the aarch64 extractor returned %r' % text
+          print('pdf-inspector on', platform.machine(), '->', repr(text.strip()))
+          "
 
   # The whole loop, booted from the Compose file the quickstart hands out. Every
   # other job asserts on a part; this one starts the parts together and runs a
