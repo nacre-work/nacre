@@ -63,12 +63,22 @@ services:
     ports: ["${NACRE_API_HOST_PORT:-8080}:8080"]
     environment:
       PORT: 8080
-      # This stack serves the admin UI on its own port, so the consent screen
-      # is not at a path under the API's origin the way it is behind an
-      # ingress. Without this, the OAuth flow would send a browser to a URL on
-      # the API that serves no bundle — a redirect into a 404, which is the
-      # shape of failure the discovery document used to have.
-      NACRE_OAUTH_CONSENT_URL: "${NACRE_OAUTH_CONSENT_URL:-http://localhost:${NACRE_WEB_HOST_PORT:-8082}/#/consent}"
+      # No NACRE_OAUTH_CONSENT_URL, and its absence is the setting.
+      #
+      # This used to default it to `http://localhost:8082/#/consent`, because the
+      # console was on its own port and the OAuth flow had to be told where. That
+      # default was a third address naming `localhost` — and the one nothing can
+      # derive, since the redirect knows the host the browser used and not the
+      # port the console is published on. Reached from another machine it sent
+      # the person to their own.
+      #
+      # The `web` front door now proxies `/oauth` too, so the console and the
+      # authorization server are the same origin and `loadConfig`'s own default —
+      # `${NACRE_CANONICAL_URL}/#/consent` — is correct without being restated.
+      # One address to get right instead of three.
+      #
+      # Set it in .env only when the console is somewhere this stack does not put
+      # it.
     depends_on:
       migrate: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
@@ -135,9 +145,15 @@ services:
       # so the one place the value differs is visible from the file that sets
       # every other endpoint.
       NACRE_API_UPSTREAM: "api:8080"
+      NACRE_MCP_UPSTREAM: "mcp:8081"
       NGINX_PORT: "80"
+    # Both, and `depends_on` is what makes them resolvable rather than what
+    # makes them ready: nginx resolves an upstream name once, at load, and exits
+    # if it cannot. A `web` that started before `mcp` existed would fail to boot
+    # rather than 502 until it appeared.
     depends_on:
       api: { condition: service_started }
+      mcp: { condition: service_started }
 
   worker:
     <<: *app

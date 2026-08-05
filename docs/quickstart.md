@@ -62,61 +62,60 @@ the reranker locally too; see [config.md](./config.md) for the difference.
 
 ## After startup — what listens where
 
-Here is every surface a person or an agent talks to, each with a URL the moment
-`docker compose up` returns:
+**One address: `http://localhost:8082`**, up the moment `docker compose up`
+returns. Everything a person or an agent talks to is under it.
 
-| Surface | Where | For |
+| Path | Surface | For |
 |---|---|---|
-| **Admin UI — your organization** | `http://localhost:8082` | a person: search, layers, grants, service accounts |
-| **API** — REST | `http://localhost:8080` | apps, `init`, the SDK — every `curl` on this page |
-| **MCP** | `http://localhost:8081/mcp` | agents (Streamable HTTP) |
-| **Global admin — every organization** | commercial (`admin-global`); not in this build | a platform administrator, across organizations |
+| `/` | **Admin UI — your organization** | a person: search, layers, grants, service accounts |
+| `/v1` | **API** — REST | apps, the SDK — every `curl` on this page |
+| `/mcp` | **MCP** | agents (Streamable HTTP) |
+| `/oauth`, `/.well-known` | the authorization server and discovery | how an MCP client gets a token without one being pasted |
+| — | **Global admin — every organization** | commercial (`admin-global`); not in this build |
 
-Three of the four are published ports and are up with the stack. The fourth is
-worth being explicit about, because it is the whole open-core line:
+The `web` service is what makes that true: it serves the static
+`packages/admin` bundle and proxies the rest to the process behind it. Same
+origin is not a convenience — the API sends no CORS headers on purpose, so it is
+the only arrangement that works without a header the API does not send. It is
+also what the Helm chart's ingress does, so the shape here is the shape in
+production rather than a local simplification.
 
-- The **admin UI** (`web`) serves the static `packages/admin` bundle and proxies
-  `/v1` to the API on the same origin — so the browser makes same-origin requests
-  and there is no CORS to configure, which matters because the API sends no CORS
-  headers on purpose. Sign in with the address and password `init` prints below.
-  It is one organization — *your* company.
-- The **global admin** — organizations, quotas and the default embedding model
-  across the *whole* installation — is the one screen that is commercial. The
-  community UI is scoped to the single organization in your token and has no way
-  to name another; managing many is `admin-global`, in the enterprise build.
+The **global admin** — organizations, quotas and the default embedding model
+across the *whole* installation — is the one screen that is commercial. The
+community UI is scoped to the single organization in your token and has no way
+to name another; managing many is `admin-global`, in the enterprise build.
 
-Postgres, Qdrant, Redis and the parser are internal to the Compose network and
-deliberately stay that way — nothing outside the stack should reach them. In
-production an ingress routes to the API and MCP, and serves the admin bundle on
-the API's origin the way the `web` service does here.
+The API and MCP are **also** published directly, on `8080` and `8081`, and both
+still work — `http://localhost:8080/v1/...` and `http://localhost:8081/mcp` are
+the same processes without the proxy in front. Postgres, Qdrant, Redis and the
+parser are internal to the Compose network and deliberately stay that way.
 
-Every command below talks to `api`; the mcp port matters once you reach
-"Connecting an agent" at the end. If 8080, 8081 or 8082 is already taken on your
-machine, set `NACRE_API_HOST_PORT` / `NACRE_MCP_HOST_PORT` / `NACRE_WEB_HOST_PORT`
-in `.env` — the host side moves, the ports inside the network do not, and nothing
-else changes.
+If 8080, 8081 or 8082 is already taken on your machine, set
+`NACRE_API_HOST_PORT` / `NACRE_MCP_HOST_PORT` / `NACRE_WEB_HOST_PORT` in `.env` —
+the host side moves, the ports inside the network do not.
 
 **If the stack is not on the same machine as the people and agents using it** —
-a VPN address, a LAN name, anything but `localhost` — two values in `.env` have
-to say so, and both default to `localhost` because that is right for the case
-this page is written for:
+a VPN address, a LAN name, anything but `localhost` — **one** value in `.env`
+says so:
 
-| Set | To | Or |
-|---|---|---|
-| `NACRE_CANONICAL_URL` | your host, API port | an MCP client is told the authorization server is on *its own* machine |
-| `NACRE_OAUTH_CONSENT_URL` | `http://your-host:8082/#/consent` | the browser is sent to *your* machine to approve |
+```bash
+NACRE_CANONICAL_URL=http://10.0.0.5:8082
+```
 
-Neither can be derived. The first is the OAuth issuer, so it is the address the
-discovery document hands a client to go and get a token from; the second is a
-redirect that knows the host the browser used but not the port the admin UI is
-published on. Leave `NACRE_MCP_CANONICAL_URL` unset either way — the MCP
-transport builds its own discovery document from the address each client
-actually connected to, which is the one of the three that *is* derived.
+That is the front door, and everything else is derived from it or from the
+request: the OAuth issuer, the address the discovery document hands a client, the
+consent redirect the browser follows, and the resource identifier the MCP
+transport builds from the `Host` each client used. Leave
+`NACRE_OAUTH_CONSENT_URL` and `NACRE_MCP_CANONICAL_URL` unset.
 
-`NACRE_JWT_ISSUER` is a different thing despite the name and does **not** belong
-in that table: it is the `iss` claim, compared against itself at verification
-and never fetched, so it does not have to resolve anywhere. Changing
-`NACRE_CANONICAL_URL` does not invalidate a token already issued.
+It was three values before this shape, on three ports, and each failed at a
+different step of the same flow with a different unhelpful message — one of them
+by sending the *browser* to the operator's own machine.
+
+`NACRE_JWT_ISSUER` is a different thing despite the name, and is **not** one of
+the addresses that has to resolve: it is the `iss` claim, compared against itself
+at verification and never fetched. Changing `NACRE_CANONICAL_URL` does not
+invalidate a token already issued.
 
 ## The first organization
 
@@ -159,7 +158,7 @@ expires in an hour.
 **When it does, sign in for another.** The password above is the one that lasts:
 
 ```bash
-curl -sX POST http://localhost:8080/v1/auth/login \
+curl -sX POST http://localhost:8082/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"you@example.com","password":"…"}'
 ```
@@ -183,7 +182,7 @@ administrator of the workspace, which is deliberate and is the thing most
 permission systems do differently.
 
 ```bash
-curl -X POST http://localhost:8080/v1/layers \
+curl -X POST http://localhost:8082/v1/layers \
   -H "Authorization: Bearer $NACRE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{ "workspace_id": "…", "slug": "handbook", "name": "Handbook" }'
@@ -194,7 +193,7 @@ afterwards — that endpoint exists because it is the one id the rest of the API
 cannot give you:
 
 ```bash
-curl -s http://localhost:8080/v1/workspaces -H "Authorization: Bearer $NACRE_TOKEN"
+curl -s http://localhost:8082/v1/workspaces -H "Authorization: Bearer $NACRE_TOKEN"
 ```
 
 It lists the workspaces you can reach, which is not the same as every workspace
@@ -207,7 +206,7 @@ A slug already in use answers `409`; a workspace you may not administer answers
 Then grant someone `read` on it:
 
 ```bash
-curl -X POST http://localhost:8080/v1/grants \
+curl -X POST http://localhost:8082/v1/grants \
   -H "Authorization: Bearer $NACRE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -237,7 +236,7 @@ opposite of most systems and it is not an oversight; see
 ## First document
 
 ```bash
-curl -X POST http://localhost:8080/v1/documents \
+curl -X POST http://localhost:8082/v1/documents \
   -H "Authorization: Bearer $NACRE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -254,7 +253,7 @@ Ingest is asynchronous and returns `202` with a `job_id`. Poll
 ## First search
 
 ```bash
-curl -X POST http://localhost:8080/v1/search \
+curl -X POST http://localhost:8082/v1/search \
   -H "Authorization: Bearer $NACRE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{ "query": "when do new hires get access", "top_k": 5 }'
@@ -400,7 +399,7 @@ send.
 Over MCP, Streamable HTTP — this is the `mcp` container from the table above:
 
 ```
-http://localhost:8081/mcp
+http://localhost:8082/mcp
 ```
 
 In production the same endpoint lives behind the API's host rather than on its
@@ -412,7 +411,7 @@ Locally, over STDIO, with a service account key. Mint one first — the token
 `init` printed expires in an hour and is not a credential for an agent:
 
 ```bash
-curl -X POST http://localhost:8080/v1/service-accounts \
+curl -X POST http://localhost:8082/v1/service-accounts \
   -H "Authorization: Bearer $NACRE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{ "name": "local-agent" }'

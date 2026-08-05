@@ -64,13 +64,14 @@ COPY --from=build /app/packages/admin/dist /usr/share/nginx/html
 # name — instead of hardcoding the first and being undeployable in the second.
 COPY docker/nginx.conf.template /etc/nginx/templates/default.conf.template
 
-# Only these two are substituted. Left unset, the entrypoint replaces every
+# Only these three are substituted. Left unset, the entrypoint replaces every
 # `$name` in the template, and nginx's own `$host`, `$scheme`, `$uri` and
 # `$proxy_add_x_forwarded_for` would be rendered as empty strings — a config
 # that loads and forwards nothing useful.
-ENV NGINX_ENVSUBST_FILTER='^(NACRE_API_UPSTREAM|NGINX_PORT)$'
+ENV NGINX_ENVSUBST_FILTER='^(NACRE_API_UPSTREAM|NACRE_MCP_UPSTREAM|NGINX_PORT)$'
 # Compose's shape as the default, because that is the one anybody meets first.
 ENV NACRE_API_UPSTREAM=api:8080
+ENV NACRE_MCP_UPSTREAM=mcp:8081
 ENV NGINX_PORT=80
 
 FROM node:22-alpine AS runtime

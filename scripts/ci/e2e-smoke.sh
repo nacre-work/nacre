@@ -57,7 +57,39 @@ for i in $(seq 1 30); do
 done
 curl -fsS "${WEB}/" | grep -qi '<title' || die "the web front-door did not serve an HTML page at /"
 curl -fsS "${WEB}/v1/health" >/dev/null || die "the API was not reachable through the web front-door at /v1"
-say "admin UI served, and /v1 proxied, on the web front-door"
+
+# The rest of the origin: discovery, the authorization server, and MCP. All four
+# have to be here or a client that reaches this address gets a console that works
+# and an OAuth flow that dead-ends — which is what having them on three ports
+# cost, three different ways.
+curl -fsS "${WEB}/.well-known/oauth-protected-resource" >/dev/null \
+  || die "the RFC 9728 document was not reachable through the front-door"
+curl -fsS "${WEB}/.well-known/oauth-authorization-server" >/dev/null \
+  || die "the RFC 8414 document was not reachable through the front-door"
+# 400 rather than 2xx: an empty registration is refused, which is the endpoint
+# answering. A 404 here is the proxy missing, and `-o /dev/null -w` reads the
+# status rather than letting curl -f collapse both into one failure.
+REG=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${WEB}/oauth/register" \
+  -H 'Content-Type: application/json' -d '{}')
+[ "${REG}" = "404" ] && die "/oauth is not proxied through the front-door (register answered 404)"
+
+# MCP, and the header is the assertion rather than the status.
+#
+# A 401 naming a `resource_metadata` URL **with the port on it** is what proves
+# the proxy forwards `Host` intact: the transport derives its RFC 9728 identifier
+# from that header, and RFC 9728 has the client compare it against the URL it
+# connected to. nginx's `$host` strips the port, and forwarding it produced
+# `http://localhost/...` for a client that reached `:8082` — a mismatch, and a
+# refusal before any token is sent. Found by starting the stack and reading one
+# header; nothing else here would have caught it.
+MCP_401=$(curl -s -i -X POST "${WEB}/mcp" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | tr -d '\r')
+echo "${MCP_401}" | grep -qi '^HTTP/1.1 401' \
+  || die "/mcp is not proxied through the front-door (no 401 from the transport)"
+echo "${MCP_401}" | grep -qi "resource_metadata=\"${WEB}/.well-known/oauth-protected-resource\"" \
+  || die "the front-door dropped the port from Host: $(echo "${MCP_401}" | grep -i www-authenticate)"
+
+say "console, /v1, /oauth, /.well-known and /mcp all on the web front-door"
 
 # ── init: one organization, one admin, the collection ──────────────────────
 say "init"
