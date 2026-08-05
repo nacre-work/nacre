@@ -675,6 +675,35 @@ did not. `docs/quickstart.md` had the matching hole: it said "proper token
 issuance is not built yet" next to a token that expires in an hour, months after
 email and password sign-in landed, so the documented path ran out at hour two.
 
+**A fix applied in one place and not in its sibling is the most repeated defect
+here, and the response is a check rather than a second fix.** One day produced
+six instances of it: `initialize` negotiated on Streamable HTTP and announced on
+STDIO; `server/discover` was added to one transport and not the other;
+`$http_host` was needed in four nginx locations; `.env.example` seeded a variable
+`docker-compose.yml` explained at length it deliberately omits, and `env_file` on
+the shared anchor delivered it anyway; `workflow_dispatch` was on three workflows
+out of four, and on none in a sibling repository; and `serverVersion` was carried
+by two transports and passed by neither entry point.
+
+The shape is always the same: **a property that has to hold in N places, with
+nothing that knows N.** So the rule is that finding one instance is not a licence
+to repair it — the repair is a check that asks all N. That is what
+`lint:config`, `lint:publish`, `lint:legal`, `lint:compose`, `check-upgrading`
+and the SDK's `coverage.test.ts` already are, and what
+`transport-parity.test.ts` and `lint:workflows` were added as: the two
+transports are driven from **one table**, so a case is asked of both and a method
+implemented on one is a failure; and every workflow that gates a pull request is
+required to be startable by hand, because that rule had been living in a comment
+and a comment does not travel to the next file, let alone the next repository.
+
+The two that resist mechanising are worth naming rather than pretending
+otherwise. A **claim repeated across documents** — `authorization_servers` was
+described as "absent and deliberately never pointed at Nacre" in four files and
+became wrong in all four at once — has no check; the answer is that correcting
+one is not done until `grep` has found the others. And a **rule stated only in a
+comment** is the one that produced `workflow_dispatch`: if a comment explains why
+something must be true, that is the signal it wants to be a check.
+
 **Test what you write by running it, not only by testing it.** Twelve of the
 worst defects found so far were each invisible to a green suite and obvious
 within a minute of starting the processes: the worker indexing nothing at all,
