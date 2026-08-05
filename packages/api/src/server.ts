@@ -21,6 +21,7 @@ import {
   REGISTER_PATH,
   TOKEN_PATH,
   authorizationServerMetadata,
+  consentRedirect,
   generateClientId,
   generateCode,
   redirectAllowed,
@@ -41,7 +42,7 @@ import { badRequest, internal, notFound, Problem } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
 import type { Login, Tokens } from './login.js'
-import type { OAuthAuthorizations, OAuthClients, PendingAuthorization } from './oauth-store.js'
+import type { OAuthAuthorizations, OAuthClients, OAuthConsents, OAuthRefreshTokens } from './oauth-store.js'
 import { looksLikeEmail, type GroupMember, type Groups, type GroupView, type Users, type UserView } from './principals.js'
 import { clientSource } from './source.js'
 import {
@@ -674,6 +675,18 @@ export interface OAuthServer {
   readonly consentUrl: string
   readonly clients: OAuthClients
   readonly authorizations: OAuthAuthorizations
+  readonly consents: OAuthConsents
+  readonly refreshTokens: OAuthRefreshTokens
+  /** How long an OAuth refresh token lives. The connection's real lifetime. */
+  readonly refreshTtlSeconds: number
+  /**
+   * How long an access token lives, reported to whoever ends a connection.
+   *
+   * A revocation deletes the refresh token; the access token already out is
+   * verified against a key and keeps working until it expires. Saying so is the
+   * honest form of "ended".
+   */
+  readonly accessTtlSeconds: number
   /**
    * Mint an access token for the approved **service account**.
    *
@@ -681,7 +694,7 @@ export interface OAuthServer {
    * authenticate, the agent is authorized, and revoking one does not touch the
    * other.
    */
-  mint(approved: PendingAuthorization): Promise<{ accessToken: string; expiresIn: number }>
+  mint(approved: { orgId: string; serviceAccountId: string }): Promise<{ accessToken: string; expiresIn: number }>
 }
 
 export interface ApiOptions {
@@ -1777,13 +1790,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
-      // Straight to the consent screen, with the request carried in the
-      // fragment rather than the query: a fragment is not sent to a server, so
-      // the parameters do not end up in the admin origin's access log on the
-      // way past.
-      const consent = new URL(oauth.consentUrl)
-      consent.hash = q.toString()
-      res.writeHead(302, { location: consent.toString() })
+      // Straight to the consent screen. `consentRedirect` carries the rule that
+      // the fragment is a route and the request is appended to it — see the
+      // note there for what assigning it outright did.
+      res.writeHead(302, { location: consentRedirect(oauth.consentUrl, q) })
       res.end()
       return
     }
@@ -1812,8 +1822,51 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       const fail = (error: string, description: string): void => {
         send(res, 400, { error, error_description: description }, requestId)
       }
+      // The refresh grant, which is what makes a connection endable. An access
+      // token is a JWT verified against a key, so nothing can take one back
+      // before it expires; the refresh token is stored, and revoking the
+      // connection deletes it. The access token then outlives a revocation by
+      // at most its own TTL, which is bounded and stated rather than forever.
+      if (form.grant_type === 'refresh_token') {
+        const presented = typeof form.refresh_token === 'string' ? form.refresh_token : ''
+        if (presented === '') {
+          fail('invalid_request', "'refresh_token' is required.")
+          return
+        }
+        const rotated = await oauth.refreshTokens.rotate(presented)
+        if (rotated === undefined) {
+          // One answer for expired, revoked, unknown and replayed. A client can
+          // act on exactly one thing — start the flow again — and telling them
+          // apart would say whether a token ever existed.
+          fail('invalid_grant', 'The refresh token is unknown, expired, already used, or the connection was ended.')
+          return
+        }
+        const next = generateCode()
+        await oauth.refreshTokens.issue(
+          rotated.orgId,
+          rotated.consentId,
+          next,
+          rotated.family,
+          new Date(Date.now() + oauth.refreshTtlSeconds * 1000),
+        )
+        const issued = await oauth.mint(rotated)
+        send(
+          res,
+          200,
+          {
+            access_token: issued.accessToken,
+            token_type: 'Bearer',
+            expires_in: issued.expiresIn,
+            refresh_token: next,
+          },
+          requestId,
+          { 'cache-control': 'no-store', pragma: 'no-cache' },
+        )
+        return
+      }
+
       if (form.grant_type !== 'authorization_code') {
-        fail('unsupported_grant_type', 'Only authorization_code is supported.')
+        fail('unsupported_grant_type', 'Only authorization_code and refresh_token are supported.')
         return
       }
       const code = typeof form.code === 'string' ? form.code : ''
@@ -1845,13 +1898,42 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       }
 
       const token = await oauth.mint(approved)
+
+      // A refresh token, hung on the standing connection. Without one the
+      // client's access simply stops at the TTL and it has to send somebody
+      // back through consent — and, more to the point, there would be nothing
+      // to revoke when they end the connection.
+      //
+      // Absent for a code from before consents existed: those rows carry no
+      // connection, and issuing a refresh token against nothing would create
+      // access with no record and no way to end it.
+      let refresh: string | undefined
+      if (approved.consentId !== undefined) {
+        refresh = generateCode()
+        await oauth.refreshTokens.issue(
+          approved.orgId,
+          approved.consentId,
+          refresh,
+          undefined,
+          new Date(Date.now() + oauth.refreshTtlSeconds * 1000),
+        )
+      }
+
       // `no-store`, which RFC 6749 requires of this response and which matters
       // more here than usual: the body is a bearer token and a caching proxy
       // that keeps it hands it to whoever asks next.
-      send(res, 200, { access_token: token.accessToken, token_type: 'Bearer', expires_in: token.expiresIn }, requestId, {
-        'cache-control': 'no-store',
-        pragma: 'no-cache',
-      })
+      send(
+        res,
+        200,
+        {
+          access_token: token.accessToken,
+          token_type: 'Bearer',
+          expires_in: token.expiresIn,
+          ...(refresh === undefined ? {} : { refresh_token: refresh }),
+        },
+        requestId,
+        { 'cache-control': 'no-store', pragma: 'no-cache' },
+      )
       return
     }
   }
@@ -3323,6 +3405,81 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
      * path to either, because a second path is how the guarded one gets walked
      * around.
      */
+    /**
+     * The connections this caller may see, and ending one.
+     *
+     * "Forget this application" is the whole point, and it is why 0024 exists:
+     * before it there was a record of an authorization *code* — ninety seconds
+     * long and consumed — and nothing of the connection that outlived it. So
+     * nothing could list what was connected, and nothing could stop it.
+     *
+     * Ending one deletes its refresh tokens in the same transaction. The access
+     * token already issued is a JWT verified against a key, so it keeps working
+     * until it expires — at most `NACRE_ACCESS_TOKEN_TTL`. That window is real
+     * and is stated in the response rather than papered over: the alternative
+     * is a denylist consulted on every request, which would make local
+     * verification not local.
+     */
+    if (instance === '/v1/oauth/consents' && options.oauth !== undefined) {
+      if (req.method !== 'GET') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      const items = await options.oauth.consents.list(auth)
+      send(
+        res,
+        200,
+        {
+          items: items.map((c) => ({
+            id: c.id,
+            client_id: c.clientId,
+            client_name: c.clientName,
+            service_account_id: c.serviceAccountId,
+            service_account_name: c.serviceAccountName,
+            approved_by: c.approvedBy,
+            created_at: c.createdAt,
+            last_refreshed_at: c.lastRefreshedAt,
+            revoked_at: c.revokedAt,
+          })),
+          // Not a field a caller has to compute from configuration they cannot
+          // see. It is how long an already-issued access token can still work
+          // after a connection is ended, and a screen that says "ended" without
+          // it would be overstating what just happened.
+          access_token_ttl_seconds: options.oauth.accessTtlSeconds,
+        },
+        requestId,
+      )
+      return
+    }
+
+    if (instance.startsWith('/v1/oauth/consents/') && options.oauth !== undefined) {
+      const id = instance.slice('/v1/oauth/consents/'.length)
+      if (req.method !== 'DELETE') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      const ended = await options.oauth.consents.revoke(auth, id)
+      if (!ended) {
+        // One they cannot see, one that does not exist, and one already ended
+        // are the same answer.
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      await options.audit?.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'oauth.revoke',
+        result: 'allow',
+        detail: { consent_id: id },
+        requestId,
+      })
+      send(res, 200, { ended: true, access_token_ttl_seconds: options.oauth.accessTtlSeconds }, requestId)
+      return
+    }
+
     if (instance === '/v1/oauth/consent' && options.oauth !== undefined) {
       if (req.method !== 'POST') {
         const problem = notFound(instance, requestId)
@@ -3383,6 +3540,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
+      // The standing connection first, then the code that points at it. That
+      // order matters: the code is exchanged for a refresh token hung on the
+      // connection, and a code with no connection would mint access nobody can
+      // ever take back — which is the gap this closes.
+      const consentId = await options.oauth.consents.record(auth, clientId, serviceAccountId)
       const code = generateCode()
       await options.oauth.authorizations.approve(auth, {
         orgId: auth.orgId,
@@ -3390,8 +3552,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         clientId,
         redirectUri,
         codeChallenge,
-        resource: need('resource'),
+        ...(need('resource') === undefined ? {} : { resource: need('resource') as string }),
         code,
+        consentId,
         expiresAt: new Date(Date.now() + CODE_TTL_MS),
       })
 

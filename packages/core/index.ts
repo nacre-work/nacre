@@ -19,6 +19,7 @@ export {
   REGISTER_PATH,
   TOKEN_PATH,
   authorizationServerMetadata,
+  consentRedirect,
   generateClientId,
   generateCode,
   hashCode,

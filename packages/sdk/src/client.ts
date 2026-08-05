@@ -23,6 +23,7 @@ import type {
   Workspace,
   SearchHit,
   SearchOptions,
+  Connection,
   Self,
   ServiceAccount,
   User,
@@ -836,6 +837,58 @@ export class NacreClient {
       },
     })) as { redirect_to?: unknown }
     return String(body.redirect_to)
+  }
+
+  /**
+   * Applications connected to this organization, and ending one.
+   *
+   * "Forget this application" is what a person actually wants when they are
+   * done with a client, and it is a different act from revoking the agent: an
+   * agent may have several connections and a key of its own in use elsewhere.
+   */
+  readonly connections = {
+    list: async (): Promise<{ items: readonly Connection[]; accessTokenTtlSeconds: number }> => {
+      const body = (await this.#request({
+        method: 'GET',
+        path: '/v1/oauth/consents',
+        retryable: true,
+      })) as { items?: unknown[]; access_token_ttl_seconds?: unknown }
+      return {
+        items: (body.items ?? []).map((raw) => {
+          const c = raw as Record<string, unknown>
+          return {
+            id: String(c.id),
+            clientId: String(c.client_id),
+            clientName: String(c.client_name),
+            serviceAccountId: String(c.service_account_id),
+            serviceAccountName: String(c.service_account_name),
+            approvedBy: String(c.approved_by),
+            createdAt: String(c.created_at),
+            lastRefreshedAt: c.last_refreshed_at === null ? null : String(c.last_refreshed_at),
+            revokedAt: c.revoked_at === null ? null : String(c.revoked_at),
+          }
+        }),
+        accessTokenTtlSeconds: Number(body.access_token_ttl_seconds ?? 0),
+      }
+    },
+
+    /**
+     * End it. The refresh token goes immediately; an access token already
+     * issued is verified against a key and keeps working until it expires, so
+     * the answer carries how long that can still be.
+     */
+    end: async (id: string): Promise<{ accessTokenTtlSeconds: number } | undefined> => {
+      try {
+        const body = (await this.#request({
+          method: 'DELETE',
+          path: `/v1/oauth/consents/${encodeURIComponent(id)}`,
+        })) as { access_token_ttl_seconds?: unknown }
+        return { accessTokenTtlSeconds: Number(body.access_token_ttl_seconds ?? 0) }
+      } catch (error) {
+        if (error instanceof NacreError && error.status === 404) return undefined
+        throw error
+      }
+    },
   }
 
   readonly serviceAccounts = {

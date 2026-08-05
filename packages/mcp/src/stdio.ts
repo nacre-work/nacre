@@ -5,7 +5,7 @@ import { authenticate, Problem, type AuthContext, type VerifyOptions } from '@na
 import { logger } from '@nacre.work/core'
 
 import { catalog } from './tools.js'
-import { PROTOCOL_VERSION } from './server.js'
+import { DISCOVER_TTL_MS, LEGACY_PROTOCOL_VERSIONS, PROTOCOL_VERSION, PROTOCOL_VERSIONS } from './server.js'
 import type { Layers, ToolRunner } from './server.js'
 
 /**
@@ -55,6 +55,8 @@ export interface StdioOptions {
   readonly layers: Layers
   readonly tools: ToolRunner
   readonly input?: NodeJS.ReadableStream
+  /** What `initialize` and `server/discover` report. See the note in main.ts. */
+  readonly serverVersion?: string
 }
 
 /**
@@ -126,11 +128,45 @@ async function dispatch(
   options: StdioOptions,
 ): Promise<unknown> {
   switch (method) {
-    case 'initialize':
+    // The same negotiation the HTTP transport makes, and it was wrong here in
+    // the same way and one step further: this answered `PROTOCOL_VERSION`
+    // unconditionally, so a client proposing anything at all was told
+    // `2026-07-28` and threw `Server's protocol version is not supported`
+    // before it ever reached a tool.
+    //
+    // `initialize` is the legacy era's opening move by definition, and a legacy
+    // client cannot fall forward — so what it hears back has to be a revision
+    // its own generation knows. Echo the proposal when this server speaks it;
+    // counter-offer the newest legacy revision otherwise.
+    case 'initialize': {
+      const asked = ((params ?? {}) as { protocolVersion?: unknown }).protocolVersion
       return {
-        protocolVersion: PROTOCOL_VERSION,
+        protocolVersion:
+          typeof asked === 'string' && (PROTOCOL_VERSIONS as readonly string[]).includes(asked)
+            ? asked
+            : LEGACY_PROTOCOL_VERSIONS[0],
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'nacre', version: '0.0.0' },
+        serverInfo: { name: 'nacre', version: options.serverVersion ?? '0.0.0' },
+      }
+    }
+
+    // The modern era's opening move, which 2026-07-28 makes a MUST. On stdio it
+    // is also the probe a dual-era client uses to tell the two apart, so a
+    // server without it reads as legacy and the client silently drops a
+    // revision.
+    case 'server/discover':
+      return {
+        resultType: 'complete',
+        supportedVersions: [...PROTOCOL_VERSIONS],
+        capabilities: { tools: { listChanged: false } },
+        _meta: {
+          'io.modelcontextprotocol/serverInfo': {
+            name: 'nacre',
+            version: options.serverVersion ?? '0.0.0',
+          },
+        },
+        ttlMs: DISCOVER_TTL_MS,
+        cacheScope: 'public',
       }
 
     case 'notifications/initialized':

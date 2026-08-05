@@ -300,6 +300,34 @@ jobs:
             ghcr.io/nacre-work/nacre:${{ needs.decide.outputs.version }}
             ghcr.io/nacre-work/nacre:latest
 
+      # The admin UI, and it should have been here from the start.
+      #
+      # `docker/Dockerfile` has had a `web` stage — nginx serving the built
+      # `packages/admin` bundle and proxying /v1 to the API — since the Compose
+      # stack grew a front door. Compose builds it locally with `target: web`;
+      # nothing published it, so `ghcr.io/nacre-work/nacre-web` did not exist and
+      # the Helm chart had nothing to deploy.
+      #
+      # That absence then got written up in the chart's README as a decision —
+      # "a deployment may reasonably put it behind its own auth proxy" — which
+      # is true of the API too, and the chart deploys that. It was an omission
+      # wearing a rationale, which is the shape this repository keeps removing.
+      #
+      # It matters more since the consent flow landed: `/oauth/authorize` sends
+      # a browser to a screen in this bundle, so a deployment with no bundle has
+      # a flow that ends in a redirect to nothing.
+      - name: nacre-web (the admin UI, served by nginx)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: web
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/nacre-work/nacre-web:${{ needs.decide.outputs.version }}
+            ghcr.io/nacre-work/nacre-web:latest
+
       - name: nacre-parser (the Python sidecar)
         uses: docker/build-push-action@v6
         with:
@@ -321,7 +349,7 @@ jobs:
       - name: both architectures are actually in the manifest
         run: |
           set -euo pipefail
-          for image in nacre nacre-parser; do
+          for image in nacre nacre-web nacre-parser; do
             ref="ghcr.io/nacre-work/$image:${{ needs.decide.outputs.version }}"
             platforms="$(docker buildx imagetools inspect "$ref" --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}')"
             echo "$ref -> $platforms"

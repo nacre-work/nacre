@@ -10,6 +10,7 @@ import {
 } from './api.js'
 import { clear, h } from './dom.js'
 import { accountsView } from './views/accounts.js'
+import { connectionsView } from './views/connections.js'
 import { consentView } from './views/consent.js'
 import { grantsView } from './views/grants.js'
 import { layersView } from './views/layers.js'
@@ -57,6 +58,17 @@ const ROUTES = [
     label: 'Service accounts',
     render: (root: HTMLElement) => void accountsView(root),
     adminOnly: true,
+  },
+  // Not adminOnly. Approving a connection is not an administrative act — it is
+  // the same permission as issuing the grant that makes the agent worth
+  // anything — so ending one must not be either. The listing shows a member
+  // their own and an administrator the organization's; the API decides that,
+  // not this table.
+  {
+    hash: '#/connections',
+    label: 'Connections',
+    render: (root: HTMLElement) => void connectionsView(root),
+    adminOnly: false,
   },
 ]
 

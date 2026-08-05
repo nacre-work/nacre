@@ -2,7 +2,15 @@ import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
 import type { AuthContext } from '@nacre.work/api'
-import { createMcpServer, PROTOCOL_VERSIONS, searchDescription, TOOLS_TTL_MS, type Layer } from '@nacre.work/mcp'
+import {
+  createMcpServer,
+  LEGACY_PROTOCOL_VERSIONS,
+  PROTOCOL_VERSION,
+  PROTOCOL_VERSIONS,
+  searchDescription,
+  TOOLS_TTL_MS,
+  type Layer,
+} from '@nacre.work/mcp'
 import { SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -421,7 +429,25 @@ describe('baseline · the MCP surface', () => {
     expect(agreeing.status).toBe(200)
   })
 
-  it('answers an unknown protocol version with one it speaks', async () => {
+  it('echoes the revision every shipping client actually proposes', async () => {
+    // 2025-11-25 is the newest revision the MCP SDK knows — `LATEST_PROTOCOL_VERSION`
+    // in its own types — so it is what a real client puts in `initialize`. It
+    // was missing from PROTOCOL_VERSIONS, so the proposal fell through to the
+    // counter-offer branch and the client was handed 2026-07-28, which its
+    // `SUPPORTED_PROTOCOL_VERSIONS` does not contain. Every connection died on
+    // `Server's protocol version is not supported: 2026-07-28`.
+    const res = await rpc(
+      'initialize',
+      { protocolVersion: '2025-11-25', capabilities: {} },
+      ORG_A,
+      { 'content-type': 'application/json' },
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { result: { protocolVersion: string } }
+    expect(body.result.protocolVersion).toBe('2025-11-25')
+  })
+
+  it('counter-offers a legacy revision, never the newest one', async () => {
     const res = await rpc(
       'initialize',
       { protocolVersion: '1999-01-01', capabilities: {} },
@@ -430,11 +456,67 @@ describe('baseline · the MCP surface', () => {
     )
     expect(res.status).toBe(200)
     const body = (await res.json()) as { result: { protocolVersion: string } }
+
     // A version this server cannot speak is answered with one it can, and the
-    // client decides. The alternative — an error — is what it used to send, and
-    // it leaves the client with nothing to do.
-    expect(body.result.protocolVersion).toBe(PROTOCOL_VERSIONS[0])
+    // client decides. The alternative — an error — leaves the client with
+    // nothing to do.
+    //
+    // But the offer has to be one the *asking generation* can take. Anything
+    // arriving on `initialize` is a legacy client, and the specification's own
+    // compatibility matrix says legacy clients have no fall-forward mechanism:
+    // they either speak what they are told or fail. So the newest legacy
+    // revision, and specifically **not** PROTOCOL_VERSIONS[0] — which is what
+    // this test asserted while no client could connect.
+    expect(body.result.protocolVersion).toBe(LEGACY_PROTOCOL_VERSIONS[0])
+    expect(body.result.protocolVersion).not.toBe(PROTOCOL_VERSION)
     expect(PROTOCOL_VERSIONS).toContain(body.result.protocolVersion)
+  })
+
+  it('server/discover advertises every revision, for anybody', async () => {
+    // A MUST in 2026-07-28, and the modern era's opening move: a client that
+    // sends no `initialize` learns the version list here instead.
+    const res = await rpc('server/discover', {}, ORG_A, { 'content-type': 'application/json' })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      result: {
+        resultType: string
+        supportedVersions: string[]
+        capabilities: Record<string, unknown>
+        cacheScope: string
+        _meta: Record<string, { name: string; version: string }>
+      }
+    }
+    expect(body.result.resultType).toBe('complete')
+    expect(body.result.supportedVersions).toEqual([...PROTOCOL_VERSIONS])
+    expect(body.result.capabilities).toEqual({ tools: {} })
+    // Nothing in it depends on who asked — unlike tools/list, which is scoped
+    // to the caller's layers and is `private` for exactly that reason.
+    expect(body.result.cacheScope).toBe('public')
+    expect(body.result._meta['io.modelcontextprotocol/serverInfo']?.name).toBe('nacre')
+  })
+
+  it('a path this transport does not serve answers HTTP, not JSON-RPC', async () => {
+    // The failure this replaces: a client with no token reads the
+    // protected-resource document, finds no authorization server named, falls
+    // back to treating this origin as one, and posts a registration request to
+    // `/register`. It got a JSON-RPC envelope, tried to read it as an RFC 6749
+    // error, and surfaced `HTTP 404: Invalid OAuth error response: ZodError`.
+    //
+    // The envelope belongs to /mcp. Everything else here arrived over plain
+    // HTTP from something that is not a JSON-RPC client.
+    for (const [method, path] of [
+      ['GET', '/.well-known/oauth-authorization-server'],
+      ['GET', '/.well-known/openid-configuration'],
+      ['POST', '/register'],
+      ['GET', '/nothing-here'],
+    ] as const) {
+      const res = await fetch(`${base}${path}`, { method })
+      expect(res.status, `${method} ${path}`).toBe(404)
+      const body = (await res.json()) as Record<string, unknown>
+      expect(typeof body.error, `${method} ${path} error is a string`).toBe('string')
+      expect(typeof body.error_description).toBe('string')
+      expect(body.jsonrpc, `${method} ${path} carries no RPC envelope`).toBeUndefined()
+    }
   })
 
   it('ignores a notification it does not know rather than refusing it', async () => {

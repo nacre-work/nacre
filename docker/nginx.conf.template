@@ -11,24 +11,38 @@
 # `/v1` and `/.well-known` are the API; everything else is the static admin. The
 # MCP port and `/metrics` are deliberately not proxied — an agent talks to the
 # mcp service directly, and metrics are not a thing the admin origin exposes.
+#
+# A **template**, rendered by the nginx image's own entrypoint, and the two
+# variables are why. This file used to hardcode `proxy_pass http://api:8080` —
+# a Compose service name — and `listen 80`. Neither survives leaving Compose:
+# in Kubernetes the API is `{release}-nacre-api` and a container that does not
+# run as root cannot bind 80. So the image was buildable, publishable, and
+# deployable nowhere but the one stack it was written against, which is the same
+# defect as a default that names localhost.
+#
+# NGINX_ENVSUBST_FILTER is set in the image and is load-bearing: without it the
+# entrypoint substitutes *every* `$name`, and nginx's own `$host`, `$scheme`,
+# `$uri` and `$proxy_add_x_forwarded_for` become empty strings.
 
 server {
-    listen 80;
+    listen ${NGINX_PORT};
     server_name _;
 
-    # A resolved-once upstream: `api` is a Compose service name, and `depends_on`
-    # below means the container exists before nginx starts, so the name resolves
-    # at load. Good enough for a single-host stack; a real ingress in front of a
-    # cluster is the production shape and is the operator's.
+    # Resolved once, at load. The name has to exist before nginx starts, which
+    # `depends_on` gives in Compose and a Service name gives in Kubernetes.
     location /v1/ {
-        proxy_pass http://api:8080;
+        proxy_pass http://${NACRE_API_UPSTREAM};
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # Discovery, and it is not optional here. A client that reaches this origin
+    # reads the RFC 9728 document and, since the consent flow, the RFC 8414 one
+    # under the same prefix. Serving the bundle without proxying these would
+    # give an origin where the console works and no application can connect.
     location /.well-known/ {
-        proxy_pass http://api:8080;
+        proxy_pass http://${NACRE_API_UPSTREAM};
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;

@@ -27,6 +27,14 @@ export const PROTOCOL_VERSION = '2026-07-28'
 /** tools/list is cached per user for five minutes — see cacheScope below. */
 export const TOOLS_TTL_MS = 300_000
 
+/**
+ * `server/discover` is cached for an hour, and publicly.
+ *
+ * Longer than the tool catalog because it carries less: a version list and a
+ * capability set change when this process is replaced, not when a grant moves.
+ */
+export const DISCOVER_TTL_MS = 3_600_000
+
 export interface Layers {
   /** The layers this caller may read. Drives both list_layers and the search description. */
   forCaller(auth: AuthContext): Promise<readonly Layer[]>
@@ -197,6 +205,64 @@ function send(res: ServerResponse, status: number, body: unknown, headers: Recor
 }
 
 /**
+ * A path this transport does not serve, answered as HTTP rather than as
+ * JSON-RPC.
+ *
+ * The envelope belongs to `/mcp` and nowhere else. Everything that reaches
+ * this function got here over plain HTTP — a discovery document, an OAuth
+ * endpoint, a mistyped path — and none of those callers is a JSON-RPC client.
+ *
+ * That was not a cosmetic mismatch. A client with no token reads the
+ * protected-resource document to find an authorization server; if it finds
+ * none named there it falls back to treating **this** origin as one and posts
+ * a registration request to `/register`. It got
+ * `{"jsonrpc":"2.0","id":null,"error":{"code":-32601,…}}`, tried to read it as
+ * an RFC 6749 error, and surfaced
+ * `HTTP 404: Invalid OAuth error response: ZodError: …` — a parser complaint
+ * about the shape of a reply, in place of the one sentence that would have
+ * explained the problem.
+ *
+ * So the body is `{ error, error_description }`: the shape RFC 6749 §5.2 fixes
+ * for exactly this reader, and ordinary JSON for everyone else. The
+ * description names where the authorization server actually is, because a
+ * client that landed here is looking for one.
+ */
+function httpError(res: ServerResponse, status: number, code: string, description: string): void {
+  res.writeHead(status, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ error: code, error_description: description }))
+}
+
+/**
+ * Where a client that came here looking for an authorization server should go.
+ *
+ * The document this transport serves already names it — RFC 9728 discovery is
+ * how a client is supposed to find it — so this repeats what is one GET away
+ * rather than deciding anything.
+ */
+function authorizationServerHint(options: McpOptions): string {
+  const named = options.resourceMetadata.authorization_servers?.[0]
+  return named === undefined
+    ? `It issues no tokens; read ${PROTECTED_RESOURCE_PATH} on this origin to find the authorization server.`
+    : `It issues no tokens — the authorization server is ${named}.`
+}
+
+/**
+ * The one 404 this transport has, for every path it does not serve.
+ *
+ * One body for all of them, deliberately: `/metrics` behind a token answers
+ * this too, and a differently-worded 404 there would confirm the endpoint
+ * exists to anyone who guessed the path and got the token wrong.
+ */
+function notServed(res: ServerResponse, options: McpOptions): void {
+  httpError(
+    res,
+    404,
+    'not_found',
+    `This is the MCP endpoint of a resource server; it serves POST /mcp. ${authorizationServerHint(options)}`,
+  )
+}
+
+/**
  * Streamable HTTP, one endpoint, no session.
  *
  * There is no `initialize`, no `Mcp-Session-Id`, and nothing kept between
@@ -230,15 +296,35 @@ const NAMED_METHODS: Record<string, 'name' | 'uri'> = {
 }
 
 /**
- * The revisions this transport can speak, newest first.
+ * The revisions reachable through `initialize`, newest first.
+ *
+ * 2026-07-28 splits clients into two eras, and this list is the older one:
+ * a **legacy** client opens with `initialize` and negotiates a version in the
+ * result, while a **modern** one carries the version on every request in
+ * `_meta` and never sends `initialize` at all. This transport serves both,
+ * which the specification calls dual-era and its compatibility matrix says
+ * works.
+ *
+ * The list matters because of one asymmetry the matrix states outright:
+ * **legacy clients have no fall-forward mechanism.** A modern client that
+ * hears a version it does not know retries with one from `supported`; a legacy
+ * client can only fail. So whatever `initialize` answers has to be a version
+ * that generation of client actually speaks.
+ */
+export const LEGACY_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'] as const
+
+/**
+ * Every revision this transport can speak, newest first — what
+ * `server/discover` advertises and what the `MCP-Protocol-Version` header is
+ * checked against.
  *
  * The list is short because the surface is: `tools/list` and `tools/call` are
- * shaped the same in all three, and nothing here uses a feature that moved.
- * The first entry is what an `initialize` gets when the client asks for
- * something not on the list — a version this server cannot speak is answered
- * with one it can, which is what the handshake is for.
+ * shaped the same in all of them, and nothing here uses a feature that moved.
+ * `2025-11-25` was missing and that was not a small omission — it is the
+ * newest revision any shipping client knows, so it is the one every real
+ * client proposes. See the note on the `initialize` handler.
  */
-export const PROTOCOL_VERSIONS = [PROTOCOL_VERSION, '2025-06-18', '2025-03-26'] as const
+export const PROTOCOL_VERSIONS = [PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS] as const
 
 /**
  * `UnsupportedProtocolVersionError`, which the schema pins at -32022 and
@@ -363,7 +449,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // hiding the endpoint does not confirm it has one.
   if (req.method === 'GET' && path === '/metrics') {
     if (options.metrics === undefined) {
-      send(res, 404, rpcError(null, -32601, 'Not found'))
+      notServed(res, options)
       return
     }
     if (options.metricsToken !== undefined) {
@@ -372,7 +458,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
       const expected = Buffer.from(options.metricsToken, 'utf8')
       const given = Buffer.from(presented, 'utf8')
       if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
-        send(res, 404, rpcError(null, -32601, 'Not found'))
+        notServed(res, options)
         return
       }
     }
@@ -434,7 +520,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   }
 
   if (req.method !== 'POST' || path !== '/mcp') {
-    send(res, 404, rpcError(null, -32601, 'Not found'))
+    notServed(res, options)
     return
   }
 
@@ -583,14 +669,26 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
     // request a client makes and never the first.
     case 'initialize': {
       const asked = (rpc.params as { protocolVersion?: unknown } | undefined)?.protocolVersion
-      // Echo what the client asked for when this server speaks it, and answer
-      // with the newest one it does otherwise. Negotiation is the client's to
-      // conclude: it may accept the counter-offer or disconnect, and either is
-      // a better outcome than the error it used to get.
+      // Echo what the client asked for when this server speaks it, and
+      // otherwise counter-offer the newest **legacy** revision — never the
+      // newest revision outright.
+      //
+      // That distinction is the whole of this fix. Answering with
+      // `PROTOCOL_VERSIONS[0]` is what the handshake reads like it should do,
+      // and it broke every real client: the current SDK's
+      // `SUPPORTED_PROTOCOL_VERSIONS` tops out at `2025-11-25`, so a client
+      // proposing that got `2026-07-28` back and threw
+      // `Server's protocol version is not supported: 2026-07-28` — a
+      // connection refused by the client, on a version the server offered it.
+      //
+      // A counter-offer is only useful if the other side can take it, and
+      // anything arriving on `initialize` is by definition a legacy client
+      // with no way to fall forward. The newest revision it might know is the
+      // newest one in the legacy list, so that is what it is offered.
       const agreed =
         typeof asked === 'string' && (PROTOCOL_VERSIONS as readonly string[]).includes(asked)
           ? asked
-          : PROTOCOL_VERSIONS[0]
+          : LEGACY_PROTOCOL_VERSIONS[0]
       send(res, 200, {
         jsonrpc: '2.0',
         id,
@@ -601,6 +699,41 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
           // not serve is how a client comes back with a call that 404s.
           capabilities: { tools: {} },
           serverInfo: { name: 'nacre', version: options.serverVersion ?? '0.0.0' },
+        },
+      })
+      return
+    }
+
+    // The modern era's entry point, and a MUST for any server claiming this
+    // revision: "Servers MUST implement server/discover."
+    //
+    // It is `initialize` with the handshake taken out. A modern client sends no
+    // `initialize` and negotiates nothing — it names a version on every request
+    // — so what it needs up front is the list of versions to pick from and the
+    // capabilities to expect. Both are static here, which is why this answers
+    // without touching a dependency and why `cacheScope` is `public`: unlike
+    // `tools/list`, nothing in this result depends on who is asking.
+    //
+    // Authenticated, like everything else on this endpoint. A client probing
+    // before it holds a token gets the same `401` and the same pointer at the
+    // metadata document that any other method gets, which is the flow rather
+    // than an obstacle to it.
+    case 'server/discover': {
+      send(res, 200, {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          resultType: 'complete',
+          supportedVersions: [...PROTOCOL_VERSIONS],
+          capabilities: { tools: {} },
+          _meta: {
+            'io.modelcontextprotocol/serverInfo': {
+              name: 'nacre',
+              version: options.serverVersion ?? '0.0.0',
+            },
+          },
+          ttlMs: DISCOVER_TTL_MS,
+          cacheScope: 'public',
         },
       })
       return

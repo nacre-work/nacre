@@ -147,24 +147,37 @@ export async function consentView(root: HTMLElement): Promise<void> {
   })
 
   root.append(
-    h('div', { class: 'panel' },
-      h('h1', {}, 'Give an application access'),
-      h('p', {},
-        h('strong', {}, host),
-        ' is asking to act as an agent in your organization.'),
-      h('p', { class: 'muted mono' }, request.redirectUri),
-
-      h('div', { class: 'note' },
-        h('p', {},
-          'It will act as the agent you pick — not as you. What it can see is exactly what that agent has been granted, and nothing else. ',
-          'Revoking the agent stops it immediately.'),
+    // The house shape: a page header, then the panel. The first version put the
+    // heading inside the panel, which is nothing else here does — and rendering
+    // it beside an existing screen is how that showed up.
+    h('header', { class: 'view-head' },
+      h('div', {},
+        h('h1', {}, 'Give an application access'),
+        h('p', { class: 'lede' },
+          h('strong', {}, host),
+          ' is asking to act as an agent in your organization. It will act as the agent you pick — ',
+          'not as you. What it can see is exactly what that agent has been granted.'),
       ),
+    ),
+
+    h('div', { class: 'panel' },
+      // The name is self-asserted and the redirect URI is not: registration is
+      // open, which is what the RFC is for, so a client calling itself
+      // something reassuring costs nothing. The URI is the field that decides
+      // where the code actually goes, so it is the one shown.
+      h('p', { class: 'hint' }, 'The code will be delivered to'),
+      h('p', { class: 'mono' }, request.redirectUri),
 
       h('label', { class: 'field' }, 'Act as', chosen),
       h('label', { class: 'field' }, 'Or create', fresh),
-      h('p', { class: 'muted' },
+      h('p', { class: 'hint' },
         'A new agent can reach nothing until it is granted something. Do that on the Grants screen — ',
         chip('read'), ' or ', chip('write'), ' on a layer.'),
+
+      h('div', { class: 'note' },
+        h('p', {},
+          'Revoking the agent stops this application immediately, and touches nothing else you have access to.'),
+      ),
 
       message,
       h('div', { class: 'dialog-actions' }, deny, approve),

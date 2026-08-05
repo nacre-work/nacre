@@ -1,9 +1,21 @@
-import { createPool, generateCode, hashCode, verifierMatches, redirectAllowed } from '@nacre.work/core'
+import {
+  consentRedirect,
+  createPool,
+  generateCode,
+  hashCode,
+  verifierMatches,
+  redirectAllowed,
+} from '@nacre.work/core'
 import { createHash, randomBytes } from 'node:crypto'
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { PostgresOAuthAuthorizations, PostgresOAuthClients } from '../oauth-store.js'
+import {
+  PostgresOAuthAuthorizations,
+  PostgresOAuthClients,
+  PostgresOAuthConsents,
+  PostgresOAuthRefreshTokens,
+} from '../oauth-store.js'
 import { PostgresServiceAccounts } from '../service-keys.js'
 
 /**
@@ -39,6 +51,8 @@ let pool: Pool
 let clients: PostgresOAuthClients
 let authorizations: PostgresOAuthAuthorizations
 let accounts: PostgresServiceAccounts
+let consents: PostgresOAuthConsents
+let refresh: PostgresOAuthRefreshTokens
 
 const admin = { orgId: ORG, principal: { type: 'user' as const, id: ADMIN }, role: 'org_admin' as const }
 const theirs = { orgId: OTHER, principal: { type: 'user' as const, id: OTHER_ADMIN }, role: 'org_admin' as const }
@@ -49,6 +63,8 @@ when('the OAuth consent flow, against the database', () => {
     clients = new PostgresOAuthClients(pool, APP_ROLE)
     authorizations = new PostgresOAuthAuthorizations(pool, APP_ROLE)
     accounts = new PostgresServiceAccounts(pool, APP_ROLE)
+    consents = new PostgresOAuthConsents(pool, APP_ROLE)
+    refresh = new PostgresOAuthRefreshTokens(pool, APP_ROLE)
 
     const c = await pool.connect()
     try {
@@ -67,7 +83,9 @@ when('the OAuth consent flow, against the database', () => {
           [who, id, `${slug}@example.test`],
         )
       }
+      await c.query('DELETE FROM oauth_refresh_tokens WHERE org_id IN ($1,$2)', [ORG, OTHER])
       await c.query('DELETE FROM oauth_authorizations WHERE org_id IN ($1,$2)', [ORG, OTHER])
+      await c.query('DELETE FROM oauth_consents WHERE org_id IN ($1,$2)', [ORG, OTHER])
       await c.query('DELETE FROM service_accounts WHERE org_id IN ($1,$2)', [ORG, OTHER])
     } finally {
       c.release()
@@ -130,7 +148,6 @@ when('the OAuth consent flow, against the database', () => {
       clientId,
       redirectUri: 'http://127.0.0.1:33418/callback',
       codeChallenge: challenge,
-      resource: undefined,
       code,
       expiresAt: new Date(Date.now() + 60_000),
     })
@@ -153,7 +170,6 @@ when('the OAuth consent flow, against the database', () => {
       clientId,
       redirectUri: 'http://127.0.0.1:33418/callback',
       codeChallenge: challenge,
-      resource: undefined,
       code,
       expiresAt: new Date(Date.now() - 1000),
     })
@@ -171,7 +187,6 @@ when('the OAuth consent flow, against the database', () => {
       clientId,
       redirectUri: 'http://127.0.0.1:33418/callback',
       codeChallenge: challenge,
-      resource: undefined,
       code,
       expiresAt: new Date(Date.now() + 60_000),
     })
@@ -203,7 +218,6 @@ when('the OAuth consent flow, against the database', () => {
       clientId,
       redirectUri: 'http://127.0.0.1:33418/callback',
       codeChallenge: challenge,
-      resource: undefined,
       code,
       expiresAt: new Date(Date.now() + 60_000),
     })
@@ -227,6 +241,106 @@ when('the OAuth consent flow, against the database', () => {
 
     // And it is still there for the organization it belongs to.
     expect(await authorizations.redeem(code)).toBeDefined()
+  })
+
+  /**
+   * Forgetting an application.
+   *
+   * The property is that the connection stops being renewable, and that it
+   * stops for *that application* rather than for the agent — several
+   * applications can act as one agent, and revoking the agent is a different
+   * and much larger act that lives on another screen.
+   */
+  it('ends one connection without touching the agent or the others', async () => {
+    const agent = (await accounts.create(admin, 'shared-agent'))!
+    const first = await register('first app')
+    const second = await register('second app')
+
+    const c1 = await consents.record(admin, first, agent.account.id)
+    const c2 = await consents.record(admin, second, agent.account.id)
+    expect(c1).not.toBe(c2)
+
+    const t1 = generateCode()
+    const t2 = generateCode()
+    await refresh.issue(ORG, c1, t1, undefined, new Date(Date.now() + 60_000))
+    await refresh.issue(ORG, c2, t2, undefined, new Date(Date.now() + 60_000))
+
+    expect(await consents.revoke(admin, c1)).toBe(true)
+
+    // The forgotten one cannot renew...
+    expect(await refresh.rotate(t1)).toBeUndefined()
+    // ...and the other is untouched, which is the whole distinction between
+    // forgetting an application and revoking an agent.
+    expect((await refresh.rotate(t2))?.serviceAccountId).toBe(agent.account.id)
+
+    // Ending it twice is not an error the second time, it is a no.
+    expect(await consents.revoke(admin, c1)).toBe(false)
+
+    const listed = await consents.list(admin)
+    expect(listed.find((c) => c.id === c1)?.revokedAt).not.toBeNull()
+    expect(listed.find((c) => c.id === c2)?.revokedAt).toBeNull()
+  })
+
+  it('reuses the connection when the same application is approved again', async () => {
+    const agent = (await accounts.create(admin, 'reapproved-agent'))!
+    const app = await register('returning app')
+
+    const once = await consents.record(admin, app, agent.account.id)
+    expect(await consents.revoke(admin, once)).toBe(true)
+
+    // Approving again is the same connection, not a second one: a screen full
+    // of duplicates is one where ending a connection leaves the others working.
+    // And the revocation is cleared, or the person would be shown a connection
+    // marked ended while the client works.
+    const again = await consents.record(admin, app, agent.account.id)
+    expect(again).toBe(once)
+    expect((await consents.list(admin)).find((c) => c.id === once)?.revokedAt).toBeNull()
+  })
+
+  it('rotates a refresh token, and ends the family on a replay', async () => {
+    const agent = (await accounts.create(admin, 'rotating-agent'))!
+    const app = await register('rotating app')
+    const consentId = await consents.record(admin, app, agent.account.id)
+
+    const first = generateCode()
+    await refresh.issue(ORG, consentId, first, undefined, new Date(Date.now() + 60_000))
+
+    const rotated = await refresh.rotate(first)
+    expect(rotated?.serviceAccountId).toBe(agent.account.id)
+    const second = generateCode()
+    await refresh.issue(ORG, consentId, second, rotated!.family, new Date(Date.now() + 60_000))
+
+    // Replaying the spent one: the legitimate holder has already exchanged it,
+    // so two parties hold it and there is no telling which is genuine. Neither
+    // continues — the whole family goes, not just the token.
+    expect(await refresh.rotate(first)).toBeUndefined()
+    expect(await refresh.rotate(second)).toBeUndefined()
+  })
+
+  it('shows a member their own connections and an administrator the organization\'s', async () => {
+    const agent = (await accounts.create(admin, 'visibility-agent'))!
+    const app = await register('visible app')
+    const mine = await consents.record(admin, app, agent.account.id)
+
+    // A different person in the same organization, not an administrator.
+    const c = await pool.connect()
+    const someone = '0a111111-1111-4111-8111-1111111111b1'
+    try {
+      await c.query(
+        `INSERT INTO users (id, org_id, email, role) VALUES ($1,$2,'member@example.test','member')
+         ON CONFLICT DO NOTHING`,
+        [someone, ORG],
+      )
+    } finally {
+      c.release()
+    }
+    const member = { orgId: ORG, principal: { type: 'user' as const, id: someone }, role: 'member' as const }
+
+    expect((await consents.list(member)).some((x) => x.id === mine)).toBe(false)
+    expect((await consents.list(admin)).some((x) => x.id === mine)).toBe(true)
+    // And they cannot end what they cannot see — the same answer as "no such
+    // connection", which is invariant 4.
+    expect(await consents.revoke(member, mine)).toBe(false)
   })
 
   it('records who created an agent, and leaves it null when nobody did', async () => {
@@ -256,11 +370,62 @@ when('the OAuth consent flow, against the database', () => {
         clientId,
         redirectUri: 'http://127.0.0.1:33418/callback',
         codeChallenge: pkce().challenge,
-        resource: undefined,
-        code: generateCode(),
+          code: generateCode(),
         expiresAt: new Date(Date.now() + 60_000),
       }),
     ).rejects.toThrow()
+  })
+})
+
+describe('where /oauth/authorize sends the browser', () => {
+  const request = new URLSearchParams({
+    response_type: 'code',
+    client_id: 'nacre_client_x',
+    redirect_uri: 'http://127.0.0.1:6274/oauth/callback',
+    code_challenge: 'abc',
+    code_challenge_method: 'S256',
+    state: 's',
+  })
+
+  /**
+   * The one assertion that matters, and the one nothing made until the flow was
+   * run end to end: **the SPA route survives**.
+   *
+   * `NACRE_OAUTH_CONSENT_URL` defaults to `…/#/consent`, and the handler
+   * assigned the fragment rather than appending to it — so the browser landed
+   * on `#response_type=code&…`, the hash router saw no route, and the person
+   * got the default view with no way to approve anything. Everything about the
+   * request was intact and the screen it belonged to never rendered.
+   *
+   * `readRequest` in the consent view is the other half: it strips a leading
+   * `/consent?` before parsing. These two are only correct together, which is
+   * why the shape is pinned here rather than left to each side's assumption.
+   */
+  it('keeps the hash route and appends the request to it', () => {
+    const to = new URL(consentRedirect('http://admin.example.test/#/consent', request))
+    expect(to.origin + to.pathname).toBe('http://admin.example.test/')
+    expect(to.hash.startsWith('#/consent?')).toBe(true)
+
+    const parsed = new URLSearchParams(to.hash.replace(/^#\/consent\??/, ''))
+    expect(parsed.get('client_id')).toBe('nacre_client_x')
+    expect(parsed.get('redirect_uri')).toBe('http://127.0.0.1:6274/oauth/callback')
+    expect(parsed.get('code_challenge')).toBe('abc')
+    expect(parsed.get('state')).toBe('s')
+  })
+
+  it('leaves a consent URL with no route alone', () => {
+    // A deployment serving the consent screen at its own path rather than
+    // through a hash router. There is nothing to preserve, so nothing is
+    // invented — the request is the whole fragment.
+    const to = new URL(consentRedirect('https://consent.example.test/approve', request))
+    expect(to.pathname).toBe('/approve')
+    expect(to.hash.startsWith('#response_type=code')).toBe(true)
+  })
+
+  it('does not double the separator on a route already ending in ?', () => {
+    const to = new URL(consentRedirect('http://admin.example.test/#/consent?', request))
+    expect(to.hash.startsWith('#/consent?response_type=')).toBe(true)
+    expect(to.hash).not.toContain('??')
   })
 })
 

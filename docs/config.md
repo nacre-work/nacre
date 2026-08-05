@@ -291,13 +291,24 @@ has a credential. It is the path every `401` from the MCP transport names in
 a client doing exactly what it was told got a `404`.
 
 The document names the canonical resource identifier, which is the audience
-value every token is bound to, and `NACRE_OAUTH_AUTHORIZATION_SERVER` when a
-deployment has an identity provider in front of it. **Absent by default, and
-deliberately not pointed at ourselves**: Nacre is a resource server, not an
-authorization server — sign-in is email and password, a service account key is
-a random string matched against a hash, and neither is an OAuth grant. A client
-sent to us for a token endpoint would find nothing, which is the original 404
-one redirect further along.
+value every token is bound to, and `authorization_servers` — which is
+`NACRE_OAUTH_AUTHORIZATION_SERVER` when a deployment has an identity provider in
+front of it, and **this installation's own API** otherwise.
+
+That default reverses what this section used to say, and the reversal is the
+point rather than a slip. The field was empty on the argument that Nacre is a
+resource server and a client sent here for a token endpoint would find nothing —
+correct for what existed then, and it is the endpoint that changed: the API runs
+the authorization server now, with a consent screen that binds the connection to
+a service account rather than to the person who approves it. Never the MCP
+transport, which still verifies tokens and issues none.
+
+`NACRE_OAUTH_CONSENT_URL` is where a browser is sent to pick that agent, and its
+**fragment is a route**: the admin UI is hash-routed, so the default
+`…/#/consent` means the consent screen and the authorization request is appended
+to it as `#/consent?client_id=…`. A value with no fragment works too — the
+request becomes the whole fragment — which is what a deployment serving the
+screen at its own path wants.
 
 Both processes serve the same object, built once. Two builders would drift, and
 a client that read one and authenticated against the other would be

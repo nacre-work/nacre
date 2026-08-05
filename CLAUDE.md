@@ -338,9 +338,46 @@ it.
 `/.well-known/oauth-protected-resource` is served, by both the API and the MCP
 transport, from one document built once. Every `401` from MCP had named that
 path in `WWW-Authenticate` since the transport existed and nothing served it.
-`authorization_servers` is absent unless a deployment names one and is
-deliberately never pointed at Nacre: this is a resource server, and a client
-sent here for a token endpoint would find nothing.
+`authorization_servers` names this installation's **API** by default, or
+whatever `NACRE_OAUTH_AUTHORIZATION_SERVER` names. Never the MCP transport,
+which verifies tokens and issues none. It was absent by default until the API
+grew the consent flow, on the argument that a client sent to a token endpoint
+that did not exist would find nothing — the argument was right and the endpoint
+is what changed.
+
+**An MCP client connects over the whole chain now, and that was checked by
+running it** with the real SDK against a running API and a running transport:
+`401` → the RFC 9728 document → RFC 8414 discovery → RFC 7591 registration →
+`/oauth/authorize` → the consent screen in a browser → `/oauth/token` →
+`initialize` → `tools/list`. Two defects only that walk could find, both of them
+green in every suite.
+
+`initialize` counter-offered `2026-07-28` — the newest revision this server
+speaks — to any client proposing something not on its list, and `2025-11-25` was
+not on that list. That is the newest revision the MCP SDK knows, so it is what
+every shipping client proposes: each was handed a revision absent from its own
+`SUPPORTED_PROTOCOL_VERSIONS` and failed with `Server's protocol version is not
+supported`. The specification's compatibility matrix has the rule the code was
+missing — a client arriving on `initialize` is *legacy*, and legacy clients have
+no fall-forward mechanism, so a counter-offer must be a revision that generation
+knows. The list gained `2025-11-25` and the counter-offer is now always the
+newest **legacy** revision. STDIO had the same defect and worse: it answered
+unconditionally, never reading the proposal. `server/discover`, a MUST in this
+revision and the modern era's opening move, is served on both.
+
+And `/oauth/authorize` sent the browser to a page with no way to approve
+anything. `NACRE_OAUTH_CONSENT_URL` ends in `#/consent` — the admin UI is
+hash-routed, so that fragment *is* the route — and the handler assigned the
+fragment instead of appending to it, so the router saw no route and rendered the
+default view with the whole request sitting in the URL. The consent screen's own
+parser reads `#/consent?…`. Two halves written to different assumptions, with
+nothing putting them side by side.
+
+The JSON-RPC envelope also escaped its endpoint: every path the transport does
+not route answered one, so a client falling back to `POST /register` on the MCP
+origin got `{"jsonrpc":…,"error":{"code":-32601}}`, tried to read it as an RFC
+6749 error and reported `Invalid OAuth error response: ZodError`. The envelope
+belongs to `/mcp`; everything else answers `{ error, error_description }`.
 
 The collection a reindex replaces is reclaimed. Every migration used to leave a
 full copy of the organization's vectors behind forever, and the runbook's manual

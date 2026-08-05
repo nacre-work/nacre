@@ -79,6 +79,8 @@ const COVERAGE: Record<string, string | null> = {
 
   'GET /me': 'me',
   'POST /oauth/consent': 'consent',
+  'GET /oauth/consents': 'connections.list',
+  'DELETE /oauth/consents/{id}': 'connections.end',
   'GET /workspaces': 'workspaces.list',
   'POST /workspaces': 'workspaces.create',
 

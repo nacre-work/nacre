@@ -31,6 +31,31 @@ export const TOKEN_PATH = '/oauth/token'
 export const REGISTER_PATH = '/oauth/register'
 
 /**
+ * Where `/oauth/authorize` sends the browser, with the request in the fragment.
+ *
+ * A fragment rather than a query because a fragment is not sent to a server:
+ * the parameters do not end up in the admin origin's access log on the way
+ * past.
+ *
+ * The rule this function exists to hold is that the consent URL's fragment is
+ * **a route**, not empty space. The admin UI is hash-routed and
+ * `NACRE_OAUTH_CONSENT_URL` ends in `#/consent`; assigning `hash` replaced that,
+ * so the browser arrived at `#client_id=…` with no route in it and the router
+ * fell through to the default view — the whole request intact, on a page with
+ * no way to approve it. The consent screen's parser reads `#/consent?…` and
+ * strips the route before the parameters, which is exactly what this produces.
+ *
+ * The two halves were each written to a different assumption and nothing put
+ * them side by side; the flow had never been run end to end.
+ */
+export function consentRedirect(consentUrl: string, request: URLSearchParams): string {
+  const at = new URL(consentUrl)
+  const route = at.hash.replace(/^#/, '').replace(/\?+$/, '')
+  at.hash = route === '' ? request.toString() : `${route}?${request.toString()}`
+  return at.toString()
+}
+
+/**
  * How long a code is worth anything.
  *
  * Ninety seconds. The exchange happens within a second of the redirect, and a

@@ -10,6 +10,7 @@ import {
 
 import { buildServices } from './services.js'
 import { serveStdio } from './stdio.js'
+import { packageVersion } from './version.js'
 
 /**
  * `npx @nacre.work/mcp` — the local transport.
@@ -73,6 +74,7 @@ async function main(): Promise<void> {
       serviceKey,
       layers,
       tools,
+      serverVersion: packageVersion(),
     })
   } finally {
     // stdin closed: the client is gone. Releasing the pool here rather than on

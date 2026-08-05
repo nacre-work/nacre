@@ -40,7 +40,12 @@ import { SignJWT } from 'jose'
 
 import { Idempotency } from './idempotency.js'
 import { Login } from './login.js'
-import { PostgresOAuthAuthorizations, PostgresOAuthClients } from './oauth-store.js'
+import {
+  PostgresOAuthAuthorizations,
+  PostgresOAuthClients,
+  PostgresOAuthConsents,
+  PostgresOAuthRefreshTokens,
+} from './oauth-store.js'
 import { rerankerFor } from './rerank.js'
 import { RateLimiter, type LimitPolicy, type Resource } from './limits.js'
 import { PostgresGroups, PostgresUsers } from './principals.js'
@@ -341,6 +346,14 @@ async function main(): Promise<void> {
       consentUrl: config.consentUrl,
       clients: new PostgresOAuthClients(pool, APP_ROLE),
       authorizations: new PostgresOAuthAuthorizations(pool, APP_ROLE),
+      consents: new PostgresOAuthConsents(pool, APP_ROLE),
+      refreshTokens: new PostgresOAuthRefreshTokens(pool, APP_ROLE),
+      // The same lifetimes a person's own session uses. An application's
+      // connection is not a different kind of thing from a browser session —
+      // both are "this holder keeps working until somebody ends it" — so
+      // inventing a second pair of knobs would be two answers to one question.
+      refreshTtlSeconds: config.refreshTokenTtl,
+      accessTtlSeconds: config.accessTokenTtl,
       /**
        * A token for the **agent**, never for the person who approved it.
        *

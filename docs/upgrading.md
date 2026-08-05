@@ -240,6 +240,128 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.5.5 — an MCP client can actually connect, and the admin UI is an image you can deploy
+
+**Nothing to do.** No migration, no new variable, no changed default. Everything
+below is a defect fixed in place; upgrade the images and the client that could
+not connect will.
+
+**The MCP handshake offered a revision no client speaks.** `initialize`
+answered with the newest revision this server knows — `2026-07-28` — whenever
+the client proposed anything not on its list, and `2025-11-25` was not on that
+list. `2025-11-25` is the newest revision the MCP SDK knows, so it is what every
+shipping client proposes: each one was handed `2026-07-28`, found it absent from
+its own `SUPPORTED_PROTOCOL_VERSIONS`, and failed with
+`Server's protocol version is not supported: 2026-07-28`.
+
+Two things were wrong and both are fixed. `2025-11-25` is in the supported list,
+so the common case is now an echo rather than a counter-offer. And a
+counter-offer is now always a **legacy** revision: anything arriving on
+`initialize` is a legacy client by definition, and the specification's own
+compatibility matrix says that generation has no fall-forward mechanism — it
+speaks what it is told or it fails. Offering it the newest revision was offering
+something it could not take.
+
+The STDIO transport had the same defect one step further along: it answered the
+newest revision unconditionally, without reading the proposal at all.
+
+**`server/discover` is served, on both transports.** It is a MUST in
+`2026-07-28` and the modern era's opening move — a client that sends no
+`initialize` learns the version list and the capabilities from it instead. On
+stdio it is also the probe a dual-era client uses to tell the two eras apart, so
+a server without it reads as legacy.
+
+**A path the MCP transport does not serve now answers HTTP, not JSON-RPC.** A
+client with no token reads the protected-resource document; if it finds no
+authorization server named there it falls back to treating the MCP origin as
+one and posts a registration request to `/register`. That got a JSON-RPC
+envelope, which is not an RFC 6749 error, and the client surfaced
+`HTTP 404: Invalid OAuth error response: ZodError: …` — a parser complaint in
+place of an explanation. Those paths now answer `{ error, error_description }`,
+and the description names where the authorization server actually is.
+
+**`/oauth/authorize` sent the browser to a page with no way to approve
+anything.** `NACRE_OAUTH_CONSENT_URL` ends in `#/consent` — the admin UI is
+hash-routed, so that fragment *is* the route — and the handler assigned the
+fragment rather than appending to it. The browser arrived at
+`#response_type=code&…`, the router saw no route, and the person got the default
+view with the whole authorization request intact in the URL. The consent
+screen's own parser reads `#/consent?…`; the two halves were written to
+different assumptions and nothing put them side by side until the flow was run
+end to end with a real client.
+
+**`serverInfo.version` reported `0.0.0`.** Both transports carried the field,
+threaded it through an option, and neither entry point ever passed a value.
+
+**A third image: `ghcr.io/nacre-work/nacre-web`.** `docker/Dockerfile` has had a
+`web` stage — nginx serving the built admin bundle and proxying `/v1` to the API
+— since the Compose stack grew a front door. Compose built it locally; the
+release workflow built the file with no `target`, so it pushed the node runtime
+and nothing else, and the image never existed.
+
+That is why the Helm chart did not deploy the console. The reason recorded in
+the chart's README was that a deployment might reasonably front it differently —
+true of the API too, which the chart does deploy. An omission wearing a
+rationale.
+
+**Nothing to do for a Compose deployment**, which builds the stage locally and
+always did.
+
+**For Helm**: the chart deploys it now, `web.enabled` defaults to true, and the
+ingress routes `/` at the console rather than at the API — the console proxies
+`/v1` and `/.well-known` onward, which is what makes the browser's requests
+same-origin. With `web.enabled=false` the ingress routes `/` at the API exactly
+as before, so a deployment that serves the bundle itself is unaffected.
+
+**The nginx config became a template, and that is the part to know if you had
+copied it.** It hardcoded `proxy_pass http://api:8080` — a Compose service name
+— and `listen 80`, which a container that does not run as root cannot bind.
+Neither survives leaving Compose. It now reads `NACRE_API_UPSTREAM` and
+`NGINX_PORT`, both defaulted in the image to the Compose shape, and
+`NGINX_ENVSUBST_FILTER` is set so the entrypoint substitutes only those two —
+without it, nginx's own `$host`, `$scheme` and `$uri` would render as empty
+strings.
+
+### 0.5.4 — a connection you can see, and end
+
+**Migration 0024.** It adds `oauth_consents`, `oauth_refresh_tokens` and a
+nullable `consent_id` on `oauth_authorizations`. Nothing is dropped and nothing
+is rewritten, so 0.5.3 runs unchanged against the upgraded database.
+
+0.5.3 built the OAuth flow and stopped one step short. It recorded an
+authorization *code* — ninety seconds long, consumed on exchange — and nothing
+that outlived it. So after an application connected there was no record it had,
+nothing could list what was connected, and **the token could not be taken
+back**: it is a JWT verified locally against a key, valid until it expires, and
+nothing consults a table.
+
+Now a connection is a row, the token endpoint issues a **refresh token** against
+it, and ending the connection deletes that token.
+
+**What "ended" means, exactly.** The application cannot renew, immediately. An
+access token it already holds keeps working until it expires — at most
+`NACRE_ACCESS_TOKEN_TTL`, fifteen minutes by default. The API reports that
+number in the response and the admin screen shows it, because a screen that said
+"ended" without it would be overstating what happened. To stop an agent *now*,
+revoke the agent; that is a different and larger act, and it is on the Service
+accounts screen.
+
+The alternative was a denylist of live tokens consulted on every request, which
+would undo local verification to reverse something that happens rarely. That
+trade is stated here rather than left implicit.
+
+**Clients that connected under 0.5.3 get no refresh token**, because their
+authorization rows carry no connection. They keep working until their access
+token expires and then have to be approved again — once. Nothing to do about it
+and nothing lost.
+
+**`Connections` is a new screen** and is not administrative: approving a
+connection is the same permission as issuing the grant that makes the agent
+worth anything, so ending one is too. A member sees the ones they approved; an
+`org_admin` sees the organization's, because an agent belongs to the
+organization and somebody has to be able to end a connection whose approver has
+left.
+
 ### 0.5.3 — an MCP client can connect, and consent names an agent
 
 **Migration 0023, and it is the first schema change since 0.5.0.** It adds
