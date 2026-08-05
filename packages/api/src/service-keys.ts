@@ -146,6 +146,18 @@ export interface ServiceAccount {
   readonly createdAt: string
   readonly lastUsedAt: string | null
   readonly revokedAt: string | null
+  /**
+   * The person who created it, when one did.
+   *
+   * Null for every account made before the column existed and for any made by
+   * `init` — inventing an owner for those, the first administrator say, would
+   * be a record that reads as fact and is a guess. It is what "my agents"
+   * filters on, which is the reason it exists: consent lets anyone who can
+   * issue a grant stand an agent up, and without this an organization fills
+   * with `laptop-agent`, `laptop-agent-2` and nobody able to say whose is
+   * whose.
+   */
+  readonly createdBy?: string | null
 }
 
 export interface ServiceAccounts {
@@ -192,9 +204,10 @@ export class PostgresServiceAccounts implements ServiceAccounts {
           created_at_text: string
           last_used_at: Date | null
           revoked_at: Date | null
+          created_by: string | null
         }>(
           `SELECT id, name, key_prefix, created_at, created_at::text AS created_at_text,
-                  last_used_at, revoked_at
+                  last_used_at, revoked_at, created_by
              FROM service_accounts WHERE org_id = $1${seek} ORDER BY created_at, id${cap}`,
           after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
         )
@@ -209,6 +222,7 @@ export class PostgresServiceAccounts implements ServiceAccounts {
           createdAt: r.created_at.toISOString(),
           lastUsedAt: r.last_used_at?.toISOString() ?? null,
           revokedAt: r.revoked_at?.toISOString() ?? null,
+          createdBy: r.created_by,
         }))
 
         return pageOf(accounts, page, (a, i) => ({
@@ -235,12 +249,16 @@ export class PostgresServiceAccounts implements ServiceAccounts {
         // transaction withOrg opens, a raised constraint error aborts
         // everything after it, so recovering would mean a savepoint. The empty
         // result says the same thing and says it without one.
-        const { rows } = await client.query<{ id: string; created_at: Date }>(
-          `INSERT INTO service_accounts (org_id, name, key_hash, key_prefix)
-           VALUES ($1,$2,$3,$4)
+        const { rows } = await client.query<{ id: string; created_at: Date; created_by: string | null }>(
+          // `created_by` from the caller when the caller is a person. A
+          // service account creating another leaves it null rather than naming
+          // the parent: an owner is a human who can be asked about it, and a
+          // chain of agents is not an answer to "whose is this".
+          `INSERT INTO service_accounts (org_id, name, key_hash, key_prefix, created_by)
+           VALUES ($1,$2,$3,$4,$5)
            ON CONFLICT (org_id, name) DO NOTHING
-           RETURNING id, created_at`,
-          [auth.orgId, name, hashOf(key), prefixOf(key)],
+           RETURNING id, created_at, created_by`,
+          [auth.orgId, name, hashOf(key), prefixOf(key), auth.principal.type === 'user' ? auth.principal.id : null],
         )
 
         const row = rows[0]
@@ -257,6 +275,7 @@ export class PostgresServiceAccounts implements ServiceAccounts {
             createdAt: row.created_at.toISOString(),
             lastUsedAt: null,
             revokedAt: null,
+            createdBy: row.created_by,
           },
         }
       },

@@ -13,6 +13,20 @@ export type { Metadata } from './metadata.js'
 export { loadConfig, loadJwtKeys, loadJwtVerification, keyFingerprint, ConfigError } from './config.js'
 export { protectedResourceMetadata, PROTECTED_RESOURCE_PATH, JWKS_PATH } from './oauth.js'
 export {
+  AUTHORIZATION_SERVER_PATH,
+  AUTHORIZE_PATH,
+  CODE_TTL_MS,
+  REGISTER_PATH,
+  TOKEN_PATH,
+  authorizationServerMetadata,
+  generateClientId,
+  generateCode,
+  hashCode,
+  redirectAllowed,
+  verifierMatches,
+} from './authserver.js'
+export type { AuthorizationServerMetadata } from './authserver.js'
+export {
   activeResolver,
   admitIngest,
   ADMIN_PREFIX,

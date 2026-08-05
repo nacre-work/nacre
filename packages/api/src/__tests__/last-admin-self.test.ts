@@ -27,7 +27,7 @@ const url = process.env.NACRE_PG_URL
 if (!url && process.env.CI) {
   throw new Error('NACRE_PG_URL is not set and CI is; the lockout guard would go untested.')
 }
-const ORG = '99999999-9999-4999-8999-999999999901'
+const ORG = '9a999999-9999-4999-8999-999999999901'
 let pool: Pool
 let users: PostgresUsers
 
@@ -41,7 +41,7 @@ when('the last administrator cannot lock themselves out', () => {
     try {
       await c.query(
         `INSERT INTO organizations (id, slug, name, vector_collection)
-         VALUES ($1,'lockout','lockout','org_lockout') ON CONFLICT DO NOTHING`, [ORG])
+         VALUES ($1,'lockoutx','lockoutx','org_lockoutx') ON CONFLICT DO NOTHING`, [ORG])
       await c.query('DELETE FROM grants WHERE org_id = $1', [ORG])
       await c.query('DELETE FROM users WHERE org_id = $1', [ORG])
     } finally { c.release() }
@@ -49,7 +49,7 @@ when('the last administrator cannot lock themselves out', () => {
   afterAll(async () => { await pool?.end() })
 
   it('refuses self-disable, self-demote and self-delete for the only admin', async () => {
-    const admin = { orgId: ORG, principal: { type: 'user' as const, id: '99999999-9999-4999-8999-9999999999a1' }, role: 'org_admin' as const }
+    const admin = { orgId: ORG, principal: { type: 'user' as const, id: '9a999999-9999-4999-8999-9999999999a1' }, role: 'org_admin' as const }
     const me = (await users.create(admin, 'only@example.test', 'org_admin'))!
     const asMe = { ...admin, principal: { type: 'user' as const, id: me.user.id } }
 

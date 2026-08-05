@@ -15,6 +15,16 @@ import {
   parseMetadata,
   PROTECTED_RESOURCE_PATH,
   JWKS_PATH,
+  AUTHORIZATION_SERVER_PATH,
+  AUTHORIZE_PATH,
+  CODE_TTL_MS,
+  REGISTER_PATH,
+  TOKEN_PATH,
+  authorizationServerMetadata,
+  generateClientId,
+  generateCode,
+  redirectAllowed,
+  verifierMatches,
   ADMIN_PREFIX,
   adminRoutes,
   withAuditSinks,
@@ -31,6 +41,7 @@ import { badRequest, internal, notFound, Problem } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
 import type { Login, Tokens } from './login.js'
+import type { OAuthAuthorizations, OAuthClients, PendingAuthorization } from './oauth-store.js'
 import { looksLikeEmail, type GroupMember, type Groups, type GroupView, type Users, type UserView } from './principals.js'
 import { clientSource } from './source.js'
 import {
@@ -438,6 +449,8 @@ export interface ServiceAccountView {
   readonly createdAt: string
   readonly lastUsedAt: string | null
   readonly revokedAt: string | null
+  /** The person who created it, where one did. See the port's own note. */
+  readonly createdBy?: string | null
 }
 
 export interface ServiceAccountPort {
@@ -646,6 +659,31 @@ export interface AuditReader {
   read(auth: AuthContext, query: AuditQuery, page: Page): Promise<PageResult<AuditRecord>>
 }
 
+/**
+ * The authorization server, when a deployment runs one.
+ *
+ * Optional, and its absence is a supported shape rather than a degraded one: a
+ * deployment with its own identity provider names that in
+ * `NACRE_OAUTH_AUTHORIZATION_SERVER` and this stays off, which is exactly what
+ * this product was before the flow existed.
+ */
+export interface OAuthServer {
+  /** The issuer, which is this API's canonical URL. */
+  readonly issuer: string
+  /** Where a browser is sent to choose an agent. The admin UI's consent screen. */
+  readonly consentUrl: string
+  readonly clients: OAuthClients
+  readonly authorizations: OAuthAuthorizations
+  /**
+   * Mint an access token for the approved **service account**.
+   *
+   * Never for the person who consented. That is the whole design: they
+   * authenticate, the agent is authorized, and revoking one does not touch the
+   * other.
+   */
+  mint(approved: PendingAuthorization): Promise<{ accessToken: string; expiresIn: number }>
+}
+
 export interface ApiOptions {
   readonly verify: VerifyOptions
   /** Rendered at /metrics. Absent means the endpoint answers 404. */
@@ -705,6 +743,7 @@ export interface ApiOptions {
    */
   readonly jwks?: readonly Record<string, unknown>[]
   /** Absent means the workspace paths answer 404, like any capability a surface lacks. */
+  readonly oauth?: OAuthServer
   readonly workspaces?: Workspaces
   /** Layer reindex. Absent means the reindex paths answer 404. */
   readonly reindex?: Reindex
@@ -792,6 +831,10 @@ function accountJson(a: ServiceAccountView): Record<string, unknown> {
     created_at: a.createdAt,
     last_used_at: a.lastUsedAt,
     revoked_at: a.revokedAt,
+    // Null on everything created before the column, and on anything `init`
+    // made. "My agents" filters on it; a guessed owner would be worse than
+    // none.
+    created_by: a.createdBy ?? null,
   }
 }
 
@@ -910,6 +953,16 @@ async function readRaw(req: IncomingMessage, limit: number): Promise<Buffer> {
     chunks.push(chunk as Buffer)
   }
   return Buffer.concat(chunks)
+}
+
+/**
+ * The body as text, for the one endpoint whose media type is not JSON.
+ *
+ * RFC 6749 specifies `application/x-www-form-urlencoded` at the token endpoint,
+ * so it has to see the bytes rather than a parsed object.
+ */
+async function readRawBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<string> {
+  return (await readRaw(req, limit)).toString('utf8')
 }
 
 async function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<unknown> {
@@ -1491,6 +1544,29 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     return
   }
 
+  /**
+   * RFC 8414 — where a client finds the two endpoints.
+   *
+   * Served only when this deployment runs the authorization server. Absent, the
+   * discovery below still answers and simply names no `authorization_servers`,
+   * which is the resource-server-only shape this product had before and still
+   * supports: a deployment with its own identity provider names that instead.
+   */
+  if (req.method === 'GET' && instance === AUTHORIZATION_SERVER_PATH) {
+    if (options.oauth === undefined) {
+      const problem = notFound(instance, requestId)
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+    send(
+      res,
+      200,
+      authorizationServerMetadata(options.oauth.issuer) as unknown as Record<string, unknown>,
+      requestId,
+    )
+    return
+  }
+
   if (req.method === 'GET' && instance === JWKS_PATH) {
     // The public half of the signing key, so anything outside this process can
     // verify a token without a secret — a gateway, a sidecar, a second service
@@ -1577,6 +1653,209 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   // rather than an omission: they are inside the authenticated surface, where
   // presenting a credential is the price of being told anything. Nothing is
   // concealed by it — every route this API serves is in docs/openapi.yaml.
+  // ─────────────────────── the authorization server ───────────────────────
+  //
+  // Three endpoints, and one decision running through all of them: the token
+  // this flow issues acts as a **service account**, never as the person who
+  // signed in. A consent screen that hands an agent your authority collapses
+  // "what may this agent read" into "what may you read", which is the
+  // distinction this whole product is built on.
+  //
+  // Unauthenticated by necessity — a client arrives here with no credential,
+  // which is what it came to get. Authority is created at exactly one point:
+  // `POST /v1/oauth/consent`, which is inside the authenticated surface and is
+  // where a signed-in person picks the agent.
+  if (options.oauth !== undefined && (instance === REGISTER_PATH || instance === AUTHORIZE_PATH || instance === TOKEN_PATH)) {
+    const oauth = options.oauth
+
+    // RFC 7591. Open, which is what an MCP client expects and what the RFC is
+    // for; the exposure is bounded by the fact that a client row permits
+    // nothing at all. It becomes authority only when somebody signs in and
+    // approves it, and the consent screen shows the redirect URI beside the
+    // self-asserted name, because the URI is what actually decides where a code
+    // goes.
+    if (instance === REGISTER_PATH) {
+      if (req.method !== 'POST') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      // Read here rather than by the shared parse below: this endpoint sits
+      // ahead of the authenticated surface, which is where that happens.
+      let posted: unknown
+      try {
+        posted = await readBody(req)
+      } catch {
+        send(res, 400, { error: 'invalid_request', error_description: 'The request body could not be read.' }, requestId)
+        return
+      }
+      const registration = (posted ?? {}) as { client_name?: unknown; redirect_uris?: unknown }
+      const uris = Array.isArray(registration.redirect_uris)
+        ? registration.redirect_uris.filter((u): u is string => typeof u === 'string')
+        : []
+      if (uris.length === 0) {
+        send(res, 400, { error: 'invalid_redirect_uri', error_description: "'redirect_uris' is required." }, requestId)
+        return
+      }
+      // Checked at registration as well as at authorize. A URI that could never
+      // receive a code is better refused now, when there is somebody to tell,
+      // than at the redirect, when the failure is a blank browser tab.
+      if (!uris.every((u) => redirectAllowed(u, uris))) {
+        send(
+          res,
+          400,
+          {
+            error: 'invalid_redirect_uri',
+            error_description:
+              'Every redirect URI must be https, or http on loopback (127.0.0.1, [::1], localhost).',
+          },
+          requestId,
+        )
+        return
+      }
+      const name = typeof registration.client_name === 'string' ? registration.client_name.slice(0, 200) : 'unnamed client'
+      const clientId = generateClientId()
+      await oauth.clients.register(name, uris, clientId)
+      // 201 and the RFC's field names. No secret: this is a public client and
+      // PKCE is what binds the exchange, so issuing one would be theatre.
+      send(res, 201, { client_id: clientId, client_name: name, redirect_uris: uris, token_endpoint_auth_method: 'none' }, requestId)
+      return
+    }
+
+    // The authorize endpoint hands the browser to the consent screen and does
+    // nothing else. Nothing is written here: an unapproved authorization
+    // request is a set of query parameters the browser is already carrying, and
+    // storing it would add a table any unauthenticated caller could fill.
+    if (instance === AUTHORIZE_PATH) {
+      if (req.method !== 'GET') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      const q = url.searchParams
+      const clientId = q.get('client_id') ?? ''
+      const redirectUri = q.get('redirect_uri') ?? ''
+      const client = clientId === '' ? undefined : await oauth.clients.find(clientId)
+
+      // These two are the only errors that must **not** redirect. RFC 6749 is
+      // explicit and the reason is worth stating: an unvalidated redirect URI
+      // is exactly what an attacker supplies, so bouncing an error to it would
+      // make this endpoint an open redirector.
+      if (client === undefined) {
+        send(res, 400, { error: 'invalid_client', error_description: 'Unknown client_id.' }, requestId)
+        return
+      }
+      if (!redirectAllowed(redirectUri, client.redirectUris)) {
+        send(
+          res,
+          400,
+          { error: 'invalid_redirect_uri', error_description: 'redirect_uri does not match a registered value.' },
+          requestId,
+        )
+        return
+      }
+
+      const challenge = q.get('code_challenge') ?? ''
+      const method = q.get('code_challenge_method') ?? ''
+      const back = (error: string, description: string): void => {
+        const to = new URL(redirectUri)
+        to.searchParams.set('error', error)
+        to.searchParams.set('error_description', description)
+        const state = q.get('state')
+        if (state !== null) to.searchParams.set('state', state)
+        res.writeHead(302, { location: to.toString() })
+        res.end()
+      }
+      if (q.get('response_type') !== 'code') {
+        back('unsupported_response_type', 'Only the authorization code flow is supported.')
+        return
+      }
+      // S256 only. `plain` is in RFC 7636 and defeats it — the verifier travels
+      // in the clear, so anybody holding the code holds the challenge too.
+      if (method !== 'S256' || challenge === '') {
+        back('invalid_request', 'PKCE with code_challenge_method=S256 is required.')
+        return
+      }
+
+      // Straight to the consent screen, with the request carried in the
+      // fragment rather than the query: a fragment is not sent to a server, so
+      // the parameters do not end up in the admin origin's access log on the
+      // way past.
+      const consent = new URL(oauth.consentUrl)
+      consent.hash = q.toString()
+      res.writeHead(302, { location: consent.toString() })
+      res.end()
+      return
+    }
+
+    // The exchange. A code, a verifier, and the redirect URI it was issued for.
+    if (instance === TOKEN_PATH) {
+      if (req.method !== 'POST') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      // `application/x-www-form-urlencoded` is what RFC 6749 specifies and what
+      // every client sends; JSON is accepted too because some send that and
+      // refusing it would be a conformance point nobody benefits from.
+      let form: Record<string, unknown>
+      try {
+        const raw = await readRawBody(req)
+        form =
+          (req.headers['content-type'] ?? '').includes('json')
+            ? ((JSON.parse(raw) ?? {}) as Record<string, unknown>)
+            : Object.fromEntries(new URLSearchParams(raw))
+      } catch {
+        send(res, 400, { error: 'invalid_request', error_description: 'The request body could not be read.' }, requestId)
+        return
+      }
+      const fail = (error: string, description: string): void => {
+        send(res, 400, { error, error_description: description }, requestId)
+      }
+      if (form.grant_type !== 'authorization_code') {
+        fail('unsupported_grant_type', 'Only authorization_code is supported.')
+        return
+      }
+      const code = typeof form.code === 'string' ? form.code : ''
+      const verifier = typeof form.code_verifier === 'string' ? form.code_verifier : ''
+      if (code === '' || verifier === '') {
+        fail('invalid_request', "'code' and 'code_verifier' are required.")
+        return
+      }
+
+      // Consumed here whether or not the checks below pass, and deliberately:
+      // a code presented with a wrong verifier is a code that has been in the
+      // wrong hands, and the safe response is to spend it.
+      const approved = await oauth.authorizations.redeem(code)
+      if (approved === undefined) {
+        fail('invalid_grant', 'The code is unknown, expired, or already used.')
+        return
+      }
+      if (!verifierMatches(verifier, approved.codeChallenge)) {
+        fail('invalid_grant', 'The code_verifier does not match the challenge.')
+        return
+      }
+      if (typeof form.client_id === 'string' && form.client_id !== approved.clientId) {
+        fail('invalid_grant', 'The code was issued to another client.')
+        return
+      }
+      if (typeof form.redirect_uri === 'string' && form.redirect_uri !== approved.redirectUri) {
+        fail('invalid_grant', 'The redirect_uri does not match the one the code was issued for.')
+        return
+      }
+
+      const token = await oauth.mint(approved)
+      // `no-store`, which RFC 6749 requires of this response and which matters
+      // more here than usual: the body is a bearer token and a caching proxy
+      // that keeps it hands it to whoever asks next.
+      send(res, 200, { access_token: token.accessToken, token_type: 'Bearer', expires_in: token.expiresIn }, requestId, {
+        'cache-control': 'no-store',
+        pragma: 'no-cache',
+      })
+      return
+    }
+  }
+
   if (!instance.startsWith('/v1/')) {
     const problem = notFound(instance, requestId)
     send(res, problem.status, problem.toJSON(), requestId)
@@ -3021,6 +3300,123 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
       res.writeHead(200, headers)
       res.end(format === 'ndjson' ? toNdjson(items) : toCsv(items))
+      return
+    }
+
+    /**
+     * The one point in the OAuth flow where authority is created.
+     *
+     * Everything before it — registration, the authorize redirect — is a
+     * conversation with an unauthenticated caller and grants nothing. This is
+     * inside the authenticated surface because it has to be: a signed-in person
+     * is choosing which **agent** the client will act as.
+     *
+     * The token that comes out acts as that service account and never as the
+     * person. That is the design and not an implementation detail: an agent
+     * holding your authority answers "what may this agent read" with "whatever
+     * you may read", which is the question the whole permission model exists to
+     * ask separately.
+     *
+     * The service account must already exist and the caller must be able to see
+     * it. Creating one, and granting it anything, goes through the endpoints
+     * that already exist and already check — this deliberately adds no second
+     * path to either, because a second path is how the guarded one gets walked
+     * around.
+     */
+    if (instance === '/v1/oauth/consent' && options.oauth !== undefined) {
+      if (req.method !== 'POST') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      // A service account cannot consent on behalf of anybody: the flow exists
+      // so a *person* decides what an agent gets, and an agent approving its
+      // own successor is that decision made by the thing it is about.
+      if (auth.principal.type !== 'user') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const consent = (body ?? {}) as Record<string, unknown>
+      const need = (field: string): string | undefined =>
+        typeof consent[field] === 'string' && consent[field] !== '' ? (consent[field] as string) : undefined
+
+      const clientId = need('client_id')
+      const redirectUri = need('redirect_uri')
+      const codeChallenge = need('code_challenge')
+      const serviceAccountId = need('service_account_id')
+      if (clientId === undefined || redirectUri === undefined || codeChallenge === undefined || serviceAccountId === undefined) {
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'client_id', 'redirect_uri', 'code_challenge' and 'service_account_id' are required.",
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      // Re-checked here rather than trusted from the browser. Everything in
+      // this body came back through a redirect the caller controls, so the
+      // client and its redirect URI are verified against the registration
+      // again — the authorize endpoint's check protected the redirect, and this
+      // one protects the code.
+      const client = await options.oauth.clients.find(clientId)
+      if (client === undefined || !redirectAllowed(redirectUri, client.redirectUris)) {
+        const problem = badRequest(instance, requestId, 'Unknown client, or a redirect_uri it did not register.')
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      // The agent has to be one this caller can see, which is what makes the
+      // consent theirs to give. `404` for anything else, because an agent they
+      // cannot see and one that does not exist are the same answer here as
+      // everywhere.
+      const visible = options.serviceAccounts === undefined
+        ? undefined
+        : (await options.serviceAccounts.list(auth, { limit: 200, after: undefined })).items.find(
+            (a) => a.id === serviceAccountId,
+          )
+      if (visible === undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const code = generateCode()
+      await options.oauth.authorizations.approve(auth, {
+        orgId: auth.orgId,
+        serviceAccountId,
+        clientId,
+        redirectUri,
+        codeChallenge,
+        resource: need('resource'),
+        code,
+        expiresAt: new Date(Date.now() + CODE_TTL_MS),
+      })
+
+      // Recorded, because "why does this agent hold a token" is a question an
+      // administrator will ask and the grant table cannot answer: the grants
+      // were there before, and what changed is that a client was handed the
+      // right to act as this principal.
+      await options.audit?.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'oauth.consent',
+        result: 'allow',
+        detail: { client_id: clientId, client_name: client.clientName, service_account_id: serviceAccountId },
+        requestId,
+      })
+
+      // The redirect is returned rather than performed: this is an API call
+      // from a page, and the page is what navigates. `state` is echoed
+      // untouched — it is the client's, it is opaque to us, and it is how the
+      // client ties the response back to the request it started.
+      const to = new URL(redirectUri)
+      to.searchParams.set('code', code)
+      const state = need('state')
+      if (state !== undefined) to.searchParams.set('state', state)
+      send(res, 200, { redirect_to: to.toString() }, requestId)
       return
     }
 

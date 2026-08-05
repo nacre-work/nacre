@@ -803,6 +803,41 @@ export class NacreClient {
 
   // ─── service accounts ────────────────────────────────────────────────────
 
+  /**
+   * Approve an OAuth request, naming the agent the client will act as.
+   *
+   * The one call in the flow that creates authority, and the reason it lives on
+   * an authenticated client: a signed-in person is choosing which **service
+   * account** a client gets to be. The token that comes back to the client acts
+   * as that account and never as them.
+   *
+   * Returns where the browser should go — the redirect is the page's to perform,
+   * not the API's, because this is an XHR from a screen the person is looking
+   * at.
+   */
+  readonly consent = async (input: {
+    clientId: string
+    redirectUri: string
+    codeChallenge: string
+    serviceAccountId: string
+    state?: string
+    resource?: string
+  }): Promise<string> => {
+    const body = (await this.#request({
+      method: 'POST',
+      path: '/v1/oauth/consent',
+      body: {
+        client_id: input.clientId,
+        redirect_uri: input.redirectUri,
+        code_challenge: input.codeChallenge,
+        service_account_id: input.serviceAccountId,
+        ...(input.state === undefined ? {} : { state: input.state }),
+        ...(input.resource === undefined ? {} : { resource: input.resource }),
+      },
+    })) as { redirect_to?: unknown }
+    return String(body.redirect_to)
+  }
+
   readonly serviceAccounts = {
     list: async (): Promise<readonly ServiceAccount[]> => {
       const body = (await this.#request({

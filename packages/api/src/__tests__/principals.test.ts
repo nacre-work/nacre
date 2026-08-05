@@ -29,7 +29,12 @@ const when = url ? describe : describe.skip
 const ORG = '99999999-9999-4999-8999-999999999901'
 const OTHER = '99999999-9999-4999-8999-999999999902'
 
-const admin = { orgId: ORG, principal: { type: 'user' as const, id: 'u1' }, role: 'org_admin' as const }
+// A real uuid with a real row behind it. `service_accounts.created_by`
+// references `users(id)` since 0023, so a placeholder principal is no longer
+// something the database will accept — which is the constraint doing its job:
+// in a deployment this id is a token's subject and the row always exists.
+const ADMIN_ID = '99999999-9999-4999-8999-9999999990a1'
+const admin = { orgId: ORG, principal: { type: 'user' as const, id: ADMIN_ID }, role: 'org_admin' as const }
 
 let pool: Pool
 let users: PostgresUsers

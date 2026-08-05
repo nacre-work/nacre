@@ -36,8 +36,11 @@ import {
   PostgresReindex,
   PostgresWorkspaces,
 } from './adapters.js'
+import { SignJWT } from 'jose'
+
 import { Idempotency } from './idempotency.js'
 import { Login } from './login.js'
+import { PostgresOAuthAuthorizations, PostgresOAuthClients } from './oauth-store.js'
 import { rerankerFor } from './rerank.js'
 import { RateLimiter, type LimitPolicy, type Resource } from './limits.js'
 import { PostgresGroups, PostgresUsers } from './principals.js'
@@ -243,9 +246,16 @@ async function main(): Promise<void> {
     metrics: registry,
     resourceMetadata: protectedResourceMetadata({
       canonicalUrl: config.canonicalUrl,
-      ...(config.oauthAuthorizationServer === ''
-        ? {}
-        : { authorizationServer: config.oauthAuthorizationServer }),
+      // An operator's identity provider wins. Failing that, **this
+      // installation** — which reverses the position this field held, and the
+      // reversal is the point rather than a slip: it was empty because pointing
+      // a client at a token endpoint that did not exist would have been a dead
+      // end one redirect further along, and the endpoint exists now. The
+      // argument was right; what it described changed.
+      authorizationServer:
+        config.oauthAuthorizationServer === ''
+          ? config.canonicalUrl.replace(/\/+$/, '')
+          : config.oauthAuthorizationServer,
     }),
     // Only when there is a public half. A deployment on NACRE_JWT_SECRET serves
     // 404 here, because a shared secret has nothing publishable and an endpoint
@@ -311,6 +321,56 @@ async function main(): Promise<void> {
     serviceAccounts: new PostgresServiceAccounts(pool, APP_ROLE),
     users: new PostgresUsers(pool, APP_ROLE),
     groups: new PostgresGroups(pool, APP_ROLE),
+
+    /**
+     * The authorization server.
+     *
+     * On by default, because the alternative for anyone connecting an agent is
+     * "make a service account by hand, copy its key, paste it into a config
+     * file" — which is the gap this closes. A deployment that would rather use
+     * its own identity provider names it in
+     * `NACRE_OAUTH_AUTHORIZATION_SERVER`, and then the discovery document
+     * points there and this flow is simply not the one clients take.
+     */
+    oauth: {
+      issuer: config.canonicalUrl.replace(/\/+$/, ''),
+      // The admin UI's consent screen. Same origin as the API in every
+      // deployment that puts an ingress in front; the Compose stack publishes
+      // the admin bundle separately, which is why this is a variable and not a
+      // path appended to the issuer.
+      consentUrl: config.consentUrl,
+      clients: new PostgresOAuthClients(pool, APP_ROLE),
+      authorizations: new PostgresOAuthAuthorizations(pool, APP_ROLE),
+      /**
+       * A token for the **agent**, never for the person who approved it.
+       *
+       * `principal_type: 'service_account'` and `sub` is the account — the same
+       * claims a service account key resolves to, so everything downstream
+       * treats this exactly as it treats one and there is no second notion of
+       * what an agent is. `role` is `member` because a service account has no
+       * organization-wide role: everything it reaches, it reaches by grant.
+       */
+      mint: async (approved) => {
+        const ttl = config.accessTokenTtl
+        const now = Math.floor(Date.now() / 1000)
+        const accessToken = await new SignJWT({
+          org: approved.orgId,
+          principal_type: 'service_account',
+          role: 'member',
+        })
+          .setProtectedHeader({
+            alg: jwt.algorithm,
+            ...(jwt.keyId === undefined ? {} : { kid: jwt.keyId }),
+          })
+          .setSubject(approved.serviceAccountId)
+          .setIssuer(config.jwtIssuer)
+          .setAudience(config.jwtAudience)
+          .setIssuedAt(now)
+          .setExpirationTime(now + ttl)
+          .sign(jwt.signing)
+        return { accessToken, expiresIn: ttl }
+      },
+    },
   })
 
   const port = Number(process.env.PORT ?? 8080)

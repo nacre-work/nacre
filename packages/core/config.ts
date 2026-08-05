@@ -57,6 +57,21 @@ export interface Config {
    */
   readonly mcpCanonicalUrlPinned: boolean
   /**
+   * Where a browser is sent to choose which agent a client will act as.
+   *
+   * The admin UI's consent screen. Defaults to `/#/consent` on the canonical
+   * URL, which is right for every deployment that serves the bundle on the
+   * API's origin — the arrangement `docs/quickstart.md` describes for
+   * production and the one an ingress produces. The Compose stack publishes the
+   * admin UI on its own port, so it sets this.
+   *
+   * A default naming a *path* on a host the deployment already declared is not
+   * the "silent default for a URL" rule being bent: the host is the operator's
+   * own `NACRE_CANONICAL_URL`, and the only guess is where the bundle sits
+   * under it.
+   */
+  readonly consentUrl: string
+  /**
    * Browser origins the MCP transport answers.
    *
    * Empty by default and that is the safe default: validating `Origin` is a
@@ -836,6 +851,9 @@ export function loadConfig(env: Env = process.env): Config {
     mcpCanonicalUrl:
       r.url('NACRE_MCP_CANONICAL_URL', { required: false }) || r.url('NACRE_CANONICAL_URL'),
     mcpCanonicalUrlPinned: r.url('NACRE_MCP_CANONICAL_URL', { required: false }) !== '',
+    consentUrl:
+      r.url('NACRE_OAUTH_CONSENT_URL', { required: false }) ||
+      `${r.url('NACRE_CANONICAL_URL').replace(/\/+$/, '')}/#/consent`,
     mcpAllowedOrigins: r.stringList('NACRE_MCP_ALLOWED_ORIGINS'),
     oauthAuthorizationServer: r.url('NACRE_OAUTH_AUTHORIZATION_SERVER', { required: false }),
     logLevel: r.oneOf('NACRE_LOG_LEVEL', ['debug', 'info', 'warn', 'error'] as const, 'info'),

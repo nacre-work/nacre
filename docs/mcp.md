@@ -113,10 +113,31 @@ The MCP server is a **resource server**, not an authorization server.
   Deriving it is not a trust decision: the identifier is not an authorization
   input, and a token is still checked against `NACRE_JWT_AUDIENCE` and
   `NACRE_JWT_ISSUER`, neither of which comes from the request.
-- **Client registration is not ours.** CIMD and DCR are both transactions
-  between a client and an *authorization server*, and the line above says which
-  one of those Nacre is. There is no registration endpoint here, no client
-  record to create, and nothing to enable — a deployment that wants either gets
+- **There is an authorization server now, and it is ours.** A client that gets
+  a `401` reads the RFC 9728 document, finds `authorization_servers` naming this
+  installation's API, discovers `/oauth/authorize` and `/oauth/token` through
+  RFC 8414, registers itself with RFC 7591, and completes the authorization
+  code flow with PKCE S256. That is the whole connect sequence an MCP client
+  already performs, and until it existed the documented alternative was "create
+  a service account by hand, copy its key, paste it into a config file".
+
+  **The token it receives acts as a service account, never as the person who
+  approved it.** A consent screen normally mints the approver's own authority,
+  and that is the wrong answer for this product by a wide margin: an agent is a
+  principal with its own grants, so "what may this agent read" is a different
+  question from "what may you read", and collapsing the two throws away what
+  the permission model is for. The screen a browser is sent to asks *which
+  agent*; revoking that agent stops the client and touches nobody else.
+
+  A deployment that would rather use its own identity provider names it in
+  `NACRE_OAUTH_AUTHORIZATION_SERVER`, and then the document points there and
+  this flow is simply not the one clients take.
+- **Client registration is not ours** — where "ours" meant the MCP transport.
+ CIMD and DCR are both transactions
+  between a client and an *authorization server*, and this transport is not
+  one: it verifies tokens and issues none. `/oauth/register` lives on the API,
+  beside the endpoints it belongs with. There is no registration endpoint on
+  this port, no client record to create here, and nothing to enable — a deployment that wants either gets
   it from the identity provider it names in
   `NACRE_OAUTH_AUTHORIZATION_SERVER`. This document said the opposite until it
   was read next to the sentence three lines above it.

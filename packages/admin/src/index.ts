@@ -10,6 +10,7 @@ import {
 } from './api.js'
 import { clear, h } from './dom.js'
 import { accountsView } from './views/accounts.js'
+import { consentView } from './views/consent.js'
 import { grantsView } from './views/grants.js'
 import { layersView } from './views/layers.js'
 import { peopleView } from './views/people.js'
@@ -134,6 +135,18 @@ function shell(): { main: HTMLElement; nav: HTMLElement } {
 }
 
 function route(main: HTMLElement, nav: HTMLElement, isAdmin: boolean): void {
+  // Not a section and deliberately not in the nav: an application sends a
+  // browser here, and it carries the request in the fragment. Available to
+  // everybody who can sign in, because choosing an agent is not an
+  // administrative act — it is the same permission as issuing the grant that
+  // makes the agent worth anything.
+  if (location.hash.startsWith('#/consent')) {
+    clear(nav)
+    clear(main)
+    void consentView(main)
+    return
+  }
+
   const allowed = ROUTES.filter((r) => isAdmin || !r.adminOnly)
   const hash = location.hash === '' ? allowed[0]!.hash : location.hash
   // A member who follows a bookmark to #/people lands on the first screen they

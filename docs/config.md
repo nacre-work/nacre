@@ -38,6 +38,7 @@ NACRE_RERANKER_ENDPOINT=http://reranker:80
 NACRE_RERANKER_ENABLED=false          # true needs an endpoint; minimal has none
 NACRE_RERANK_CANDIDATES=50            # fetched from the index, cut to top_k after scoring
 NACRE_PARSER_ENDPOINT=http://parser:8090
+NACRE_OAUTH_CONSENT_URL=              # optional; where a browser picks the agent
 # Both model endpoints are base URLs and **a path on one is kept**: the route is
 # resolved under it, so `https://api.openai.com/v1` calls /v1/embeddings and
 # `http://embedder:80` calls /embeddings. Until 0.5.2 the route was appended from

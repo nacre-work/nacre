@@ -78,6 +78,7 @@ const COVERAGE: Record<string, string | null> = {
   'DELETE /documents/{id}': 'documents.remove',
 
   'GET /me': 'me',
+  'POST /oauth/consent': 'consent',
   'GET /workspaces': 'workspaces.list',
   'POST /workspaces': 'workspaces.create',
 
