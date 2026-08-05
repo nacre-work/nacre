@@ -58,7 +58,20 @@ RUN pnpm install --frozen-lockfile --prod --ignore-scripts
 # the api/mcp/worker services run.
 FROM nginx:alpine AS web
 COPY --from=build /app/packages/admin/dist /usr/share/nginx/html
-COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+# A template, not a config: the image's entrypoint renders anything under
+# /etc/nginx/templates into /etc/nginx/conf.d. That is what lets one image serve
+# Compose, where the API is `api:8080`, and Kubernetes, where it is a Service
+# name — instead of hardcoding the first and being undeployable in the second.
+COPY docker/nginx.conf.template /etc/nginx/templates/default.conf.template
+
+# Only these two are substituted. Left unset, the entrypoint replaces every
+# `$name` in the template, and nginx's own `$host`, `$scheme`, `$uri` and
+# `$proxy_add_x_forwarded_for` would be rendered as empty strings — a config
+# that loads and forwards nothing useful.
+ENV NGINX_ENVSUBST_FILTER='^(NACRE_API_UPSTREAM|NGINX_PORT)$'
+# Compose's shape as the default, because that is the one anybody meets first.
+ENV NACRE_API_UPSTREAM=api:8080
+ENV NGINX_PORT=80
 
 FROM node:22-alpine AS runtime
 WORKDIR /app

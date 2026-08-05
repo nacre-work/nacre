@@ -1,6 +1,6 @@
 {
   "name": "@nacre.work/worker",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Indexing pipeline: parse, chunk, embed",
   "type": "module",
   "scripts": {

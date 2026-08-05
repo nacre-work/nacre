@@ -367,7 +367,7 @@ The screen is `packages/admin`, a static bundle the `web` service serves on its
 own origin while proxying `/v1` to the API — so the browser makes same-origin
 requests and there is no CORS to configure, which is the point rather than a
 detail: the API sends no CORS headers on purpose. In production the arrangement
-is the same, one origin fronting the bundle and `/v1`; `docker/nginx.conf` is the
+is the same, one origin fronting the bundle and `/v1`; `docker/nginx.conf.template` is the
 proxy this stack uses and a working example of it. The UI can also be pointed at
 a different API from its sign-in screen, which is a real deployment and a
 slightly worse one — same-origin is what avoids the header the API declines to

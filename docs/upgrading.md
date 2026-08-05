@@ -240,6 +240,37 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.5.5 — the admin UI is finally an image you can deploy
+
+**A third image: `ghcr.io/nacre-work/nacre-web`.** `docker/Dockerfile` has had a
+`web` stage — nginx serving the built admin bundle and proxying `/v1` to the API
+— since the Compose stack grew a front door. Compose built it locally; the
+release workflow built the file with no `target`, so it pushed the node runtime
+and nothing else, and the image never existed.
+
+That is why the Helm chart did not deploy the console. The reason recorded in
+the chart's README was that a deployment might reasonably front it differently —
+true of the API too, which the chart does deploy. An omission wearing a
+rationale.
+
+**Nothing to do for a Compose deployment**, which builds the stage locally and
+always did.
+
+**For Helm**: the chart deploys it now, `web.enabled` defaults to true, and the
+ingress routes `/` at the console rather than at the API — the console proxies
+`/v1` and `/.well-known` onward, which is what makes the browser's requests
+same-origin. With `web.enabled=false` the ingress routes `/` at the API exactly
+as before, so a deployment that serves the bundle itself is unaffected.
+
+**The nginx config became a template, and that is the part to know if you had
+copied it.** It hardcoded `proxy_pass http://api:8080` — a Compose service name
+— and `listen 80`, which a container that does not run as root cannot bind.
+Neither survives leaving Compose. It now reads `NACRE_API_UPSTREAM` and
+`NGINX_PORT`, both defaulted in the image to the Compose shape, and
+`NGINX_ENVSUBST_FILTER` is set so the entrypoint substitutes only those two —
+without it, nginx's own `$host`, `$scheme` and `$uri` would render as empty
+strings.
+
 ### 0.5.4 — a connection you can see, and end
 
 **Migration 0024.** It adds `oauth_consents`, `oauth_refresh_tokens` and a
