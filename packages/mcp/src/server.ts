@@ -165,6 +165,12 @@ interface JsonRpcRequest {
   readonly id?: unknown
   readonly method?: unknown
   readonly params?: unknown
+  /**
+   * Request metadata, where the binding carries the protocol version under
+   * `io.modelcontextprotocol/protocolVersion`. Read only to compare against the
+   * header; nothing dispatches on it.
+   */
+  readonly _meta?: unknown
 }
 
 const MAX_BODY_BYTES = 1_000_000
@@ -235,6 +241,16 @@ const NAMED_METHODS: Record<string, 'name' | 'uri'> = {
 export const PROTOCOL_VERSIONS = [PROTOCOL_VERSION, '2025-06-18', '2025-03-26'] as const
 
 /**
+ * `UnsupportedProtocolVersionError`, which the schema pins at -32022 and
+ * requires to carry both halves of the disagreement.
+ *
+ * Listing what this server *does* speak is the part that matters: a bare
+ * refusal leaves a client with nothing to retry, and the whole point of naming
+ * a version is that the other side can pick another one.
+ */
+const UNSUPPORTED_VERSION = -32022
+
+/**
  * Decode the Base64 sentinel a client uses for a value that is not header-safe.
  *
  * `=?base64?…?=`, lower case and exact — a value that merely looks like one is
@@ -254,14 +270,39 @@ function decodeHeaderValue(value: string): string {
 /**
  * Whether the mirrored headers describe this body, and what is wrong if not.
  *
- * `Mcp-Method` on every request; `Mcp-Name` only on the three that name
- * something, because requiring it everywhere refuses a `tools/list` that no
- * client can make any other way.
+ * Three comparisons: the protocol version against `_meta`, `Mcp-Method` against
+ * the method, and `Mcp-Name` against the field the method names — the last only
+ * on the three methods that name something, because requiring it everywhere
+ * refuses a `tools/list` no client can make any other way.
+ *
+ * Every one is "when present". Absent is not a mismatch, and that is the branch
+ * the binding sanctions for a server supporting clients older than 2025-06-18;
+ * see docs/mcp-conformance.md. What is refused is a header that *disagrees*.
  */
 function headerMismatch(
   headers: IncomingMessage['headers'],
-  rpc: { method: string; params?: unknown },
+  rpc: { method: string; params?: unknown; _meta?: unknown },
 ): string | undefined {
+  // The version the body carries, when it carries one. The binding puts it in
+  // `_meta` under a reversed-domain key and requires the header to agree — the
+  // same rule as `Mcp-Method`, and it was the one comparison still missing
+  // after the others went in. A header that says one revision while the body
+  // says another is two components acting on different instructions, which is
+  // the entire reason any of these are mirrored.
+  const declaredVersion = headers['mcp-protocol-version']
+  const meta = (rpc._meta ?? {}) as Record<string, unknown>
+  const bodyVersion = meta['io.modelcontextprotocol/protocolVersion']
+  if (
+    typeof declaredVersion === 'string' &&
+    typeof bodyVersion === 'string' &&
+    declaredVersion !== bodyVersion
+  ) {
+    return (
+      `Header mismatch: MCP-Protocol-Version header value '${declaredVersion}' does not match ` +
+      `body value '${bodyVersion}'`
+    )
+  }
+
   const declared = headers['mcp-method']
   if (typeof declared === 'string' && declared !== rpc.method) {
     return `Header mismatch: Mcp-Method header value '${declared}' does not match body value '${rpc.method}'`
@@ -472,9 +513,32 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // halves disagree is one where the balancer and the server acted on different
   // instructions. Demanding the headers and never comparing them bought the
   // incompatibility and none of the protection.
-  const mismatch = headerMismatch(req.headers, { method: rpc.method, params: rpc.params })
+  const mismatch = headerMismatch(req.headers, { method: rpc.method, params: rpc.params, _meta: rpc._meta })
   if (mismatch !== undefined) {
     send(res, 400, rpcError(id, HEADER_MISMATCH, mismatch))
+    return
+  }
+
+  // A revision this server does not speak is refused with the list of the ones
+  // it does — `400` and -32022, both pinned by the schema.
+  //
+  // The *header* only. `initialize`'s `params.protocolVersion` is a proposal
+  // and is answered by counter-offering, which is what the handshake is for;
+  // refusing it there would turn a negotiation into a failure. The header is a
+  // different statement: it says which revision's transport rules this request
+  // was framed by, and if that is one we cannot read then nothing below can be
+  // trusted to mean what it appears to.
+  const framing = req.headers['mcp-protocol-version']
+  if (typeof framing === 'string' && !(PROTOCOL_VERSIONS as readonly string[]).includes(framing)) {
+    send(res, 400, {
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: UNSUPPORTED_VERSION,
+        message: 'Unsupported protocol version',
+        data: { supported: [...PROTOCOL_VERSIONS], requested: framing },
+      },
+    })
     return
   }
 

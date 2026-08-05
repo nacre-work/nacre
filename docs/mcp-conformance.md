@@ -15,9 +15,10 @@ it), or **deviation** (we do something else on purpose, with the reason).
 | `Origin` validated; present-and-invalid is `403` | holds |
 | A notification the server accepts gets `202` with no body | holds |
 | An unimplemented RPC method gets `404` **and** JSON-RPC `-32601` | holds — the pair matters: the JSON-RPC body is what separates this from a legacy server's bare `404` |
-| A request gets either a JSON object **or** an SSE stream, and the server supports **both** | **gap** — see below |
+| A request gets either a JSON object **or** an SSE stream | holds — see below, and this entry was wrong when first written |
 | `MCP-Protocol-Version` absent may be treated as `2025-03-26` | holds, and this is the sanctioned branch — see below |
-| The header value must match `_meta`'s `io.modelcontextprotocol/protocolVersion` | **gap** — small, see below |
+| The header must match `_meta`'s `io.modelcontextprotocol/protocolVersion` | holds |
+| A framing revision the server does not speak is `400` + `-32022`, listing the supported ones | holds |
 | `Mcp-Method` / `Mcp-Name` must agree with the body when sent | holds |
 | Base64 sentinel `=?base64?…?=` decoded for header values | holds |
 | No session is required of a stateless server | holds — no `Mcp-Session-Id` is ever issued |
@@ -42,30 +43,46 @@ that request is what negotiates the version.
 The comparison is unchanged and is where the value is: a header that is *sent*
 and disagrees with the body is still `-32020`.
 
-### Gap: no SSE response
+### Not a gap: returning JSON and never SSE
 
-> If the body is a JSON-RPC *request*, the server **MUST** return either a
-> single JSON object or an SSE stream […] servers **MUST** support both.
+The first version of this page listed this as an unmet MUST. It read the
+sentence wrong, and the correction is worth keeping because the misreading is
+easy:
 
-We return `application/json` only. A client that requires `text/event-stream`
-cannot be served, and a MUST is unmet.
+> If the body is a JSON-RPC *request*, the server **MUST** return either
+> `Content-Type: application/json` (a single JSON object) or
+> `Content-Type: text/event-stream` (an SSE response stream). The client
+> **MUST** support both.
 
-Not fixed here, and the reason is scope rather than disagreement: every tool on
-this surface answers with a complete result, so the honest implementation is a
-one-event stream chosen by the client's `Accept` — small, but it changes the
-response path for every method and wants its own tests and its own review. It is
-the top item outstanding.
+The obligation to support both is on the **client**. The server picks one. This
+one returns `application/json`, which is the honest choice for a surface where
+every tool answers with a complete result: an SSE stream carrying a single event
+and closing would be the same answer in a costlier envelope.
 
-Nothing about it conflicts with the product: a single-event stream keeps the
-transport stateless and issues no session.
+The place SSE is not optional is `subscriptions/listen`, whose response *is* a
+long-lived stream — and this server declares no subscriptions capability, so no
+client will ask. Declaring one it does not serve is the failure the capability
+table exists to prevent.
 
-### Gap: `_meta` protocol version is not cross-checked
+`X-Accel-Buffering: no` is likewise a SHOULD for a server *initiating* an SSE
+stream, and does not arise.
 
-When a client sends both `MCP-Protocol-Version` and
-`_meta["io.modelcontextprotocol/protocolVersion"]`, the two must agree and a
-mismatch is `-32020`. We compare `Mcp-Method` and `Mcp-Name` against the body
-and not this one. Same class of defect as the mirrored headers being demanded
-and never compared, and it is cheap to close.
+### Closed: the two comparisons that were missing
+
+Both are now checked and both have tests.
+
+`MCP-Protocol-Version` is compared against
+`_meta["io.modelcontextprotocol/protocolVersion"]`, and a disagreement is `400`
+with `-32020`. It was the third mirrored comparison and the only one still
+absent after `Mcp-Method` and `Mcp-Name` went in — the same defect as demanding
+a header and never reading it, one field along.
+
+A framing revision this server does not speak is `400` with `-32022` and a body
+carrying both `supported` and `requested`, which the schema pins. Listing what
+we do speak is the point: a bare refusal leaves a client with nothing to retry.
+The header is deliberately treated differently from `initialize`'s
+`params.protocolVersion` — that one is a proposal and is answered with a
+counter-offer, because refusing a proposal turns a negotiation into a failure.
 
 ## Authorization
 

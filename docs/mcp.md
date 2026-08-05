@@ -95,8 +95,11 @@ The MCP server is a **resource server**, not an authorization server.
   client bounced off `-32020` on its first POST. `Mcp-Method` and `Mcp-Name`
   are the same generation and no shipping client sends those either.
   Taking the other branch made the transport unreachable by every shipping
-  client. The full reading is in [mcp-conformance.md](./mcp-conformance.md),
-  which also names the two places this server does not yet meet the binding. The protection those headers buy is in the
+  client. The full reading is in [mcp-conformance.md](./mcp-conformance.md).
+  A header that is *sent* and disagrees is still `-32020`, and that now covers
+  three fields rather than two: `Mcp-Method`, `Mcp-Name`, and the protocol
+  version against `_meta`. A framing revision this server does not speak is
+  `400` with `-32022` and the list of the ones it does. The protection those headers buy is in the
   *comparison* — an intermediary must not route on one instruction while the
   server executes another — and that check is unchanged: present and
   disagreeing is still `-32020`.

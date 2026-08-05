@@ -362,6 +362,65 @@ describe('baseline · the MCP surface', () => {
     expect(called.status, 'tools/call with no mirrored headers').toBe(200)
   })
 
+  it('refuses a framing revision it cannot read, and lists the ones it can', async () => {
+    // The header is not the same statement as `params.protocolVersion`. That
+    // one is a proposal and gets a counter-offer; this one says which
+    // revision's transport rules framed the request, and a revision we cannot
+    // read means nothing below it can be trusted to mean what it looks like.
+    const res = await rpc('tools/list', {}, ORG_A, {
+      'mcp-protocol-version': '1999-01-01',
+      'content-type': 'application/json',
+    })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as {
+      error: { code: number; data: { supported: string[]; requested: string } }
+    }
+    expect(body.error.code).toBe(-32022)
+    expect(body.error.data.requested).toBe('1999-01-01')
+    // Naming what we do speak is the point: a bare refusal leaves the client
+    // with nothing to retry.
+    expect(body.error.data.supported).toEqual([...PROTOCOL_VERSIONS])
+  })
+
+  it('refuses a header revision that disagrees with the one in _meta', async () => {
+    // The third mirrored comparison, and the one that was still missing after
+    // Mcp-Method and Mcp-Name went in.
+    const res = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'mcp-protocol-version': '2026-07-28',
+        'mcp-method': 'tools/list',
+        'content-type': 'application/json',
+        authorization: `Bearer ${await token(ORG_A)}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/list',
+        _meta: { 'io.modelcontextprotocol/protocolVersion': '2025-06-18' },
+      }),
+    })
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: { code: number } }).error.code).toBe(-32020)
+
+    // Agreeing is fine, and so is a body that carries no version at all.
+    const agreeing = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'mcp-protocol-version': '2026-07-28',
+        'content-type': 'application/json',
+        authorization: `Bearer ${await token(ORG_A)}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/list',
+        _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+      }),
+    })
+    expect(agreeing.status).toBe(200)
+  })
+
   it('answers an unknown protocol version with one it speaks', async () => {
     const res = await rpc(
       'initialize',
