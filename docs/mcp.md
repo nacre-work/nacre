@@ -1,18 +1,35 @@
 # MCP server
 
-Target specification revision: **2026-07-28**. The consequences that matter:
-the protocol is stateless, `initialize`/`initialized` and `Mcp-Session-Id` are
-gone, the `Mcp-Method` and `Mcp-Name` headers are required, and DCR is
-deprecated in favour of CIMD.
+Target specification revision: **2026-07-28**, served **dual-era** — which is
+the term that revision uses and the thing to hold on to while reading the rest.
+
+It splits clients in two. A *modern* client names the protocol version on every
+request in `_meta`, sends no `initialize`, and learns what a server can do from
+`server/discover`. A *legacy* client opens with `initialize` and negotiates
+there. This server answers both, on one endpoint, and the specification's
+compatibility matrix says that combination works for either kind of client.
+
+The consequences that matter: the protocol is stateless and no `Mcp-Session-Id`
+is ever issued; `Mcp-Method` and `Mcp-Name` are required *of a modern client*
+and are validated here when sent rather than demanded; and DCR is deprecated in
+favour of CIMD — a statement about an **authorization server**, which this
+transport is not. See "Authorization" for which half of this product is one and
+what it supports.
+
+This opening paragraph said `initialize` was "gone" and the headers "required",
+and both readings were taken literally in the code: the headers were demanded
+from clients that cannot send them, and `initialize` was answered with a
+revision no client speaks. Neither is what the revision asks of a server that
+means to be reachable.
 
 ## Transport
 
 - Streamable HTTP, one endpoint: `POST /mcp`.
-- Required request headers: `MCP-Protocol-Version` and `Mcp-Method` on every
-  request; `Mcp-Name` **only** on `tools/call`, `resources/read` and
-  `prompts/get` — the three that name something. Requiring it everywhere is a
-  server that refuses `tools/list`, which no client can make any other way, and
-  that is what this did until it was pointed at a real one.
+- Request headers: `MCP-Protocol-Version` and `Mcp-Method` on every request;
+  `Mcp-Name` **only** on `tools/call`, `resources/read` and `prompts/get` — the
+  three that name something. Requiring `Mcp-Name` everywhere is a server that
+  refuses `tools/list`, which no client can make any other way, and that is what
+  this did until it was pointed at a real one.
 - **The headers are validated against the body**, which is the whole reason
   they exist: an intermediary routes and rate-limits on the header while the
   server executes the body, so a request whose halves disagree is one where the
@@ -153,15 +170,22 @@ The MCP server is a **resource server**, not an authorization server.
   A deployment that would rather use its own identity provider names it in
   `NACRE_OAUTH_AUTHORIZATION_SERVER`, and then the document points there and
   this flow is simply not the one clients take.
-- **Client registration is not ours** — where "ours" meant the MCP transport.
- CIMD and DCR are both transactions
-  between a client and an *authorization server*, and this transport is not
-  one: it verifies tokens and issues none. `/oauth/register` lives on the API,
-  beside the endpoints it belongs with. There is no registration endpoint on
-  this port, no client record to create here, and nothing to enable — a deployment that wants either gets
-  it from the identity provider it names in
-  `NACRE_OAUTH_AUTHORIZATION_SERVER`. This document said the opposite until it
-  was read next to the sentence three lines above it.
+- **Client registration is not this transport's** — CIMD and DCR are both
+  transactions between a client and an *authorization server*, and this
+  transport is not one: it verifies tokens and issues none. There is no
+  registration endpoint on this port and no client record to create here.
+  `/oauth/register` lives on the API, beside the endpoints it belongs with, and
+  a deployment naming its own provider in `NACRE_OAUTH_AUTHORIZATION_SERVER`
+  registers there instead.
+
+  **Of the two, the API implements DCR and not CIMD**, which is a `MAY` taken
+  and a `SHOULD` declined. CIMD makes `client_id` an HTTPS URL the authorization
+  server *fetches*, which puts an outbound request to an attacker-chosen address
+  on an endpoint reachable before anybody has signed in — in a product that runs
+  inside somebody's network next to their documents, and that ships an
+  `airgapped` profile making no outbound connection at all. The reasoning is in
+  [mcp-conformance.md](./mcp-conformance.md); the practical position is that
+  every shipping MCP client speaks DCR.
 - `iss` validation (RFC 9207) on the client side; `resource=` on every token
   request, including refresh.
 

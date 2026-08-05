@@ -149,8 +149,11 @@ cannot confirm the endpoint exists.
 
 | Requirement | Status |
 |---|---|
-| Resource server, not authorization server | holds, and is a product decision — see `docs/mcp.md` |
+| The MCP transport is a resource server and issues no token | holds |
 | RFC 9728 protected-resource metadata served | holds |
+| RFC 8414 authorization-server metadata served | holds — by the API, which is the authorization server |
+| RFC 7591 dynamic client registration (**MAY**, deprecated) | holds — by the API |
+| Client ID Metadata Documents (**SHOULD**) | deviation — see below |
 | Every `401` carries `WWW-Authenticate` naming that document | holds |
 | The `resource` identifier matches the URL the client reached | holds — derived from `Host` unless `NACRE_MCP_CANONICAL_URL` pins it |
 | Tokens validated locally, audience-bound | holds |
@@ -172,6 +175,28 @@ the fixes were checked against: `401` → RFC 9728 document → RFC 8414 documen
 RFC 7591 registration → `/oauth/authorize` → the consent screen in a browser →
 `/oauth/token` → `initialize` → `tools/list`. Every step is a real request; the
 only stand-in is the person clicking Approve.
+
+### Client ID Metadata Documents: a SHOULD we decline, and why
+
+The revision says an authorization server **SHOULD** support CIMD and **MAY**
+support Dynamic Client Registration, the latter "deprecated and retained for
+backwards compatibility". We are on the deprecated one, deliberately.
+
+CIMD makes `client_id` an HTTPS URL that the authorization server **fetches** to
+read the client's metadata. That puts an outbound request, to a URL an
+unauthenticated caller chose, on the authorization endpoint — a server-side
+request forgery surface reachable before anybody has signed in, in a product
+whose whole premise is that it runs inside somebody's network next to their
+documents. It is also incompatible with the `airgapped` profile by
+construction, which makes no outbound connection at all and says so.
+
+DCR costs nothing comparable: the client posts its own metadata, we store a row,
+and that row permits nothing until a person approves it on the consent screen.
+
+This is a deviation rather than a gap because the choice is stated and the
+consequence is bounded: a client that supports only CIMD cannot register here,
+and every shipping MCP client supports DCR. If that changes, the way in is a
+fetch confined to an operator-supplied allowlist — not an open one.
 
 ## Tools
 
