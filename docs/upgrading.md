@@ -240,7 +240,58 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
-### 0.5.5 — the admin UI is finally an image you can deploy
+### 0.5.5 — an MCP client can actually connect, and the admin UI is an image you can deploy
+
+**Nothing to do.** No migration, no new variable, no changed default. Everything
+below is a defect fixed in place; upgrade the images and the client that could
+not connect will.
+
+**The MCP handshake offered a revision no client speaks.** `initialize`
+answered with the newest revision this server knows — `2026-07-28` — whenever
+the client proposed anything not on its list, and `2025-11-25` was not on that
+list. `2025-11-25` is the newest revision the MCP SDK knows, so it is what every
+shipping client proposes: each one was handed `2026-07-28`, found it absent from
+its own `SUPPORTED_PROTOCOL_VERSIONS`, and failed with
+`Server's protocol version is not supported: 2026-07-28`.
+
+Two things were wrong and both are fixed. `2025-11-25` is in the supported list,
+so the common case is now an echo rather than a counter-offer. And a
+counter-offer is now always a **legacy** revision: anything arriving on
+`initialize` is a legacy client by definition, and the specification's own
+compatibility matrix says that generation has no fall-forward mechanism — it
+speaks what it is told or it fails. Offering it the newest revision was offering
+something it could not take.
+
+The STDIO transport had the same defect one step further along: it answered the
+newest revision unconditionally, without reading the proposal at all.
+
+**`server/discover` is served, on both transports.** It is a MUST in
+`2026-07-28` and the modern era's opening move — a client that sends no
+`initialize` learns the version list and the capabilities from it instead. On
+stdio it is also the probe a dual-era client uses to tell the two eras apart, so
+a server without it reads as legacy.
+
+**A path the MCP transport does not serve now answers HTTP, not JSON-RPC.** A
+client with no token reads the protected-resource document; if it finds no
+authorization server named there it falls back to treating the MCP origin as
+one and posts a registration request to `/register`. That got a JSON-RPC
+envelope, which is not an RFC 6749 error, and the client surfaced
+`HTTP 404: Invalid OAuth error response: ZodError: …` — a parser complaint in
+place of an explanation. Those paths now answer `{ error, error_description }`,
+and the description names where the authorization server actually is.
+
+**`/oauth/authorize` sent the browser to a page with no way to approve
+anything.** `NACRE_OAUTH_CONSENT_URL` ends in `#/consent` — the admin UI is
+hash-routed, so that fragment *is* the route — and the handler assigned the
+fragment rather than appending to it. The browser arrived at
+`#response_type=code&…`, the router saw no route, and the person got the default
+view with the whole authorization request intact in the URL. The consent
+screen's own parser reads `#/consent?…`; the two halves were written to
+different assumptions and nothing put them side by side until the flow was run
+end to end with a real client.
+
+**`serverInfo.version` reported `0.0.0`.** Both transports carried the field,
+threaded it through an option, and neither entry point ever passed a value.
 
 **A third image: `ghcr.io/nacre-work/nacre-web`.** `docker/Dockerfile` has had a
 `web` stage — nginx serving the built admin bundle and proxying `/v1` to the API

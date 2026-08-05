@@ -67,11 +67,13 @@ The MCP server is a **resource server**, not an authorization server.
 - `WWW-Authenticate` on every 401, pointing at
   `/.well-known/oauth-protected-resource` (RFC 9728) — **which is served**, by
   both this transport and the API, from one document built once. It names the
-  canonical resource identifier and, when a deployment configures one,
-  `authorization_servers`. That field is absent by default and is deliberately
-  not pointed at Nacre: this is a resource server, and sending a client here
-  for a token endpoint would be the same dead end as not serving the document
-  at all.
+  canonical resource identifier and `authorization_servers`, which names this
+  installation's **API** by default and whatever `NACRE_OAUTH_AUTHORIZATION_SERVER`
+  names when a deployment has its own identity provider. Never this transport:
+  it verifies tokens and issues none. This paragraph said the field was absent
+  and deliberately unpointed until the API grew the flow — see "There is an
+  authorization server now" below, which had been saying the opposite three
+  screens further down.
 - **`initialize` is answered**, statelessly. It had never been implemented:
   the dispatcher knew `tools/list` and `tools/call` and nothing else, and a
   comment justified the absence as a consequence of having no session. Those
@@ -82,6 +84,25 @@ The MCP server is a **resource server**, not an authorization server.
   `notifications/initialized` is accepted with `202`, as is any other
   notification: one the server does not understand is by definition one it may
   ignore.
+- **The version it negotiates is one the asking client can speak.** The
+  revisions reachable through `initialize` are `2025-11-25`, `2025-06-18` and
+  `2025-03-26`; a proposal among them is echoed, and anything else is
+  counter-offered the newest of them — **never** `2026-07-28`. That is not a
+  preference. `initialize` belongs to the era the specification calls legacy,
+  and its compatibility matrix says legacy clients have no fall-forward
+  mechanism: a revision they do not know is a failed connection, not a retry.
+  Answering with the newest revision outright is what this server did, and no
+  shipping client could connect — each one proposed `2025-11-25`, was handed
+  `2026-07-28`, and stopped.
+- **`server/discover` is answered**, which 2026-07-28 makes a MUST. It is the
+  modern era's opening move: a client that sends no `initialize` reads
+  `supportedVersions` and the capability set from here instead. Cached
+  `public`, unlike `tools/list` — nothing in it depends on who is asking.
+- **A path this transport does not route answers HTTP, not JSON-RPC.** The
+  envelope belongs to `/mcp`. A discovery fetch or an OAuth request that lands
+  here gets `{ error, error_description }`, RFC 6749's shape, naming where the
+  authorization server actually is — because the client that sent it is looking
+  for one and cannot read a JSON-RPC error at all.
 - **The 2026-07-28 mirrored headers are validated when present and never
   demanded**, which is the branch the binding sanctions and not a deviation: a
   server that supports clients implementing revisions earlier than 2025-06-18

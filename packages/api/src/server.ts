@@ -21,6 +21,7 @@ import {
   REGISTER_PATH,
   TOKEN_PATH,
   authorizationServerMetadata,
+  consentRedirect,
   generateClientId,
   generateCode,
   redirectAllowed,
@@ -1789,13 +1790,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
-      // Straight to the consent screen, with the request carried in the
-      // fragment rather than the query: a fragment is not sent to a server, so
-      // the parameters do not end up in the admin origin's access log on the
-      // way past.
-      const consent = new URL(oauth.consentUrl)
-      consent.hash = q.toString()
-      res.writeHead(302, { location: consent.toString() })
+      // Straight to the consent screen. `consentRedirect` carries the rule that
+      // the fragment is a route and the request is appended to it — see the
+      // note there for what assigning it outright did.
+      res.writeHead(302, { location: consentRedirect(oauth.consentUrl, q) })
       res.end()
       return
     }

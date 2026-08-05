@@ -18,8 +18,10 @@ import {
   Registry,
 } from '@nacre.work/core'
 import { RateLimiter, type LimitPolicy, type Resource } from '@nacre.work/api'
+
 import { createMcpServer } from './server.js'
 import { buildServices } from './services.js'
+import { packageVersion } from './version.js'
 
 /**
  * The MCP process, Streamable HTTP.
@@ -145,6 +147,7 @@ async function main(): Promise<void> {
     },
     layers,
     tools,
+    serverVersion: packageVersion(),
     // Discovery lives on the API host, never on the apex — static hosting there
     // intercepts /.well-known/* before the API sees it.
     // This transport's own URL, which is the canonical one unless a deployment

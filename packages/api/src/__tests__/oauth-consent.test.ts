@@ -1,4 +1,11 @@
-import { createPool, generateCode, hashCode, verifierMatches, redirectAllowed } from '@nacre.work/core'
+import {
+  consentRedirect,
+  createPool,
+  generateCode,
+  hashCode,
+  verifierMatches,
+  redirectAllowed,
+} from '@nacre.work/core'
 import { createHash, randomBytes } from 'node:crypto'
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -367,6 +374,58 @@ when('the OAuth consent flow, against the database', () => {
         expiresAt: new Date(Date.now() + 60_000),
       }),
     ).rejects.toThrow()
+  })
+})
+
+describe('where /oauth/authorize sends the browser', () => {
+  const request = new URLSearchParams({
+    response_type: 'code',
+    client_id: 'nacre_client_x',
+    redirect_uri: 'http://127.0.0.1:6274/oauth/callback',
+    code_challenge: 'abc',
+    code_challenge_method: 'S256',
+    state: 's',
+  })
+
+  /**
+   * The one assertion that matters, and the one nothing made until the flow was
+   * run end to end: **the SPA route survives**.
+   *
+   * `NACRE_OAUTH_CONSENT_URL` defaults to `…/#/consent`, and the handler
+   * assigned the fragment rather than appending to it — so the browser landed
+   * on `#response_type=code&…`, the hash router saw no route, and the person
+   * got the default view with no way to approve anything. Everything about the
+   * request was intact and the screen it belonged to never rendered.
+   *
+   * `readRequest` in the consent view is the other half: it strips a leading
+   * `/consent?` before parsing. These two are only correct together, which is
+   * why the shape is pinned here rather than left to each side's assumption.
+   */
+  it('keeps the hash route and appends the request to it', () => {
+    const to = new URL(consentRedirect('http://admin.example.test/#/consent', request))
+    expect(to.origin + to.pathname).toBe('http://admin.example.test/')
+    expect(to.hash.startsWith('#/consent?')).toBe(true)
+
+    const parsed = new URLSearchParams(to.hash.replace(/^#\/consent\??/, ''))
+    expect(parsed.get('client_id')).toBe('nacre_client_x')
+    expect(parsed.get('redirect_uri')).toBe('http://127.0.0.1:6274/oauth/callback')
+    expect(parsed.get('code_challenge')).toBe('abc')
+    expect(parsed.get('state')).toBe('s')
+  })
+
+  it('leaves a consent URL with no route alone', () => {
+    // A deployment serving the consent screen at its own path rather than
+    // through a hash router. There is nothing to preserve, so nothing is
+    // invented — the request is the whole fragment.
+    const to = new URL(consentRedirect('https://consent.example.test/approve', request))
+    expect(to.pathname).toBe('/approve')
+    expect(to.hash.startsWith('#response_type=code')).toBe(true)
+  })
+
+  it('does not double the separator on a route already ending in ?', () => {
+    const to = new URL(consentRedirect('http://admin.example.test/#/consent?', request))
+    expect(to.hash.startsWith('#/consent?response_type=')).toBe(true)
+    expect(to.hash).not.toContain('??')
   })
 })
 

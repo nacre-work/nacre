@@ -4,7 +4,7 @@ import { SignJWT } from 'jose'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { AuthContext } from '@nacre.work/api'
-import { serveStdio } from '@nacre.work/mcp'
+import { LEGACY_PROTOCOL_VERSIONS, PROTOCOL_VERSION, PROTOCOL_VERSIONS, serveStdio } from '@nacre.work/mcp'
 import type { Layer } from '@nacre.work/mcp'
 
 /**
@@ -101,12 +101,42 @@ describe('baseline · the MCP local transport', () => {
     }
   })
 
-  it('initialize answers with the protocol revision', async () => {
-    const [frame] = await exchange(
-      ['{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'],
+  it('initialize negotiates rather than announcing', async () => {
+    // This asserted `2026-07-28` for any request at all, which is what the
+    // handler did: it answered the newest revision unconditionally. A client
+    // proposing the newest one *it* knows was told about a revision it has
+    // never heard of and gave up before reaching a tool — the same defect the
+    // HTTP transport had, one step further along, because here there was not
+    // even a proposal being read.
+    const [echoed] = await exchange(
+      ['{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}'],
       await serviceKey(),
     )
-    expect((frame?.result as { protocolVersion?: string })?.protocolVersion).toBe('2026-07-28')
+    expect((echoed?.result as { protocolVersion?: string })?.protocolVersion).toBe('2025-11-25')
+
+    // And a proposal this server cannot speak gets the newest **legacy**
+    // revision back, because `initialize` is by definition a legacy client and
+    // that generation cannot fall forward.
+    const [offered] = await exchange(
+      ['{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}'],
+      await serviceKey(),
+    )
+    const agreed = (offered?.result as { protocolVersion?: string })?.protocolVersion
+    expect(agreed).toBe(LEGACY_PROTOCOL_VERSIONS[0])
+    expect(agreed).not.toBe(PROTOCOL_VERSION)
+  })
+
+  it('server/discover answers on stdio too', async () => {
+    // On stdio this is also the era probe: a dual-era client sends it first,
+    // and a server that answers `-32601` reads as legacy and gets served an
+    // older revision than it had to be.
+    const [frame] = await exchange(
+      ['{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}'],
+      await serviceKey(),
+    )
+    const result = frame?.result as { resultType?: string; supportedVersions?: string[] }
+    expect(result?.resultType).toBe('complete')
+    expect(result?.supportedVersions).toEqual([...PROTOCOL_VERSIONS])
   })
 
   it('tools/list is the same catalog the HTTP surface builds', async () => {
