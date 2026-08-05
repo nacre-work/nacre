@@ -240,6 +240,48 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.5.6 — one line to remove from `.env`, if you copied the example
+
+**No image changed.** The code is 0.5.5's; this release exists because the fix
+is in a file an operator copies rather than in one they pull, so upgrading the
+containers does not deliver it.
+
+**Remove `NACRE_MCP_CANONICAL_URL` from your `.env`** unless a proxy rewrites
+`Host` and the public name is one the server cannot see. `.env.example` seeded
+it as `http://localhost:8081`, and every deployment that started from
+`cp .env.example .env` has it.
+
+Pinned, the MCP transport names that value as the `resource` in its RFC 9728
+document. RFC 9728 has the client compare the identifier against the URL it
+actually connected to, so anybody reaching the stack at `10.8.0.1` or a hostname
+is refused — **before** a token is sent, which reads as a broken server rather
+than as a misconfiguration. Unset, the document follows the `Host` each client
+used, which is what the identifier is for.
+
+`docker-compose.yml` sets no `NACRE_MCP_CANONICAL_URL` on the `mcp` service and
+explains at length that the absence is the fix. That was true of the service
+block and false of the stack: `env_file: .env` is on the shared anchor, so the
+line arrived anyway. `pnpm lint:compose` now renders the stack with
+`.env.example` in place as `.env` and fails if the variable reaches the
+container, because the previous guarantee was a comment.
+
+While you are in that file, two addresses have to be reachable from somewhere
+other than the server, and `localhost` is right for neither once a client is
+elsewhere:
+
+- **`NACRE_CANONICAL_URL`** — the OAuth issuer, and so what the discovery
+  document names as the authorization server. A client told `localhost` looks on
+  its own machine and finds nothing.
+- **`NACRE_OAUTH_CONSENT_URL`** — where `/oauth/authorize` redirects the
+  *browser* to pick the agent. Compose defaults it to
+  `http://localhost:8082/#/consent` and cannot do better: the redirect knows the
+  host the browser used but not the port the admin UI is published on. It is the
+  one step of the flow that no amount of `Host` derivation fixes, and the
+  easiest to miss because a browser follows it rather than a client.
+
+Both are one edit each and both fail the same way — a step of the OAuth flow
+that lands on the operator's own machine.
+
 ### 0.5.5 — an MCP client can actually connect, and the admin UI is an image you can deploy
 
 **Nothing to do.** No migration, no new variable, no changed default. Everything
