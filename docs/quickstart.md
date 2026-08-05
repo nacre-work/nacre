@@ -106,11 +106,17 @@ this page is written for:
 | `NACRE_CANONICAL_URL` | your host, API port | an MCP client is told the authorization server is on *its own* machine |
 | `NACRE_OAUTH_CONSENT_URL` | `http://your-host:8082/#/consent` | the browser is sent to *your* machine to approve |
 
-Neither can be derived. The first is the OAuth issuer and is baked into every
-token; the second is a redirect that knows the host the browser used but not the
-port the admin UI is published on. Leave `NACRE_MCP_CANONICAL_URL` unset either
-way — the MCP transport builds its own discovery document from the address each
-client actually connected to, which is the one of the three that *is* derived.
+Neither can be derived. The first is the OAuth issuer, so it is the address the
+discovery document hands a client to go and get a token from; the second is a
+redirect that knows the host the browser used but not the port the admin UI is
+published on. Leave `NACRE_MCP_CANONICAL_URL` unset either way — the MCP
+transport builds its own discovery document from the address each client
+actually connected to, which is the one of the three that *is* derived.
+
+`NACRE_JWT_ISSUER` is a different thing despite the name and does **not** belong
+in that table: it is the `iss` claim, compared against itself at verification
+and never fetched, so it does not have to resolve anywhere. Changing
+`NACRE_CANONICAL_URL` does not invalidate a token already issued.
 
 ## The first organization
 
