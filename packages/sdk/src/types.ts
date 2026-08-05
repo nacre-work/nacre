@@ -324,3 +324,24 @@ export interface Self {
   readonly principalId: string
   readonly role: UserRole
 }
+
+/**
+ * An application connected to this organization, acting as an agent.
+ *
+ * `lastRefreshedAt` is "last seen renewing" rather than last used, and the name
+ * says so: an access token is verified locally, so its use touches nothing the
+ * server could record. A connection in constant use with a long-lived access
+ * token looks idle here, and claiming otherwise would be a number that reads as
+ * fact and is a guess.
+ */
+export interface Connection {
+  readonly id: string
+  readonly clientId: string
+  readonly clientName: string
+  readonly serviceAccountId: string
+  readonly serviceAccountName: string
+  readonly approvedBy: string
+  readonly createdAt: string
+  readonly lastRefreshedAt: string | null
+  readonly revokedAt: string | null
+}

@@ -371,6 +371,23 @@ components:
           description: |
             What this principal may do organization-wide. A service account is
             always `member`; anything it reaches, it reaches through a grant.
+    Connection:
+      type: object
+      required: [id, client_id, client_name, service_account_id, service_account_name, approved_by, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        client_id: { type: string }
+        client_name:
+          type: string
+          description: Self-asserted at registration. The redirect URI is what decides where a code goes.
+        service_account_id: { type: string, format: uuid }
+        service_account_name: { type: string }
+        approved_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        last_refreshed_at:
+          type: [string, 'null']
+          description: Last seen renewing, never last used. See the endpoint's note.
+        revoked_at: { type: [string, 'null'] }
     ConsentRequest:
       type: object
       required: [client_id, redirect_uri, code_challenge, service_account_id]
@@ -982,6 +999,81 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          $ref: '#/components/responses/NotFoundOrForbidden'
+  /oauth/consents:
+    get:
+      operationId: listConnections
+      summary: Applications connected to this organization
+      description: |
+        What has been approved and is able to act as an agent.
+
+        An `org_admin` sees the organization's; everybody else sees the ones
+        they approved. That is not a gradient invented for this endpoint — an
+        agent belongs to the organization, so somebody has to be able to end a
+        connection whose approver has left.
+
+        `last_refreshed_at` is *last seen renewing*, and the name says so. An
+        access token is verified locally against a key, so its use touches
+        nothing the server could record; a connection in constant use with a
+        long-lived token looks idle here.
+      tags: [auth]
+      responses:
+        '200':
+          description: The connections, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, access_token_ttl_seconds]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Connection' }
+                  access_token_ttl_seconds:
+                    type: integer
+                    description: |
+                      How long an already-issued access token can still work
+                      after a connection is ended. Reported here so a client
+                      does not have to compute it from configuration it cannot
+                      see, and so a screen cannot claim an end that has not
+                      happened yet.
+  /oauth/consents/{id}:
+    delete:
+      operationId: endConnection
+      summary: Forget an application
+      description: |
+        Ends one connection. The refresh token is deleted in the same
+        transaction, so the application cannot renew and has to be approved
+        again.
+
+        **It is not the same as revoking the agent**, and the difference is the
+        point: an agent may hold several connections and a key of its own that
+        somebody pasted into a config file. Revoking the agent stops all of
+        that; this stops one application.
+
+        An access token already issued keeps working until it expires — it is a
+        JWT verified against a key, and nothing consults a table when it is
+        presented. The response carries that window rather than implying there
+        is none. A denylist checked per request is the alternative, and it would
+        make local verification not local.
+      tags: [auth]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Ended
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ended, access_token_ttl_seconds]
+                properties:
+                  ended: { type: boolean }
+                  access_token_ttl_seconds: { type: integer }
         '404':
           $ref: '#/components/responses/NotFoundOrForbidden'
   /workspaces:

@@ -20,19 +20,72 @@ export interface RegisteredClient {
   readonly redirectUris: readonly string[]
 }
 
+/** A standing connection: this application, acting as this agent. */
+export interface Consent {
+  readonly id: string
+  readonly clientId: string
+  readonly clientName: string
+  readonly serviceAccountId: string
+  readonly serviceAccountName: string
+  readonly approvedBy: string
+  readonly createdAt: string
+  readonly lastRefreshedAt: string | null
+  readonly revokedAt: string | null
+}
+
 /** A consent that has been given and not yet exchanged. */
 export interface PendingAuthorization {
   readonly orgId: string
+  /** The standing connection this code belongs to. */
+  readonly consentId?: string
   readonly serviceAccountId: string
   readonly clientId: string
   readonly redirectUri: string
   readonly codeChallenge: string
-  readonly resource: string | undefined
+  readonly resource?: string
 }
 
 export interface OAuthClients {
   register(name: string, redirectUris: readonly string[], clientId: string): Promise<RegisteredClient>
   find(clientId: string): Promise<RegisteredClient | undefined>
+}
+
+export interface OAuthConsents {
+  /**
+   * The connection, created or found.
+   *
+   * Approving twice is the same connection rather than a second one: a screen
+   * full of duplicates is one where ending a connection leaves the others
+   * working.
+   */
+  record(auth: AuthContext, clientId: string, serviceAccountId: string): Promise<string>
+  /**
+   * Every connection this caller may see.
+   *
+   * An `org_admin` sees the organization's; everybody else sees the ones they
+   * approved. That is not a permission gradient invented here — an agent is the
+   * organization's, and somebody has to be able to end a connection whose
+   * approver has left.
+   */
+  list(auth: AuthContext): Promise<readonly Consent[]>
+  /**
+   * End it. Returns false when there is nothing of theirs by that id, which is
+   * the same answer as "no such connection" — invariant 4.
+   */
+  revoke(auth: AuthContext, id: string): Promise<boolean>
+}
+
+export interface OAuthRefreshTokens {
+  /** Issue one against a connection, in the family a rotation continues. */
+  issue(orgId: string, consentId: string, token: string, family: string | undefined, expiresAt: Date): Promise<string>
+  /**
+   * Spend one and say what it was for, or refuse.
+   *
+   * Refuses an expired token, a revoked connection, and — loudly — a **replay**:
+   * a token already spent means two holders have it and there is no way to tell
+   * which is genuine, so the whole family is ended rather than the one token.
+   */
+  rotate(token: string): Promise<{ orgId: string; consentId: string; serviceAccountId: string; family: string } | undefined>
 }
 
 export interface OAuthAuthorizations {
@@ -102,8 +155,8 @@ export class PostgresOAuthAuthorizations implements OAuthAuthorizations {
         await client.query(
           `INSERT INTO oauth_authorizations
              (org_id, client_id, service_account_id, approved_by, code_hash,
-              code_challenge, redirect_uri, resource, expires_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+              code_challenge, redirect_uri, resource, expires_at, consent_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
           [
             auth.orgId,
             input.clientId,
@@ -114,6 +167,7 @@ export class PostgresOAuthAuthorizations implements OAuthAuthorizations {
             input.redirectUri,
             input.resource ?? null,
             input.expiresAt,
+            input.consentId ?? null,
           ],
         )
       },
@@ -161,13 +215,14 @@ export class PostgresOAuthAuthorizations implements OAuthAuthorizations {
           redirect_uri: string
           code_challenge: string
           resource: string | null
+          consent_id: string | null
         }>(
           `UPDATE oauth_authorizations
               SET consumed_at = now()
             WHERE code_hash = $1
               AND consumed_at IS NULL
               AND expires_at > now()
-          RETURNING org_id, service_account_id, client_id, redirect_uri, code_challenge, resource`,
+          RETURNING org_id, service_account_id, client_id, redirect_uri, code_challenge, resource, consent_id`,
           [hashCode(code)],
         )
         const row = rows[0]
@@ -178,7 +233,224 @@ export class PostgresOAuthAuthorizations implements OAuthAuthorizations {
           clientId: row.client_id,
           redirectUri: row.redirect_uri,
           codeChallenge: row.code_challenge,
-          resource: row.resource ?? undefined,
+          ...(row.resource === null ? {} : { resource: row.resource }),
+          ...(row.consent_id === null ? {} : { consentId: row.consent_id }),
+        }
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+}
+
+export class PostgresOAuthConsents implements OAuthConsents {
+  constructor(
+    private readonly pool: Pool,
+    private readonly role?: string,
+  ) {}
+
+  async record(auth: AuthContext, clientId: string, serviceAccountId: string): Promise<string> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        // Approving again reuses the row and clears a previous revocation: the
+        // person is deliberately reconnecting an application they had ended,
+        // and leaving it marked revoked would show them a connection that says
+        // "ended" while the client works.
+        const { rows } = await client.query<{ id: string }>(
+          `INSERT INTO oauth_consents (org_id, client_id, service_account_id, approved_by)
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (org_id, client_id, service_account_id)
+           DO UPDATE SET revoked_at = NULL, approved_by = EXCLUDED.approved_by
+           RETURNING id`,
+          [auth.orgId, clientId, serviceAccountId, auth.principal.id],
+        )
+        return (rows[0] as { id: string }).id
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+
+  async list(auth: AuthContext): Promise<readonly Consent[]> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        // An org_admin sees the organization's, everybody else their own. Not
+        // an invented gradient: an agent belongs to the organization, so
+        // somebody has to be able to end a connection whose approver has left.
+        const mine = auth.role === 'org_admin' || auth.role === 'platform_admin' ? '' : ' AND c.approved_by = $2'
+        const { rows } = await client.query<{
+          id: string
+          client_id: string
+          client_name: string
+          service_account_id: string
+          service_account_name: string
+          approved_by: string
+          created_at: string
+          last_refreshed_at: string | null
+          revoked_at: string | null
+        }>(
+          `SELECT c.id, c.client_id, oc.client_name, c.service_account_id,
+                  sa.name AS service_account_name, c.approved_by,
+                  c.created_at::text, c.last_refreshed_at::text, c.revoked_at::text
+             FROM oauth_consents c
+             JOIN oauth_clients oc ON oc.client_id = c.client_id
+             JOIN service_accounts sa ON sa.id = c.service_account_id AND sa.org_id = c.org_id
+            WHERE c.org_id = $1${mine}
+            ORDER BY c.created_at DESC, c.id`,
+          mine === '' ? [auth.orgId] : [auth.orgId, auth.principal.id],
+        )
+        return rows.map((r) => ({
+          id: r.id,
+          clientId: r.client_id,
+          clientName: r.client_name,
+          serviceAccountId: r.service_account_id,
+          serviceAccountName: r.service_account_name,
+          approvedBy: r.approved_by,
+          createdAt: r.created_at,
+          lastRefreshedAt: r.last_refreshed_at,
+          revokedAt: r.revoked_at,
+        }))
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+
+  async revoke(auth: AuthContext, id: string): Promise<boolean> {
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return false
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const mine = auth.role === 'org_admin' || auth.role === 'platform_admin' ? '' : ' AND approved_by = $3'
+        const params = mine === '' ? [auth.orgId, id] : [auth.orgId, id, auth.principal.id]
+        const { rows } = await client.query<{ id: string }>(
+          `UPDATE oauth_consents SET revoked_at = now()
+            WHERE org_id = $1 AND id = $2 AND revoked_at IS NULL${mine}
+            RETURNING id`,
+          params,
+        )
+        if (rows.length === 0) return false
+
+        // The refresh tokens go with it, in the same transaction. Leaving them
+        // is the difference between a connection that says ended and one that
+        // *is*: the application renews on its own schedule, and a token that
+        // still works is a connection that has not ended.
+        //
+        // Deleted rather than marked. There is nothing to investigate later
+        // about a credential whose whole purpose was to be exchanged, and a row
+        // kept is a hash kept.
+        await client.query('DELETE FROM oauth_refresh_tokens WHERE org_id = $1 AND consent_id = $2', [auth.orgId, id])
+        return true
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+}
+
+export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
+  constructor(
+    private readonly pool: Pool,
+    private readonly role?: string,
+  ) {}
+
+  async issue(
+    orgId: string,
+    consentId: string,
+    token: string,
+    family: string | undefined,
+    expiresAt: Date,
+  ): Promise<string> {
+    return withOrg(
+      this.pool,
+      orgId,
+      async (client) => {
+        const { rows } = await client.query<{ family_id: string }>(
+          `INSERT INTO oauth_refresh_tokens (org_id, consent_id, token_hash, family_id, expires_at)
+           VALUES ($1,$2,$3,COALESCE($4::uuid, gen_random_uuid()),$5)
+           RETURNING family_id`,
+          [orgId, consentId, hashCode(token), family ?? null, expiresAt],
+        )
+        return (rows[0] as { family_id: string }).family_id
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+
+  async rotate(
+    token: string,
+  ): Promise<{ orgId: string; consentId: string; serviceAccountId: string; family: string } | undefined> {
+    // The same split as an authorization code, and for the same reason: the
+    // endpoint holds a bearer secret and no organization, so the lookup crosses
+    // tenants and is **read-only** — that restriction is what keeps the one
+    // tenant-spanning path unable to write.
+    const found = await whileAuthenticating(
+      this.pool,
+      async (client) => {
+        const { rows } = await client.query<{ org_id: string }>(
+          'SELECT org_id FROM oauth_refresh_tokens WHERE token_hash = $1',
+          [hashCode(token)],
+        )
+        return rows[0]?.org_id
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+    if (found === undefined) return undefined
+
+    return withOrg(
+      this.pool,
+      found,
+      async (client) => {
+        const { rows } = await client.query<{
+          id: string
+          consent_id: string
+          family_id: string
+          used_at: Date | null
+          expired: boolean
+          service_account_id: string | null
+        }>(
+          `SELECT t.id, t.consent_id, t.family_id, t.used_at, t.expires_at <= now() AS expired,
+                  CASE WHEN c.revoked_at IS NULL THEN c.service_account_id END AS service_account_id
+             FROM oauth_refresh_tokens t
+             JOIN oauth_consents c ON c.id = t.consent_id
+            WHERE t.token_hash = $1
+            FOR UPDATE OF t`,
+          [hashCode(token)],
+        )
+        const row = rows[0]
+        if (row === undefined) return undefined
+
+        if (row.used_at !== null) {
+          // A replay. The legitimate holder has already exchanged this, so two
+          // parties hold it and there is no way to tell which is which — the
+          // only safe answer is that neither continues. Same rule as the
+          // sign-in family, and it is the reason a family id exists at all.
+          await client.query('DELETE FROM oauth_refresh_tokens WHERE org_id = $1 AND family_id = $2', [
+            found,
+            row.family_id,
+          ])
+          return undefined
+        }
+        if (row.expired || row.service_account_id === null) return undefined
+
+        // Spent, in the statement that reads it: two concurrent exchanges race
+        // for one row and exactly one wins.
+        const { rows: spent } = await client.query<{ id: string }>(
+          'UPDATE oauth_refresh_tokens SET used_at = now() WHERE id = $1 AND used_at IS NULL RETURNING id',
+          [row.id],
+        )
+        if (spent.length === 0) return undefined
+
+        await client.query('UPDATE oauth_consents SET last_refreshed_at = now() WHERE org_id = $1 AND id = $2', [
+          found,
+          row.consent_id,
+        ])
+        return {
+          orgId: found,
+          consentId: row.consent_id,
+          serviceAccountId: row.service_account_id,
+          family: row.family_id,
         }
       },
       this.role === undefined ? {} : { role: this.role },

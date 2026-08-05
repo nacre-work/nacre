@@ -240,6 +240,46 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.5.4 — a connection you can see, and end
+
+**Migration 0024.** It adds `oauth_consents`, `oauth_refresh_tokens` and a
+nullable `consent_id` on `oauth_authorizations`. Nothing is dropped and nothing
+is rewritten, so 0.5.3 runs unchanged against the upgraded database.
+
+0.5.3 built the OAuth flow and stopped one step short. It recorded an
+authorization *code* — ninety seconds long, consumed on exchange — and nothing
+that outlived it. So after an application connected there was no record it had,
+nothing could list what was connected, and **the token could not be taken
+back**: it is a JWT verified locally against a key, valid until it expires, and
+nothing consults a table.
+
+Now a connection is a row, the token endpoint issues a **refresh token** against
+it, and ending the connection deletes that token.
+
+**What "ended" means, exactly.** The application cannot renew, immediately. An
+access token it already holds keeps working until it expires — at most
+`NACRE_ACCESS_TOKEN_TTL`, fifteen minutes by default. The API reports that
+number in the response and the admin screen shows it, because a screen that said
+"ended" without it would be overstating what happened. To stop an agent *now*,
+revoke the agent; that is a different and larger act, and it is on the Service
+accounts screen.
+
+The alternative was a denylist of live tokens consulted on every request, which
+would undo local verification to reverse something that happens rarely. That
+trade is stated here rather than left implicit.
+
+**Clients that connected under 0.5.3 get no refresh token**, because their
+authorization rows carry no connection. They keep working until their access
+token expires and then have to be approved again — once. Nothing to do about it
+and nothing lost.
+
+**`Connections` is a new screen** and is not administrative: approving a
+connection is the same permission as issuing the grant that makes the agent
+worth anything, so ending one is too. A member sees the ones they approved; an
+`org_admin` sees the organization's, because an agent belongs to the
+organization and somebody has to be able to end a connection whose approver has
+left.
+
 ### 0.5.3 — an MCP client can connect, and consent names an agent
 
 **Migration 0023, and it is the first schema change since 0.5.0.** It adds
