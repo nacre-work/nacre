@@ -240,6 +240,45 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.5.7 — one address instead of three
+
+**Compose now serves everything on the `web` port**, `8082` by default: the
+console, `/v1`, `/oauth`, `/.well-known` and `/mcp`. The API and MCP ports stay
+published and keep working, so nothing breaks — this adds an address that works
+rather than removing ones that did.
+
+**What it is for.** 0.5.6 documented three values that have to name a reachable
+host, and two of them could not be derived from a request: the OAuth issuer is a
+value, and the consent redirect knows the host a browser used but not the port
+the console is published on. Each failed at a different step of the same flow
+with a different unhelpful message, and one of them sent the *browser* to the
+operator's own machine. Behind one origin all three are the same string, so
+there is nothing left to get out of step. It is also what the Helm chart's
+ingress has always done — the Compose stack was the odd one out.
+
+**For a Compose deployment**, after `docker compose pull && docker compose up -d`:
+
+- Point `NACRE_CANONICAL_URL` at the **web** port rather than the API's:
+  `http://your-host:8082`. This is the one value that has to be right.
+- **Remove `NACRE_OAUTH_CONSENT_URL`.** It now defaults to `/#/consent` on the
+  canonical URL, which is the same origin that serves the console. The stack no
+  longer sets it either.
+- Leave `NACRE_MCP_CANONICAL_URL` unset, as in 0.5.6.
+- An MCP client can move from `http://your-host:8081/mcp` to
+  `http://your-host:8082/mcp`. Both work; the second is the one where discovery,
+  the token endpoint and the consent screen are all on the origin the client
+  already reached.
+
+**For Helm: nothing to do.** The ingress already routed `/mcp` ahead of `/`. The
+chart passes `NACRE_MCP_UPSTREAM` to the console pod now so the image behaves the
+same everywhere — relevant only to a deployment fronting that Service itself
+rather than through this ingress, where the route would otherwise proxy to a
+Compose service name.
+
+**If you front the stack with your own proxy**, `/oauth` and `/mcp` join `/v1`
+and `/.well-known` as paths that have to reach the right process.
+`docker/nginx.conf.template` is the worked example.
+
 ### 0.5.6 — one line to remove from `.env`, if you copied the example
 
 **No image changed.** The code is 0.5.5's; this release exists because the fix

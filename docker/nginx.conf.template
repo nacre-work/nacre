@@ -1,4 +1,5 @@
-# The company admin UI and the API on one origin.
+# The whole installation on one origin: the console, the API, the authorization
+# server, and MCP.
 #
 # The admin bundle calls the API at `location.origin` (see packages/admin/src/api.ts),
 # so serving the UI and proxying `/v1` from the same host is what makes the two
@@ -8,9 +9,26 @@
 # built into the stack so the UI has a URL the moment `docker compose up` returns
 # rather than after a manual build and a proxy the operator writes themselves.
 #
-# `/v1` and `/.well-known` are the API; everything else is the static admin. The
-# MCP port and `/metrics` are deliberately not proxied — an agent talks to the
-# mcp service directly, and metrics are not a thing the admin origin exposes.
+# ## Why `/oauth` and `/mcp` are here, and were not
+#
+# This proxied `/v1` and `/.well-known` only, and an agent talked to the mcp
+# service on its own port. That works and it costs three addresses instead of
+# one — which turned out to be three chances to name `localhost` to somebody on
+# another machine, and each one fails at a different step of the same flow with
+# a different unhelpful message. Two of them cannot be derived from a request at
+# all: the OAuth issuer is a value, and the consent redirect knows the host the
+# browser used but not the port the console is published on.
+#
+# Behind one origin every one of those is the same string, so there is nothing
+# left to get out of step. It is also what the Helm chart's ingress has always
+# done, and what `docs/quickstart.md` already described as the production shape —
+# the Compose stack was the odd one out.
+#
+# The separate ports stay published. This is one address that works, not a
+# removal of the ones that already did.
+#
+# `/metrics` is still deliberately not proxied: it is not something the console's
+# origin exposes, and a scrape belongs on the process it is scraping.
 #
 # A **template**, rendered by the nginx image's own entrypoint, and the two
 # variables are why. This file used to hardcode `proxy_pass http://api:8080` —
@@ -24,6 +42,21 @@
 # entrypoint substitutes *every* `$name`, and nginx's own `$host`, `$scheme`,
 # `$uri` and `$proxy_add_x_forwarded_for` become empty strings.
 
+# `Host $http_host` and never `$host`, in every location below.
+#
+# `$host` is the hostname with **the port stripped**, and the port is load-bearing
+# here: the MCP transport builds its RFC 9728 `resource` identifier from the
+# `Host` it was given, and RFC 9728 has the client compare that against the URL
+# it connected to. Forwarding `$host` made every 401 answer
+# `resource_metadata="http://localhost/..."` for a client that reached
+# `localhost:8082` — a mismatch, and a refusal before any token is sent.
+#
+# Which is to say: proxying MCP with the wrong Host variable would have broken
+# exactly the thing this front door exists to fix. Found by starting the stack
+# and reading one header, not by any test.
+#
+# `$http_host` is the header the client actually sent, port and all.
+
 server {
     listen ${NGINX_PORT};
     server_name _;
@@ -32,7 +65,7 @@ server {
     # `depends_on` gives in Compose and a Service name gives in Kubernetes.
     location /v1/ {
         proxy_pass http://${NACRE_API_UPSTREAM};
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
@@ -43,7 +76,48 @@ server {
     # give an origin where the console works and no application can connect.
     location /.well-known/ {
         proxy_pass http://${NACRE_API_UPSTREAM};
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # The authorization server's three endpoints: registration, the authorize
+    # redirect, and the token exchange. They are on the API and they have to be
+    # on this origin, because RFC 8414 discovery — served above — names them
+    # under whatever host the client read the document from. Proxying the
+    # document and not the endpoints it advertises would point every client at
+    # three URLs this origin answers 404 for.
+    #
+    # `/oauth/authorize` is the one a *browser* follows, and it redirects to the
+    # console — which is this same origin, so `NACRE_OAUTH_CONSENT_URL` needs no
+    # value at all here.
+    location /oauth/ {
+        proxy_pass http://${NACRE_API_UPSTREAM};
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # MCP. An exact-prefix match rather than a trailing slash, because the
+    # endpoint *is* `/mcp` — with a slash this location would never match it.
+    #
+    # `proxy_http_version 1.1` is not decoration. nginx speaks HTTP/1.0 upstream
+    # by default, which has no chunked encoding and no keep-alive, and this
+    # endpoint is a POST-per-message protocol whose responses this revision may
+    # send as a stream. `proxy_buffering off` is the same argument: a buffered
+    # proxy holds a stream until it ends, which turns an incremental response
+    # into a single late one.
+    #
+    # The read timeout is long for one reason: a tool call runs a search against
+    # the index and an embedder, and nginx's 60-second default would cut a slow
+    # one off with a 504 that names nothing.
+    location /mcp {
+        proxy_pass http://${NACRE_MCP_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+        proxy_set_header Host $http_host;
+        proxy_set_header Connection "";
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
