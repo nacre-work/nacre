@@ -240,6 +240,36 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.5.6 — one line to remove from `.env`, if you copied the example
+
+**No image changed.** The code is 0.5.5's; this release exists because the fix
+is in a file an operator copies rather than in one they pull, so upgrading the
+containers does not deliver it.
+
+**Remove `NACRE_MCP_CANONICAL_URL` from your `.env`** unless a proxy rewrites
+`Host` and the public name is one the server cannot see. `.env.example` seeded
+it as `http://localhost:8081`, and every deployment that started from
+`cp .env.example .env` has it.
+
+Pinned, the MCP transport names that value as the `resource` in its RFC 9728
+document. RFC 9728 has the client compare the identifier against the URL it
+actually connected to, so anybody reaching the stack at `10.8.0.1` or a hostname
+is refused — **before** a token is sent, which reads as a broken server rather
+than as a misconfiguration. Unset, the document follows the `Host` each client
+used, which is what the identifier is for.
+
+`docker-compose.yml` sets no `NACRE_MCP_CANONICAL_URL` on the `mcp` service and
+explains at length that the absence is the fix. That was true of the service
+block and false of the stack: `env_file: .env` is on the shared anchor, so the
+line arrived anyway. `pnpm lint:compose` now renders the stack with
+`.env.example` in place as `.env` and fails if the variable reaches the
+container, because the previous guarantee was a comment.
+
+While you are in that file: **`NACRE_CANONICAL_URL` has to be reachable from the
+machine your MCP client runs on**, not only from the server. It is the OAuth
+issuer, so it is what the discovery document names as the authorization server —
+a client told `localhost` looks on its own machine and finds nothing.
+
 ### 0.5.5 — an MCP client can actually connect, and the admin UI is an image you can deploy
 
 **Nothing to do.** No migration, no new variable, no changed default. Everything
