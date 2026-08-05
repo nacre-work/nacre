@@ -14,6 +14,22 @@ name: cla
 on:
   pull_request:
     branches: [main]
+  # Manual, for the same reason `ci.yml` grew it and this file did not: when
+  # Actions stops scheduling `pull_request` runs there is no failed run to
+  # re-run and nothing queued to wait for, and a required check with no way to
+  # be asked for by hand blocks a pull request until somebody pushes an empty
+  # commit. That lesson was applied to `ci`, `acl-invariants` and `release`, and
+  # missed here — the same shape as a fix made in one file and not its sibling.
+  #
+  # The two refs are inputs because a dispatch has no `pull_request` context.
+  # `base` defaults to main, which is the only base this gate runs against; the
+  # head defaults to the ref the dispatch was made on, which is the branch.
+  workflow_dispatch:
+    inputs:
+      base:
+        description: The branch to read the signature list from
+        required: false
+        default: main
 
 permissions:
   contents: read
@@ -34,8 +50,11 @@ jobs:
           # and every past contributor reads as unsigned.
           fetch-depth: 0
 
+      # The signature list is read from the **base** either way, so a pull
+      # request still cannot sign itself. A dispatch names the base explicitly
+      # and the head is whatever ref it ran on.
       - name: Everyone who wrote this has signed
         run: |
           node .github/scripts/check-cla.mjs \
-            "origin/${{ github.base_ref }}" \
-            "${{ github.event.pull_request.head.sha }}"
+            "origin/${{ github.base_ref || inputs.base }}" \
+            "${{ github.event.pull_request.head.sha || github.sha }}"
