@@ -96,6 +96,22 @@ machine, set `NACRE_API_HOST_PORT` / `NACRE_MCP_HOST_PORT` / `NACRE_WEB_HOST_POR
 in `.env` — the host side moves, the ports inside the network do not, and nothing
 else changes.
 
+**If the stack is not on the same machine as the people and agents using it** —
+a VPN address, a LAN name, anything but `localhost` — two values in `.env` have
+to say so, and both default to `localhost` because that is right for the case
+this page is written for:
+
+| Set | To | Or |
+|---|---|---|
+| `NACRE_CANONICAL_URL` | your host, API port | an MCP client is told the authorization server is on *its own* machine |
+| `NACRE_OAUTH_CONSENT_URL` | `http://your-host:8082/#/consent` | the browser is sent to *your* machine to approve |
+
+Neither can be derived. The first is the OAuth issuer and is baked into every
+token; the second is a redirect that knows the host the browser used but not the
+port the admin UI is published on. Leave `NACRE_MCP_CANONICAL_URL` unset either
+way — the MCP transport builds its own discovery document from the address each
+client actually connected to, which is the one of the three that *is* derived.
+
 ## The first organization
 
 Nothing exists yet — not an organization, not a user, not the Qdrant collection.
