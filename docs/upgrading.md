@@ -265,10 +265,22 @@ line arrived anyway. `pnpm lint:compose` now renders the stack with
 `.env.example` in place as `.env` and fails if the variable reaches the
 container, because the previous guarantee was a comment.
 
-While you are in that file: **`NACRE_CANONICAL_URL` has to be reachable from the
-machine your MCP client runs on**, not only from the server. It is the OAuth
-issuer, so it is what the discovery document names as the authorization server —
-a client told `localhost` looks on its own machine and finds nothing.
+While you are in that file, two addresses have to be reachable from somewhere
+other than the server, and `localhost` is right for neither once a client is
+elsewhere:
+
+- **`NACRE_CANONICAL_URL`** — the OAuth issuer, and so what the discovery
+  document names as the authorization server. A client told `localhost` looks on
+  its own machine and finds nothing.
+- **`NACRE_OAUTH_CONSENT_URL`** — where `/oauth/authorize` redirects the
+  *browser* to pick the agent. Compose defaults it to
+  `http://localhost:8082/#/consent` and cannot do better: the redirect knows the
+  host the browser used but not the port the admin UI is published on. It is the
+  one step of the flow that no amount of `Host` derivation fixes, and the
+  easiest to miss because a browser follows it rather than a client.
+
+Both are one edit each and both fail the same way — a step of the OAuth flow
+that lands on the operator's own machine.
 
 ### 0.5.5 — an MCP client can actually connect, and the admin UI is an image you can deploy
 
