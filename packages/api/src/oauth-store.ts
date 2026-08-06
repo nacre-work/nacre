@@ -9,10 +9,10 @@
  * against it goes through `withOrg`.
  */
 
-import { hashCode, whileAuthenticating, withOrg } from '@nacre.work/core'
+import { hashCode, whileAuthenticating, withOrg, type OrgRole } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
-import type { AuthContext } from './auth.js'
+import type { AuthContext, Delegations } from './auth.js'
 
 export interface RegisteredClient {
   readonly clientId: string
@@ -451,6 +451,76 @@ export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
           consentId: row.consent_id,
           serviceAccountId: row.service_account_id,
           family: row.family_id,
+        }
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+}
+
+/**
+ * The one read docs/authz.md puts before `resolve` on a delegated request.
+ *
+ * Its whole job is to be *current*. Everything a JWT can say was true when it
+ * was signed; whether this authority may still be exercised changes when an
+ * administrator acts, and that question has no answer in a token.
+ *
+ * One statement, joined by primary key, inside `withOrg` — the organization
+ * comes from the token, so unlike a refresh token there is no cross-tenant
+ * lookup here and no `app.authenticating` shape to it.
+ */
+export class PostgresDelegations implements Delegations {
+  constructor(
+    private readonly pool: Pool,
+    private readonly role?: string,
+  ) {}
+
+  async resolve(
+    orgId: string,
+    id: string,
+  ): Promise<{ userId: string; role: OrgRole; layers?: readonly string[] } | undefined> {
+    return withOrg(
+      this.pool,
+      orgId,
+      async (client) => {
+        // Every refusal is expressed as "no row" rather than as a flag the
+        // caller then interprets. A revoked connection, a disabled user and a
+        // platform_admin are three different facts and one answer, and putting
+        // that in the predicate means there is no branch above it where two of
+        // them could drift apart.
+        //
+        // `acts_as = 'user'` is part of it: a service-account connection has a
+        // row here too, and resolving one as its approver would hand an
+        // application the person's own reach instead of the agent's.
+        const { rows } = await client.query<{ user_id: string; role: OrgRole; layers: string[] | null }>(
+          `SELECT c.approved_by AS user_id,
+                  u.role,
+                  NULLIF(ARRAY_REMOVE(ARRAY_AGG(l.layer_id), NULL), '{}') AS layers
+             FROM oauth_consents c
+             JOIN users u
+               ON u.id = c.approved_by AND u.org_id = c.org_id
+             LEFT JOIN oauth_consent_layers l
+               ON l.consent_id = c.id AND l.org_id = c.org_id
+            WHERE c.org_id = $1
+              AND c.id = $2
+              AND c.acts_as = 'user'
+              AND c.revoked_at IS NULL
+              AND u.disabled_at IS NULL
+              AND u.role <> 'platform_admin'
+            GROUP BY c.approved_by, u.role`,
+          [orgId, id],
+        )
+
+        const row = rows[0]
+        if (row === undefined) return undefined
+        // No rows in the join table means **no narrowing**, never "narrowed to
+        // nothing". `ARRAY_REMOVE`/`NULLIF` above collapse the LEFT JOIN's one
+        // null row to null rather than to `[null]`, so an unnarrowed delegation
+        // does not arrive here as a narrowing nobody can satisfy.
+        return {
+          userId: row.user_id,
+          role: row.role,
+          ...(row.layers === null ? {} : { layers: row.layers }),
         }
       },
       this.role === undefined ? {} : { role: this.role },

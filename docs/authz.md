@@ -387,14 +387,14 @@ Every request presenting a delegated token performs **one read, before
 `resolve`**:
 
 ```sql
-SELECT d.revoked_at, u.disabled, u.role
+SELECT d.revoked_at, u.disabled_at, u.role
   FROM delegations d
   JOIN users u ON u.id = d.user_id AND u.org_id = d.org_id
  WHERE d.org_id = $1 AND d.id = $2
 ```
 
 It refuses when there is no row, when `revoked_at` is set, when the user is
-disabled, or when the user's role is `platform_admin`.
+disabled (`users.disabled_at` — the column is a timestamp, not a flag), or when the user's role is `platform_admin`.
 
 **The refusal is `401`, not `404`.** Invariant I4 governs the visibility of
 *objects*; this is authentication, and a token that no longer authenticates
