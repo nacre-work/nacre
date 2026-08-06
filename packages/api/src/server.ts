@@ -37,7 +37,14 @@ import {
   type ProtectedResourceMetadata,
 } from '@nacre.work/core'
 
-import { authenticate, rejectTenantOverride, type AuthContext, type VerifyOptions } from './auth.js'
+import {
+  administers,
+  administersTenants,
+  authenticate,
+  rejectTenantOverride,
+  type AuthContext,
+  type VerifyOptions,
+} from './auth.js'
 import { badRequest, internal, notFound, Problem } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
@@ -3084,7 +3091,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // about what a caller can tell apart — it is that a member must not
       // reach module code at all, and "the module happened to have no matching
       // route" is not a reason to be safe.
-      if (auth.role !== 'platform_admin' && auth.role !== 'org_admin') {
+      if (!administersTenants(auth) && !administers(auth)) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -3315,7 +3322,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // build; it is for the multi-tenancy module, which inherits this endpoint
       // and where a platform administrator spans tenants. Writing the rule now
       // costs three lines. Retrofitting it later means auditing every caller.
-      if (auth.role !== 'org_admin' && auth.role !== 'platform_admin') {
+      if (!administers(auth) && !administersTenants(auth)) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -3354,7 +3361,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         // `administrativeOnly` is set here and never read from the request. A
         // caller cannot widen their own view by omitting a parameter, which is
         // the shape this would take if it were a query filter.
-        { ...query, administrativeOnly: auth.role === 'platform_admin' },
+        { ...query, administrativeOnly: administersTenants(auth) },
         page,
       )
 
@@ -3545,7 +3552,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // one from an org-scoped endpoint. Refused here *and* again at
       // validation: this is the reachable path, the other is the one that holds
       // if a token is ever minted some other way.
-      if (delegating && auth.role === 'platform_admin') {
+      if (delegating && administersTenants(auth)) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -3689,7 +3696,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // in the organization rather than an object inside a workspace, and there
       // is no scope to check it against — someone holding admin on one layer
       // must not be able to mint credentials.
-      if (auth.role !== 'org_admin') {
+      if (!administers(auth)) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -3763,7 +3770,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
     const accountMatch = /^\/v1\/service-accounts\/([^/]+)$/.exec(instance)
     if (req.method === 'DELETE' && accountMatch && options.serviceAccounts !== undefined) {
-      if (auth.role !== 'org_admin') {
+      if (!administers(auth)) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -3804,7 +3811,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     const principalPath = /^\/v1\/(users|groups)(\/.*)?$/.exec(instance)
     if (principalPath !== null) {
       const port = principalPath[1] === 'users' ? options.users : options.groups
-      if (port !== undefined && auth.role !== 'org_admin') {
+      if (port !== undefined && !administers(auth)) {
         await options.audit.write({
           orgId: auth.orgId,
           actor: `${auth.principal.type}:${auth.principal.id}`,

@@ -9,9 +9,10 @@
  * against it goes through `withOrg`.
  */
 
-import { hashCode, whileAuthenticating, withOrg, type OrgRole } from '@nacre.work/core'
+import { hashCode, whileAuthenticating, withOrg, type OrgRole, type Permission } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
+import { administers, administersTenants } from './auth.js'
 import type { AuthContext, Delegations } from './auth.js'
 
 export interface RegisteredClient {
@@ -48,6 +49,11 @@ export interface Consent {
    * opposite, and the table deliberately cannot express the second.
    */
   readonly layers: readonly string[]
+  /**
+   * The permissions a delegation may exercise. Empty means no ceiling — it
+   * reaches every verb its person holds.
+   */
+  readonly permissions: readonly Permission[]
   readonly createdAt: string
   readonly lastRefreshedAt: string | null
   readonly revokedAt: string | null
@@ -109,6 +115,14 @@ export interface OAuthConsents {
      * the narrowing question again rather than adding to a previous answer.
      */
     layers?: readonly string[],
+    /**
+     * The permissions a delegation may exercise. Absent is no ceiling.
+     *
+     * Replaced wholesale for the same reason as `layers`, and empty is
+     * deliberately not storable: a delegation that can do nothing is not a
+     * restriction anybody meant to write, and the database refuses one.
+     */
+    permissions?: readonly Permission[],
   ): Promise<string>
   /**
    * Every connection this caller may see.
@@ -322,6 +336,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
     clientId: string,
     subject: ConsentSubject,
     layers?: readonly string[],
+    permissions?: readonly Permission[],
   ): Promise<string> {
     return withOrg(
       this.pool,
@@ -348,12 +363,17 @@ export class PostgresOAuthConsents implements OAuthConsents {
                 [auth.orgId, clientId, subject.serviceAccountId, auth.principal.id],
               )
             : await client.query<{ id: string }>(
-                `INSERT INTO oauth_consents (org_id, client_id, service_account_id, approved_by, acts_as)
-                 VALUES ($1,$2,NULL,$3,'user')
+                `INSERT INTO oauth_consents
+                   (org_id, client_id, service_account_id, approved_by, acts_as, permissions)
+                 VALUES ($1,$2,NULL,$3,'user',$4)
                  ON CONFLICT (org_id, client_id, approved_by) WHERE acts_as = 'user'
-                 DO UPDATE SET revoked_at = NULL
+                 DO UPDATE SET revoked_at = NULL, permissions = EXCLUDED.permissions
                  RETURNING id`,
-                [auth.orgId, clientId, subject.userId],
+                // Replaced on re-approval, never merged. Merging would make a
+                // ceiling that can only ever rise, which is the one direction
+                // a restriction must not move in.
+                [auth.orgId, clientId, subject.userId,
+                 permissions === undefined || permissions.length === 0 ? null : [...permissions]],
               )
         const id = (rows[0] as { id: string }).id
 
@@ -389,7 +409,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
         // An org_admin sees the organization's, everybody else their own. Not
         // an invented gradient: an agent belongs to the organization, so
         // somebody has to be able to end a connection whose approver has left.
-        const mine = auth.role === 'org_admin' || auth.role === 'platform_admin' ? '' : ' AND c.approved_by = $2'
+        const mine = administers(auth) || administersTenants(auth) ? '' : ' AND c.approved_by = $2'
         const { rows } = await client.query<{
           id: string
           client_id: string
@@ -399,6 +419,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
           service_account_name: string | null
           approved_by: string
           layers: string[] | null
+          permissions: Permission[] | null
           created_at: string
           last_refreshed_at: string | null
           revoked_at: string | null
@@ -407,7 +428,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
           // inner join, which would have made every delegation invisible on the
           // one screen that can end it.
           `SELECT c.id, c.client_id, oc.client_name, c.acts_as, c.service_account_id,
-                  sa.name AS service_account_name, c.approved_by,
+                  sa.name AS service_account_name, c.approved_by, c.permissions,
                   NULLIF(ARRAY_REMOVE(ARRAY_AGG(cl.layer_id), NULL), '{}') AS layers,
                   c.created_at::text, c.last_refreshed_at::text, c.revoked_at::text
              FROM oauth_consents c
@@ -430,6 +451,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
           serviceAccountName: r.service_account_name,
           approvedBy: r.approved_by,
           layers: r.layers ?? [],
+          permissions: r.permissions ?? [],
           createdAt: r.created_at,
           lastRefreshedAt: r.last_refreshed_at,
           revokedAt: r.revoked_at,
@@ -445,7 +467,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
       this.pool,
       auth.orgId,
       async (client) => {
-        const mine = auth.role === 'org_admin' || auth.role === 'platform_admin' ? '' : ' AND approved_by = $3'
+        const mine = administers(auth) || administersTenants(auth) ? '' : ' AND approved_by = $3'
         const params = mine === '' ? [auth.orgId, id] : [auth.orgId, id, auth.principal.id]
         const { rows } = await client.query<{ id: string }>(
           `UPDATE oauth_consents SET revoked_at = now()
@@ -636,9 +658,15 @@ export class PostgresDelegations implements Delegations {
         // `acts_as = 'user'` is part of it: a service-account connection has a
         // row here too, and resolving one as its approver would hand an
         // application the person's own reach instead of the agent's.
-        const { rows } = await client.query<{ user_id: string; role: OrgRole; layers: string[] | null }>(
+        const { rows } = await client.query<{
+          user_id: string
+          role: OrgRole
+          layers: string[] | null
+          permissions: Permission[] | null
+        }>(
           `SELECT c.approved_by AS user_id,
                   u.role,
+                  c.permissions,
                   NULLIF(ARRAY_REMOVE(ARRAY_AGG(l.layer_id), NULL), '{}') AS layers
              FROM oauth_consents c
              JOIN users u
@@ -651,7 +679,7 @@ export class PostgresDelegations implements Delegations {
               AND c.revoked_at IS NULL
               AND u.disabled_at IS NULL
               AND u.role <> 'platform_admin'
-            GROUP BY c.approved_by, u.role`,
+            GROUP BY c.approved_by, u.role, c.permissions`,
           [orgId, id],
         )
 
@@ -665,6 +693,10 @@ export class PostgresDelegations implements Delegations {
           userId: row.user_id,
           role: row.role,
           ...(row.layers === null ? {} : { layers: row.layers }),
+          // NULL is no ceiling, which is a different state from an empty set —
+          // the CHECK on the column refuses the second, so this cannot arrive
+          // as a delegation that may do nothing.
+          ...(row.permissions === null ? {} : { permissions: row.permissions }),
         }
       },
       this.role === undefined ? {} : { role: this.role },
