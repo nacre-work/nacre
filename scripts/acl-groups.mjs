@@ -48,6 +48,11 @@ export const ACL_GROUPS = [
     selector: 'embedding_providers',
     title: 'RLS · the installation default embedding provider is read-only to a tenant',
   },
+  // T16-T22. Its own step because a delegation is the only authority here that
+  // a *person's* state can suspend: everything else either passes through
+  // sign-in or carries its own `revoked_at`, so this is the one group whose
+  // failure means somebody who cannot sign in is still acting.
+  { selector: 'delegation', title: 'T16-T22 · delegated authority' },
 ]
 
 /** The property run is its own step with its own run count; not a group. */
