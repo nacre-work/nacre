@@ -101,7 +101,14 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
       body.append(
         h('tr', { class: ended ? 'muted' : '' },
           h('td', {}, c.clientName),
-          h('td', {}, c.serviceAccountName),
+          // A delegation names no agent, so the cell says what it *is* rather
+          // than rendering an empty one. "You" is right for the person reading
+          // their own connections and wrong on an administrator's list, which
+          // is why the approver is named there.
+          h('td', {},
+            c.actsAs === 'user'
+              ? h('span', { class: 'muted' }, 'the person who approved it')
+              : (c.serviceAccountName ?? 'an agent that no longer exists')),
           h('td', {}, ago(c.createdAt)),
           // Renewal is the only thing the server sees: an access token is
           // verified locally and its use touches nothing.
