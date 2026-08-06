@@ -1,5 +1,5 @@
 /**
- * The T1-T22 inventory from docs/authz.md section "Test plan".
+ * The T1-T25 inventory from docs/authz.md section "Test plan".
  *
  * This exists so the gap between "the suite the specification requires" and
  * "the suite that runs today" is a checked fact rather than a memory. A test
@@ -85,6 +85,21 @@ export const TEST_PLAN: readonly TestCase[] = [
   // clause.
   { id: 'T22', group: 'delegation', status: 'implemented',
     scenario: '20 layers, the user reads 1, the delegation narrowed to that 1, top_k=10 returns exactly 10' },
+
+  // The permission ceiling. A set rather than a level, because rule 6 makes
+  // permissions unordered — and T24 is the case that would be lost by
+  // modelling it as one.
+  { id: 'T23', group: 'delegation', status: 'pending',
+    blockedBy: 'the permission ceiling is not built',
+    scenario: 'A ceiling of {read} whose person holds write: reads, and every write path answers as it would for a principal with no write' },
+  { id: 'T24', group: 'delegation', status: 'pending',
+    blockedBy: 'the permission ceiling is not built',
+    scenario: 'A ceiling of {write} whose person holds both: ingests, and search returns empty — rule 6 inherited rather than collapsed' },
+  // The one a half-built ceiling passes: bound documents and not
+  // administration, and a read-only delegation can still mint a key.
+  { id: 'T25', group: 'delegation', status: 'pending',
+    blockedBy: 'the permission ceiling is not built',
+    scenario: 'An org_admin with a {read} ceiling reads the whole organization and every org_admin-gated endpoint refuses' },
 ]
 
 export const pending = (): readonly TestCase[] =>

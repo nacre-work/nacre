@@ -205,6 +205,13 @@ both of the ways this document already guards against, plus one that is its own.
 | T20 | A delegation narrowed to layer L, whose user also reads layer M | nothing from M, and never more from L than the user would get |
 | T21 | A `platform_admin` attempts to delegate | refused at consent, and a token minted around it refused at validation |
 | T22 | 20 layers, the user reads 1, the delegation narrowed to that 1, `top_k=10` | exactly 10 results — the narrowing is inside the traversal, not a trim after it |
+| T23 | A delegation with ceiling `{read}`, whose person holds `write` on the layer | reads; every write path answers as it would for a principal with no write at all |
+| T24 | A delegation with ceiling `{write}`, whose person holds both | ingests; search returns empty — rule 6 inherited, not collapsed |
+| T25 | An `org_admin` delegates with ceiling `{read}` | reads the whole organization, and every `org_admin`-gated endpoint refuses |
+
+T25 is the one that is easy to get half right. A ceiling that bounds documents
+and not administration produces a read-only delegation that can mint a service
+account key, and the key is then a credential with no ceiling at all.
 
 T22 is the one that matters most and the one a naive implementation passes
 everywhere else: a narrowing applied to the result set instead of to the query
@@ -357,8 +364,61 @@ Four consequences, each of which falls out rather than being enforced:
    It is applied **inside the index traversal**, so invariant I2 holds; a
    narrowing applied to results after they come back is a post-filter and is
    forbidden exactly as any other would be.
-4. **The narrowing narrows scopes, never verbs.** There is no way to spend a
-   delegation to turn `read` into `write`.
+4. **The narrowing narrows, and never widens.** There is no way to spend a
+   delegation to turn `read` into `write`. Both dimensions are restrictions on
+   what the person already holds, applied on top of their resolution; neither
+   adds anything.
+
+### The permission ceiling
+
+A person may also restrict a delegation to chosen **permissions**, and this is
+the dimension somebody actually asks for first: connecting a search client
+should not hand it the ability to delete a document.
+
+The ceiling is a **set**, not a level, because rule 6 makes permissions
+unordered. `{read}` is a client that searches. `{write}` alone is an ingest
+pipeline that cannot read back what it wrote — which is the shape rule 6 exists
+to make expressible, and it would be lost by modelling this as a ladder.
+Absent means no ceiling: everything its person holds.
+
+```
+authority(delegation) = { p ∈ ceiling : resolve(user, p) }
+```
+
+Two things it has to close, and only the first is obvious.
+
+**Documents.** `resolve(user, p)` is `none` when `p` is outside the ceiling.
+That is a field on the resolver's input rather than a check in front of each
+call, on the same argument the recall gate makes for being a predicate inside
+the switch statement: a check in front of N call sites is a check missing from
+the N+1th.
+
+**Administration.** `org_admin` reaches every scope with no grants at all — rule
+3 — and its other powers, minting a user, creating a service account, reading
+the access log, are gated on the *role* rather than on a scope. A ceiling of
+`{read}` that left those open would be a read-only delegation that can mint a
+credential, which is worse than not having a ceiling.
+
+So the ceiling bounds the role as well, and it is **not** done by rewriting the
+role to `member`. An `org_admin` with a `{read}` delegation must still read the
+whole organization, and `member` reaches only what grants give — rewriting the
+role would silently take away what the person came to delegate. Role and
+ceiling are two facts and stay two:
+
+```
+administers(auth) = auth.role = 'org_admin' ∧ 'admin' ∈ ceiling
+```
+
+Every handler that gated on `auth.role === 'org_admin'` asks that instead. The
+comparison is what a lint check now refuses outside that one function — a rule
+that has to hold in fifteen handlers, with nothing that knows fifteen, is the
+defect this repository keeps re-deriving.
+
+**`admin` is offered and is not the default.** It is a real answer — an
+administrator may want an application that manages layers — but a person
+connecting an MCP client means `read`, and a consent screen whose default is
+everything is a consent screen nobody reads. `read` alone is what a fresh
+connection proposes.
 
 **`platform_admin` is never delegable.** It spans tenants in the multi-tenancy
 module, so a delegation of it would be an escalation out of the organization the
