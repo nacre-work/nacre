@@ -405,8 +405,27 @@ effective-principals cache keys on `groups_version`, which does not move on
 *spending* the refresh token, so re-enabling is a restoration rather than a
 reconnection.
 
-The narrowing a person chooses at consent is a `must` on `layer_id` inside the
-index traversal, so `top_k` still returns k permitted results — and it is
+A person restricts a delegation in two dimensions, and the second is the one
+they ask for first: a **permission ceiling**, so connecting a search client does
+not hand it the ability to delete a document. A set rather than a level, because
+rule 6 makes permissions unordered — `{write}` alone is an ingest client that
+cannot read back what it wrote, and a ladder would have lost that case silently.
+
+It is applied **before rule 3** in the resolver, which is the whole of T25
+rather than a matter of style: an `org_admin` reaches everything by role and by
+no grant at all, so a ceiling consulted after that line does not bound the one
+principal it exists for. Checked by moving it after and watching a read-only
+delegation of an administrator answer `all` on write.
+
+And it bounds administration separately, because minting a user or a service
+account is gated on the *role* rather than on a scope. Not by rewriting the role
+to `member` — that would stop an `org_admin` reading the organization they came
+to delegate. Role and ceiling stay two facts, `administers(auth)` asks both, and
+`check-admin-gate.mjs` refuses the raw comparison it replaced so the tenth
+handler cannot be written the old way. Writing it found two sites and one
+resolve input that I had not counted.
+
+The layer narrowing is a `must` on `layer_id` inside the index traversal, so `top_k` still returns k permitted results — and it is
 enforced again on every path where a layer id and a document meet, because
 fetching by id is exactly how a narrowing gets walked around otherwise.
 

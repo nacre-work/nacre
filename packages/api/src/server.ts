@@ -35,6 +35,7 @@ import {
   type Metadata,
   type MultipartPart,
   type ProtectedResourceMetadata,
+  type Permission,
 } from '@nacre.work/core'
 
 import {
@@ -3568,6 +3569,42 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
+      // The permission ceiling, which is the dimension a person reaches for
+      // first. Validated here rather than left to the database, so a typo is a
+      // 400 naming the field instead of a constraint violation as a 500.
+      const ceiling = consent['permissions']
+      if (ceiling !== undefined && (!isStringArray(ceiling) || ceiling.some((p) => !(PERMISSIONS as readonly string[]).includes(p)))) {
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'permissions' must be an array of 'read', 'write' or 'admin'.",
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      if (delegating && isStringArray(ceiling) && ceiling.length === 0) {
+        // Empty is not "no ceiling", it is a delegation that can do nothing —
+        // a restriction nobody meant to write, and the database refuses one
+        // too. Omitting the field is how a caller says there is no ceiling.
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'permissions' cannot be empty. Omit it for a delegation with no restriction.",
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      if (!delegating && ceiling !== undefined) {
+        // An agent's reach is its grants, which are an administrator's to set.
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'permissions' restricts a delegation, and this consent names an agent.",
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
       if (!delegating && narrowing !== undefined && narrowing.length > 0) {
         // An agent's reach is its grants, and those are an administrator's to
         // set. Accepting a narrowing here and storing it against a connection
@@ -3637,6 +3674,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         clientId,
         subject,
         narrowing === undefined ? [] : narrowing,
+        isStringArray(ceiling) ? (ceiling as readonly Permission[]) : undefined,
       )
       const code = generateCode()
       const common = {
@@ -3673,7 +3711,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           client_name: client.clientName,
           acts_as: subject.actsAs,
           ...(delegating
-            ? { delegation_id: consentId, layers: narrowing ?? [] }
+            ? {
+                delegation_id: consentId,
+                layers: narrowing ?? [],
+                // Recorded because it is the answer to "why can this
+                // application not delete anything", asked six months later.
+                permissions: isStringArray(ceiling) ? ceiling : 'no ceiling',
+              }
             : { service_account_id: serviceAccountId as string }),
         },
         requestId,

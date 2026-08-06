@@ -89,16 +89,13 @@ export const TEST_PLAN: readonly TestCase[] = [
   // The permission ceiling. A set rather than a level, because rule 6 makes
   // permissions unordered — and T24 is the case that would be lost by
   // modelling it as one.
-  { id: 'T23', group: 'delegation', status: 'pending',
-    blockedBy: 'the permission ceiling is not built',
+  { id: 'T23', group: 'delegation', status: 'implemented',
     scenario: 'A ceiling of {read} whose person holds write: reads, and every write path answers as it would for a principal with no write' },
-  { id: 'T24', group: 'delegation', status: 'pending',
-    blockedBy: 'the permission ceiling is not built',
+  { id: 'T24', group: 'delegation', status: 'implemented',
     scenario: 'A ceiling of {write} whose person holds both: ingests, and search returns empty — rule 6 inherited rather than collapsed' },
   // The one a half-built ceiling passes: bound documents and not
   // administration, and a read-only delegation can still mint a key.
-  { id: 'T25', group: 'delegation', status: 'pending',
-    blockedBy: 'the permission ceiling is not built',
+  { id: 'T25', group: 'delegation', status: 'implemented',
     scenario: 'An org_admin with a {read} ceiling reads the whole organization and every org_admin-gated endpoint refuses' },
 ]
 

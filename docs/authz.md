@@ -525,13 +525,15 @@ case is marked implemented without a test carrying its marker — so the list
 cannot drift in either direction. `pnpm authz:pending` prints what is
 outstanding, and the CI job prints it on green runs too.
 
-**T16–T22 run**, against a real PostgreSQL, and each was checked by removing
-the thing it guards and watching it go red. They were written before the
+**T16–T25 run**, against a real PostgreSQL, and each was checked by removing
+the thing it guards and watching it go red — including the ceiling's two halves
+separately: taking it out of the resolver fails T23 and T24, taking it out of
+`administers` fails T25, and nothing else moves. They were written before the
 implementation on purpose: a test written after the code it covers gets written
 to match what was built rather than what was specified.
 
-Delegated authority is built. A connection may act as the person who approved
-it; the token carries their id and the connection's, never a permitted set; the
+Delegated authority is built, in both dimensions. A connection may act as the
+person who approved it, restricted to chosen layers and to chosen permissions; the token carries their id and the connection's, never a permitted set; the
 authentication path asks the database on every request whether that authority
 may still be exercised; and the narrowing is enforced wherever a layer id and a
 document meet — as a `must` inside the index traversal on search, and as a

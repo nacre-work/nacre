@@ -830,6 +830,15 @@ export class NacreClient {
     serviceAccountId?: string
     /** Layer ids a delegation is restricted to. Empty means no restriction. */
     layers?: readonly string[]
+    /**
+     * Permissions a delegation may exercise. Omit for no ceiling.
+     *
+     * A set rather than a level: `['write']` alone is an ingest client that
+     * cannot read back what it wrote, which is rule 6 and is deliberately
+     * expressible. Empty is refused — that would be a delegation that can do
+     * nothing, which is not what omitting a restriction means.
+     */
+    permissions?: readonly ('read' | 'write' | 'admin')[]
     state?: string
     resource?: string
   }): Promise<string> => {
@@ -842,6 +851,7 @@ export class NacreClient {
         code_challenge: input.codeChallenge,
         ...(input.serviceAccountId === undefined ? {} : { service_account_id: input.serviceAccountId }),
         ...(input.layers === undefined || input.layers.length === 0 ? {} : { layers: [...input.layers] }),
+        ...(input.permissions === undefined ? {} : { permissions: [...input.permissions] }),
         ...(input.state === undefined ? {} : { state: input.state }),
         ...(input.resource === undefined ? {} : { resource: input.resource }),
       },
@@ -878,6 +888,9 @@ export class NacreClient {
             serviceAccountName: c.service_account_name == null ? null : String(c.service_account_name),
             approvedBy: String(c.approved_by),
             layers: Array.isArray(c.layers) ? c.layers.map(String) : [],
+            permissions: Array.isArray(c.permissions)
+              ? (c.permissions.map(String) as ('read' | 'write' | 'admin')[])
+              : [],
             createdAt: String(c.created_at),
             lastRefreshedAt: c.last_refreshed_at === null ? null : String(c.last_refreshed_at),
             revokedAt: c.revoked_at === null ? null : String(c.revoked_at),
