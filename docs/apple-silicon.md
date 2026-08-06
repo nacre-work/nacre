@@ -126,10 +126,40 @@ though, not at startup: nothing at boot knows what the model will return.
 
 ### 3. Start it
 
+Select the overlay **once**, in `.env`, rather than on every command:
+
+```ini
+COMPOSE_FILE=docker-compose.yml:docker-compose.apple-silicon.yml
+```
+
+`.env.example` ships that line commented out. Then:
+
+```bash
+docker compose --profile minimal up -d
+```
+
+`COMPOSE_FILE` is Compose's own variable and it is read from `.env` in the
+project directory, so every `docker compose` command from here — `up`, `logs`,
+`exec`, `down`, and every one on the [quickstart](./quickstart.md) — picks up
+the overlay with no flags. Passing the two `-f` flags by hand works and is
+equivalent:
+
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.apple-silicon.yml \
   --profile minimal up -d
 ```
+
+**Prefer the `.env` line, because the flags have to be right every time and
+nothing reminds you.** A later plain `docker compose up -d` computes the project
+*without* the overlay and recreates `api` and `worker` with no
+`extra_hosts` — so the embedder becomes unreachable and the worker logs
+`EAI_AGAIN`, which is the exact failure the overlay exists to prevent, arriving
+long after the command that caused it. This page walked into that itself: two of
+its own examples below used to drop the flags.
+
+One side effect, stated rather than left to be found: `.env` is also loaded
+*into* the containers, so `COMPOSE_FILE` appears in their environment. Nothing
+reads it — `loadConfig` only looks at `NACRE_` names — and it is inert.
 
 The overlay is two things and no more: `host.docker.internal` made to resolve
 from the `api` and `worker` containers, and the platform stated explicitly on
@@ -139,12 +169,13 @@ first instruction. Docker Desktop already provides that name and points
 there; it is for Colima, Rancher Desktop, OrbStack and podman, which do not all
 agree, and where the failure without it is an `EAI_AGAIN` in the worker log that
 names no cause. If your runtime does provide the name and you would rather not
-override it, drop the `-f docker-compose.apple-silicon.yml` — nothing else in
-the overlay applies to `minimal`.
+override it, leave `COMPOSE_FILE` unset — nothing else in the overlay applies to
+`minimal`.
 
 From here the [quickstart](./quickstart.md) applies unchanged: `init`, a layer,
 a grant, a document, a search. Nothing else on that page is architecture
-specific.
+specific — and with `COMPOSE_FILE` set, "unchanged" is literally true rather
+than true apart from the flags every command needs.
 
 ## Changing the endpoint after `init`
 
@@ -173,22 +204,36 @@ one rather than left to be discovered.
 `full` adds MinIO, an embedder and a reranker. MinIO is arm64. The other two are
 the TEI image, and there is no arm64 of it.
 
-Running them emulated is a question about your Docker runtime that this
-repository cannot answer for you. Rosetta 2 does not implement AVX, and an x86
-build compiled with vector instructions may fault rather than run slowly; QEMU
-will execute it and will be slower still. The overlay states
-`platform: linux/amd64` on both so the outcome is deterministic and the reason
-is visible, but stating a platform is not a claim that it works — it has not
-been tried here, and this page will not pretend it has.
+Without the overlay, a plain `docker compose --profile full up -d` fails at the
+pull with `no matching manifest for linux/arm64/v8`, because there is no arm64
+to resolve. The overlay states `platform: linux/amd64` on both, so the amd64
+image is pulled and run under emulation instead.
+
+**That has now been run, and it works** — reported from a Docker Desktop install
+with Rosetta, where both TEI services come up and stay up alongside the rest of
+the stack. This page previously said it had not been tried and would not pretend
+otherwise; it has, so the sentence is replaced rather than left standing.
+
+It is still not the arrangement to choose. In that same run the reranker sat
+near a full core with nothing being searched, and Rosetta 2 does not implement
+AVX — an x86 build compiled with vector instructions can fault rather than run
+slowly, and a Docker runtime using QEMU instead will execute it and be slower
+still. So "it works" is a report about one runtime and not a property of the
+architecture, and the embedder is on the request path for every ingest and every
+search.
 
 Use `minimal` with a host-native embedder. If you want object storage without
 the rest of `full`, MinIO is arm64 and can be started on its own:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.apple-silicon.yml \
-  --profile minimal up -d
+docker compose --profile minimal up -d
 docker compose --profile full up -d minio minio-init
 ```
+
+Both with `COMPOSE_FILE` set. The second line names the two services rather than
+the profile's whole set, so the TEI images are never pulled — `--profile full`
+selects `minio`, `minio-init`, `embedder` and `reranker`, and only the first two
+are arm64.
 
 and then set `NACRE_S3_*` as [config.md](./config.md) describes.
 

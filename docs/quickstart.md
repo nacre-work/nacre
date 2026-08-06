@@ -21,12 +21,26 @@
 - Docker with Compose v2
 - 8 GB of RAM for the `minimal` profile
 - An embedding endpoint. Any OpenAI-compatible one will do; the `full` profile
-  brings its own.
+  brings its own **on x86-64 only** — see the note directly below.
 
-On an **Apple Silicon Mac**, go through [apple-silicon.md](./apple-silicon.md)
-instead of this section and come back at "After startup". Everything here works
-there — the images carry arm64 — but the embedder is not something the `full`
-profile can bring on that architecture, and that page has the arrangement.
+> **On an Apple Silicon Mac, `--profile full` needs the overlay.** It pulls
+> `text-embeddings-inference`, which is published for linux/amd64 and nothing
+> else, so a plain `docker compose --profile full up -d` stops at
+> `no matching manifest for linux/arm64/v8` before any Nacre service runs.
+> Everything else in this stack is arm64 and native.
+>
+> `docker-compose.apple-silicon.yml` names `platform: linux/amd64` on those two
+> services, so the amd64 image is pulled and run under emulation instead. That
+> does work on Docker Desktop with Rosetta, and it is slow — the reranker sits
+> near a full core at idle. [apple-silicon.md](./apple-silicon.md) has the setup
+> and the faster arrangement: `minimal` with an embedder on the host. One extra
+> line in `.env` and the commands on this page work here unchanged. Come back at
+> "After startup".
+
+The caveat is stated on the bullet as well as in the note on purpose: "the
+`full` profile brings its own" was true of x86-64 and read as unconditional, and
+an architecture-blind sentence three lines above an architecture-specific one is
+how a reader ends up running the profile that cannot start.
 
 ## First run
 
@@ -45,9 +59,10 @@ so this is a value only you can supply:
 NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://host.docker.internal:8000
 ```
 
-On `--profile full`, use the embedder that profile brings:
-`http://embedder:80`. Either way, `NACRE_DEFAULT_EMBEDDING_DIM` has to match the
-model or the index is built with the wrong width and every search misses.
+On `--profile full` — x86-64 only, per the note above — use the embedder that
+profile brings: `http://embedder:80`. Either way,
+`NACRE_DEFAULT_EMBEDDING_DIM` has to match the model or the index is built with
+the wrong width and every search misses.
 
 Then:
 
