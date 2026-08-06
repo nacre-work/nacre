@@ -414,11 +414,21 @@ comparison is what a lint check now refuses outside that one function — a rule
 that has to hold in fifteen handlers, with nothing that knows fifteen, is the
 defect this repository keeps re-deriving.
 
-**`admin` is offered and is not the default.** It is a real answer — an
-administrator may want an application that manages layers — but a person
-connecting an MCP client means `read`, and a consent screen whose default is
-everything is a consent screen nobody reads. `read` alone is what a fresh
-connection proposes.
+**`read` alone is what a fresh connection proposes.** A consent screen whose
+default is everything is a consent screen nobody reads, and a person connecting
+an MCP client means "let it search".
+
+**`admin` is a real ceiling value and is not on that screen**, which is a
+statement about the screen rather than about the mechanism. The MCP surface has
+no administrative tool — its tools resolve with `read` or `write` — so the
+choice would do nothing where the person is looking and a great deal through the
+REST API, where they are not. That is worse than a control that does nothing.
+
+It stays in the ceiling because it is not an escalation. A ceiling cannot exceed
+what its person already holds, so only an `org_admin` can obtain an
+administrative delegation, and that is a *weaker* act than the service account
+they could mint instead: a delegation stops the moment they are disabled, and a
+key pasted into a config file does not.
 
 **`platform_admin` is never delegable.** It spans tenants in the multi-tenancy
 module, so a delegation of it would be an escalation out of the organization the

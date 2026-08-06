@@ -478,6 +478,19 @@ components:
             read-only delegation of an administrator cannot mint a credential.
             Refused beside `service_account_id`, on the same argument as
             `layers`.
+
+            **`admin` is accepted here and is not offered on the consent
+            screen**, which is a deliberate difference rather than a drift. The
+            person that screen is built for arrived from an MCP client, and the
+            MCP surface has no administrative tool — its tools resolve with
+            `read` or `write` — so the choice would do nothing where they are
+            looking and a great deal through this API, where they are not.
+
+            It stays available here because it is not an escalation: a ceiling
+            cannot exceed what its person already holds, so only an `org_admin`
+            can obtain an administrative delegation, and doing so is a weaker
+            act than the service account they could mint instead — it stops the
+            moment they are disabled.
         state:
           type: string
           description: The client's, opaque here, echoed back untouched.

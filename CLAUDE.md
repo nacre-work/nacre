@@ -417,6 +417,16 @@ no grant at all, so a ceiling consulted after that line does not bound the one
 principal it exists for. Checked by moving it after and watching a read-only
 delegation of an administrator answer `all` on write.
 
+`admin` is a ceiling value and is deliberately **not** on the consent screen.
+The MCP surface has no administrative tool at all — its five tools resolve with
+`read` or `write` — so the box would do nothing where the person is looking and
+a great deal through REST, where they are not, which is worse than a control
+that does nothing. It stays reachable through the API because it is not an
+escalation: a ceiling cannot exceed what its person holds, so only an
+`org_admin` can obtain one, and that is weaker than the service account they
+could mint instead — a delegation stops when they are disabled and a key does
+not. The contract says so, so the screen and the API do not quietly disagree.
+
 And it bounds administration separately, because minting a user or a service
 account is gated on the *role* rather than on a scope. Not by rewriting the role
 to `member` — that would stop an `org_admin` reading the organization they came

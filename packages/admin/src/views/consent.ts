@@ -124,6 +124,9 @@ export async function consentView(root: HTMLElement): Promise<void> {
    * Independent boxes rather than a level, because `write` does not imply
    * `read` anywhere in this model: write alone is an ingest client that cannot
    * read back what it wrote, and it is a real thing to want.
+   *
+   * Two boxes and not three. See where they are built for why `admin` is not
+   * on this screen.
    */
   const verb = (value: string, label: string, note: string, checked: boolean): HTMLInputElement => {
     const box = h('input', { type: 'checkbox', value, ...(checked ? { checked: 'checked' } : {}) }) as HTMLInputElement
@@ -179,9 +182,19 @@ export async function consentView(root: HTMLElement): Promise<void> {
     verbs.length = 0
     verb('read', 'Search and read documents', 'what it can see is exactly what you can see', true)
     verb('write', 'Add and change documents', 'it can ingest and delete in the layers below', false)
-    if (mayMintAgents) {
-      verb('admin', 'Administer the organization', 'people, groups, agents and the access log', false)
-    }
+
+    // No `admin` box, and that is about *this screen* rather than about the
+    // mechanism. The person arriving here was sent by an MCP client, and the
+    // MCP surface has no administrative tool at all — its five tools resolve
+    // with read or write — so the box would do nothing where they are looking
+    // and something considerable through the REST API, where they are not.
+    //
+    // The ceiling still admits it and `POST /v1/oauth/consent` still takes it,
+    // for an `org_admin` who deliberately wants an administrative delegation:
+    // it is not an escalation, since a ceiling cannot exceed what its person
+    // already holds, and it dies when they are disabled, which a service
+    // account's key does not. docs/openapi.yaml says so, so the contract and
+    // this screen do not quietly disagree.
 
     // The layers this person reads, which is the only sensible set to narrow
     // to: the delegation cannot reach anything else anyway, so offering more
