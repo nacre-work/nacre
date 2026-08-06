@@ -23,13 +23,39 @@ const suiteText = readdirSync(here)
  * suite nobody is maintaining, which is the shape of a green light that means
  * nothing.
  */
+/**
+ * The cases the specification actually lists, read out of it.
+ *
+ * Only table rows — `| T7 | … |`. The prose names ids too ("T22 is the one that
+ * matters", "T9's argument"), and a mention is not a requirement.
+ */
+const specified = ((): readonly string[] => {
+  const doc = readFileSync(join(here, '..', '..', '..', '..', 'docs', 'authz.md'), 'utf8')
+  return [...doc.matchAll(/^\|\s*(T\d+)\s*\|/gm)].map((m) => m[1]!)
+})()
+
 describe('test plan coverage', () => {
-  it('covers T1 through T15 with no gaps and no duplicates', () => {
+  /**
+   * The inventory is exactly what docs/authz.md lists.
+   *
+   * This used to compare against a hard-coded 15, which made the count a third
+   * place the same fact lived — the document, this file, and that literal — with
+   * nothing holding them together. Adding T16-T22 to the specification left the
+   * assertion describing a suite that no longer existed, and the failure named a
+   * number rather than the case that was missing.
+   *
+   * Reading the document instead makes it the one source: a case added to the
+   * specification and not to the plan fails here, and so does a case dropped
+   * from the plan while the specification still requires it. The other direction
+   * — plan to tests — is the assertion below, so the chain is complete.
+   */
+  it('is exactly the set docs/authz.md specifies, with no gaps or duplicates', () => {
     const ids = TEST_PLAN.map((t) => t.id)
     expect(new Set(ids).size).toBe(ids.length)
-    expect([...ids].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))).toEqual(
-      Array.from({ length: 15 }, (_, i) => `T${i + 1}`),
-    )
+    expect(specified.length, 'no T-cases found in docs/authz.md — the regex or the tables moved').toBeGreaterThan(0)
+
+    const byNumber = (a: string, b: string): number => Number(a.slice(1)) - Number(b.slice(1))
+    expect([...ids].sort(byNumber)).toEqual([...specified].sort(byNumber))
   })
 
   it('every case marked implemented has a test carrying its marker', () => {
