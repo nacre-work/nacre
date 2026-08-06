@@ -468,7 +468,9 @@ edge.** That was an end-to-end change and the estimate was right about which
 pieces it touched: the parser port grew a third form
 (`{ content } | { url } | { bytes, contentType }`), the sidecar took its first
 dependency ever — pure-Python `pypdf`, pinned, chosen for dependency surface
-because it runs hostile input — migration 0020 added `documents.content_type`,
+because it runs hostile input; **it is `pdf-inspector` since 0.5.8**, and the
+reversal of "pure Python" is argued in `services/parser/requirements.txt` —
+migration 0020 added `documents.content_type`,
 and `content_hash` became `sha256` over the *uploaded bytes* for a binary
 source while staying over the text for the others. Getting that last one wrong
 would have been invisible: the API stores the hash when it accepts the file and

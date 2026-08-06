@@ -213,6 +213,72 @@ def encrypted_pdf() -> bytes:
     )
 
 
+def _assemble(objects: list[bytes]) -> bytes:
+    """The xref-and-trailer half of `minimal_pdf`, for fixtures with no text.
+
+    Separate rather than a parameter on `minimal_pdf`, because these two carry
+    no content stream at all and threading that through would make the readable
+    fixture harder to read for the sake of two callers.
+    """
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode() + b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n"
+    ).encode()
+    return bytes(out)
+
+
+def scanned_pdf() -> bytes:
+    """One page whose only content is an image: a scan, with no text layer.
+
+    No text operators anywhere, which is what makes it the real case rather than
+    an approximation of it — an extractor has nothing to find, and the only way
+    to tell this from a text document is to classify it.
+    """
+    import zlib
+
+    pixels = zlib.compress(bytes(8 * 8))
+    return _assemble(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+            b"/Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>",
+            b"<< /Length 31 >>\nstream\nq 200 0 0 200 0 0 cm /Im0 Do Q\nendstream",
+            b"<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray "
+            b"/BitsPerComponent 8 /Filter /FlateDecode /Length "
+            + str(len(pixels)).encode()
+            + b" >>\nstream\n"
+            + pixels
+            + b"\nendstream",
+        ]
+    )
+
+
+def cyclic_pages_pdf() -> bytes:
+    """A `/Pages` tree that points back at itself, two hops around.
+
+    One of the three shapes the previous extractor's pin was about — it was a
+    SIGSEGV there. Kept as a fixture because it is also the input that proved
+    "no pages" needs its own refusal: it classifies as `scanned`, and telling an
+    operator to OCR a file with no pages in it would be nonsense.
+    """
+    return _assemble(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Pages /Parent 2 0 R /Kids [2 0 R] /Count 1 >>",
+        ]
+    )
+
+
 class ParsePdfTests(unittest.TestCase):
     def test_a_real_pdf_yields_its_text_and_page_count(self) -> None:
         result = app.parse_pdf(minimal_pdf("New engineers get repository access"))
@@ -236,15 +302,59 @@ class ParsePdfTests(unittest.TestCase):
         self.assertNotIn("xff", str(caught.exception))
 
     def test_an_encrypted_pdf_is_refused_rather_than_guessed_at(self) -> None:
-        # `parse_pdf` branches on reader.is_encrypted, and nothing asserted
-        # that branch until the pin moved a major version. It is the kind of
-        # thing a library is entitled to change the spelling of, and if it
-        # ever stops being true the failure is silent: pypdf would hand back
-        # the undecrypted content streams and the document would index as
+        # Nothing asserted this branch until the pin moved a major version, and
+        # it is the kind of thing a library is entitled to change the spelling
+        # of. If it ever stops being true the failure is silent: the parser
+        # hands back the undecrypted content streams and the document indexes as
         # whatever those decode to.
         with self.assertRaises(app.ParseError) as caught:
             app.parse_pdf(encrypted_pdf())
         self.assertIn("encrypted", str(caught.exception))
+
+    def test_a_scan_is_refused_rather_than_indexed_as_nothing(self) -> None:
+        # The defect this extractor was changed for. A PDF whose only content is
+        # an image extracted to `""`, chunked to nothing, wrote no points, and
+        # the job reported `indexed` — accepted, returned by no search, and
+        # visible only as a `chunk_count` of zero that nothing reads.
+        #
+        # The refusal has to name the reason. "No text" would be true of a
+        # broken file too, and an operator who uploads a scan needs to be told
+        # it is a scan, because the remedy is OCR and not a re-upload.
+        with self.assertRaises(app.ParseError) as caught:
+            app.parse_pdf(scanned_pdf())
+        reason = str(caught.exception)
+        self.assertIn("scan", reason)
+        self.assertIn("OCR", reason)
+
+    def test_a_pdf_with_no_pages_is_not_called_a_scan(self) -> None:
+        # A `/Pages` tree that points at itself comes back as zero pages and is
+        # classified `scanned`, so keying the refusal on the classification
+        # alone would tell an operator to go and OCR a file that is simply
+        # broken. Found by running the classifier against it, not by reading.
+        with self.assertRaises(app.ParseError) as caught:
+            app.parse_pdf(cyclic_pages_pdf())
+        reason = str(caught.exception)
+        self.assertIn("no pages", reason)
+        self.assertNotIn("scan", reason)
+
+    def test_a_text_pdf_reports_what_the_classifier_saw(self) -> None:
+        # Carried so the partial case is visible: a document where most pages
+        # are scans extracts the rest and would otherwise report success with
+        # four fifths of it missing. Empty here, and the point is that the key
+        # exists to be read.
+        result = app.parse_pdf(minimal_pdf("Reimbursement is capped at twenty euros"))
+        self.assertEqual(result["metadata"]["pdf_type"], "text_based")
+        self.assertEqual(result["metadata"]["pages_needing_ocr"], [])
+
+    def test_a_failure_message_is_ours_and_never_the_library_s(self) -> None:
+        # The reason is matched against and never echoed, so a parser that
+        # starts quoting the bytes it choked on cannot leak them through here.
+        self.assertIn("encrypted", app._pdf_failure(ValueError("PDF is encrypted")))
+        self.assertIn("structure", app._pdf_failure(ValueError("Invalid PDF structure")))
+        unknown = app._pdf_failure(ValueError("choked on \x00\xff and /Root 9 0 R"))
+        self.assertIn("ValueError", unknown)
+        self.assertNotIn("Root", unknown)
+        self.assertNotIn("choked", unknown)
 
 
 if __name__ == "__main__":

@@ -240,6 +240,51 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.5.8 — a scanned PDF stops reporting success
+
+**Nothing to do**, unless you have documents that were accepted and index
+nothing — see below.
+
+**A PDF with no text layer is refused now.** It used to be accepted: the
+extractor returned an empty string, the chunker made nothing of it, the worker
+wrote no points, and the job reported `indexed`. The document was in the
+database, returned by no search, and the only trace was a `chunk_count` of zero
+that nothing reads. It now lands in `failed` with a reason that says it is a
+scan and that this build does no OCR — because the remedy is not a re-upload.
+
+**Look for the ones already in.** A document that reports `indexed` with
+`chunk_count: 0` is either an empty file or one of these:
+
+```sql
+SELECT id, external_id, title FROM documents
+WHERE deleted_at IS NULL AND chunk_count = 0;
+```
+
+Re-ingesting one now gives the refusal instead of the silence. Nothing is
+migrated automatically: the rows are not wrong, they are just empty, and
+deciding what to do with a scan somebody uploaded six months ago is not a
+choice this release should make for you.
+
+**The parser sidecar's one dependency changed**, from `pypdf` to
+`pdf-inspector`, and the argument is in `services/parser/requirements.txt`
+rather than only in a commit message. It reverses a stated position — that file
+had "pure Python, no native parsers" as its first line — so it is worth reading
+before the next person is surprised by it. In short: it is a compiled Rust
+extension, a memory-safe parser fails by panicking rather than by corrupting a
+heap, and it answers the question pypdf structurally cannot. Both were run
+against the same inputs first, including the shapes the old pin was about, and
+nothing the parser relied on was given up.
+
+**`metadata` on a PDF gains `pdf_type` and `pages_needing_ocr`.** The second is
+what makes the partial case visible: a fifty-page document with forty scanned
+pages extracts the other ten and would otherwise report success with four fifths
+of it missing.
+
+**A parse failure now carries the sidecar's reason** into the job's `error`
+column. It carried the status alone — `the parser answered 422` — which is a
+refusal nobody can act on. If anything of yours parses job errors, the string is
+longer and ends with `(parser answered NNN)`.
+
 ### 0.5.7 — one address instead of three
 
 **Compose now serves everything on the `web` port**, `8082` by default: the

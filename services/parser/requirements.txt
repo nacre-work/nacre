@@ -1,20 +1,43 @@
-# The one dependency, pinned exactly. Pure Python, no native parsers — this
-# process runs hostile input through whatever it depends on, so the extractor
-# is chosen for dependency surface first. Anything added here is a decision
-# about that surface, not a convenience; see the module docstring in app.py.
+# The one dependency, pinned exactly. This process runs hostile input through
+# whatever it depends on, so the extractor is chosen for dependency surface
+# first. Anything added here is a decision about that surface, not a
+# convenience; see the module docstring in app.py.
 #
 # Pinning it exactly means the pin has to be *moved*, and a security release
-# here is not an optional upgrade: the whole reason this dependency was
-# argued about is that it is the code that reads attacker-supplied bytes.
-# Everything between 5.1.0 and 6.14.2 that matters to this process is a
-# denial-of-service fix in exactly that path — infinite loops on incomplete
-# ASCII85 and ASCIIHex inline images, a SIGSEGV on multi-hop cyclic /Pages
-# trees, an unbounded declared stream length, an unbounded requested image
-# size. A worker is strictly serial, so any one of those is indexing stopped
-# for every tenant by one uploaded file.
+# here is not an optional upgrade: this is the code that reads attacker-supplied
+# bytes. A worker is strictly serial, so a hang in it is indexing stopped for
+# every tenant by one uploaded file.
 #
-# `cryptography` is deliberately not added alongside it. pypdf uses it for
-# AES-encrypted documents and falls back without it; this parser refuses an
-# encrypted PDF outright, so the fallback is the whole of what it needs and
-# the native dependency stays off the hostile-input path.
-pypdf==6.14.2
+# ## Why this one, and not the pure-Python one it replaced
+#
+# `pypdf` was chosen because it is pure Python, and that was the whole argument.
+# This is Rust behind a PyO3 binding — native code on the hostile-input path,
+# which is the thing this file has twice refused. `cryptography` is still not
+# here for exactly that reason.
+#
+# Two things make it a different question rather than the same one answered
+# differently. A memory-safe parser fails by panicking rather than by corrupting
+# a heap, so the shape of the risk changes even if its size does not go to zero.
+# And it closes a defect pypdf structurally cannot: it reports whether a PDF
+# *has* a text layer. Without that, a scanned document extracted to nothing,
+# chunked to nothing, and was reported `indexed` — accepted, searchable by
+# nobody, visible only as a `chunk_count` of zero that nothing reads.
+#
+# Nothing was given up in the swap, and that was checked rather than assumed:
+# identical text against pypdf on a text PDF, an explicit refusal from both on
+# garbage, and an explicit refusal from both on an encrypted document. That last
+# was the one thing that could have forced keeping two parsers, and it did not —
+# two parsers on this path would have been a worse surface than either alone.
+#
+# The three hostile shapes the pypdf pin was about were run against it directly:
+# a `/Pages` tree that points at itself, a stream declaring four gigabytes, an
+# incomplete ASCII85 inline image. All three return in milliseconds. The first
+# is also what turned up a refusal worth having — it comes back as zero pages,
+# so "this is a scan" would have been the wrong thing to tell an operator about
+# a file that is simply broken.
+#
+# Its own tree is one crate, `lopdf`, with no ML models and no network calls,
+# which is what keeps the `airgapped` profile honest. Wheels are published for
+# manylinux x86_64 and aarch64, so both architectures this project ships install
+# a binary rather than compiling one.
+pdf-inspector==0.2.6

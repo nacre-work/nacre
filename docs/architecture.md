@@ -442,11 +442,29 @@ already answer is unchanged.
 
 **The sidecar takes its first dependency, and that is the decision.** It is
 stdlib-only on purpose — it runs hostile input through whatever it depends on —
-so the extractor is chosen for dependency surface first: pure-Python `pypdf`,
-no native parsers, pinned. An extraction failure is a `ParseError` with the
+so the extractor is chosen for dependency surface first. In 0.4.0 that was
+pure-Python `pypdf`, pinned; since 0.5.8 it is `pdf-inspector`, pinned, which is
+a compiled Rust extension and therefore a reversal of the "no native parsers"
+half of that sentence. It was made deliberately and the argument is in
+`services/parser/requirements.txt`: a memory-safe parser fails by panicking
+rather than by corrupting a heap, and it answers a question pypdf structurally
+cannot — whether a PDF has a text layer at all.
+
+**A PDF with no text layer is refused, not indexed as nothing.** A scan
+extracted to `""`, chunked to nothing and was reported `indexed`: accepted,
+returned by no search, visible only as a `chunk_count` of zero. It now fails
+with a reason that says it is a scan and that this build does no OCR, because
+the remedy is not a re-upload. A PDF that declares no pages is its own refusal —
+it classifies as scanned, and telling an operator to OCR a broken file would be
+nonsense.
+
+An extraction failure is a `ParseError` with the
 reason, landing the document in `failed` where an operator can see it; text
 comes out concatenated per page with `metadata.pages`, and `blocks` stays
-empty rather than fabricated. The URL ingest path stays text-only in 0.4.0:
+empty rather than fabricated. `metadata` also carries `pdf_type` and
+`pages_needing_ocr`, which is what makes the *partial* case visible: a document
+whose pages are mostly scans extracts the rest and would otherwise report
+success with most of it missing. The URL ingest path stays text-only in 0.4.0:
 a response's declared type is an attacker's field, and extending the magic
 check to fetched bytes is its own change with its own tests, listed here so it
 is a decision rather than a leftover.

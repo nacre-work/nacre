@@ -6,12 +6,34 @@ separate process because this is the one component that runs untrusted input
 through a large C dependency tree. It holds no credentials and reaches no
 database. If it is compromised, there is nothing here to reach.
 
-One dependency, taken deliberately: pypdf, pure Python, pinned in
+One dependency, taken deliberately: `pdf-inspector`, pinned in
 requirements.txt. This service was stdlib-only until the binary-ingest work,
 and the bar for adding anything here is dependency surface first — it runs
-hostile input through whatever it depends on, which is why the extractor has
-no native parsers and why there is still no web framework. Everything else
-stays standard library.
+hostile input through whatever it depends on, which is why there is still no
+web framework and why everything else stays standard library.
+
+That dependency was `pypdf` and is not, and the swap is a judgement worth
+stating rather than a version bump. pypdf is pure Python, which was the whole
+argument for it; `pdf-inspector` is Rust behind a PyO3 binding, which is native
+code on the hostile-input path and the thing this file has refused twice — it
+is why `cryptography` was left out. What makes it a different question is that
+the failure mode of a memory-safe parser is a panic rather than a corrupted
+heap, and what makes it worth answering differently is that it closes a defect
+pypdf structurally cannot: it says whether a PDF *has* a text layer.
+
+Without that, a scanned document extracted to `""`, chunked to nothing, and was
+reported `indexed` — accepted, searchable by nobody, and visible only as a
+`chunk_count` of zero that nothing reads. Checked by building a one-page PDF
+whose only content is an image: pypdf returns `""` and raises nothing, and this
+library returns `scanned` at 0.95 confidence and names the page.
+
+Both parsers were run against the same inputs before the swap: identical text
+on a text PDF, and an explicit refusal from each on garbage and on an encrypted
+document — so nothing this file relied on was given up. The three hostile shapes
+the pypdf pin was about — a cyclic `/Pages` tree, a stream declaring four
+gigabytes, an incomplete ASCII85 inline image — return in milliseconds rather
+than hanging, which matters because a worker is strictly serial and one hang is
+indexing stopped for every tenant.
 """
 
 from __future__ import annotations
@@ -161,34 +183,74 @@ def parse_pdf(raw: bytes) -> dict:
         raise ParseError("the body does not start with the %PDF- magic; it is not a PDF")
 
     try:
-        from io import BytesIO
-
-        from pypdf import PdfReader
+        import pdf_inspector
     except ImportError as error:  # pragma: no cover - an install problem, not input
         raise ParseError(
-            "the PDF extractor is not installed; the parser image is missing pypdf"
+            "the PDF extractor is not installed; the parser image is missing pdf-inspector"
         ) from error
 
+    # Classification and extraction are two calls because they answer two
+    # questions, and the first is the cheap one — the library documents it as
+    # lightweight and it does no extraction. Both are needed even when text
+    # comes back: a fifty-page document with forty scanned pages extracts the
+    # other ten and would otherwise report success while four fifths of it is
+    # missing, which is the same silent-partial defect one level down.
     try:
-        reader = PdfReader(BytesIO(raw))
-        if reader.is_encrypted:
-            raise ParseError("the PDF is encrypted, and this parser holds no passwords")
-        pages = [page.extract_text() or "" for page in reader.pages]
-    except ParseError:
-        raise
+        found = pdf_inspector.classify_pdf_bytes(raw)
+        text = pdf_inspector.extract_text_bytes(raw)
     except Exception as error:  # noqa: BLE001 - hostile input, reason class only
-        raise ParseError(
-            f"the PDF could not be parsed ({type(error).__name__})"
-        ) from error
+        raise ParseError(_pdf_failure(error)) from error
 
-    # Two newlines between pages: a page boundary is at least a paragraph
-    # boundary, and the chunker splits on paragraphs.
-    text = "\n\n".join(part for part in pages if part.strip() != "")
+    # A PDF that declares no pages at all. It reaches here as `scanned`, which
+    # would be a lie in the refusal — there is nothing to scan. Found by feeding
+    # in a `/Pages` tree that points at itself.
+    if found.page_count == 0:
+        raise ParseError("the PDF declares no pages")
+
+    # Nothing came out, and the classification is what turns that from a silent
+    # empty document into an answer. This is the case that used to be accepted:
+    # zero chunks, zero points, status `indexed`, and no search would ever
+    # return it.
+    if text.strip() == "":
+        if found.pdf_type == "scanned":
+            raise ParseError(
+                "the PDF has no text layer — it is a scan, and this build does no OCR"
+            )
+        raise ParseError("no text could be extracted from the PDF")
+
     return {
         "text": text,
         "blocks": [],
-        "metadata": {"bytes": len(raw), "pages": len(reader.pages)},
+        "metadata": {
+            "bytes": len(raw),
+            "pages": found.page_count,
+            "pdf_type": found.pdf_type,
+            # Empty for an ordinary document, and the point of carrying it is
+            # the partial case: these pages contributed nothing, and a reader
+            # who wonders why an answer is missing has somewhere to look.
+            "pages_needing_ocr": list(found.pages_needing_ocr),
+        },
     }
+
+
+def _pdf_failure(error: Exception) -> str:
+    """Our wording for a parser failure, never the parser's.
+
+    The rule is unchanged and is why this exists: an exception message from a
+    PDF library can quote the bytes it choked on, and the failure path is part
+    of the attack surface. So the message is matched against — never echoed —
+    and anything unrecognised falls back to the class name, which says what kind
+    of failure it was without saying what was in the file.
+    """
+    known = {
+        "encrypted": "the PDF is encrypted, and this parser holds no passwords",
+        "invalid pdf": "the PDF structure could not be read",
+    }
+    lowered = str(error).lower()
+    for marker, reason in known.items():
+        if marker in lowered:
+            return reason
+    return f"the PDF could not be parsed ({type(error).__name__})"
 
 
 def parse_source(source: dict) -> dict:

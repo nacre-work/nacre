@@ -500,7 +500,31 @@ export class HttpParser implements Parser {
           })
 
     if (!response.ok) {
-      throw new Error(`the parser answered ${response.status}`)
+      // The sidecar's own reason, not just its status.
+      //
+      // This threw `the parser answered 422` and dropped the body, which is
+      // where the reason lives — and a refusal whose reason does not travel is
+      // a refusal nobody can act on. It lands in the job's `error` column and
+      // is the only thing an operator sees, so "the PDF has no text layer — it
+      // is a scan, and this build does no OCR" arriving as a bare `422` sends
+      // them looking for a corrupt file instead of an OCR step.
+      //
+      // The sidecar has already decided what is safe to say: a `ParseError`
+      // message is ours by construction and never quotes the bytes it choked
+      // on. Anything else, and the status is all there is.
+      const reason = await response
+        .json()
+        .then((body: unknown) =>
+          typeof (body as { error?: unknown })?.error === 'string'
+            ? ((body as { error: string }).error)
+            : undefined,
+        )
+        .catch(() => undefined)
+      throw new Error(
+        reason === undefined
+          ? `the parser answered ${response.status}`
+          : `${reason} (parser answered ${response.status})`,
+      )
     }
 
     const body = (await response.json()) as { text?: unknown; metadata?: unknown }
