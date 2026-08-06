@@ -17,6 +17,7 @@ model, and reworking it after search is written is expensive.
 | [quickstart.md](./quickstart.md) | First run, first document, first search |
 | [apple-silicon.md](./apple-silicon.md) | Running on an M-series Mac: what is native, and the one thing that is not |
 | [upgrading.md](./upgrading.md) | What an operator does when a release comes out |
+| [backup.md](./backup.md) | Backing up and restoring by hand: what to copy, in what order, and what is derived |
 
 ## Order of work
 

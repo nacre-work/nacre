@@ -178,7 +178,10 @@ a genuinely slow migration is not killed for being slow.
 ## Rolling back
 
 **Rolling the schema back is a restore, not a command.** Take the backup
-described in the restore runbook before an upgrade, not after it goes wrong.
+[backup.md](./backup.md) describes before an upgrade, not after it goes wrong.
+That page also says the part that is not obvious: the database is dumped
+*before* the bucket is copied, because ingest writes a document's bytes before
+its row.
 
 Rolling the *code* back while leaving the schema forward is safe **only** where
 every migration in between was additive. This is a per-release fact and it is in
