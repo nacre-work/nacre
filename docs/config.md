@@ -569,10 +569,19 @@ packaging one — see [licensing.md](./licensing.md).
 Text Embeddings Inference publishes no arm64 image, so `full` and `airgapped`
 run those containers emulated on an Apple Silicon Mac or an arm64 node;
 everything else in every profile — this repository's two images since 0.5.2,
-Postgres, Qdrant, Redis, nginx, MinIO and Keycloak — is native. The arrangement
-that avoids the emulation is `minimal` with an embedder on the host, and
-[apple-silicon.md](./apple-silicon.md) has it, along with
-`docker-compose.apple-silicon.yml`.
+Postgres, Qdrant, Redis, nginx, MinIO and Keycloak — is native.
+
+Emulated only once something names the platform. A plain
+`docker compose --profile full up -d` on an arm64 host fails at the pull with
+`no matching manifest for linux/arm64/v8`, because there is no arm64 to resolve
+and Compose asks for the host's. `docker-compose.apple-silicon.yml` sets
+`platform: linux/amd64` on those two services, which is what turns that failure
+into an emulated container. Select it with one line in `.env` —
+`COMPOSE_FILE=docker-compose.yml:docker-compose.apple-silicon.yml` — rather than
+with `-f` flags that every later command has to repeat.
+
+The arrangement that avoids the emulation altogether is `minimal` with an
+embedder on the host, and [apple-silicon.md](./apple-silicon.md) has both.
 
 **`airgapped` is airgapped only after two one-time steps, and the profile now
 says so rather than implying it happens by itself.**

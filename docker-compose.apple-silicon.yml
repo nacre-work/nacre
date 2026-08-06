@@ -1,7 +1,20 @@
 # Apple Silicon — an overlay, not a fourth profile.
 #
+# Select it once, in .env, rather than on every command:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.apple-silicon.yml
+#
+# then plain `docker compose --profile minimal up -d`. `.env.example` ships that
+# line commented out. The two `-f` flags are equivalent and are what this
+# comment used to give:
+#
 #   docker compose -f docker-compose.yml -f docker-compose.apple-silicon.yml \
 #     --profile minimal up -d
+#
+# The flags are worse because they have to be right every time and nothing
+# reminds you — a later plain `docker compose up -d` recreates api and worker
+# without the extra_hosts below, and the symptom is an EAI_AGAIN in the worker
+# arriving long after the command that caused it.
 #
 # See docs/apple-silicon.md. The short version of why this file is small:
 # almost nothing about an M-series Mac is special any more.
