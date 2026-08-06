@@ -20,25 +20,66 @@ export interface RegisteredClient {
   readonly redirectUris: readonly string[]
 }
 
-/** A standing connection: this application, acting as this agent. */
+/**
+ * What a connection acts as.
+ *
+ * A discriminated union rather than a nullable id, which is migration 0025's
+ * argument carried into the code: inferring "this is a delegation" from a null
+ * puts a guess on the issuance path, and the two modes mint different tokens.
+ */
+export type ConsentSubject =
+  | { readonly actsAs: 'service_account'; readonly serviceAccountId: string }
+  /** A delegation. `userId` is the person who approved it — see docs/authz.md. */
+  | { readonly actsAs: 'user'; readonly userId: string }
+
+/** A standing connection: this application, acting as this agent or as a person. */
 export interface Consent {
   readonly id: string
   readonly clientId: string
   readonly clientName: string
-  readonly serviceAccountId: string
-  readonly serviceAccountName: string
+  readonly subject: ConsentSubject
+  /** The agent's name, for a connection that has one. */
+  readonly serviceAccountName: string | null
   readonly approvedBy: string
+  /**
+   * The layers a delegation was narrowed to at consent, if any.
+   *
+   * Empty means **no narrowing**, never "narrowed to nothing" — the two are
+   * opposite, and the table deliberately cannot express the second.
+   */
+  readonly layers: readonly string[]
   readonly createdAt: string
   readonly lastRefreshedAt: string | null
   readonly revokedAt: string | null
 }
 
+/**
+ * What a token is minted for.
+ *
+ * A union rather than a record with two optional halves, so the delegated case
+ * **cannot** be constructed without the connection it names. The `del` claim is
+ * that connection's id and the authentication path refuses a token whose
+ * delegation does not resolve, so a delegated token minted with nothing to
+ * point at would be one nobody can ever use — and a type is a cheaper place to
+ * learn that than a running deployment.
+ *
+ * `consentId` is optional on the service-account side only, because 0023 wrote
+ * authorization codes before 0024 gave connections a table.
+ */
+export type MintRequest =
+  | {
+      readonly orgId: string
+      readonly subject: { readonly actsAs: 'service_account'; readonly serviceAccountId: string }
+      readonly consentId?: string
+    }
+  | {
+      readonly orgId: string
+      readonly subject: { readonly actsAs: 'user'; readonly userId: string }
+      readonly consentId: string
+    }
+
 /** A consent that has been given and not yet exchanged. */
-export interface PendingAuthorization {
-  readonly orgId: string
-  /** The standing connection this code belongs to. */
-  readonly consentId?: string
-  readonly serviceAccountId: string
+export type PendingAuthorization = MintRequest & {
   readonly clientId: string
   readonly redirectUri: string
   readonly codeChallenge: string
@@ -58,7 +99,17 @@ export interface OAuthConsents {
    * full of duplicates is one where ending a connection leaves the others
    * working.
    */
-  record(auth: AuthContext, clientId: string, serviceAccountId: string): Promise<string>
+  record(
+    auth: AuthContext,
+    clientId: string,
+    subject: ConsentSubject,
+    /**
+     * The layers a delegation is restricted to. Replaced wholesale on
+     * re-approval, because a person reconnecting an application is answering
+     * the narrowing question again rather than adding to a previous answer.
+     */
+    layers?: readonly string[],
+  ): Promise<string>
   /**
    * Every connection this caller may see.
    *
@@ -85,7 +136,9 @@ export interface OAuthRefreshTokens {
    * a token already spent means two holders have it and there is no way to tell
    * which is genuine, so the whole family is ended rather than the one token.
    */
-  rotate(token: string): Promise<{ orgId: string; consentId: string; serviceAccountId: string; family: string } | undefined>
+  rotate(
+    token: string,
+  ): Promise<(MintRequest & { readonly consentId: string; readonly family: string }) | undefined>
 }
 
 export interface OAuthAuthorizations {
@@ -155,12 +208,12 @@ export class PostgresOAuthAuthorizations implements OAuthAuthorizations {
         await client.query(
           `INSERT INTO oauth_authorizations
              (org_id, client_id, service_account_id, approved_by, code_hash,
-              code_challenge, redirect_uri, resource, expires_at, consent_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+              code_challenge, redirect_uri, resource, expires_at, consent_id, acts_as)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
           [
             auth.orgId,
             input.clientId,
-            input.serviceAccountId,
+            input.subject.actsAs === 'service_account' ? input.subject.serviceAccountId : null,
             auth.principal.id,
             hashCode(input.code),
             input.codeChallenge,
@@ -168,6 +221,7 @@ export class PostgresOAuthAuthorizations implements OAuthAuthorizations {
             input.resource ?? null,
             input.expiresAt,
             input.consentId ?? null,
+            input.subject.actsAs,
           ],
         )
       },
@@ -210,7 +264,9 @@ export class PostgresOAuthAuthorizations implements OAuthAuthorizations {
       async (client) => {
         const { rows } = await client.query<{
           org_id: string
-          service_account_id: string
+          acts_as: 'service_account' | 'user'
+          service_account_id: string | null
+          approved_by: string
           client_id: string
           redirect_uri: string
           code_challenge: string
@@ -222,18 +278,31 @@ export class PostgresOAuthAuthorizations implements OAuthAuthorizations {
             WHERE code_hash = $1
               AND consumed_at IS NULL
               AND expires_at > now()
-          RETURNING org_id, service_account_id, client_id, redirect_uri, code_challenge, resource, consent_id`,
+          RETURNING org_id, acts_as, service_account_id, approved_by, client_id,
+                    redirect_uri, code_challenge, resource, consent_id`,
           [hashCode(code)],
         )
         const row = rows[0]
         if (row === undefined) return undefined
-        return {
+        // The database's CHECK guarantees the pairing, so this reads the
+        // discriminator rather than testing the null — the same distinction
+        // 0025 draws, kept on this side of the boundary too.
+        const common = {
           orgId: row.org_id,
-          serviceAccountId: row.service_account_id,
           clientId: row.client_id,
           redirectUri: row.redirect_uri,
           codeChallenge: row.code_challenge,
           ...(row.resource === null ? {} : { resource: row.resource }),
+        }
+        if (row.acts_as === 'user') {
+          // `consent_id IS NOT NULL` is in 0025's CHECK for the delegated
+          // shape, which is what lets this be a cast rather than a branch that
+          // has to decide what a delegation with no connection means.
+          return { ...common, subject: { actsAs: 'user', userId: row.approved_by }, consentId: row.consent_id as string }
+        }
+        return {
+          ...common,
+          subject: { actsAs: 'service_account', serviceAccountId: row.service_account_id as string },
           ...(row.consent_id === null ? {} : { consentId: row.consent_id }),
         }
       },
@@ -248,7 +317,12 @@ export class PostgresOAuthConsents implements OAuthConsents {
     private readonly role?: string,
   ) {}
 
-  async record(auth: AuthContext, clientId: string, serviceAccountId: string): Promise<string> {
+  async record(
+    auth: AuthContext,
+    clientId: string,
+    subject: ConsentSubject,
+    layers?: readonly string[],
+  ): Promise<string> {
     return withOrg(
       this.pool,
       auth.orgId,
@@ -257,15 +331,51 @@ export class PostgresOAuthConsents implements OAuthConsents {
         // person is deliberately reconnecting an application they had ended,
         // and leaving it marked revoked would show them a connection that says
         // "ended" while the client works.
-        const { rows } = await client.query<{ id: string }>(
-          `INSERT INTO oauth_consents (org_id, client_id, service_account_id, approved_by)
-           VALUES ($1,$2,$3,$4)
-           ON CONFLICT (org_id, client_id, service_account_id)
-           DO UPDATE SET revoked_at = NULL, approved_by = EXCLUDED.approved_by
-           RETURNING id`,
-          [auth.orgId, clientId, serviceAccountId, auth.principal.id],
-        )
-        return (rows[0] as { id: string }).id
+        //
+        // Two conflict targets because there are two unique indexes, and the
+        // delegated one is **partial** — `(org_id, client_id, approved_by)
+        // WHERE acts_as = 'user'`, since NULLs are distinct and the 0024 index
+        // would let a person approve the same application twice. The inference
+        // clause has to repeat the index's predicate for Postgres to match it.
+        const { rows } =
+          subject.actsAs === 'service_account'
+            ? await client.query<{ id: string }>(
+                `INSERT INTO oauth_consents (org_id, client_id, service_account_id, approved_by, acts_as)
+                 VALUES ($1,$2,$3,$4,'service_account')
+                 ON CONFLICT (org_id, client_id, service_account_id)
+                 DO UPDATE SET revoked_at = NULL, approved_by = EXCLUDED.approved_by
+                 RETURNING id`,
+                [auth.orgId, clientId, subject.serviceAccountId, auth.principal.id],
+              )
+            : await client.query<{ id: string }>(
+                `INSERT INTO oauth_consents (org_id, client_id, service_account_id, approved_by, acts_as)
+                 VALUES ($1,$2,NULL,$3,'user')
+                 ON CONFLICT (org_id, client_id, approved_by) WHERE acts_as = 'user'
+                 DO UPDATE SET revoked_at = NULL
+                 RETURNING id`,
+                [auth.orgId, clientId, subject.userId],
+              )
+        const id = (rows[0] as { id: string }).id
+
+        if (subject.actsAs === 'user') {
+          // Replaced wholesale, in the same transaction as the row it belongs
+          // to. A person reconnecting an application is answering the narrowing
+          // question again, so merging their new answer into the old one would
+          // make a narrowing that can only ever widen — the one direction this
+          // whole mechanism is not allowed to move in.
+          await client.query('DELETE FROM oauth_consent_layers WHERE org_id = $1 AND consent_id = $2', [
+            auth.orgId,
+            id,
+          ])
+          if (layers !== undefined && layers.length > 0) {
+            await client.query(
+              `INSERT INTO oauth_consent_layers (org_id, consent_id, layer_id)
+               SELECT $1, $2, unnest($3::uuid[])`,
+              [auth.orgId, id, [...layers]],
+            )
+          }
+        }
+        return id
       },
       this.role === undefined ? {} : { role: this.role },
     )
@@ -284,20 +394,28 @@ export class PostgresOAuthConsents implements OAuthConsents {
           id: string
           client_id: string
           client_name: string
-          service_account_id: string
-          service_account_name: string
+          acts_as: 'service_account' | 'user'
+          service_account_id: string | null
+          service_account_name: string | null
           approved_by: string
+          layers: string[] | null
           created_at: string
           last_refreshed_at: string | null
           revoked_at: string | null
         }>(
-          `SELECT c.id, c.client_id, oc.client_name, c.service_account_id,
+          // LEFT, because a delegation names no service account. It was an
+          // inner join, which would have made every delegation invisible on the
+          // one screen that can end it.
+          `SELECT c.id, c.client_id, oc.client_name, c.acts_as, c.service_account_id,
                   sa.name AS service_account_name, c.approved_by,
+                  NULLIF(ARRAY_REMOVE(ARRAY_AGG(cl.layer_id), NULL), '{}') AS layers,
                   c.created_at::text, c.last_refreshed_at::text, c.revoked_at::text
              FROM oauth_consents c
              JOIN oauth_clients oc ON oc.client_id = c.client_id
-             JOIN service_accounts sa ON sa.id = c.service_account_id AND sa.org_id = c.org_id
+             LEFT JOIN service_accounts sa ON sa.id = c.service_account_id AND sa.org_id = c.org_id
+             LEFT JOIN oauth_consent_layers cl ON cl.consent_id = c.id AND cl.org_id = c.org_id
             WHERE c.org_id = $1${mine}
+            GROUP BY c.id, oc.client_name, sa.name
             ORDER BY c.created_at DESC, c.id`,
           mine === '' ? [auth.orgId] : [auth.orgId, auth.principal.id],
         )
@@ -305,9 +423,13 @@ export class PostgresOAuthConsents implements OAuthConsents {
           id: r.id,
           clientId: r.client_id,
           clientName: r.client_name,
-          serviceAccountId: r.service_account_id,
+          subject:
+            r.acts_as === 'user'
+              ? ({ actsAs: 'user', userId: r.approved_by } as const)
+              : ({ actsAs: 'service_account', serviceAccountId: r.service_account_id as string } as const),
           serviceAccountName: r.service_account_name,
           approvedBy: r.approved_by,
+          layers: r.layers ?? [],
           createdAt: r.created_at,
           lastRefreshedAt: r.last_refreshed_at,
           revokedAt: r.revoked_at,
@@ -380,7 +502,7 @@ export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
 
   async rotate(
     token: string,
-  ): Promise<{ orgId: string; consentId: string; serviceAccountId: string; family: string } | undefined> {
+  ): Promise<(MintRequest & { readonly consentId: string; readonly family: string }) | undefined> {
     // The same split as an authorization code, and for the same reason: the
     // endpoint holds a bearer secret and no organization, so the lookup crosses
     // tenants and is **read-only** — that restriction is what keeps the one
@@ -408,12 +530,28 @@ export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
           family_id: string
           used_at: Date | null
           expired: boolean
+          revoked: boolean
+          acts_as: 'service_account' | 'user'
           service_account_id: string | null
+          approved_by: string
+          suspended: boolean
         }>(
-          `SELECT t.id, t.consent_id, t.family_id, t.used_at, t.expires_at <= now() AS expired,
-                  CASE WHEN c.revoked_at IS NULL THEN c.service_account_id END AS service_account_id
+          // The user is joined for the delegated case only, and it is a LEFT
+          // join so a service-account connection is unaffected by it. What it
+          // answers is the same question the authentication path asks on every
+          // request: may this authority still be exercised. Asking it here too
+          // is not belt and braces — a renewal that succeeded while the person
+          // was disabled would hand the application a fresh token for every one
+          // of the next fourteen days, each of which 401s.
+          `SELECT t.id, t.consent_id, t.family_id, t.used_at,
+                  t.expires_at <= now() AS expired,
+                  c.revoked_at IS NOT NULL AS revoked,
+                  c.acts_as, c.service_account_id, c.approved_by,
+                  (c.acts_as = 'user'
+                     AND (u.id IS NULL OR u.disabled_at IS NOT NULL OR u.role = 'platform_admin')) AS suspended
              FROM oauth_refresh_tokens t
              JOIN oauth_consents c ON c.id = t.consent_id
+             LEFT JOIN users u ON u.id = c.approved_by AND u.org_id = c.org_id
             WHERE t.token_hash = $1
             FOR UPDATE OF t`,
           [hashCode(token)],
@@ -432,7 +570,15 @@ export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
           ])
           return undefined
         }
-        if (row.expired || row.service_account_id === null) return undefined
+        if (row.expired || row.revoked) return undefined
+
+        // Suspended, and the token is deliberately **not** spent. Disabling a
+        // person is reversible — docs/authz.md is explicit that the grant
+        // survives it — so burning their applications' refresh tokens on the
+        // way past would make re-enabling them a reconnection rather than a
+        // restoration. The application retries, and the day it is allowed to,
+        // the same token works.
+        if (row.suspended) return undefined
 
         // Spent, in the statement that reads it: two concurrent exchanges race
         // for one row and exactly one wins.
@@ -446,12 +592,10 @@ export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
           found,
           row.consent_id,
         ])
-        return {
-          orgId: found,
-          consentId: row.consent_id,
-          serviceAccountId: row.service_account_id,
-          family: row.family_id,
-        }
+        const base = { orgId: found, consentId: row.consent_id, family: row.family_id }
+        return row.acts_as === 'user'
+          ? { ...base, subject: { actsAs: 'user', userId: row.approved_by } }
+          : { ...base, subject: { actsAs: 'service_account', serviceAccountId: row.service_account_id as string } }
       },
       this.role === undefined ? {} : { role: this.role },
     )

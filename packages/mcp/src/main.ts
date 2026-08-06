@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   // one.
   const redis = new Redis({ url: config.redisUrl })
 
-  const { pool, layers, tools, serviceKeys } = buildServices(config, {
+  const { pool, layers, tools, verification } = buildServices(config, {
     principalsCache: { store: new RedisCache(redis), ttlSeconds: config.aclCacheTtl },
   })
 
@@ -132,18 +132,21 @@ async function main(): Promise<void> {
   }
 
   const server = createMcpServer({
-    // serviceKeys is not optional here in practice. An agent connecting over
-    // Streamable HTTP is the case this transport exists for, and a service
-    // account key is how an agent authenticates; leaving it out made every
-    // `nacre_sk_` token 401 on this transport while the same key worked over
-    // STDIO and REST — one credential, three surfaces, two of them agreeing.
+    // Neither database-backed port is optional here in practice, and both
+    // arrive together for that reason. An agent connecting over Streamable HTTP
+    // is the case this transport exists for, and a service account key is how
+    // an agent authenticates; leaving it out made every `nacre_sk_` token 401
+    // on this transport while the same key worked over STDIO and REST — one
+    // credential, three surfaces, two of them agreeing. A delegated token is
+    // the same shape of failure with a quieter symptom, which is why the two
+    // are one object now rather than two fields to remember.
     verify: {
       key: jwt.verification,
       ...(jwt.alsoAccept.length === 0 ? {} : { alsoAccept: jwt.alsoAccept }),
       algorithms: [jwt.algorithm],
       issuer: config.jwtIssuer,
       audience: config.jwtAudience,
-      serviceKeys,
+      ...verification,
     },
     layers,
     tools,

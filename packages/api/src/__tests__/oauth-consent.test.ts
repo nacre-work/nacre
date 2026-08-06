@@ -116,7 +116,7 @@ when('the OAuth consent flow, against the database', () => {
 
     await authorizations.approve(admin, {
       orgId: ORG,
-      serviceAccountId: agent.account.id,
+      subject: { actsAs: 'service_account', serviceAccountId: agent.account.id } as const,
       clientId,
       redirectUri: 'http://127.0.0.1:33418/callback',
       codeChallenge: challenge,
@@ -128,11 +128,11 @@ when('the OAuth consent flow, against the database', () => {
     const approved = await authorizations.redeem(code)
     expect(approved).toBeDefined()
     // The whole point, stated as an assertion: what comes back names the agent.
-    expect(approved?.serviceAccountId).toBe(agent.account.id)
+    expect(approved?.subject).toEqual({ actsAs: 'service_account', serviceAccountId: agent.account.id })
     // And never the person. If this ever equals ADMIN, the flow has started
     // handing agents their approver's authority and the permission model has
     // nothing left to say.
-    expect(approved?.serviceAccountId).not.toBe(ADMIN)
+    expect(approved?.subject).not.toEqual({ actsAs: 'service_account', serviceAccountId: ADMIN })
     expect(approved?.orgId).toBe(ORG)
     expect(verifierMatches(verifier, approved!.codeChallenge)).toBe(true)
   })
@@ -144,7 +144,7 @@ when('the OAuth consent flow, against the database', () => {
     const code = generateCode()
     await authorizations.approve(admin, {
       orgId: ORG,
-      serviceAccountId: agent.account.id,
+      subject: { actsAs: 'service_account', serviceAccountId: agent.account.id } as const,
       clientId,
       redirectUri: 'http://127.0.0.1:33418/callback',
       codeChallenge: challenge,
@@ -166,7 +166,7 @@ when('the OAuth consent flow, against the database', () => {
     const code = generateCode()
     await authorizations.approve(admin, {
       orgId: ORG,
-      serviceAccountId: agent.account.id,
+      subject: { actsAs: 'service_account', serviceAccountId: agent.account.id } as const,
       clientId,
       redirectUri: 'http://127.0.0.1:33418/callback',
       codeChallenge: challenge,
@@ -183,7 +183,7 @@ when('the OAuth consent flow, against the database', () => {
     const code = generateCode()
     await authorizations.approve(admin, {
       orgId: ORG,
-      serviceAccountId: agent.account.id,
+      subject: { actsAs: 'service_account', serviceAccountId: agent.account.id } as const,
       clientId,
       redirectUri: 'http://127.0.0.1:33418/callback',
       codeChallenge: challenge,
@@ -214,7 +214,7 @@ when('the OAuth consent flow, against the database', () => {
     const code = generateCode()
     await authorizations.approve(admin, {
       orgId: ORG,
-      serviceAccountId: agent.account.id,
+      subject: { actsAs: 'service_account', serviceAccountId: agent.account.id } as const,
       clientId,
       redirectUri: 'http://127.0.0.1:33418/callback',
       codeChallenge: challenge,
@@ -256,8 +256,8 @@ when('the OAuth consent flow, against the database', () => {
     const first = await register('first app')
     const second = await register('second app')
 
-    const c1 = await consents.record(admin, first, agent.account.id)
-    const c2 = await consents.record(admin, second, agent.account.id)
+    const c1 = await consents.record(admin, first, { actsAs: 'service_account', serviceAccountId: agent.account.id })
+    const c2 = await consents.record(admin, second, { actsAs: 'service_account', serviceAccountId: agent.account.id })
     expect(c1).not.toBe(c2)
 
     const t1 = generateCode()
@@ -271,7 +271,7 @@ when('the OAuth consent flow, against the database', () => {
     expect(await refresh.rotate(t1)).toBeUndefined()
     // ...and the other is untouched, which is the whole distinction between
     // forgetting an application and revoking an agent.
-    expect((await refresh.rotate(t2))?.serviceAccountId).toBe(agent.account.id)
+    expect((await refresh.rotate(t2))?.subject).toEqual({ actsAs: 'service_account', serviceAccountId: agent.account.id })
 
     // Ending it twice is not an error the second time, it is a no.
     expect(await consents.revoke(admin, c1)).toBe(false)
@@ -285,14 +285,14 @@ when('the OAuth consent flow, against the database', () => {
     const agent = (await accounts.create(admin, 'reapproved-agent'))!
     const app = await register('returning app')
 
-    const once = await consents.record(admin, app, agent.account.id)
+    const once = await consents.record(admin, app, { actsAs: 'service_account', serviceAccountId: agent.account.id })
     expect(await consents.revoke(admin, once)).toBe(true)
 
     // Approving again is the same connection, not a second one: a screen full
     // of duplicates is one where ending a connection leaves the others working.
     // And the revocation is cleared, or the person would be shown a connection
     // marked ended while the client works.
-    const again = await consents.record(admin, app, agent.account.id)
+    const again = await consents.record(admin, app, { actsAs: 'service_account', serviceAccountId: agent.account.id })
     expect(again).toBe(once)
     expect((await consents.list(admin)).find((c) => c.id === once)?.revokedAt).toBeNull()
   })
@@ -300,13 +300,13 @@ when('the OAuth consent flow, against the database', () => {
   it('rotates a refresh token, and ends the family on a replay', async () => {
     const agent = (await accounts.create(admin, 'rotating-agent'))!
     const app = await register('rotating app')
-    const consentId = await consents.record(admin, app, agent.account.id)
+    const consentId = await consents.record(admin, app, { actsAs: 'service_account', serviceAccountId: agent.account.id })
 
     const first = generateCode()
     await refresh.issue(ORG, consentId, first, undefined, new Date(Date.now() + 60_000))
 
     const rotated = await refresh.rotate(first)
-    expect(rotated?.serviceAccountId).toBe(agent.account.id)
+    expect(rotated?.subject).toEqual({ actsAs: 'service_account', serviceAccountId: agent.account.id })
     const second = generateCode()
     await refresh.issue(ORG, consentId, second, rotated!.family, new Date(Date.now() + 60_000))
 
@@ -320,7 +320,7 @@ when('the OAuth consent flow, against the database', () => {
   it('shows a member their own connections and an administrator the organization\'s', async () => {
     const agent = (await accounts.create(admin, 'visibility-agent'))!
     const app = await register('visible app')
-    const mine = await consents.record(admin, app, agent.account.id)
+    const mine = await consents.record(admin, app, { actsAs: 'service_account', serviceAccountId: agent.account.id })
 
     // A different person in the same organization, not an administrator.
     const c = await pool.connect()
@@ -366,7 +366,7 @@ when('the OAuth consent flow, against the database', () => {
     await expect(
       authorizations.approve(admin, {
         orgId: ORG,
-        serviceAccountId: foreign.account.id,
+        subject: { actsAs: 'service_account', serviceAccountId: foreign.account.id } as const,
         clientId,
         redirectUri: 'http://127.0.0.1:33418/callback',
         codeChallenge: pkce().challenge,

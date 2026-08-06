@@ -104,6 +104,25 @@ export interface VerifyOptions {
 }
 
 /**
+ * Whether a layer is inside this request's delegation, if it has one.
+ *
+ * `true` for everything that is not a delegation, because there is no narrowing
+ * to be outside of — a plain token, a service account key and an SSO assertion
+ * all reach whatever `resolve` says they reach.
+ *
+ * The **search** path does not go through this: there the narrowing is a `must`
+ * on `layer_id` inside the index traversal, which is what invariant 2 requires
+ * and what a per-result check would break. This is for the paths that already
+ * hold one row and one layer id — a document fetched by id, an ingest naming
+ * its target — where the same restriction has to hold and there is no traversal
+ * to put it inside of.
+ */
+export function withinDelegation(auth: AuthContext, layerId: string): boolean {
+  const narrowing = auth.delegation?.layers
+  return narrowing === undefined || narrowing.includes(layerId)
+}
+
+/**
  * Fields a request body, path, or query string may never carry.
  *
  * Rule 1 is a precondition, not a validation step: the organization comes from

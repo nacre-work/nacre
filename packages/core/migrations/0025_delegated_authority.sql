@@ -51,6 +51,27 @@ CREATE UNIQUE INDEX oauth_consents_delegation_key
     ON oauth_consents (org_id, client_id, approved_by)
  WHERE acts_as = 'user';
 
+-- The code that becomes that connection's first token carries the same
+-- discriminator, for the same reason: `redeem` returns what the token endpoint
+-- mints from, and inferring the mode from a null there would put the guess on
+-- the issuance path instead of the authentication one.
+--
+-- `consent_id IS NOT NULL` is part of the delegated shape rather than a
+-- convention. The token's `del` claim *is* the connection's id, so a delegated
+-- authorization with nothing to point at would be a code that can only mint a
+-- token no request can check.
+ALTER TABLE oauth_authorizations
+  ADD COLUMN acts_as text NOT NULL DEFAULT 'service_account'
+    CHECK (acts_as IN ('service_account', 'user'));
+
+ALTER TABLE oauth_authorizations ALTER COLUMN service_account_id DROP NOT NULL;
+
+ALTER TABLE oauth_authorizations
+  ADD CONSTRAINT oauth_authorizations_acts_as_shape CHECK (
+      (acts_as = 'service_account' AND service_account_id IS NOT NULL)
+   OR (acts_as = 'user'            AND service_account_id IS NULL AND consent_id IS NOT NULL)
+  );
+
 -- ─────────────────────────────── the narrowing ───────────────────────────────
 
 -- Chosen layers, and a row per layer rather than a `uuid[]` column.

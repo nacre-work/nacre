@@ -32,7 +32,8 @@ export type {
   ServiceAccountView,
 } from './server.js'
 export { authenticate, findTenantOverride, rejectTenantOverride } from './auth.js'
-export type { AuthContext, VerifyOptions } from './auth.js'
+export type { AuthContext, Delegations, VerifyOptions } from './auth.js'
+export { postgresVerification } from './verification.js'
 export { Problem, badRequest, forbidden, internal, notFound, unauthorized } from './errors.js'
 export {
   HttpEmbedder,

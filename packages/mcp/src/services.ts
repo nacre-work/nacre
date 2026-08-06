@@ -29,7 +29,7 @@ import {
   withOrg,
   type Config,
 } from '@nacre.work/core'
-import { PostgresServiceKeys } from '@nacre.work/api'
+import { postgresVerification } from '@nacre.work/api'
 import type { Pool } from 'pg'
 
 import type { Layers, ToolRunner } from './server.js'
@@ -49,8 +49,16 @@ export const APP_ROLE = 'nacre_app'
 
 export interface Services {
   readonly pool: Pool
-  /** Resolves service account keys, which is what local mode authenticates with. */
-  readonly serviceKeys: PostgresServiceKeys
+  /**
+   * The database-backed halves of `VerifyOptions`: service account keys, which
+   * is what local mode authenticates with, and the delegation lookup a
+   * delegated token is checked against on every request.
+   *
+   * One object from one function rather than a field per port, so a port added
+   * to a Postgres verifier arrives on both transports instead of on whichever
+   * the author remembered. See the API's verification.ts.
+   */
+  readonly verification: ReturnType<typeof postgresVerification>
   readonly layers: Layers
   readonly tools: ToolRunner
 }
@@ -414,5 +422,5 @@ export function buildServices(
       }
     },
   }
-  return { pool, layers, tools, serviceKeys: new PostgresServiceKeys(pool, APP_ROLE) }
+  return { pool, layers, tools, verification: postgresVerification(pool, APP_ROLE) }
 }
