@@ -373,7 +373,7 @@ components:
             always `member`; anything it reaches, it reaches through a grant.
     Connection:
       type: object
-      required: [id, client_id, client_name, acts_as, service_account_id, service_account_name, approved_by, created_at, layers]
+      required: [id, client_id, client_name, acts_as, service_account_id, service_account_name, approved_by, created_at, layers, permissions]
       properties:
         id: { type: string, format: uuid }
         client_id: { type: string }
@@ -400,6 +400,12 @@ components:
             Layers a delegation was narrowed to at consent. Empty means **no
             narrowing** — never "narrowed to nothing", which is the opposite
             state and is deliberately not representable.
+        permissions:
+          type: array
+          items: { type: string, enum: [read, write, admin] }
+          description: |
+            Permissions a delegation may exercise. Empty means **no ceiling**:
+            it reaches every verb its person holds.
         created_at: { type: string, format: date-time }
         last_refreshed_at:
           type: [string, 'null']
@@ -453,6 +459,38 @@ components:
             same application is approved again. Refused beside
             `service_account_id`: an agent's reach is its grants, which are an
             administrator's to set.
+        permissions:
+          type: array
+          items: { type: string, enum: [read, write, admin] }
+          minItems: 1
+          description: |
+            Permissions a delegation may exercise, chosen by the person
+            approving. Omit for no ceiling.
+
+            A **set**, not a level: `write` does not imply `read` anywhere in
+            this model, so `["write"]` alone is an ingest client that cannot
+            read back what it wrote. Empty is refused rather than treated as
+            "no restriction" — that would be a delegation that can do nothing,
+            which is a different thing and one nobody means to write.
+
+            It bounds administration as well as documents. A delegation without
+            `admin` is refused by every endpoint an `org_admin` gates, so a
+            read-only delegation of an administrator cannot mint a credential.
+            Refused beside `service_account_id`, on the same argument as
+            `layers`.
+
+            **`admin` is accepted here and is not offered on the consent
+            screen**, which is a deliberate difference rather than a drift. The
+            person that screen is built for arrived from an MCP client, and the
+            MCP surface has no administrative tool — its tools resolve with
+            `read` or `write` — so the choice would do nothing where they are
+            looking and a great deal through this API, where they are not.
+
+            It stays available here because it is not an escalation: a ceiling
+            cannot exceed what its person already holds, so only an `org_admin`
+            can obtain an administrative delegation, and doing so is a weaker
+            act than the service account they could mint instead — it stops the
+            moment they are disabled.
         state:
           type: string
           description: The client's, opaque here, echoed back untouched.

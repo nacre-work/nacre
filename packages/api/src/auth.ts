@@ -1,4 +1,10 @@
-import { authProviders, type OrgRole, type Principal, type ResolvedPrincipal } from '@nacre.work/core'
+import {
+  authProviders,
+  type OrgRole,
+  type Permission,
+  type Principal,
+  type ResolvedPrincipal,
+} from '@nacre.work/core'
 import { jwtVerify, type JWTPayload, type KeyObject } from 'jose'
 
 import { forbidden, unauthorized, type Problem } from './errors.js'
@@ -23,6 +29,14 @@ export interface AuthContext {
   readonly delegation?: {
     readonly id: string
     readonly layers?: readonly string[]
+    /**
+     * The permissions this token may exercise. Absent means no ceiling.
+     *
+     * A set rather than a level, because rule 6 makes permissions unordered —
+     * `{write}` alone is an ingest pipeline that cannot read back what it
+     * wrote. See docs/authz.md, "The permission ceiling".
+     */
+    readonly permissions?: readonly Permission[]
   }
 }
 
@@ -44,7 +58,10 @@ export interface Delegations {
   resolve(
     orgId: string,
     id: string,
-  ): Promise<{ userId: string; role: OrgRole; layers?: readonly string[] } | undefined>
+  ): Promise<
+    | { userId: string; role: OrgRole; layers?: readonly string[]; permissions?: readonly Permission[] }
+    | undefined
+  >
 }
 
 export interface VerifyOptions {
@@ -101,6 +118,54 @@ export interface VerifyOptions {
    * accepted as its user. Invariant 3: a check that cannot run denies.
    */
   readonly delegations?: Delegations
+}
+
+/**
+ * Whether this request may exercise a permission at all.
+ *
+ * The delegation's ceiling, and `true` for everything that is not one. It is
+ * consulted by `contextFor` on the way into `resolve`, which is where it does
+ * the work for documents; this is for the handful of places that ask about a
+ * verb without building a plan.
+ */
+export function delegationPermits(auth: AuthContext, permission: Permission): boolean {
+  const ceiling = auth.delegation?.permissions
+  return ceiling === undefined || ceiling.includes(permission)
+}
+
+/**
+ * Whether this request administers the organization.
+ *
+ * Two facts, deliberately kept as two. `role` is what the *principal* is and
+ * decides what they reach — an `org_admin` holds admin on every scope with no
+ * grants at all, by rule 3. The ceiling is what this *token* may exercise, and
+ * a delegation restricted to `{read}` must not mint a service account key even
+ * though its person could.
+ *
+ * Rewriting the role to `member` instead would be the same check in one place
+ * and would be wrong: `member` reaches only what grants give, so an `org_admin`
+ * with a read-only delegation would stop reading the organization they came to
+ * delegate. So the role stays, and every handler that gated on
+ * `auth.role === 'org_admin'` asks this.
+ *
+ * `scripts/check-admin-gate.mjs` is what keeps that true — a rule that has to
+ * hold in nine handlers, with nothing that knows nine, is the defect this
+ * repository keeps re-deriving.
+ */
+export function administers(auth: AuthContext): boolean {
+  return auth.role === 'org_admin' && delegationPermits(auth, 'admin')
+}
+
+/**
+ * Whether this request administers *tenants* — the multi-tenancy module's role.
+ *
+ * No ceiling question: `platform_admin` is never delegable, refused at consent
+ * and again at validation, so a request carrying this role is never a
+ * delegation. Stated as its own function anyway, because the alternative is a
+ * raw comparison and the check refuses those.
+ */
+export function administersTenants(auth: AuthContext): boolean {
+  return auth.role === 'platform_admin'
 }
 
 /**
@@ -336,6 +401,7 @@ export async function authenticate(
     delegation: {
       id: claims.del,
       ...(delegation.layers === undefined ? {} : { layers: delegation.layers }),
+      ...(delegation.permissions === undefined ? {} : { permissions: delegation.permissions }),
     },
   }
 }

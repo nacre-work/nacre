@@ -178,7 +178,10 @@ a genuinely slow migration is not killed for being slow.
 ## Rolling back
 
 **Rolling the schema back is a restore, not a command.** Take the backup
-described in the restore runbook before an upgrade, not after it goes wrong.
+[backup.md](./backup.md) describes before an upgrade, not after it goes wrong.
+That page also says the part that is not obvious: the database is dumped
+*before* the bucket is copied, because ingest writes a document's bytes before
+its row.
 
 Rolling the *code* back while leaving the schema forward is safe **only** where
 every migration in between was additive. This is a per-release fact and it is in
@@ -239,6 +242,44 @@ one real ingest is for.
 
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
+
+### 0.7.0 — a delegation can be restricted to reading
+
+**Run the migrator.** Migration 0026 adds one nullable column to
+`oauth_consents` with two CHECKs. Nothing existing changes meaning: `NULL` is
+"no ceiling", which is what every delegation written by 0.6.0 has.
+
+**The consent screen now asks what an application may do**, not only which
+layers it may reach. Two tick boxes, and only *Search and read documents* is
+ticked — a person connecting an MCP client means "let it search", and a screen
+whose default is everything is a screen nobody reads.
+
+Anyone who connected an application under 0.6.0 keeps what they had: no ceiling,
+so the delegation reaches every verb its person holds. Re-approving the same
+application replaces the answer rather than adding to it, so reconnecting is how
+somebody narrows a connection they already made.
+
+**The two are a set, not a level.** `write` does not imply `read` anywhere in
+this model, so a delegation restricted to writing can ingest and cannot search
+what it ingested. That is deliberate and it is what rule 6 exists to express.
+
+**`admin` is a ceiling value and is not on the screen.** The MCP surface has no
+administrative tool, so the choice would do nothing where the person is looking
+and a great deal through the REST API, where they are not. It stays available
+through `POST /v1/oauth/consent` for an `org_admin` who deliberately wants an
+administrative delegation — it is not an escalation, since a ceiling cannot
+exceed what its person already holds, and it stops when they are disabled, which
+a service account key does not. `docs/openapi.yaml` says both halves.
+
+**`initialize` now carries `instructions`**, the MCP field for "how to use this
+server". Nothing to configure. A client that ignores the field is unaffected;
+one that reads it hands its model the things worth knowing — that `404` here is
+deliberate, that an empty search result is an answer rather than an error, and
+that a delegated connection may have been narrowed by the person who approved
+it.
+
+**If you build against the SDK**, `Connection` gained `permissions` and
+`consent()` gained an optional `permissions`. Both are additive.
 
 ### 0.6.0 — an application can act as the person who approved it
 

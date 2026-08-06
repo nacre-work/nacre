@@ -65,7 +65,7 @@ import type {
   SearchOptions,
   SearchService,
 } from './server.js'
-import { withinDelegation, type AuthContext } from './auth.js'
+import { administers, withinDelegation, type AuthContext } from './auth.js'
 
 /**
  * The adapters that put the permission model on the request path.
@@ -358,7 +358,7 @@ export class NacreSearchService implements SearchService {
           grants.filter((g) => g.scope.type === 'document').map((g) => g.scope.id),
         )
         const plan = activeResolver().resolve(
-          { orgId: auth.orgId, role: auth.role, principals, grants, tree },
+          { orgId: auth.orgId, role: auth.role, principals, grants, tree, ...ceilingOf(auth) },
           'read',
         )
 
@@ -961,7 +961,10 @@ export class NacreIngest implements Ingest {
       auth.orgId,
       grants.filter((g) => g.scope.type === 'document').map((g) => g.scope.id),
     )
-    const plan = activeResolver().resolve({ orgId: auth.orgId, role: auth.role, principals, grants, tree }, 'write')
+    const plan = activeResolver().resolve(
+      { orgId: auth.orgId, role: auth.role, principals, grants, tree, ...ceilingOf(auth) },
+      'write',
+    )
     if (plan.kind === 'none') return undefined
 
     const { rows } = await client.query<{ id: string }>(
@@ -1144,7 +1147,10 @@ export class NacreIngest implements Ingest {
         const principals = await principalsFor(client, auth, this.deps.principalsCache)
         const grants = await loadGrants(client, auth.orgId, principals)
         const tree = await loadScopeTree(client, auth.orgId, [documentId])
-        const plan = activeResolver().resolve({ orgId: auth.orgId, role: auth.role, principals, grants, tree }, 'write')
+        const plan = activeResolver().resolve(
+          { orgId: auth.orgId, role: auth.role, principals, grants, tree, ...ceilingOf(auth) },
+          'write',
+        )
         if (plan.kind === 'none') return false
 
         const { rows } = await client.query<{ layer_id: string }>(
@@ -1345,6 +1351,7 @@ async function contextFor(
   principals: ReadonlySet<import('@nacre.work/core').PrincipalRef>
   grants: readonly import('@nacre.work/core').Grant[]
   tree: import('@nacre.work/core').ScopeTree
+  ceiling?: readonly import('@nacre.work/core').Permission[]
 }> {
   const principals = await principalsFor(client, auth, cache)
   const grants = await loadGrants(client, auth.orgId, principals)
@@ -1353,7 +1360,22 @@ async function contextFor(
     auth.orgId,
     grants.filter((g) => g.scope.type === 'document').map((g) => g.scope.id),
   )
-  return { orgId: auth.orgId, role: auth.role, principals, grants, tree }
+  return { orgId: auth.orgId, role: auth.role, principals, grants, tree, ...ceilingOf(auth) }
+}
+
+/**
+ * The delegation's permission ceiling, in the shape `ResolveInput` takes it.
+ *
+ * One function so the three places that build a resolve input cannot disagree,
+ * and so adding a fourth is a compile error rather than a silently unbounded
+ * token. `resolve` applies it before rule 3, which is the part that matters:
+ * an `org_admin` reaches everything by role and by no grant at all, so a
+ * ceiling consulted after that line would not bound the one principal it
+ * exists for.
+ */
+function ceilingOf(auth: AuthContext): { ceiling?: readonly import('@nacre.work/core').Permission[] } {
+  const ceiling = auth.delegation?.permissions
+  return ceiling === undefined ? {} : { ceiling }
 }
 
 interface LayerRow {
@@ -1872,7 +1894,7 @@ export class PostgresWorkspaces implements Workspaces {
     auth: AuthContext,
     input: { slug: string; name: string },
   ): Promise<WorkspaceOutcome> {
-    if (auth.role !== 'org_admin') return { kind: 'denied' }
+    if (!administers(auth)) return { kind: 'denied' }
 
     return withOrg(
       this.pool,

@@ -352,6 +352,11 @@ export interface Connection {
   readonly approvedBy: string
   /** Layers a delegation was narrowed to. Empty means no narrowing. */
   readonly layers: readonly string[]
+  /**
+   * Permissions a delegation may exercise. Empty means no ceiling — it reaches
+   * every verb its person holds.
+   */
+  readonly permissions: readonly ('read' | 'write' | 'admin')[]
   readonly createdAt: string
   readonly lastRefreshedAt: string | null
   readonly revokedAt: string | null

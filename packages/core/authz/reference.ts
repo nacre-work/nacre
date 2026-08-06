@@ -23,6 +23,12 @@ export interface ReferenceInput {
   readonly principals: ReadonlySet<PrincipalRef>
   readonly grants: readonly Grant[]
   readonly tree: ScopeTree
+  /**
+   * The token's permission ceiling. See `ResolveInput.ceiling` — the two are
+   * one concept and the property test compares them, so it is stated here in
+   * the shape the rules are written in and nowhere optimised.
+   */
+  readonly ceiling?: readonly Permission[]
 }
 
 export function referenceAllows(
@@ -30,7 +36,14 @@ export function referenceAllows(
   scope: Scope,
   permission: Permission,
 ): boolean {
-  const { orgId, role, principals, grants, tree } = input
+  const { orgId, role, principals, grants, tree, ceiling } = input
+
+  // The token's permission ceiling, when it has one. Written straight from
+  // docs/authz.md: `authority(delegation) = { p in ceiling : resolve(user, p) }`
+  // — so a permission outside the ceiling is refused whoever holds the token,
+  // before any rule about the principal is consulted. Before rule 3 in
+  // particular, which grants an org_admin everything by role alone.
+  if (ceiling !== undefined && !ceiling.includes(permission)) return false
 
   // Rule 2. platform_admin administers organizations and reads no documents.
   // Checked before anything else so no later rule can grant it access.

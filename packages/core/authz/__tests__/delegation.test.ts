@@ -1,4 +1,6 @@
+import type { Permission } from '@nacre.work/core'
 import {
+  administers,
   authenticate,
   postgresVerification,
   PostgresDocuments,
@@ -68,6 +70,8 @@ let consents: PostgresOAuthConsents
 let authorizations: PostgresOAuthAuthorizations
 let refreshTokens: PostgresOAuthRefreshTokens
 let documents: PostgresDocuments
+/** Documents whose payload was rewritten, so a refusal can be told from a write. */
+const wrote: string[] = []
 
 const context = (userId: string, role: AuthContext['role'] = 'member'): AuthContext => ({
   orgId: ORG,
@@ -100,8 +104,16 @@ const present = async (token: string): Promise<AuthContext | Problem> =>
 const connect = async (
   who: AuthContext,
   layers: readonly string[] = [],
+  /** The permission ceiling. Empty is "no ceiling", as it is at the endpoint. */
+  permissions: readonly Permission[] = [],
 ): Promise<{ token: string; delegationId: string }> => {
-  const delegationId = await consents.record(who, CLIENT, { actsAs: 'user', userId: who.principal.id }, layers)
+  const delegationId = await consents.record(
+    who,
+    CLIENT,
+    { actsAs: 'user', userId: who.principal.id },
+    layers,
+    permissions.length === 0 ? undefined : permissions,
+  )
   return { token: await mint(who.principal.id, delegationId), delegationId }
 }
 
@@ -120,12 +132,16 @@ when('delegation · a person lending their own reach', () => {
     consents = new PostgresOAuthConsents(pool, AS_APP)
     authorizations = new PostgresOAuthAuthorizations(pool, AS_APP)
     refreshTokens = new PostgresOAuthRefreshTokens(pool, AS_APP)
-    // The payload writer is never reached: every case here refuses before the
-    // index is touched, and a port that throws makes that a failure rather than
-    // a silent write.
+    // The payload writer records rather than throws.
+    //
+    // It threw until T24, on the argument that every case here refuses before
+    // the index is touched — which was true of T16-T22 and is exactly what T24
+    // is about: a `{write}` ceiling *should* reach the index, because writing
+    // is what it permits. Recording keeps the assertion available without
+    // making "the write happened" a failure.
     documents = new PostgresDocuments(
       pool,
-      { setMetadata: () => { throw new Error('the index must not be reached in these cases') } },
+      { setMetadata: async (collection, documentId) => { wrote.push(`${collection}:${documentId}`) } },
       AS_APP,
     )
 
@@ -182,6 +198,7 @@ when('delegation · a person lending their own reach', () => {
 
   /** The person reads both layers, and every test starts from that. */
   beforeEach(async () => {
+    wrote.length = 0
     await disabled(false)
     const c = await pool.connect()
     try {
@@ -337,6 +354,84 @@ when('delegation · a person lending their own reach', () => {
     expect(auth).not.toBeInstanceOf(Problem)
     if (auth instanceof Problem) return
     expect(await documents.read(auth, DOC_IN_L)).toBeUndefined()
+  })
+
+  it('T23 · a {read} ceiling reads, and every write path answers as no-write', async () => {
+    const c = await pool.connect()
+    try {
+      await c.query(
+        `INSERT INTO grants (org_id, principal_type, principal_id, scope_type, scope_id, permission, effect)
+         VALUES ($1,'user',$2,'layer',$3,'write','allow')`,
+        [ORG, PERSON, LAYER_L],
+      )
+    } finally {
+      c.release()
+    }
+
+    const { token } = await connect(context(PERSON), [], ['read'])
+    const auth = await present(token)
+    expect(auth).not.toBeInstanceOf(Problem)
+    if (auth instanceof Problem) return
+    expect(auth.delegation?.permissions).toEqual(['read'])
+
+    expect(await documents.read(auth, DOC_IN_L)).toBeDefined()
+    // The person holds `write` on this layer and the delegation does not, so
+    // the write path answers exactly as it would for somebody with no write
+    // grant at all — `false`, which the handler turns into 404.
+    expect(await documents.updateMetadata(auth, DOC_IN_L, { tag: 'x' })).toBe(false)
+    // And it refused before the index, rather than writing and reporting false.
+    expect(wrote).not.toContain(`org_delegation:${DOC_IN_L}`)
+  })
+
+  it('T24 · a {write} ceiling ingests and reads nothing — rule 6, inherited', async () => {
+    const c = await pool.connect()
+    try {
+      await c.query(
+        `INSERT INTO grants (org_id, principal_type, principal_id, scope_type, scope_id, permission, effect)
+         VALUES ($1,'user',$2,'layer',$3,'write','allow')`,
+        [ORG, PERSON, LAYER_L],
+      )
+    } finally {
+      c.release()
+    }
+
+    const { token } = await connect(context(PERSON), [], ['write'])
+    const auth = await present(token)
+    expect(auth).not.toBeInstanceOf(Problem)
+    if (auth instanceof Problem) return
+
+    // The case a ceiling modelled as a level would have lost: write without
+    // read is a real thing to want, and it is what rule 6 exists to express.
+    expect(await documents.read(auth, DOC_IN_L)).toBeUndefined()
+    expect(await documents.updateMetadata(auth, DOC_IN_L, { tag: 'y' })).toBe(true)
+    // The index was reached, which is the difference between "permitted" and
+    // "refused quietly" that a boolean alone cannot show.
+    expect(wrote).toContain(`org_delegation:${DOC_IN_L}`)
+  })
+
+  it('T25 · an org_admin with a {read} ceiling reads all and administers nothing', async () => {
+    const { token } = await connect(context(ADMIN, 'org_admin'), [], ['read'])
+    const auth = await present(token)
+    expect(auth).not.toBeInstanceOf(Problem)
+    if (auth instanceof Problem) return
+
+    // Rule 3 still applies: they reach the whole organization, including a
+    // layer no grant of theirs names. Rewriting the role to `member` would
+    // have taken this away, which is why role and ceiling stay two facts.
+    expect(auth.role).toBe('org_admin')
+    expect(await documents.read(auth, DOC_IN_L)).toBeDefined()
+    expect(await documents.read(auth, DOC_IN_M)).toBeDefined()
+
+    // And nothing administrative. This is the half a naive ceiling misses: a
+    // read-only delegation that can still mint a credential, and the
+    // credential it mints has no ceiling at all.
+    expect(administers(auth)).toBe(false)
+    // The same person without the ceiling does administer, so the assertion
+    // above is about the ceiling rather than about the fixture.
+    const { token: full } = await connect(context(ADMIN, 'org_admin'), [], [])
+    const unbounded = await present(full)
+    if (unbounded instanceof Problem) throw new Error('expected the unbounded delegation to resolve')
+    expect(administers(unbounded)).toBe(true)
   })
 
   it('T21 · platform_admin is refused at validation, however the token was minted', async () => {

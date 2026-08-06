@@ -35,9 +35,17 @@ import {
   type Metadata,
   type MultipartPart,
   type ProtectedResourceMetadata,
+  type Permission,
 } from '@nacre.work/core'
 
-import { authenticate, rejectTenantOverride, type AuthContext, type VerifyOptions } from './auth.js'
+import {
+  administers,
+  administersTenants,
+  authenticate,
+  rejectTenantOverride,
+  type AuthContext,
+  type VerifyOptions,
+} from './auth.js'
 import { badRequest, internal, notFound, Problem } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
@@ -3084,7 +3092,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // about what a caller can tell apart — it is that a member must not
       // reach module code at all, and "the module happened to have no matching
       // route" is not a reason to be safe.
-      if (auth.role !== 'platform_admin' && auth.role !== 'org_admin') {
+      if (!administersTenants(auth) && !administers(auth)) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -3315,7 +3323,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // build; it is for the multi-tenancy module, which inherits this endpoint
       // and where a platform administrator spans tenants. Writing the rule now
       // costs three lines. Retrofitting it later means auditing every caller.
-      if (auth.role !== 'org_admin' && auth.role !== 'platform_admin') {
+      if (!administers(auth) && !administersTenants(auth)) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -3354,7 +3362,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         // `administrativeOnly` is set here and never read from the request. A
         // caller cannot widen their own view by omitting a parameter, which is
         // the shape this would take if it were a query filter.
-        { ...query, administrativeOnly: auth.role === 'platform_admin' },
+        { ...query, administrativeOnly: administersTenants(auth) },
         page,
       )
 
@@ -3545,7 +3553,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // one from an org-scoped endpoint. Refused here *and* again at
       // validation: this is the reachable path, the other is the one that holds
       // if a token is ever minted some other way.
-      if (delegating && auth.role === 'platform_admin') {
+      if (delegating && administersTenants(auth)) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -3561,6 +3569,42 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
+      // The permission ceiling, which is the dimension a person reaches for
+      // first. Validated here rather than left to the database, so a typo is a
+      // 400 naming the field instead of a constraint violation as a 500.
+      const ceiling = consent['permissions']
+      if (ceiling !== undefined && (!isStringArray(ceiling) || ceiling.some((p) => !(PERMISSIONS as readonly string[]).includes(p)))) {
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'permissions' must be an array of 'read', 'write' or 'admin'.",
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      if (delegating && isStringArray(ceiling) && ceiling.length === 0) {
+        // Empty is not "no ceiling", it is a delegation that can do nothing —
+        // a restriction nobody meant to write, and the database refuses one
+        // too. Omitting the field is how a caller says there is no ceiling.
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'permissions' cannot be empty. Omit it for a delegation with no restriction.",
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      if (!delegating && ceiling !== undefined) {
+        // An agent's reach is its grants, which are an administrator's to set.
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'permissions' restricts a delegation, and this consent names an agent.",
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
       if (!delegating && narrowing !== undefined && narrowing.length > 0) {
         // An agent's reach is its grants, and those are an administrator's to
         // set. Accepting a narrowing here and storing it against a connection
@@ -3630,6 +3674,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         clientId,
         subject,
         narrowing === undefined ? [] : narrowing,
+        isStringArray(ceiling) ? (ceiling as readonly Permission[]) : undefined,
       )
       const code = generateCode()
       const common = {
@@ -3666,7 +3711,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           client_name: client.clientName,
           acts_as: subject.actsAs,
           ...(delegating
-            ? { delegation_id: consentId, layers: narrowing ?? [] }
+            ? {
+                delegation_id: consentId,
+                layers: narrowing ?? [],
+                // Recorded because it is the answer to "why can this
+                // application not delete anything", asked six months later.
+                permissions: isStringArray(ceiling) ? ceiling : 'no ceiling',
+              }
             : { service_account_id: serviceAccountId as string }),
         },
         requestId,
@@ -3689,7 +3740,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // in the organization rather than an object inside a workspace, and there
       // is no scope to check it against — someone holding admin on one layer
       // must not be able to mint credentials.
-      if (auth.role !== 'org_admin') {
+      if (!administers(auth)) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -3763,7 +3814,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
     const accountMatch = /^\/v1\/service-accounts\/([^/]+)$/.exec(instance)
     if (req.method === 'DELETE' && accountMatch && options.serviceAccounts !== undefined) {
-      if (auth.role !== 'org_admin') {
+      if (!administers(auth)) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -3804,7 +3855,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     const principalPath = /^\/v1\/(users|groups)(\/.*)?$/.exec(instance)
     if (principalPath !== null) {
       const port = principalPath[1] === 'users' ? options.users : options.groups
-      if (port !== undefined && auth.role !== 'org_admin') {
+      if (port !== undefined && !administers(auth)) {
         await options.audit.write({
           orgId: auth.orgId,
           actor: `${auth.principal.type}:${auth.principal.id}`,

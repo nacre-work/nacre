@@ -31,7 +31,15 @@ export type {
   ServiceAccountPort,
   ServiceAccountView,
 } from './server.js'
-export { authenticate, findTenantOverride, rejectTenantOverride } from './auth.js'
+export {
+  administers,
+  administersTenants,
+  authenticate,
+  delegationPermits,
+  findTenantOverride,
+  rejectTenantOverride,
+  withinDelegation,
+} from './auth.js'
 export type { AuthContext, Delegations, VerifyOptions } from './auth.js'
 export { postgresVerification } from './verification.js'
 export {

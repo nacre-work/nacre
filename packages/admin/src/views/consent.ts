@@ -113,9 +113,38 @@ export async function consentView(root: HTMLElement): Promise<void> {
   const narrowing = h('div', { class: 'field-group' })
   const boxes: HTMLInputElement[] = []
 
+  /**
+   * What the application may do, and the dimension people reach for first.
+   *
+   * `read` is ticked and the others are not, deliberately. A consent screen
+   * whose default is everything is a consent screen nobody reads, and a person
+   * connecting an MCP client means "let it search". Ticking `write` is a
+   * decision they make rather than one they inherit.
+   *
+   * Independent boxes rather than a level, because `write` does not imply
+   * `read` anywhere in this model: write alone is an ingest client that cannot
+   * read back what it wrote, and it is a real thing to want.
+   *
+   * Two boxes and not three. See where they are built for why `admin` is not
+   * on this screen.
+   */
+  const verb = (value: string, label: string, note: string, checked: boolean): HTMLInputElement => {
+    const box = h('input', { type: 'checkbox', value, ...(checked ? { checked: 'checked' } : {}) }) as HTMLInputElement
+    verbs.push(box)
+    ceiling.append(
+      h('label', { class: 'choice' }, box,
+        h('span', {}, h('strong', {}, label), h('span', { class: 'hint' }, ' — ' + note)),
+      ),
+    )
+    return box
+  }
+  const ceiling = h('div', { class: 'field-group' })
+  const verbs: HTMLInputElement[] = []
+
   const showAgentFields = (): void => {
     agentPanel.hidden = !asAgent.checked
     narrowing.hidden = asAgent.checked
+    ceiling.hidden = asAgent.checked
   }
   asSelf.addEventListener('change', showAgentFields)
   asAgent.addEventListener('change', showAgentFields)
@@ -144,6 +173,28 @@ export async function consentView(root: HTMLElement): Promise<void> {
         chosen.append(h('option', { value: a.id }, `${a.name} · ${a.keyPrefix}…`))
       }
     }
+
+    // What this person can offer. `admin` only where they hold it: a member
+    // has no organization-wide administration to lend, so offering the box
+    // would be offering something that resolves to nothing — and the honest
+    // reading of a screen is that everything on it does something.
+    clear(ceiling)
+    verbs.length = 0
+    verb('read', 'Search and read documents', 'what it can see is exactly what you can see', true)
+    verb('write', 'Add and change documents', 'it can ingest and delete in the layers below', false)
+
+    // No `admin` box, and that is about *this screen* rather than about the
+    // mechanism. The person arriving here was sent by an MCP client, and the
+    // MCP surface has no administrative tool at all — its five tools resolve
+    // with read or write — so the box would do nothing where they are looking
+    // and something considerable through the REST API, where they are not.
+    //
+    // The ceiling still admits it and `POST /v1/oauth/consent` still takes it,
+    // for an `org_admin` who deliberately wants an administrative delegation:
+    // it is not an escalation, since a ceiling cannot exceed what its person
+    // already holds, and it dies when they are disabled, which a service
+    // account's key does not. docs/openapi.yaml says so, so the contract and
+    // this screen do not quietly disagree.
 
     // The layers this person reads, which is the only sensible set to narrow
     // to: the delegation cannot reach anything else anyway, so offering more
@@ -195,12 +246,22 @@ export async function consentView(root: HTMLElement): Promise<void> {
         // and it is not a state this offers.
         const layers = boxes.filter((b) => b.checked).map((b) => b.value)
 
+        // Permissions are the other way round: none ticked *is* an application
+        // that can do nothing, so it is refused here rather than sent as an
+        // empty array the server would have to interpret.
+        const permissions = verbs.filter((b) => b.checked).map((b) => b.value) as ('read' | 'write' | 'admin')[]
+        if (!asAgent.checked && permissions.length === 0) {
+          message.textContent = 'Choose at least one thing the application may do.'
+          return
+        }
+
         const to = await api.consent({
           clientId: request.clientId,
           redirectUri: request.redirectUri,
           codeChallenge: request.codeChallenge,
           ...(serviceAccountId === undefined ? {} : { serviceAccountId }),
           ...(serviceAccountId === undefined && layers.length > 0 ? { layers } : {}),
+          ...(serviceAccountId === undefined ? { permissions } : {}),
           ...(request.state === undefined ? {} : { state: request.state }),
           ...(request.resource === undefined ? {} : { resource: request.resource }),
         })
@@ -255,6 +316,9 @@ export async function consentView(root: HTMLElement): Promise<void> {
             ' — it reaches exactly what you reach, checked again on every request.'),
         ),
       ),
+      h('p', { class: 'hint' }, 'It may'),
+      ceiling,
+      h('p', { class: 'hint' }, 'In these layers'),
       narrowing,
       agentChoice,
       agentPanel,

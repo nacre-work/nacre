@@ -31,6 +31,27 @@ export interface ResolveInput {
   /** Grants for these principals. Extra rows are tolerated and filtered here. */
   readonly grants: readonly Grant[]
   readonly tree: ScopeTree
+  /**
+   * The permissions this *token* may exercise, when it is a delegation.
+   *
+   * Absent means no ceiling, which is every principal that is not one. Present,
+   * it is a restriction on top of whatever the person resolves to: a plan for a
+   * permission outside it is `none`, so a `{read}` delegation of somebody
+   * holding `write` reaches nothing on the write path. docs/authz.md, "The
+   * permission ceiling".
+   *
+   * A field on the input rather than a check in front of each `resolve` call,
+   * and that is the whole reason it is here: a check in front of N call sites
+   * is the check missing from the N+1th, and this repository has that defect
+   * written on its wall. It is also why it sits *before* rule 2 and rule 3
+   * below — an `org_admin` reaches everything by role and by no grant at all,
+   * so a ceiling applied after that line would not apply to the one principal
+   * it matters most for.
+   *
+   * A **set**, because rule 6 makes permissions unordered. `{write}` alone is
+   * an ingest pipeline that cannot read back what it wrote.
+   */
+  readonly ceiling?: readonly Permission[]
 }
 
 /**
@@ -46,7 +67,13 @@ export interface ResolveInput {
  * answering the same question, and only one of them is obviously correct.
  */
 export function resolve(input: ResolveInput, permission: Permission): AccessPlan {
-  const { orgId, role, principals, grants, tree } = input
+  const { orgId, role, principals, grants, tree, ceiling } = input
+
+  // The token's ceiling, before the principal's own reach — including before
+  // rule 3, which grants an org_admin everything with no grant to filter.
+  // Outside the ceiling there is nothing to compute: this permission is not one
+  // this token may exercise, whoever is holding it.
+  if (ceiling !== undefined && !ceiling.includes(permission)) return { kind: 'none' }
 
   // Rule 2, before anything else: platform_admin reads no documents.
   if (role === 'platform_admin') return { kind: 'none' }
