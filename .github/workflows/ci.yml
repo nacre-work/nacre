@@ -61,6 +61,11 @@ jobs:
       # hands back the unprofiled services — so a typo starts a working stack
       # and nobody notices.
       - run: pnpm lint:compose
+      # Every workflow that gates a pull request can be started by hand. The
+      # reason lived in a comment in this file, which is why three workflows had
+      # it and the required one did not — a comment does not travel to the next
+      # file, and it certainly does not travel to another repository.
+      - run: pnpm lint:workflows
       # docs/config.md is the contract a self-hoster deploys against. This fails
       # if the core reads a NACRE_ variable the reference omits, or .env.example
       # seeds one it does not explain — the "validated at startup and read by

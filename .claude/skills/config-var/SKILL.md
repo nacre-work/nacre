@@ -31,6 +31,20 @@ A variable that exists in code but not in `docs/config.md` is invisible to the
 person deploying this, which for a self-hosted product is the person who
 matters most.
 
+**And the four have to agree, not merely all exist.** `lint:config` checks
+existence and that is not the same thing. `NACRE_MCP_CANONICAL_URL` was present
+in all four and they contradicted each other: `docker-compose.yml` omitted it
+from the `mcp` service with eleven lines explaining that its absence *was* the
+fix, and `.env.example` seeded it — and `env_file` sits on the shared service
+anchor, so the value reached the container anyway. Every deployment that started
+from `cp .env.example .env` had the fix silently undone.
+
+So before adding a line to `.env.example`, ask what happens when a service
+deliberately does **not** set that variable. If the answer is "the seeded value
+wins", the variable belongs commented out with the reason, and the reason
+belongs in `lint:compose` rather than only in a comment — a comment does not
+travel to the next file.
+
 ## Compose profiles
 
 | Profile | Contains | For |
