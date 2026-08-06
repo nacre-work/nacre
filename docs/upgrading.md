@@ -516,9 +516,10 @@ client that was sending them, nothing changes. If you have an intermediary that
 
 **There is an authorization server.** A client discovers it, registers, and
 completes the authorization code flow with PKCE — and the token it gets acts as
-a **service account**, never as the person who approved it. `/oauth/consent` is
-the only part inside the authenticated surface, because that is where a
-signed-in person picks the agent.
+whatever the person chose: as **them**, reaching exactly what they reach and
+recomputed on every request, or as an **agent** with its own grants.
+`/oauth/consent` is the only part inside the authenticated surface, because that
+is where a signed-in person makes that choice.
 
 Two consequences for an existing deployment:
 

@@ -21,11 +21,12 @@ import { PostgresServiceAccounts } from '../service-keys.js'
 /**
  * The consent flow, against a real database.
  *
- * The property under test is not "a code round-trips". It is the one decision
- * the whole feature turns on: **the code is exchanged for authority to act as a
- * service account, and never as the person who approved it.** A consent screen
- * that mints the approver's own token would pass every mechanical check here
- * and be the wrong product.
+ * The property under test is not "a code round-trips". It is that a code is
+ * exchanged for the authority the person **chose**, and for nothing else. This
+ * file covers the agent half: naming a service account gets that account's
+ * reach and never the approver's, which is what keeps "what may this agent
+ * read" a separate question from "what may you read". The delegated half is
+ * `packages/core/authz/__tests__/delegation.test.ts` — T16-T22.
  *
  * The rest is the part that has to be right because it is a credential:
  * exchange exactly once, PKCE actually compared, and a code that belongs to one

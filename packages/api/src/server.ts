@@ -1679,15 +1679,17 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   // ─────────────────────── the authorization server ───────────────────────
   //
   // Three endpoints, and one decision running through all of them: the token
-  // this flow issues acts as a **service account**, never as the person who
-  // signed in. A consent screen that hands an agent your authority collapses
-  // "what may this agent read" into "what may you read", which is the
+  // this flow issues acts as whatever the *person* chose at consent — as them,
+  // or as an agent. Both are offered because they are different acts. A
+  // delegation reaches exactly what its person reaches and is recomputed every
+  // request; an agent is a principal with its own grants, and collapsing "what
+  // may this agent read" into "what may you read" would throw away the
   // distinction this whole product is built on.
   //
   // Unauthenticated by necessity — a client arrives here with no credential,
   // which is what it came to get. Authority is created at exactly one point:
   // `POST /v1/oauth/consent`, which is inside the authenticated surface and is
-  // where a signed-in person picks the agent.
+  // where a signed-in person makes that choice.
   if (options.oauth !== undefined && (instance === REGISTER_PATH || instance === AUTHORIZE_PATH || instance === TOKEN_PATH)) {
     const oauth = options.oauth
 

@@ -465,11 +465,18 @@ case is marked implemented without a test carrying its marker — so the list
 cannot drift in either direction. `pnpm authz:pending` prints what is
 outstanding, and the CI job prints it on green runs too.
 
-**T16–T22 are specified above and outstanding as of this commit.** They are
-written first on purpose: a test written after the code it covers gets written
-to match what was built rather than what was specified, and delegated authority
-is the one interface that can break the six invariants from a direction none of
-T1–T15 approaches. `authz:pending` names them until they run.
+**T16–T22 run**, against a real PostgreSQL, and each was checked by removing
+the thing it guards and watching it go red. They were written before the
+implementation on purpose: a test written after the code it covers gets written
+to match what was built rather than what was specified.
+
+Delegated authority is built. A connection may act as the person who approved
+it; the token carries their id and the connection's, never a permitted set; the
+authentication path asks the database on every request whether that authority
+may still be exercised; and the narrowing is enforced wherever a layer id and a
+document meet — as a `must` inside the index traversal on search, and as a
+refusal on the paths that hold one row and have no traversal to put a clause
+inside of.
 
 That makes `acl-invariants` a gate on what this document specifies — and only on
 that. A case nobody has thought to write down is still unguarded, and adding one
