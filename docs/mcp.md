@@ -186,6 +186,23 @@ The MCP server is a **resource server**, not an authorization server.
   A deployment that would rather use its own identity provider names it in
   `NACRE_OAUTH_AUTHORIZATION_SERVER`, and then the document points there and
   this flow is simply not the one clients take.
+- **`initialize` carries `instructions`.** The specification has a field for
+  "how to use this server" and this sent nothing in it, so a client's model got
+  tool schemas and no idea that a `404` here is deliberate — it retries,
+  rephrases, and eventually reports the server as broken.
+
+  What is in it is what is true of *this server*: that search is filtered inside
+  the index traversal so `top_k` returns k permitted results, that an empty
+  result is an answer rather than an error, that "not permitted" and "not there"
+  are one reply on purpose, that `write` does not imply `read`, and that a
+  delegated connection may have been restricted further by the person who
+  approved it. Not a workflow — "how to onboard a team" spans this product and
+  others, changes on a different clock, and would rot here.
+
+  One string in `instructions.ts`, used by both transports, with a parity case
+  that asserts it is present as well as identical: two transports agreeing on
+  nothing is still agreement, and that is what the absence looked like.
+
 - **Client registration is not this transport's** — CIMD and DCR are both
   transactions between a client and an *authorization server*, and this
   transport is not one: it verifies tokens and issues none. There is no

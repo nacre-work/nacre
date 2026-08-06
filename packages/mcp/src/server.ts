@@ -19,6 +19,7 @@ import {
   type VerifyOptions,
 } from '@nacre.work/api'
 
+import { INSTRUCTIONS } from './instructions.js'
 import { catalog, type Layer, type ToolDefinition } from './tools.js'
 
 /** The revision this server prefers — the head of PROTOCOL_VERSIONS. */
@@ -699,6 +700,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
           // not serve is how a client comes back with a call that 404s.
           capabilities: { tools: {} },
           serverInfo: { name: 'nacre', version: options.serverVersion ?? '0.0.0' },
+          // The specification's field for "how to use this server", which we
+          // sent nothing in. One string shared with STDIO — see
+          // instructions.ts, and transport-parity.test.ts asks both.
+          instructions: INSTRUCTIONS,
         },
       })
       return

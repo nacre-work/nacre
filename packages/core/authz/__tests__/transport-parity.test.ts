@@ -96,6 +96,22 @@ const SHARED: readonly {
     compare: (r) => (r.serverInfo as { name?: string } | undefined)?.name,
   },
   {
+    // The specification's field for "how to use this server". It was absent
+    // from both, which is the quiet half of this failure mode: two transports
+    // agreeing on nothing is still agreement, so the case asserts it is
+    // *present* as well as identical.
+    name: 'initialize carries the same instructions',
+    method: 'initialize',
+    params: { protocolVersion: '2025-11-25', capabilities: {} },
+    compare: (r) => {
+      const text = r.instructions
+      if (typeof text !== 'string' || text.length === 0) {
+        throw new Error('initialize sent no instructions; the field is what a client hands its model')
+      }
+      return text
+    },
+  },
+  {
     name: 'server/discover advertises the same versions',
     method: 'server/discover',
     params: {},

@@ -4,6 +4,8 @@ import { createInterface } from 'node:readline'
 import { authenticate, Problem, type AuthContext, type VerifyOptions } from '@nacre.work/api'
 import { logger } from '@nacre.work/core'
 
+import { INSTRUCTIONS } from './instructions.js'
+
 import { catalog } from './tools.js'
 import { DISCOVER_TTL_MS, LEGACY_PROTOCOL_VERSIONS, PROTOCOL_VERSION, PROTOCOL_VERSIONS } from './server.js'
 import type { Layers, ToolRunner } from './server.js'
@@ -147,6 +149,7 @@ async function dispatch(
             : LEGACY_PROTOCOL_VERSIONS[0],
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'nacre', version: options.serverVersion ?? '0.0.0' },
+        instructions: INSTRUCTIONS,
       }
     }
 
