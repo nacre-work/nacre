@@ -338,9 +338,20 @@ export interface Connection {
   readonly id: string
   readonly clientId: string
   readonly clientName: string
-  readonly serviceAccountId: string
-  readonly serviceAccountName: string
+  /**
+   * What the application acts as.
+   *
+   * `service_account` is an agent with its own grants; `user` is a delegation,
+   * where the application acts as the person who approved it and reaches
+   * exactly what they reach.
+   */
+  readonly actsAs: 'service_account' | 'user'
+  /** Null for a delegation, which names no agent. */
+  readonly serviceAccountId: string | null
+  readonly serviceAccountName: string | null
   readonly approvedBy: string
+  /** Layers a delegation was narrowed to. Empty means no narrowing. */
+  readonly layers: readonly string[]
   readonly createdAt: string
   readonly lastRefreshedAt: string | null
   readonly revokedAt: string | null

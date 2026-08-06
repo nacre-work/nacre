@@ -159,13 +159,29 @@ The MCP server is a **resource server**, not an authorization server.
   already performs, and until it existed the documented alternative was "create
   a service account by hand, copy its key, paste it into a config file".
 
-  **The token it receives acts as a service account, never as the person who
-  approved it.** A consent screen normally mints the approver's own authority,
-  and that is the wrong answer for this product by a wide margin: an agent is a
-  principal with its own grants, so "what may this agent read" is a different
-  question from "what may you read", and collapsing the two throws away what
-  the permission model is for. The screen a browser is sent to asks *which
-  agent*; revoking that agent stops the client and touches nobody else.
+  **The token it receives acts as the person who approved it, or as an agent,
+  and the screen asks which.** A delegation is the default and is what OAuth is
+  for: the client reaches exactly what its person reaches, recomputed on every
+  request from `grants`, and a person may restrict it to chosen layers at
+  consent. Nothing is granted to a delegation — it holds no grants of its own,
+  so there is no second grant set and no intersection to compute.
+
+  An **agent** is the other answer and it is not the same act. A service
+  account is a principal with its own grants, so "what may this agent read" is
+  a different question from "what may you read", and collapsing the two throws
+  away what the permission model is for. An agent belongs to the organization
+  and survives any one person, which makes it right for an unattended pipeline
+  and wrong for a client on somebody's laptop. Minting one is `org_admin`;
+  delegating is anybody's, which is why offering only agents left every member
+  at a screen they could not complete.
+
+  A delegation is also **more revocable** than an agent's token, and the
+  asymmetry is the right way round. Forgetting an application stops a delegation
+  on the next request, because a delegated token consults a table anyway;
+  an agent's access token is verified against a key and keeps working until it
+  expires. A key pasted into a config file lives for years by design; a person
+  lending their own reach is the kind of thing people change their mind about.
+  docs/authz.md, "Delegated authority".
 
   A deployment that would rather use its own identity provider names it in
   `NACRE_OAUTH_AUTHORIZATION_SERVER`, and then the document points there and

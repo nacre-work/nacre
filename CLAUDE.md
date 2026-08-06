@@ -379,6 +379,44 @@ origin got `{"jsonrpc":…,"error":{"code":-32601}}`, tried to read it as an RFC
 6749 error and reported `Invalid OAuth error response: ZodError`. The envelope
 belongs to `/mcp`; everything else answers `{ error, error_description }`.
 
+**An application can act as the person who approved it.** OAuth exists so a
+*person* can let an application act for them, and the consent flow could only
+offer a service account — both listing and minting one are `org_admin`, so a
+member who followed an MCP client's link reached an empty picker and a `404` on
+Approve. Found by looking at a screenshot, which is the third defect that
+arrived that way.
+
+A **delegation** is deliberately not a fourth principal type. Nothing is granted
+to one, so there is no second grant set and no intersection to compute, and
+therefore no new way for the resolver to be wrong: `authority(delegation) =
+resolve(delegating user)`, unchanged. The token carries the person's id and the
+connection's, never a permitted set — a token carrying one would keep answering
+with the access its holder had at consent, and every revocation would wait for
+it to expire.
+
+`disabled` gains a second meaning on this path and only on this path. It has
+meant "cannot sign in" and not "cannot act", which was safe while every
+authority either passed through sign-in or carried its own `revoked_at`; a
+delegation is authority derived from a person, held by a third party, and
+renewed without them present. So every delegated request makes one indexed read
+before `resolve` — and it is deliberately **not** cached, because the
+effective-principals cache keys on `groups_version`, which does not move on
+`users`. Suspended, not revoked: the grant survives, and renewal refuses without
+*spending* the refresh token, so re-enabling is a restoration rather than a
+reconnection.
+
+The narrowing a person chooses at consent is a `must` on `layer_id` inside the
+index traversal, so `top_k` still returns k permitted results — and it is
+enforced again on every path where a layer id and a document meet, because
+fetching by id is exactly how a narrowing gets walked around otherwise.
+
+`postgresVerification` is the answer to the wiring rather than a third copy of
+it. Three processes verify tokens and each assembled `VerifyOptions` by hand; a
+transport missing `delegations` does not crash, it refuses every delegated token
+with the `401` a forged one gets, so the symptom would have been "this client
+cannot connect", days later, with nothing in a log. The failure mode is why the
+ports arrive as one object.
+
 The collection a reindex replaces is reclaimed. Every migration used to leave a
 full copy of the organization's vectors behind forever, and the runbook's manual
 cleanup was the wrong rule as well as a manual one: "every collection Qdrant has

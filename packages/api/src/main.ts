@@ -49,7 +49,8 @@ import {
 import { rerankerFor } from './rerank.js'
 import { RateLimiter, type LimitPolicy, type Resource } from './limits.js'
 import { PostgresGroups, PostgresUsers } from './principals.js'
-import { PostgresServiceAccounts, PostgresServiceKeys } from './service-keys.js'
+import { PostgresServiceAccounts } from './service-keys.js'
+import { postgresVerification } from './verification.js'
 import { createApi } from './server.js'
 
 /**
@@ -246,7 +247,10 @@ async function main(): Promise<void> {
       algorithms: [jwt.algorithm],
       issuer: config.jwtIssuer,
       audience: config.jwtAudience,
-      serviceKeys: new PostgresServiceKeys(pool, APP_ROLE),
+      // Both database-backed ports, from the one function that knows what a
+      // Postgres verifier is. See verification.ts — this used to be assembled
+      // by hand in three processes.
+      ...postgresVerification(pool, APP_ROLE),
     },
     metrics: registry,
     resourceMetadata: protectedResourceMetadata({
@@ -355,27 +359,42 @@ async function main(): Promise<void> {
       refreshTtlSeconds: config.refreshTokenTtl,
       accessTtlSeconds: config.accessTokenTtl,
       /**
-       * A token for the **agent**, never for the person who approved it.
+       * A token for whatever the connection acts as.
        *
-       * `principal_type: 'service_account'` and `sub` is the account — the same
-       * claims a service account key resolves to, so everything downstream
-       * treats this exactly as it treats one and there is no second notion of
-       * what an agent is. `role` is `member` because a service account has no
-       * organization-wide role: everything it reaches, it reaches by grant.
+       * For an **agent**: `principal_type: 'service_account'` and `sub` is the
+       * account — the same claims a service account key resolves to, so
+       * everything downstream treats this exactly as it treats one and there is
+       * no second notion of what an agent is. `role` is `member` because a
+       * service account has no organization-wide role: everything it reaches,
+       * it reaches by grant.
+       *
+       * For a **delegation**: `principal_type: 'user'` and `sub` is the person,
+       * plus `del` naming the connection. The permitted set is deliberately not
+       * in here — a token carrying one would keep answering with the access its
+       * holder had at consent, and every revocation would wait for it to
+       * expire. `role` is carried for shape and is **not** what the request
+       * runs as: `authenticate` takes the role from the connection's row, so a
+       * demotion applies without waiting for the token to expire.
        */
       mint: async (approved) => {
         const ttl = config.accessTokenTtl
         const now = Math.floor(Date.now() / 1000)
+        const delegated = approved.subject.actsAs === 'user'
         const accessToken = await new SignJWT({
           org: approved.orgId,
-          principal_type: 'service_account',
+          principal_type: delegated ? 'user' : 'service_account',
           role: 'member',
+          ...(delegated ? { del: approved.consentId } : {}),
         })
           .setProtectedHeader({
             alg: jwt.algorithm,
             ...(jwt.keyId === undefined ? {} : { kid: jwt.keyId }),
           })
-          .setSubject(approved.serviceAccountId)
+          .setSubject(
+            approved.subject.actsAs === 'user'
+              ? approved.subject.userId
+              : approved.subject.serviceAccountId,
+          )
           .setIssuer(config.jwtIssuer)
           .setAudience(config.jwtAudience)
           .setIssuedAt(now)

@@ -92,6 +92,8 @@ jobs:
         run: pnpm test:acl:group "truth table"
       - name: T11-T15 · adversarial
         run: pnpm test:acl:group "adversarial"
+      - name: T16-T22 · delegated authority
+        run: pnpm test:acl:group "delegation"
 
       # Its own step for the same reason as the rest, and it needs one: the
       # group selectors above are literal, so a file whose describe block

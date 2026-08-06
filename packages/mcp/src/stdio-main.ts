@@ -56,7 +56,7 @@ async function main(): Promise<void> {
     ])
   }
 
-  const { pool, layers, tools, serviceKeys } = buildServices(config)
+  const { pool, layers, tools, verification } = buildServices(config)
 
   try {
     await serveStdio({
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
         algorithms: [jwt.algorithm],
         issuer: config.jwtIssuer,
         audience: config.jwtAudience,
-        serviceKeys,
+        ...verification,
       },
       serviceKey,
       layers,

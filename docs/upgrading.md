@@ -240,6 +240,45 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.6.0 — an application can act as the person who approved it
+
+**Run the migrator.** Migration 0025 adds one column to `oauth_consents` and to
+`oauth_authorizations`, relaxes a `NOT NULL` on each, and creates
+`oauth_consent_layers`. Nothing existing changes meaning: `acts_as` defaults to
+`service_account`, which is what every connection written before this release
+is.
+
+**Nothing else to do**, and nothing you have stops working. Every existing
+connection keeps acting as its agent, every issued token keeps verifying, and
+every refresh token keeps rotating.
+
+**What is new is that a member can now complete the consent flow.** It used to
+offer only a service account, and both listing and minting one are `org_admin`
+— so anybody else who followed an MCP client's link reached a screen they could
+not use. Approving as yourself is now the default: the application acts as you
+and reaches exactly what you reach, recomputed from `grants` on every request. A
+person may restrict it to chosen layers at consent.
+
+**One behaviour changes for an operator, and it is worth knowing before you
+need it.** `disabled` has meant "cannot sign in" and not "cannot act". On this
+path it now means both: disabling a person suspends every delegation they have
+approved, with `401`, on the next request. It is a **suspension** and not a
+revocation — the grants survive, the refresh tokens are not spent, and
+re-enabling them restores every connection without anybody reconnecting.
+
+So disabling a departing colleague now also stops the applications they had
+connected, which is almost certainly what you wanted it to do already. Service
+accounts are unaffected: an agent belongs to the organization, not to a person.
+
+**If you build against the SDK**, `Connection.serviceAccountId` and
+`serviceAccountName` are `string | null` — a delegation names no agent — and
+`Connection` gained `actsAs` and `layers`. `consent()`'s `serviceAccountId` is
+optional now; omitting it is what makes the approval a delegation.
+
+**If you run a split deployment**, nothing to configure. The MCP transport
+verifies delegated tokens through the same code path as the API, from the same
+database, and needs no key it did not already have.
+
 ### 0.5.8 — a scanned PDF stops reporting success
 
 **Nothing to do**, unless you have documents that were accepted and index
@@ -516,9 +555,10 @@ client that was sending them, nothing changes. If you have an intermediary that
 
 **There is an authorization server.** A client discovers it, registers, and
 completes the authorization code flow with PKCE — and the token it gets acts as
-a **service account**, never as the person who approved it. `/oauth/consent` is
-the only part inside the authenticated surface, because that is where a
-signed-in person picks the agent.
+whatever the person chose: as **them**, reaching exactly what they reach and
+recomputed on every request, or as an **agent** with its own grants.
+`/oauth/consent` is the only part inside the authenticated surface, because that
+is where a signed-in person makes that choice.
 
 Two consequences for an existing deployment:
 

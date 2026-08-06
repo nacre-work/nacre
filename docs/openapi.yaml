@@ -373,16 +373,33 @@ components:
             always `member`; anything it reaches, it reaches through a grant.
     Connection:
       type: object
-      required: [id, client_id, client_name, service_account_id, service_account_name, approved_by, created_at]
+      required: [id, client_id, client_name, acts_as, service_account_id, service_account_name, approved_by, created_at, layers]
       properties:
         id: { type: string, format: uuid }
         client_id: { type: string }
         client_name:
           type: string
           description: Self-asserted at registration. The redirect URI is what decides where a code goes.
-        service_account_id: { type: string, format: uuid }
-        service_account_name: { type: string }
+        acts_as:
+          type: string
+          enum: [service_account, user]
+          description: |
+            What the application acts as. `service_account` is an agent with its
+            own grants; `user` is a delegation, where the application acts as
+            the person who approved it and reaches exactly what they reach.
+        service_account_id:
+          type: [string, 'null']
+          format: uuid
+          description: Null for a delegation, which names no agent.
+        service_account_name: { type: [string, 'null'] }
         approved_by: { type: string, format: uuid }
+        layers:
+          type: array
+          items: { type: string, format: uuid }
+          description: |
+            Layers a delegation was narrowed to at consent. Empty means **no
+            narrowing** — never "narrowed to nothing", which is the opposite
+            state and is deliberately not representable.
         created_at: { type: string, format: date-time }
         last_refreshed_at:
           type: [string, 'null']
@@ -390,7 +407,7 @@ components:
         revoked_at: { type: [string, 'null'] }
     ConsentRequest:
       type: object
-      required: [client_id, redirect_uri, code_challenge, service_account_id]
+      required: [client_id, redirect_uri, code_challenge]
       properties:
         client_id:
           type: string
@@ -412,6 +429,30 @@ components:
           description: |
             The agent the client will act as. Must be visible to the caller —
             one they cannot see and one that does not exist are the same answer.
+
+            **Omit it to approve as yourself.** Naming an agent is what makes
+            this the agent flow; naming nobody is a delegation, where the token
+            acts as the signed-in person and reaches exactly what they reach.
+            Not a mode flag beside this field, because two ways to say one thing
+            is two ways for them to disagree.
+
+            A `platform_admin` may not delegate: it spans tenants, so a
+            delegation of it would be an escalation out of the organization this
+            screen is scoped to. Refused here and again at token validation.
+        layers:
+          type: array
+          items: { type: string, format: uuid }
+          description: |
+            Layer ids a delegation is restricted to, chosen by the person
+            approving. It can only ever remove: the ids become a `must` on
+            `layer_id` inside the index traversal, beside the permission filter,
+            so `top_k` still returns k permitted results.
+
+            Every id must be one the caller can read — `404` otherwise, for an
+            unknown id and an unreadable one alike. Replaced wholesale when the
+            same application is approved again. Refused beside
+            `service_account_id`: an agent's reach is its grants, which are an
+            administrator's to set.
         state:
           type: string
           description: The client's, opaque here, echoed back untouched.

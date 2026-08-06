@@ -42,7 +42,14 @@ import { badRequest, internal, notFound, Problem } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
 import type { Login, Tokens } from './login.js'
-import type { OAuthAuthorizations, OAuthClients, OAuthConsents, OAuthRefreshTokens } from './oauth-store.js'
+import type {
+  ConsentSubject,
+  MintRequest,
+  OAuthAuthorizations,
+  OAuthClients,
+  OAuthConsents,
+  OAuthRefreshTokens,
+} from './oauth-store.js'
 import { looksLikeEmail, type GroupMember, type Groups, type GroupView, type Users, type UserView } from './principals.js'
 import { clientSource } from './source.js'
 import {
@@ -688,13 +695,16 @@ export interface OAuthServer {
    */
   readonly accessTtlSeconds: number
   /**
-   * Mint an access token for the approved **service account**.
+   * Mint an access token for what the connection acts as.
    *
-   * Never for the person who consented. That is the whole design: they
-   * authenticate, the agent is authorized, and revoking one does not touch the
-   * other.
+   * Two shapes, and the union is what keeps them apart. A **service account**
+   * connection mints the agent's own token: the person authenticates, the agent
+   * is authorized, and revoking one does not touch the other. A **delegation**
+   * mints a token for the person, carrying the connection's id as `del` — so
+   * every request re-resolves their access and the connection can be ended.
+   * docs/authz.md, "Delegated authority".
    */
-  mint(approved: { orgId: string; serviceAccountId: string }): Promise<{ accessToken: string; expiresIn: number }>
+  mint(approved: MintRequest): Promise<{ accessToken: string; expiresIn: number }>
 }
 
 export interface ApiOptions {
@@ -1669,15 +1679,17 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   // ─────────────────────── the authorization server ───────────────────────
   //
   // Three endpoints, and one decision running through all of them: the token
-  // this flow issues acts as a **service account**, never as the person who
-  // signed in. A consent screen that hands an agent your authority collapses
-  // "what may this agent read" into "what may you read", which is the
+  // this flow issues acts as whatever the *person* chose at consent — as them,
+  // or as an agent. Both are offered because they are different acts. A
+  // delegation reaches exactly what its person reaches and is recomputed every
+  // request; an agent is a principal with its own grants, and collapsing "what
+  // may this agent read" into "what may you read" would throw away the
   // distinction this whole product is built on.
   //
   // Unauthenticated by necessity — a client arrives here with no credential,
   // which is what it came to get. Authority is created at exactly one point:
   // `POST /v1/oauth/consent`, which is inside the authenticated surface and is
-  // where a signed-in person picks the agent.
+  // where a signed-in person makes that choice.
   if (options.oauth !== undefined && (instance === REGISTER_PATH || instance === AUTHORIZE_PATH || instance === TOKEN_PATH)) {
     const oauth = options.oauth
 
@@ -3435,9 +3447,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             id: c.id,
             client_id: c.clientId,
             client_name: c.clientName,
-            service_account_id: c.serviceAccountId,
+            // What it acts as, named rather than inferred from which of the
+            // two id fields came back — the screen has to tell a person "this
+            // application acts as you" from "this application acts as an
+            // agent", and those are different sentences.
+            acts_as: c.subject.actsAs,
+            service_account_id: c.subject.actsAs === 'service_account' ? c.subject.serviceAccountId : null,
             service_account_name: c.serviceAccountName,
             approved_by: c.approvedBy,
+            // Empty means the delegation reaches everything its approver does.
+            layers: c.layers,
             created_at: c.createdAt,
             last_refreshed_at: c.lastRefreshedAt,
             revoked_at: c.revokedAt,
@@ -3503,12 +3522,50 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       const redirectUri = need('redirect_uri')
       const codeChallenge = need('code_challenge')
       const serviceAccountId = need('service_account_id')
-      if (clientId === undefined || redirectUri === undefined || codeChallenge === undefined || serviceAccountId === undefined) {
+      if (clientId === undefined || redirectUri === undefined || codeChallenge === undefined) {
         const problem = badRequest(
           instance,
           requestId,
-          "'client_id', 'redirect_uri', 'code_challenge' and 'service_account_id' are required.",
+          "'client_id', 'redirect_uri' and 'code_challenge' are required.",
         )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      // Naming an agent is what makes this the agent flow; naming nobody is a
+      // delegation. Not a mode flag beside the field, because two ways to say
+      // one thing is two ways for them to disagree — and this endpoint used to
+      // *require* the agent, which is exactly why a member reached a screen
+      // they could not complete.
+      const delegating = serviceAccountId === undefined
+
+      // Never delegable. It spans tenants in the multi-tenancy module, so a
+      // delegation of it would be an escalation out of the organization this
+      // screen is scoped to — the same argument that already refuses minting
+      // one from an org-scoped endpoint. Refused here *and* again at
+      // validation: this is the reachable path, the other is the one that holds
+      // if a token is ever minted some other way.
+      if (delegating && auth.role === 'platform_admin') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      // The narrowing, which can only ever remove. Ids rather than slugs: this
+      // is stored and read on the authentication path, and a slug is renameable
+      // — a narrowing that follows a rename is one that silently changes what a
+      // person approved.
+      const narrowing = consent['layers']
+      if (narrowing !== undefined && !isStringArray(narrowing)) {
+        const problem = badRequest(instance, requestId, "'layers' must be an array of layer ids.")
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      if (!delegating && narrowing !== undefined && narrowing.length > 0) {
+        // An agent's reach is its grants, and those are an administrator's to
+        // set. Accepting a narrowing here and storing it against a connection
+        // nothing reads it for would be a control that does nothing.
+        const problem = badRequest(instance, requestId, "'layers' narrows a delegation, and this consent names an agent.")
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
@@ -3529,26 +3586,54 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // consent theirs to give. `404` for anything else, because an agent they
       // cannot see and one that does not exist are the same answer here as
       // everywhere.
-      const visible = options.serviceAccounts === undefined
-        ? undefined
-        : (await options.serviceAccounts.list(auth, { limit: 200, after: undefined })).items.find(
-            (a) => a.id === serviceAccountId,
-          )
-      if (visible === undefined) {
-        const problem = notFound(instance, requestId)
-        send(res, problem.status, problem.toJSON(), requestId)
-        return
+      if (!delegating) {
+        const visible = options.serviceAccounts === undefined
+          ? undefined
+          : (await options.serviceAccounts.list(auth, { limit: 200, after: undefined })).items.find(
+              (a) => a.id === serviceAccountId,
+            )
+        if (visible === undefined) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+      }
+
+      // Every named layer has to be one this caller can read.
+      //
+      // Not a security check — a narrowing can only remove, so a layer they
+      // cannot reach would simply contribute nothing. It is here because the
+      // alternative is a foreign key violation surfacing as a 500 on a typo,
+      // and because a person approving a restriction should be told when the
+      // restriction they wrote is not the one they meant. `404` for an unknown
+      // id and for an unreadable one alike, on invariant I6.
+      if (delegating && narrowing !== undefined && narrowing.length > 0) {
+        const readable = options.layers === undefined
+          ? []
+          : (await options.layers.list(auth, { limit: 500, after: undefined })).items.map((l) => l.id)
+        if (narrowing.some((id) => !readable.includes(id))) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
       }
 
       // The standing connection first, then the code that points at it. That
       // order matters: the code is exchanged for a refresh token hung on the
       // connection, and a code with no connection would mint access nobody can
       // ever take back — which is the gap this closes.
-      const consentId = await options.oauth.consents.record(auth, clientId, serviceAccountId)
+      const subject: ConsentSubject = delegating
+        ? { actsAs: 'user', userId: auth.principal.id }
+        : { actsAs: 'service_account', serviceAccountId: serviceAccountId as string }
+      const consentId = await options.oauth.consents.record(
+        auth,
+        clientId,
+        subject,
+        narrowing === undefined ? [] : narrowing,
+      )
       const code = generateCode()
-      await options.oauth.authorizations.approve(auth, {
+      const common = {
         orgId: auth.orgId,
-        serviceAccountId,
         clientId,
         redirectUri,
         codeChallenge,
@@ -3556,7 +3641,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         code,
         consentId,
         expiresAt: new Date(Date.now() + CODE_TTL_MS),
-      })
+      }
+      // Two calls rather than one with a union in it. The delegated shape
+      // *requires* the connection id and the agent shape does not, and writing
+      // that as one object hands the compiler a value it cannot place in either
+      // arm — which is the same reason 0025 gave the database a CHECK per mode
+      // instead of one that permits both halves.
+      await options.oauth.authorizations.approve(
+        auth,
+        subject.actsAs === 'user' ? { ...common, subject } : { ...common, subject },
+      )
 
       // Recorded, because "why does this agent hold a token" is a question an
       // administrator will ask and the grant table cannot answer: the grants
@@ -3567,7 +3661,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'oauth.consent',
         result: 'allow',
-        detail: { client_id: clientId, client_name: client.clientName, service_account_id: serviceAccountId },
+        detail: {
+          client_id: clientId,
+          client_name: client.clientName,
+          acts_as: subject.actsAs,
+          ...(delegating
+            ? { delegation_id: consentId, layers: narrowing ?? [] }
+            : { service_account_id: serviceAccountId as string }),
+        },
         requestId,
       })
 

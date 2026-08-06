@@ -8,13 +8,22 @@ import { chip, clear, h } from '../dom.js'
  * the flow where authority is created. Everything before it is a conversation
  * with an unauthenticated caller.
  *
- * **It does not hand the agent your account.** That is what a consent screen
- * usually does and it is the wrong answer here: an agent is a principal of its
- * own with its own grants, and "what may this agent read" is the question this
- * product exists to answer separately from "what may you read". So the choice
- * on this screen is *which service account*, and the token the client receives
- * acts as that account. Revoking it does not touch you; leaving the company
- * does not silently widen it.
+ * Two things can be approved here, and which one a person wants is not the same
+ * question as which one they are allowed to give.
+ *
+ * **As you** is a delegation: the application acts as you and reaches exactly
+ * what you reach, re-resolved on every request. It is what OAuth is for, and it
+ * is what this screen offers first — the flow used to offer only the other one,
+ * and both listing and minting a service account are `org_admin`, so a member
+ * arriving here found an empty picker and a 404 on Approve.
+ *
+ * **As an agent** is a principal of its own with its own grants, which is the
+ * question this product exists to answer separately from "what may you read".
+ * An agent belongs to the organization and survives any one person, so it is
+ * the right answer for an unattended pipeline and the wrong one for a client on
+ * somebody's laptop. Offered only where the person can actually see agents;
+ * asking for the list is how that is decided, because the answer is the
+ * permission.
  *
  * The request arrives in the fragment rather than the query, because a fragment
  * is not sent to a server: the client's parameters do not end up in this
@@ -83,12 +92,74 @@ export async function consentView(root: HTMLElement): Promise<void> {
   const approve = h('button', { type: 'button', class: 'btn btn-primary' }, 'Approve') as HTMLButtonElement
   const deny = h('button', { type: 'button', class: 'btn' }, 'Cancel')
 
+  const asSelf = h('input', { type: 'radio', name: 'acts-as', value: 'self', checked: 'checked' }) as HTMLInputElement
+  const asAgent = h('input', { type: 'radio', name: 'acts-as', value: 'agent' }) as HTMLInputElement
+  const agentPanel = h('div', { class: 'field-group' },
+    h('label', { class: 'field' }, 'Act as', chosen),
+    h('label', { class: 'field' }, 'Or create', fresh),
+    h('p', { class: 'hint' },
+      'A new agent can reach nothing until it is granted something. Do that on the Grants screen — ',
+      chip('read'), ' or ', chip('write'), ' on a layer.'),
+  )
+  const agentChoice = h('label', { class: 'choice' }, asAgent,
+    h('span', {},
+      h('strong', {}, 'As an agent'),
+      h('span', { class: 'hint' },
+        ' — a principal of its own, with its own grants. It belongs to the organization and outlives you.'),
+    ),
+  )
+
+  /** Layer checkboxes, for narrowing a delegation. */
+  const narrowing = h('div', { class: 'field-group' })
+  const boxes: HTMLInputElement[] = []
+
+  const showAgentFields = (): void => {
+    agentPanel.hidden = !asAgent.checked
+    narrowing.hidden = asAgent.checked
+  }
+  asSelf.addEventListener('change', showAgentFields)
+  asAgent.addEventListener('change', showAgentFields)
+
   const load = async (): Promise<void> => {
-    const accounts = (await api.serviceAccounts.list()).filter((a) => a.revokedAt === null)
-    clear(chosen)
-    chosen.append(h('option', { value: '' }, accounts.length === 0 ? 'no agents yet — create one' : 'create a new agent…'))
-    for (const a of accounts) {
-      chosen.append(h('option', { value: a.id }, `${a.name} · ${a.keyPrefix}…`))
+    // Whether agents can be offered is decided by asking for them, not by
+    // reading a role out of the token. A member gets 404 here — invariant 6 —
+    // and the honest reading of that is "this option is not yours to give",
+    // which is different from "this screen is broken", which is what it looked
+    // like before.
+    let accounts: readonly { id: string; name: string; keyPrefix: string; revokedAt: string | null }[] = []
+    let mayMintAgents = true
+    try {
+      accounts = (await api.serviceAccounts.list()).filter((a) => a.revokedAt === null)
+    } catch {
+      mayMintAgents = false
+    }
+    agentChoice.hidden = !mayMintAgents
+    agentPanel.hidden = true
+    if (mayMintAgents) {
+      clear(chosen)
+      chosen.append(
+        h('option', { value: '' }, accounts.length === 0 ? 'no agents yet — create one' : 'create a new agent…'),
+      )
+      for (const a of accounts) {
+        chosen.append(h('option', { value: a.id }, `${a.name} · ${a.keyPrefix}…`))
+      }
+    }
+
+    // The layers this person reads, which is the only sensible set to narrow
+    // to: the delegation cannot reach anything else anyway, so offering more
+    // would be offering a restriction that restricts nothing.
+    clear(narrowing)
+    boxes.length = 0
+    const layers = await api.layers.list()
+    if (layers.length === 0) {
+      narrowing.append(h('p', { class: 'hint' }, 'You do not read any layer yet, so there is nothing to restrict.'))
+      return
+    }
+    narrowing.append(h('p', { class: 'hint' }, 'Leave all unticked to give it everything you can read.'))
+    for (const layer of layers) {
+      const box = h('input', { type: 'checkbox', value: layer.id }) as HTMLInputElement
+      boxes.push(box)
+      narrowing.append(h('label', { class: 'choice' }, box, h('span', {}, `${layer.name} · ${layer.slug}`)))
     }
   }
 
@@ -102,25 +173,34 @@ export async function consentView(root: HTMLElement): Promise<void> {
       message.textContent = ''
       setBusy(true)
       try {
-        let serviceAccountId = chosen.value
-        if (serviceAccountId === '') {
-          const name = fresh.value.trim()
-          if (name === '') {
-            message.textContent = 'Name the agent, or pick one that already exists.'
-            return
+        let serviceAccountId: string | undefined
+        if (asAgent.checked) {
+          serviceAccountId = chosen.value
+          if (serviceAccountId === '') {
+            const name = fresh.value.trim()
+            if (name === '') {
+              message.textContent = 'Name the agent, or pick one that already exists.'
+              return
+            }
+            // Through the endpoint that already exists and already checks. A
+            // second creation path here is how the guarded one gets walked
+            // around.
+            const created = await api.serviceAccounts.create(name)
+            serviceAccountId = created.id
           }
-          // Through the endpoint that already exists and already checks. A
-          // second creation path here is how the guarded one gets walked
-          // around.
-          const created = await api.serviceAccounts.create(name)
-          serviceAccountId = created.id
         }
+
+        // None ticked is no narrowing, which is not the same as narrowed to
+        // nothing — the second would be an application that can reach nothing,
+        // and it is not a state this offers.
+        const layers = boxes.filter((b) => b.checked).map((b) => b.value)
 
         const to = await api.consent({
           clientId: request.clientId,
           redirectUri: request.redirectUri,
           codeChallenge: request.codeChallenge,
-          serviceAccountId,
+          ...(serviceAccountId === undefined ? {} : { serviceAccountId }),
+          ...(serviceAccountId === undefined && layers.length > 0 ? { layers } : {}),
           ...(request.state === undefined ? {} : { state: request.state }),
           ...(request.resource === undefined ? {} : { resource: request.resource }),
         })
@@ -155,8 +235,8 @@ export async function consentView(root: HTMLElement): Promise<void> {
         h('h1', {}, 'Give an application access'),
         h('p', { class: 'lede' },
           h('strong', {}, host),
-          ' is asking to act as an agent in your organization. It will act as the agent you pick — ',
-          'not as you. What it can see is exactly what that agent has been granted.'),
+          ' is asking for access to your organization. By default it acts as you and sees exactly what ',
+          'you see — never more, and never after you lose it.'),
       ),
     ),
 
@@ -168,15 +248,21 @@ export async function consentView(root: HTMLElement): Promise<void> {
       h('p', { class: 'hint' }, 'The code will be delivered to'),
       h('p', { class: 'mono' }, request.redirectUri),
 
-      h('label', { class: 'field' }, 'Act as', chosen),
-      h('label', { class: 'field' }, 'Or create', fresh),
-      h('p', { class: 'hint' },
-        'A new agent can reach nothing until it is granted something. Do that on the Grants screen — ',
-        chip('read'), ' or ', chip('write'), ' on a layer.'),
+      h('label', { class: 'choice' }, asSelf,
+        h('span', {},
+          h('strong', {}, 'As you'),
+          h('span', { class: 'hint' },
+            ' — it reaches exactly what you reach, checked again on every request.'),
+        ),
+      ),
+      narrowing,
+      agentChoice,
+      agentPanel,
 
       h('div', { class: 'note' },
         h('p', {},
-          'Revoking the agent stops this application immediately, and touches nothing else you have access to.'),
+          'Forgetting this application on the Connections screen stops it on the next request. ',
+          'Nothing else you have access to is touched, and nothing is granted to the application itself.'),
       ),
 
       message,

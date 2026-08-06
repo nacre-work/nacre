@@ -805,12 +805,18 @@ export class NacreClient {
   // ─── service accounts ────────────────────────────────────────────────────
 
   /**
-   * Approve an OAuth request, naming the agent the client will act as.
+   * Approve an OAuth request: as an agent, or as yourself.
    *
    * The one call in the flow that creates authority, and the reason it lives on
-   * an authenticated client: a signed-in person is choosing which **service
-   * account** a client gets to be. The token that comes back to the client acts
-   * as that account and never as them.
+   * an authenticated client. Naming a `serviceAccountId` gives the client that
+   * **agent's** reach, which is its own principal with its own grants — the
+   * token that comes back never acts as the person who approved it. Naming none
+   * is a **delegation**: the client acts as the person, reaching exactly what
+   * they reach and nothing more, re-resolved on every request.
+   *
+   * `layers` narrows a delegation to chosen layers, by id. It can only ever
+   * remove, and it is meaningless beside an agent — an agent's reach is its
+   * grants, which are an administrator's to set.
    *
    * Returns where the browser should go — the redirect is the page's to perform,
    * not the API's, because this is an XHR from a screen the person is looking
@@ -820,7 +826,10 @@ export class NacreClient {
     clientId: string
     redirectUri: string
     codeChallenge: string
-    serviceAccountId: string
+    /** Absent means the client acts as the signed-in person. */
+    serviceAccountId?: string
+    /** Layer ids a delegation is restricted to. Empty means no restriction. */
+    layers?: readonly string[]
     state?: string
     resource?: string
   }): Promise<string> => {
@@ -831,7 +840,8 @@ export class NacreClient {
         client_id: input.clientId,
         redirect_uri: input.redirectUri,
         code_challenge: input.codeChallenge,
-        service_account_id: input.serviceAccountId,
+        ...(input.serviceAccountId === undefined ? {} : { service_account_id: input.serviceAccountId }),
+        ...(input.layers === undefined || input.layers.length === 0 ? {} : { layers: [...input.layers] }),
         ...(input.state === undefined ? {} : { state: input.state }),
         ...(input.resource === undefined ? {} : { resource: input.resource }),
       },
@@ -860,9 +870,14 @@ export class NacreClient {
             id: String(c.id),
             clientId: String(c.client_id),
             clientName: String(c.client_name),
-            serviceAccountId: String(c.service_account_id),
-            serviceAccountName: String(c.service_account_name),
+            // A delegation names no agent. `null` rather than the string
+            // "null", which is what `String(...)` produced and what would have
+            // rendered on the connections screen.
+            actsAs: c.acts_as === 'user' ? ('user' as const) : ('service_account' as const),
+            serviceAccountId: c.service_account_id == null ? null : String(c.service_account_id),
+            serviceAccountName: c.service_account_name == null ? null : String(c.service_account_name),
             approvedBy: String(c.approved_by),
+            layers: Array.isArray(c.layers) ? c.layers.map(String) : [],
             createdAt: String(c.created_at),
             lastRefreshedAt: c.last_refreshed_at === null ? null : String(c.last_refreshed_at),
             revokedAt: c.revoked_at === null ? null : String(c.revoked_at),

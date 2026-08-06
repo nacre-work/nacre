@@ -1,6 +1,6 @@
 {
   "name": "@nacre.work/core",
-  "version": "0.5.8",
+  "version": "0.6.0",
   "description": "Nacre core: data model, permission resolver, and shared types",
   "repository": {
     "type": "git",

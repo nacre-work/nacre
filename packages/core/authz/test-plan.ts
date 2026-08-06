@@ -1,5 +1,5 @@
 /**
- * The T1-T15 inventory from docs/authz.md section "Test plan".
+ * The T1-T22 inventory from docs/authz.md section "Test plan".
  *
  * This exists so the gap between "the suite the specification requires" and
  * "the suite that runs today" is a checked fact rather than a memory. A test
@@ -16,7 +16,7 @@ export type TestStatus = 'implemented' | 'pending'
 
 export interface TestCase {
   readonly id: `T${number}`
-  readonly group: 'baseline' | 'saturation' | 'adversarial'
+  readonly group: 'baseline' | 'saturation' | 'adversarial' | 'delegation'
   readonly scenario: string
   readonly status: TestStatus
   /** Why it cannot run yet. Required for `pending`, absent otherwise. */
@@ -61,6 +61,30 @@ export const TEST_PLAN: readonly TestCase[] = [
     scenario: 'Cyclic group nesting (A ⊂ B ⊂ A)' },
   { id: 'T15', group: 'adversarial', status: 'implemented',
     scenario: '10 000 principals in the filter' },
+
+  // ── delegation ──
+  // A delegation adds a filter clause and an authentication check, so it can
+  // fail in both of the ways this plan already guards against plus one of its
+  // own. Written before the implementation, deliberately: a test written after
+  // the code it covers gets written to match what was built.
+  { id: 'T16', group: 'delegation', status: 'implemented',
+    scenario: 'A delegation resolves exactly what its user resolves — across two layers, a document-scoped grant and one deny' },
+  { id: 'T17', group: 'delegation', status: 'implemented',
+    scenario: 'A grant revoked from the user is gone from a live delegation on the next request, with no renewal between' },
+  { id: 'T18', group: 'delegation', status: 'implemented',
+    scenario: 'Disabling the user suspends every delegation with 401; re-enabling restores them, the grant untouched throughout' },
+  { id: 'T19', group: 'delegation', status: 'implemented',
+    scenario: 'Forgetting the application stops that delegation while the user’s own token keeps working' },
+  { id: 'T20', group: 'delegation', status: 'implemented',
+    scenario: 'A delegation narrowed to layer L returns nothing from layer M its user also reads, and never more from L than the user would' },
+  { id: 'T21', group: 'delegation', status: 'implemented',
+    scenario: 'platform_admin is refused at consent, and a token minted around consent is refused at validation' },
+  // The one a naive implementation passes everywhere else: a narrowing applied
+  // to the result set instead of to the query returns fewer than top_k and
+  // reads as "there were only that many". T9's argument, aimed at the new
+  // clause.
+  { id: 'T22', group: 'delegation', status: 'implemented',
+    scenario: '20 layers, the user reads 1, the delegation narrowed to that 1, top_k=10 returns exactly 10' },
 ]
 
 export const pending = (): readonly TestCase[] =>

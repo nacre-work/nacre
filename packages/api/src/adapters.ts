@@ -65,7 +65,7 @@ import type {
   SearchOptions,
   SearchService,
 } from './server.js'
-import type { AuthContext } from './auth.js'
+import { withinDelegation, type AuthContext } from './auth.js'
 
 /**
  * The adapters that put the permission model on the request path.
@@ -151,6 +151,14 @@ export class PostgresDocuments implements Documents {
         )
         const row = rows[0]
         if (row === undefined) return undefined
+
+        // Outside the delegation's narrowing is invisible, on every path that
+        // returns a document and not only on search. Fetching by id is exactly
+        // how a narrowing gets walked around otherwise: the search would refuse
+        // the layer and this would hand over the same document a request later.
+        // `undefined` here becomes the 404 an unreachable document gets, which
+        // is invariant 6 — the caller learns nothing about why.
+        if (!withinDelegation(auth, row.layer_id)) return undefined
 
         // `all` is org_admin, which reaches everything by rule 3. Otherwise the
         // document has to sit in a layer the plan reached, or be named
@@ -238,6 +246,9 @@ export class PostgresDocuments implements Documents {
         )
         const layerId = rows[0]?.layer_id
         if (layerId === undefined) return false
+
+        // The narrowing, same as everywhere a layer id and a document meet.
+        if (!withinDelegation(auth, layerId)) return false
 
         if (plan.kind === 'scoped') {
           // deniedDocs first, as on the delete path: a deny beats an allow at
@@ -435,6 +446,26 @@ export class NacreSearchService implements SearchService {
       if (permitted.length === 0) return []
 
       narrow = { ...narrow, layers: permitted }
+    }
+
+    // The delegation's own narrowing, intersected last so nothing a caller
+    // sends can widen it.
+    //
+    // Applied here rather than to the plan, and **not** intersected with
+    // `plan.layers` on the way in: a document-scoped grant reaches a document in
+    // a layer the plan does not list, and the person who narrowed this
+    // delegation to layer L meant that document too if it is in L. As a `must`
+    // beside the permission constraint the index answers that exactly, which is
+    // also why this is not a post-filter — invariant 2 holds because the clause
+    // is inside the traversal and `top_k` still returns k permitted results.
+    const delegated = auth.delegation?.layers
+    if (delegated !== undefined) {
+      const both = narrow?.layers === undefined ? [...delegated] : narrow.layers.filter((id) => delegated.includes(id))
+      // The caller named layers and none of them survive the narrowing. Empty,
+      // with no query and no error naming a layer — a delegation must not be a
+      // way to learn which layers its user can reach.
+      if (both.length === 0) return []
+      narrow = { ...narrow, layers: both }
     }
 
     // One branch per model actually in scope.
@@ -940,6 +971,13 @@ export class NacreIngest implements Ingest {
     const id = rows[0]?.id
     if (id === undefined) return undefined
 
+    // Outside the delegation's narrowing is the same answer as not writable.
+    // "The narrowing narrows scopes, never verbs" cuts both ways: a person who
+    // restricted an application to one layer restricted what it can *put*
+    // there too, and an ingest is the one verb where the layer arrives named
+    // rather than being discovered by a query.
+    if (!withinDelegation(auth, id)) return undefined
+
     // A layer that exists but is not writable and a layer that does not exist
     // return the same thing, so the caller cannot tell them apart.
     if (plan.kind === 'all') return id
@@ -1116,6 +1154,10 @@ export class NacreIngest implements Ingest {
         )
         const layerId = rows[0]?.layer_id
         if (layerId === undefined) return false
+        // The narrowing. A delegation restricted to one layer must not be able
+        // to delete out of another, and this is a `write` path so rule 6 does
+        // not help: the person's own `read` never came into it.
+        if (!withinDelegation(auth, layerId)) return false
         if (plan.kind === 'scoped') {
           // deniedDocs first. `resolve` populates it precisely so a deny beats
           // an allow at any depth (rule 5), and checking only `layers` let a

@@ -32,7 +32,26 @@ export type {
   ServiceAccountView,
 } from './server.js'
 export { authenticate, findTenantOverride, rejectTenantOverride } from './auth.js'
-export type { AuthContext, VerifyOptions } from './auth.js'
+export type { AuthContext, Delegations, VerifyOptions } from './auth.js'
+export { postgresVerification } from './verification.js'
+export {
+  PostgresDelegations,
+  PostgresOAuthAuthorizations,
+  PostgresOAuthClients,
+  PostgresOAuthConsents,
+  PostgresOAuthRefreshTokens,
+} from './oauth-store.js'
+export type {
+  Consent,
+  ConsentSubject,
+  MintRequest,
+  OAuthAuthorizations,
+  OAuthClients,
+  OAuthConsents,
+  OAuthRefreshTokens,
+  PendingAuthorization,
+  RegisteredClient,
+} from './oauth-store.js'
 export { Problem, badRequest, forbidden, internal, notFound, unauthorized } from './errors.js'
 export {
   HttpEmbedder,
