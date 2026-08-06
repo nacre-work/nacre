@@ -8,6 +8,43 @@ export interface AuthContext {
   readonly orgId: string
   readonly principal: Principal
   readonly role: OrgRole
+  /**
+   * Present when an application is acting for the person in `principal`.
+   *
+   * The principal is the **user**, not the delegation, and that is the whole
+   * design: `resolve` runs on them unchanged, so a delegation reaches exactly
+   * what its user reaches and there is no second grant set to intersect. See
+   * docs/authz.md, "Delegated authority".
+   *
+   * `layers` is the narrowing the person chose at consent, if any. `undefined`
+   * means no narrowing — never "narrowed to nothing", which is a different
+   * state and is deliberately not expressible.
+   */
+  readonly delegation?: {
+    readonly id: string
+    readonly layers?: readonly string[]
+  }
+}
+
+/**
+ * The one read docs/authz.md puts before `resolve` on a delegated request.
+ *
+ * Separate from everything else the auth path touches because it is the only
+ * lookup here that exists to be *immediate*: it answers "may this authority
+ * still be exercised", and the answer changes when an administrator acts.
+ */
+export interface Delegations {
+  /**
+   * The delegation, or `undefined` when it must not be exercised.
+   *
+   * One answer for a missing row, a revoked connection, a disabled user and a
+   * `platform_admin`, on the same rule every other credential failure follows:
+   * which of them applies is not something a caller is told.
+   */
+  resolve(
+    orgId: string,
+    id: string,
+  ): Promise<{ userId: string; role: OrgRole; layers?: readonly string[] } | undefined>
 }
 
 export interface VerifyOptions {
@@ -56,6 +93,14 @@ export interface VerifyOptions {
   readonly serviceKeys?: {
     resolve(key: string): Promise<AuthContext | undefined>
   }
+  /**
+   * Consulted only for a token carrying a `del` claim.
+   *
+   * Optional so a deployment that has never issued a delegation pays nothing —
+   * but a token *claiming* one where this is absent is refused rather than
+   * accepted as its user. Invariant 3: a check that cannot run denies.
+   */
+  readonly delegations?: Delegations
 }
 
 /**
@@ -118,6 +163,16 @@ interface NacreClaims extends JWTPayload {
   readonly org?: unknown
   readonly principal_type?: unknown
   readonly role?: unknown
+  /**
+   * The connection an application is acting through, when it acts for a person.
+   *
+   * The permitted set is deliberately **not** in here. A token carrying one
+   * would keep answering with the access its holder had at consent, and every
+   * revocation would wait for it to expire — which is the one way to get
+   * delegation wrong. What is in the token is an id; the authority is
+   * recomputed from `grants` on every request, like everyone else's.
+   */
+  readonly del?: unknown
 }
 
 const ROLES: readonly OrgRole[] = ['platform_admin', 'org_admin', 'member']
@@ -215,9 +270,53 @@ export async function authenticate(
     return unauthorized(instance, requestId, 'The token is not valid.')
   }
 
-  return {
+  const base: AuthContext = {
     orgId: org,
     principal: { type: type as Principal['type'], id: sub },
     role: role as OrgRole,
+  }
+
+  if (claims.del === undefined) return base
+
+  // ── a delegated token ──
+  //
+  // Everything above verified the signature; none of it says whether this
+  // authority may still be exercised. That question has no answer in a JWT —
+  // it changes when an administrator acts — so it is asked here, before
+  // `resolve`, on every request.
+  //
+  // Uncached, deliberately. The effective-principals cache keys on
+  // `organizations.groups_version`, which triggers bump on `groups`,
+  // `group_members` and `grants` — and not on `users`. Behind that cache a
+  // disabled user's delegations would keep working for the TTL, which is the
+  // lag the ACL tag cache was removed for.
+  if (typeof claims.del !== 'string' || options.delegations === undefined) {
+    return unauthorized(instance, requestId, 'The token is not valid.')
+  }
+
+  const delegation = await options.delegations.resolve(org, claims.del)
+  if (delegation === undefined) {
+    return unauthorized(instance, requestId, 'The token is not valid.')
+  }
+
+  // The token says who it acts for and the row says who it was issued for. They
+  // are two copies of one fact, so they are compared rather than one being
+  // trusted: a token whose subject no longer matches its connection is refused,
+  // not resolved as whichever of the two the code happened to read.
+  if (delegation.userId !== sub || type !== 'user') {
+    return unauthorized(instance, requestId, 'The token is not valid.')
+  }
+
+  return {
+    orgId: org,
+    principal: { type: 'user', id: delegation.userId },
+    // From the row and never from the claim. A role in a token is a snapshot,
+    // and an administrator demoted since consent must not keep administering
+    // through an application they connected while they still could.
+    role: delegation.role,
+    delegation: {
+      id: claims.del,
+      ...(delegation.layers === undefined ? {} : { layers: delegation.layers }),
+    },
   }
 }
