@@ -586,6 +586,32 @@ it to `indexed`, and asserts the extracted phrase comes back out of a search —
 with a constant-vector stub embedder, so relevance decides nothing and the
 phrase is there only if it came out of the PDF.
 
+**Provisioning an organization is one function, in the core.** `initialize`
+lived beside the `init` CLI, and the CLI is one caller rather than the
+definition — a control plane minting tenants through an API is another, and two
+implementations of "what a new organization is made of" would be two answers
+about `organizations.vector_collection`, which every read and write on the
+search path depends on.
+
+Moving it found a defect that had been reachable since an organization could be
+the second one. The installation default is a `NULL`-`org_id` provider created
+once and reused, so `initialize` ignored the endpoint, model and dimensions it
+was handed whenever one existed — and `main` then built the collection's named
+vector out of **its own configuration**. A second organization created after
+somebody changed `NACRE_DEFAULT_EMBEDDING_MODEL` therefore got a collection with
+a slot no layer would ever write to: the worker derives the name from
+`layers.provider_id`, so every document failed forever while the API answered
+`queued`. That is the "layers naming a vector that did not exist" defect,
+arriving from the other side.
+
+`provisionOrganization` returns the provider it actually resolved and names the
+slot after that. Reproduced first against a real PostgreSQL and a real Qdrant —
+two organizations either side of a model change, reporting `MISMATCH` — then
+re-run against the fix. It also picks the *newest* NULL-org provider, which is
+what `admin-global`'s read already documented and what a bare `LIMIT 1` did not
+do: there can be several, since changing the default removes only the
+unreferenced old ones.
+
 **Embeddings can come from a hosted API, and nothing about that is a default.**
 A self-hoster on a laptop has no good embedder — bge-m3 under emulation blows
 the worker's 120 s budget — and the alternative is somebody else's GPU. The
