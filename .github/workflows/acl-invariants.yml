@@ -42,6 +42,18 @@ jobs:
           --health-cmd pg_isready --health-interval 5s
           --health-timeout 5s --health-retries 10
         ports: ["5432:5432"]
+      # Here so the unit suite can run below. Those tests refuse to skip when
+      # CI is set — the rate limiter and the idempotency cache are built out of
+      # exactly the behaviours a fake would be written to have, so a fake of
+      # them tests the fake — and the point of running them here is to run the
+      # *whole* suite the release job runs, not a subset that happens to fit
+      # the services this job already had.
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+        ports: ["6379:6379"]
       qdrant:
         # The same pin as docker-compose.yml, not `latest`. Testing against
         # whatever was published this morning while shipping a fixed version
@@ -56,6 +68,7 @@ jobs:
       # mode this whole job exists to avoid.
       NACRE_PG_URL: postgres://postgres:test@localhost:5432/nacre_test
       NACRE_QDRANT_URL: http://localhost:6333
+      NACRE_REDIS_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
       # No version here: pnpm/action-setup refuses to run when the version is
@@ -67,6 +80,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm migrate
 
+      # The unit suite first, against the same database the acl suite is about
+      # to use — not to test it again (the `build` job already did, on its own
+      # database) but because **that combination is what the release job runs**
+      # and nothing on a pull request exercised it.
+      #
+      # It is not hypothetical. Migration 0028 made `(org_id, name)` unique on
+      # `embedding_providers` with NULLS NOT DISTINCT, and the acl fixture pins
+      # a NULL-org row called `default` by id while provisioning creates one
+      # with the same name and a different id. Each suite passed alone, both
+      # jobs were green, main merged — and the release failed after the merge,
+      # which is the worst place for it: `main` is then a version that cannot
+      # ship, and the pull request that caused it is already closed.
+      #
+      # A fixture that assumes it owns the database is the defect; this is what
+      # makes a pull request able to see one.
+      - run: pnpm test:unit
       # Split by group so a leak reads as "T3 failed" in the checks list rather
       # than as one number among fifty. The selector is `-t`, an alias of
       # --testNamePattern; `--grep` is not a vitest flag and silently ran

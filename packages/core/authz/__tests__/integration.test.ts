@@ -88,8 +88,16 @@ when('baseline · tenant isolation in the database', () => {
         [ids.wsA, ids.wsB, A, B],
       )
       await c.query(
+        // Named `acl-fixture` and not `default`, which is the name
+        // `provisionOrganization` gives the installation default it creates.
+        // Migration 0028 made `(org_id, name)` unique with NULLS NOT DISTINCT,
+        // so two NULL-org rows called `default` collide — and this fixture pins
+        // its row by *id* because the layers below reference that id, so
+        // `ON CONFLICT (id) DO NOTHING` cannot absorb a collision on the other
+        // key. Two suites sharing one database is the release job's
+        // arrangement, and it is the only place the two ever met.
         `INSERT INTO embedding_providers (id, org_id, name, endpoint, model, dimensions)
-         VALUES ('00000000-0000-0000-0000-0000000000e1', NULL, 'default', 'http://e', 'bge-m3', 1024)
+         VALUES ('00000000-0000-0000-0000-0000000000e1', NULL, 'acl-fixture', 'http://e', 'bge-m3', 1024)
          ON CONFLICT (id) DO NOTHING`,
       )
       await c.query(
