@@ -131,6 +131,22 @@ export interface DocumentView {
   readonly title: string | null
   readonly status: string
   readonly chunk_count: number
+  /**
+   * Why indexing failed, for a document whose `status` is `failed`.
+   *
+   * The worker has written this to `documents.error` since it had a message
+   * worth writing, and no surface read it back — so `status: "failed"` with
+   * `chunk_count: 0` was the whole of what a caller could learn, and the
+   * reason lived where only somebody with the host could reach it.
+   *
+   * `null` for every other status, including a document that failed once and
+   * succeeded on a retry: the column keeps the last error, and reporting it
+   * beside `indexed` would describe a working document as a broken one.
+   *
+   * It follows the document's own permission, so rule 6 keeps it away from a
+   * caller holding `write` alone — the same as `source_url`.
+   */
+  readonly error: string | null
   readonly updated_at: string
   /** What the caller tagged it with, and what `filters` reads back. */
   readonly metadata: Metadata
@@ -297,6 +313,24 @@ export interface Layer {
   /** The cursor's sort key. Not serialized; it exists so paging is stable. */
   readonly createdAt: string
   readonly description: string
+  /**
+   * Live documents in the layer that indexing **failed** on.
+   *
+   * Beside `documentCount` rather than instead of it, because the two answer
+   * different questions and only one of them is actionable. A count of rows is
+   * the right definition for the first — counting only `indexed` would make a
+   * freshly ingested layer read zero while the worker catches up, so the number
+   * would swing on a state that resolves itself.
+   *
+   * `failed` does not resolve itself. It is the one status that waits for a
+   * person, which makes it the one that has to be *reported* rather than merely
+   * recorded — and until this existed a layer where every document had failed
+   * looked exactly like a healthy one, answering every search with nothing.
+   *
+   * Not per caller, on the same argument `documentCount` makes: a count that
+   * varied by who asked would describe somebody else's grants.
+   */
+  readonly failedCount: number
   /**
    * Live documents in the layer.
    *
@@ -2881,6 +2915,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             workspace_id: l.workspaceId,
             description: l.description,
             document_count: l.documentCount,
+            failed_count: l.failedCount,
           })),
           next_cursor: nextCursor,
         },
@@ -2966,6 +3001,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           workspace_id: created.workspaceId,
           description: created.description,
           document_count: created.documentCount,
+          failed_count: created.failedCount,
         },
         requestId,
       )

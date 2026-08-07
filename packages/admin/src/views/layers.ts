@@ -125,7 +125,14 @@ function table(layers: readonly Layer[], root: HTMLElement): HTMLElement {
         h('td', {}, h('span', { class: 'slug' }, l.slug)),
         h('td', {}, l.name),
         h('td', { class: 'muted' }, l.description || '—'),
-        h('td', { class: 'num tabular' }, String(l.documentCount)),
+        h('td', { class: 'num tabular' },
+          String(l.documentCount),
+          // A layer where everything failed looked exactly like a healthy one:
+          // the count is of rows and stays right, but every search over it
+          // answers nothing and nothing on the screen said so. `failed` is the
+          // one status that waits for a person, so it is the one worth a mark.
+          l.failedCount > 0 ? h('span', { class: 'tag tag-off' }, `${String(l.failedCount)} failed`) : null,
+        ),
         h('td', {}, shortId(l.id)),
         h('td', { class: 'row-end' },
           h('button', { class: 'btn btn-quiet', onclick: () => void rename(l, root) }, 'Rename'),

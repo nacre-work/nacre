@@ -103,6 +103,17 @@ export interface Layer {
   readonly name: string
   readonly description: string
   readonly documentCount: number
+  /**
+   * Live documents in the layer that indexing failed on.
+   *
+   * Beside the count rather than folded into it: rows are the right definition
+   * of "documents in this layer" — counting only indexed ones would swing while
+   * the worker catches up — and `failed` is the one status that waits for a
+   * person rather than resolving itself. A layer with documents and every one
+   * of them failed answers every search with nothing, and looked identical to a
+   * healthy one until this existed.
+   */
+  readonly failedCount: number
 }
 
 export interface Workspace {

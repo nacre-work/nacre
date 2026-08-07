@@ -594,6 +594,7 @@ export class NacreClient {
           name: String(layer.name ?? ''),
           description: String(layer.description ?? ''),
           documentCount: Number(layer.document_count ?? 0),
+          failedCount: Number(layer.failed_count ?? 0),
         }
       })
     },
@@ -618,6 +619,7 @@ export class NacreClient {
         name: String(body.name ?? ''),
         description: String(body.description ?? ''),
         documentCount: Number(body.document_count ?? 0),
+        failedCount: Number(body.failed_count ?? 0),
       }
     },
 
