@@ -43,6 +43,10 @@ const ids = {
   // admin on the workspace and nothing else; erin has nothing at all.
   dave: '00000000-0000-0000-0000-0000000000a7',
   erin: '00000000-0000-0000-0000-0000000000a8',
+  // read *and* admin on a layer, and nothing on the workspace holding it. The
+  // one principal that can tell "administers a workspace" from "administers
+  // something inside one" apart, which every other principal here cannot.
+  frank: '00000000-0000-0000-0000-0000000000a9',
   provider: '00000000-0000-0000-0000-0000000000e2',
 }
 
@@ -154,6 +158,17 @@ when('baseline · the search path', () => {
          VALUES ($1,'user',$2,'workspace',$3,'admin','allow')
          ON CONFLICT DO NOTHING`,
         [A, ids.dave, ids.wsA],
+      )
+      await c.query(
+        `INSERT INTO users (id, org_id, email) VALUES ($1,$2,'f@sp.test') ON CONFLICT DO NOTHING`,
+        [ids.frank, A],
+      )
+      await c.query(
+        `INSERT INTO grants (org_id, principal_type, principal_id, scope_type, scope_id, permission, effect)
+         VALUES ($1,'user',$2,'layer',$3,'read','allow'),
+                ($1,'user',$2,'layer',$3,'admin','allow')
+         ON CONFLICT DO NOTHING`,
+        [A, ids.frank, ids.openA],
       )
       await c.query('COMMIT')
     } catch (e) {
@@ -315,11 +330,29 @@ when('baseline · the search path', () => {
 
     // alice reaches wsA only through grants on layers in it. She may read the
     // workspace — that is what put it in her list — and holds nothing on the
-    // workspace itself. This is the assertion that fails if the scoped branch
-    // is allowed to answer for anything but `read`.
+    // workspace itself.
     const [forAlice] = (await workspaces.list(as(A, ids.alice))).items
     expect(forAlice?.id).toBe(ids.wsA)
     expect([...(forAlice?.permissions ?? [])]).toEqual(['read'])
+
+    // And frank, who holds `read` **and `admin`** on a layer inside wsA and
+    // nothing on the workspace. This is the assertion that pins the rule rather
+    // than agreeing with it by accident — alice and dave are each answered the
+    // same way by a wrong implementation, and frank is not.
+    //
+    // Asking the plan instead of the workspace scope reports `admin` here,
+    // because the resolver flattens a grant set to the layers it reaches: a
+    // grant *on* a workspace and a grant on a layer *in* it produce the same
+    // scoped plan and cannot be told apart from it. Reported as authority over
+    // the workspace, that is "New layer" in front of a principal the server
+    // refuses, and the refusal is the 404 rule 4 owes an unreachable object.
+    //
+    // It is also the case where `read` comes from having reached a layer rather
+    // than from a grant on the workspace, which is the one thing `permissionsOn`
+    // takes on trust from the filter that put the row here.
+    const [forFrank] = (await workspaces.list(as(A, ids.frank))).items
+    expect(forFrank?.id).toBe(ids.wsA)
+    expect([...(forFrank?.permissions ?? [])]).toEqual(['read'])
   })
 
   it('creating a workspace is org_admin, and nobody else', async () => {

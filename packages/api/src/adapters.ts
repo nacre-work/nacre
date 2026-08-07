@@ -1849,28 +1849,36 @@ export class PostgresWorkspaces implements Workspaces {
         })
 
         /**
-         * What this caller holds on this workspace, asked the same way the
-         * filter above asks: through the resolver, per request, never cached
-         * and never derived from `users.role`.
+         * What this caller holds on **this workspace**, asked per request and
+         * never derived from `users.role`.
          *
-         * `read` is already known — a row that reached here satisfied it — but
-         * it is asked again rather than assumed, because the two answers come
-         * from different branches above and a shortcut here would be a third
-         * copy of a predicate that has to agree with them.
+         * Authority over a workspace comes from a grant placed on the workspace
+         * scope, or from the role, and `referenceAllows` is the one thing that
+         * answers that — the same function the filter above uses for its third
+         * branch.
+         *
+         * The plan is deliberately *not* consulted. `resolve` flattens a grant
+         * set to the layers it reaches, so a workspace grant and a grant on a
+         * layer inside that workspace produce the same scoped plan: asking the
+         * plan cannot tell "admin on the workspace" from "admin on one layer in
+         * it", and reporting the second as the first would put "New layer" in
+         * front of a principal the server refuses. That was the first shape of
+         * this function, and the T-case is what caught it.
+         *
+         * `read` is added rather than asked, and that is the one thing here
+         * taken on trust from the filter above: a row only reaches this point
+         * because the caller can see the workspace — through a grant on it, or
+         * through a layer inside it, or by role. Either way `read` is true.
          */
-        const permissionsOn = (w: { id: string; layer_ids: string[] | null }): Permission[] =>
-          (['read', 'write', 'admin'] as const).filter((permission) => {
-            const p = activeResolver().resolve(context, permission)
-            if (p.kind === 'all') return true
-            if (p.kind === 'scoped' && (w.layer_ids ?? []).some((id) => p.layers.includes(id))) {
-              // Reaching a layer inside it is not authority over the workspace.
-              // `admin` on one layer must not report as `admin` here, or the
-              // screen that reads this would offer "New layer" to a principal
-              // the server refuses.
-              return permission === 'read'
+        const permissionsOn = (w: { id: string }): Permission[] => {
+          const held = new Set<Permission>(['read'])
+          for (const permission of ['write', 'admin'] as const) {
+            if (referenceAllows(context, { type: 'workspace', id: w.id }, permission)) {
+              held.add(permission)
             }
-            return referenceAllows(context, { type: 'workspace', id: w.id }, permission)
-          })
+          }
+          return (['read', 'write', 'admin'] as const).filter((p) => held.has(p))
+        }
 
         const fetched = page === undefined ? rows : rows.slice(0, page.limit)
         const items = reachable
