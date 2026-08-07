@@ -85,7 +85,11 @@ export type {
   PrincipalsCache,
   SearchDeps,
 } from './adapters.js'
-export { PostgresGroups, PostgresUsers, generatePassword, looksLikeEmail } from './principals.js'
+export { PostgresGroups, PostgresUsers, looksLikeEmail } from './principals.js'
+// Re-exported rather than defined here. It moved to the core when the second
+// copy of its word list was found; this keeps an existing importer working and
+// makes it visibly one function rather than two agreeing.
+export { generatePassword } from '@nacre.work/core'
 export type { GroupMember, Groups, GroupView, Users, UserView } from './principals.js'
 export { applyRanking, HttpReranker, rerankerFor } from './rerank.js'
 export type { Reranker } from './rerank.js'

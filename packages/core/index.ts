@@ -102,9 +102,13 @@ export type { RedisOptions } from './redis.js'
 export { reindexProgress, toStateJson, toCheckJson, fromStateJson } from './reindex.js'
 export type { ReindexState, ReindexCheck } from './reindex.js'
 export {
+  generatePassword,
   hashingLoad,
   hashPassword,
   needsRehash,
+  PASSWORD_ENTROPY_BITS,
+  PASSWORD_WORD_COUNT,
+  PASSWORD_WORDS,
   spendVerificationTime,
   TooBusy,
   verifyPassword,

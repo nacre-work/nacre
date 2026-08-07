@@ -1,6 +1,7 @@
 import {
   ConfigError,
   createPool,
+  generatePassword,
   hashPassword,
   loadConfig,
   loadJwtKeys,
@@ -10,7 +11,6 @@ import {
 } from '@nacre.work/core'
 import type { ProvisionOptions } from '@nacre.work/core'
 import { SignJWT } from 'jose'
-import { randomInt } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 
 /**
@@ -67,32 +67,6 @@ export function parseArgs(argv: readonly string[]): Options | string {
 
 const say = (msg: string, extra: Record<string, unknown> = {}): void => {
   console.log(JSON.stringify({ msg, ...extra }))
-}
-
-/**
- * Six words and a number, from the CSPRNG.
- *
- * Roughly 70 bits with this list, which is more than a person would choose and
- * still something they can read off a terminal and type into a form once. A
- * base64 string of the same strength gets copied wrong, and the recovery from
- * that is re-running init against a live installation.
- */
-function generatePassword(): string {
-  const words = [
-    'abalone', 'anchor', 'aurora', 'basalt', 'beacon', 'bramble', 'cinder', 'clover',
-    'compass', 'coral', 'crest', 'current', 'delta', 'drift', 'ember', 'estuary',
-    'fathom', 'ferry', 'fjord', 'granite', 'harbor', 'haven', 'iris', 'kelp',
-    'lantern', 'ledger', 'lichen', 'mantle', 'marlin', 'meadow', 'mica', 'nacre',
-    'nautilus', 'obsidian', 'onyx', 'opal', 'orbit', 'pearl', 'pelagic', 'pillar',
-    'plover', 'quarry', 'quartz', 'reef', 'ripple', 'salt', 'sextant', 'shale',
-    'shoal', 'silt', 'slate', 'spindrift', 'stratum', 'tide', 'trawler', 'trench',
-    'vellum', 'wharf', 'willow', 'zephyr',
-  ] as const
-
-  // randomInt rather than Math.random or a modulo of randomBytes: one is not a
-  // CSPRNG and the other is biased unless the range divides evenly.
-  const chosen = Array.from({ length: 6 }, () => words[randomInt(words.length)])
-  return `${chosen.join('-')}-${String(randomInt(10, 100))}`
 }
 
 async function main(): Promise<void> {
