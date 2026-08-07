@@ -33,6 +33,35 @@ export type ConsentSubject =
   /** A delegation. `userId` is the person who approved it — see docs/authz.md. */
   | { readonly actsAs: 'user'; readonly userId: string }
 
+/**
+ * One layer in a delegation's narrowing, and what it may be used for there.
+ *
+ * `permissions` absent means this layer inherits the connection's ceiling,
+ * which is what every narrowing written before per-layer ceilings meant and
+ * still means. Present, it is intersected with that ceiling and never replaces
+ * it — see docs/authz.md, "Per layer".
+ */
+export interface LayerNarrowing {
+  readonly id: string
+  readonly permissions?: readonly Permission[]
+}
+
+/**
+ * The narrowing as Postgres hands it back, in the shape the rest of the code
+ * reads.
+ *
+ * `JSON_BUILD_OBJECT` renders a NULL column as JSON `null`, not as an absent
+ * key — so a layer inheriting the connection's ceiling arrives as
+ * `permissions: null`, and `permissions === undefined` is false for it. That
+ * threw on the first run of T26, which is the whole reason this conversion is a
+ * named function rather than a cast: the type said optional and the value said
+ * null, and only one of them was true.
+ */
+const narrowingOf = (
+  rows: readonly { id: string; permissions: Permission[] | null }[] | null,
+): readonly LayerNarrowing[] =>
+  (rows ?? []).map((l) => ({ id: l.id, ...(l.permissions === null ? {} : { permissions: l.permissions }) }))
+
 /** A standing connection: this application, acting as this agent or as a person. */
 export interface Consent {
   readonly id: string
@@ -48,7 +77,7 @@ export interface Consent {
    * Empty means **no narrowing**, never "narrowed to nothing" — the two are
    * opposite, and the table deliberately cannot express the second.
    */
-  readonly layers: readonly string[]
+  readonly layers: readonly LayerNarrowing[]
   /**
    * The permissions a delegation may exercise. Empty means no ceiling — it
    * reaches every verb its person holds.
@@ -114,7 +143,7 @@ export interface OAuthConsents {
      * re-approval, because a person reconnecting an application is answering
      * the narrowing question again rather than adding to a previous answer.
      */
-    layers?: readonly string[],
+    layers?: readonly LayerNarrowing[],
     /**
      * The permissions a delegation may exercise. Absent is no ceiling.
      *
@@ -335,7 +364,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
     auth: AuthContext,
     clientId: string,
     subject: ConsentSubject,
-    layers?: readonly string[],
+    layers?: readonly LayerNarrowing[],
     permissions?: readonly Permission[],
   ): Promise<string> {
     return withOrg(
@@ -388,10 +417,29 @@ export class PostgresOAuthConsents implements OAuthConsents {
             id,
           ])
           if (layers !== undefined && layers.length > 0) {
+            // One jsonb array of objects rather than parallel arrays: a
+            // `text[][]` would have to be rectangular, and these are not — a
+            // layer inheriting the connection's ceiling stores NULL. The
+            // multi-argument `unnest` that would carry two ragged arrays was
+            // written first and inserted a null `layer_id`, which is the kind
+            // of subtly-wrong SQL one parameter and one row shape avoids.
             await client.query(
-              `INSERT INTO oauth_consent_layers (org_id, consent_id, layer_id)
-               SELECT $1, $2, unnest($3::uuid[])`,
-              [auth.orgId, id, [...layers]],
+              `INSERT INTO oauth_consent_layers (org_id, consent_id, layer_id, permissions)
+               SELECT $1, $2, (e->>'id')::uuid,
+                      CASE WHEN e->'permissions' IS NULL OR e->'permissions' = 'null'::jsonb
+                           THEN NULL
+                           ELSE ARRAY(SELECT jsonb_array_elements_text(e->'permissions')) END
+                 FROM jsonb_array_elements($3::jsonb) AS e`,
+              [
+                auth.orgId,
+                id,
+                JSON.stringify(
+                  layers.map((l) => ({
+                    id: l.id,
+                    ...(l.permissions === undefined ? {} : { permissions: l.permissions }),
+                  })),
+                ),
+              ],
             )
           }
         }
@@ -418,7 +466,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
           service_account_id: string | null
           service_account_name: string | null
           approved_by: string
-          layers: string[] | null
+          layers: { id: string; permissions: Permission[] | null }[] | null
           permissions: Permission[] | null
           created_at: string
           last_refreshed_at: string | null
@@ -429,7 +477,8 @@ export class PostgresOAuthConsents implements OAuthConsents {
           // one screen that can end it.
           `SELECT c.id, c.client_id, oc.client_name, c.acts_as, c.service_account_id,
                   sa.name AS service_account_name, c.approved_by, c.permissions,
-                  NULLIF(ARRAY_REMOVE(ARRAY_AGG(cl.layer_id), NULL), '{}') AS layers,
+                  JSON_AGG(JSON_BUILD_OBJECT('id', cl.layer_id, 'permissions', cl.permissions))
+                    FILTER (WHERE cl.layer_id IS NOT NULL) AS layers,
                   c.created_at::text, c.last_refreshed_at::text, c.revoked_at::text
              FROM oauth_consents c
              JOIN oauth_clients oc ON oc.client_id = c.client_id
@@ -450,7 +499,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
               : ({ actsAs: 'service_account', serviceAccountId: r.service_account_id as string } as const),
           serviceAccountName: r.service_account_name,
           approvedBy: r.approved_by,
-          layers: r.layers ?? [],
+          layers: narrowingOf(r.layers),
           permissions: r.permissions ?? [],
           createdAt: r.created_at,
           lastRefreshedAt: r.last_refreshed_at,
@@ -644,7 +693,7 @@ export class PostgresDelegations implements Delegations {
   async resolve(
     orgId: string,
     id: string,
-  ): Promise<{ userId: string; role: OrgRole; layers?: readonly string[] } | undefined> {
+  ): Promise<{ userId: string; role: OrgRole; layers?: readonly LayerNarrowing[] } | undefined> {
     return withOrg(
       this.pool,
       orgId,
@@ -661,13 +710,14 @@ export class PostgresDelegations implements Delegations {
         const { rows } = await client.query<{
           user_id: string
           role: OrgRole
-          layers: string[] | null
+          layers: { id: string; permissions: Permission[] | null }[] | null
           permissions: Permission[] | null
         }>(
           `SELECT c.approved_by AS user_id,
                   u.role,
                   c.permissions,
-                  NULLIF(ARRAY_REMOVE(ARRAY_AGG(l.layer_id), NULL), '{}') AS layers
+                  JSON_AGG(JSON_BUILD_OBJECT('id', l.layer_id, 'permissions', l.permissions))
+                    FILTER (WHERE l.layer_id IS NOT NULL) AS layers
              FROM oauth_consents c
              JOIN users u
                ON u.id = c.approved_by AND u.org_id = c.org_id
@@ -686,13 +736,15 @@ export class PostgresDelegations implements Delegations {
         const row = rows[0]
         if (row === undefined) return undefined
         // No rows in the join table means **no narrowing**, never "narrowed to
-        // nothing". `ARRAY_REMOVE`/`NULLIF` above collapse the LEFT JOIN's one
-        // null row to null rather than to `[null]`, so an unnarrowed delegation
-        // does not arrive here as a narrowing nobody can satisfy.
+        // nothing". The `FILTER` above drops the LEFT JOIN's one null row, and
+        // `JSON_AGG` over nothing is NULL rather than `[null]` — so an
+        // unnarrowed delegation does not arrive here as a narrowing nobody can
+        // satisfy. That was a real defect in the array version of this query
+        // and the filter is how it stays fixed.
         return {
           userId: row.user_id,
           role: row.role,
-          ...(row.layers === null ? {} : { layers: row.layers }),
+          ...(row.layers === null ? {} : { layers: narrowingOf(row.layers) }),
           // NULL is no ceiling, which is a different state from an empty set —
           // the CHECK on the column refuses the second, so this cannot arrive
           // as a delegation that may do nothing.

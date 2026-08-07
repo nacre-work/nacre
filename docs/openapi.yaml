@@ -468,12 +468,41 @@ components:
             screen is scoped to. Refused here and again at token validation.
         layers:
           type: array
-          items: { type: string, format: uuid }
+          items:
+            oneOf:
+              - type: string
+                format: uuid
+              - type: object
+                required: [id]
+                properties:
+                  id: { type: string, format: uuid }
+                  permissions:
+                    type: array
+                    items: { type: string, enum: [read, write, admin] }
+                    minItems: 1
           description: |
-            Layer ids a delegation is restricted to, chosen by the person
+            Layers a delegation is restricted to, chosen by the person
             approving. It can only ever remove: the ids become a `must` on
             `layer_id` inside the index traversal, beside the permission filter,
             so `top_k` still returns k permitted results.
+
+            An entry may be a bare id, or an object carrying a ceiling for that
+            layer alone. The two spellings are not two features: a bare id means
+            "inherit the connection's ceiling", which is what every entry meant
+            before a layer could carry one.
+
+            A per-layer set is **intersected** with `permissions` and never
+            replaces it. One naming a permission the connection's ceiling
+            excludes could therefore never take effect, so it is refused with a
+            `400` naming both sets rather than stored as a control that does
+            nothing. It also never confers organization-wide authority: minting
+            a user or an agent is gated on `permissions`, because a permission
+            granted inside one layer is not authority over the organization
+            holding it.
+
+            The narrowing becomes one set of layers **per permission**:
+            `{ L : p ∈ ceiling(L) }`. A layer given only `write` is absent from
+            search, which is rule 6 rather than a special case.
 
             Every id must be one the caller can read — `404` otherwise, for an
             unknown id and an unreadable one alike. Replaced wholesale when the

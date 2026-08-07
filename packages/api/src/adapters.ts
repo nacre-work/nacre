@@ -66,7 +66,7 @@ import type {
   SearchOptions,
   SearchService,
 } from './server.js'
-import { administers, withinDelegation, type AuthContext } from './auth.js'
+import { administers, delegatedLayers, withinDelegation, type AuthContext } from './auth.js'
 
 /**
  * The adapters that put the permission model on the request path.
@@ -159,7 +159,7 @@ export class PostgresDocuments implements Documents {
         // the layer and this would hand over the same document a request later.
         // `undefined` here becomes the 404 an unreachable document gets, which
         // is invariant 6 — the caller learns nothing about why.
-        if (!withinDelegation(auth, row.layer_id)) return undefined
+        if (!withinDelegation(auth, row.layer_id, 'read')) return undefined
 
         // `all` is org_admin, which reaches everything by rule 3. Otherwise the
         // document has to sit in a layer the plan reached, or be named
@@ -249,7 +249,7 @@ export class PostgresDocuments implements Documents {
         if (layerId === undefined) return false
 
         // The narrowing, same as everywhere a layer id and a document meet.
-        if (!withinDelegation(auth, layerId)) return false
+        if (!withinDelegation(auth, layerId, 'write')) return false
 
         if (plan.kind === 'scoped') {
           // deniedDocs first, as on the delete path: a deny beats an allow at
@@ -459,7 +459,12 @@ export class NacreSearchService implements SearchService {
     // beside the permission constraint the index answers that exactly, which is
     // also why this is not a post-filter — invariant 2 holds because the clause
     // is inside the traversal and `top_k` still returns k permitted results.
-    const delegated = auth.delegation?.layers
+    // `read`, because this is the search path and there is no other verb it
+    // could be asking about. A layer the person gave the application `write`
+    // and not `read` is absent from this set, which is exactly rule 6: an
+    // ingest-only layer is not searchable, and it never was for a principal
+    // holding `write` alone either.
+    const delegated = delegatedLayers(auth, 'read')
     if (delegated !== undefined) {
       const both = narrow?.layers === undefined ? [...delegated] : narrow.layers.filter((id) => delegated.includes(id))
       // The caller named layers and none of them survive the narrowing. Empty,
@@ -980,7 +985,7 @@ export class NacreIngest implements Ingest {
     // restricted an application to one layer restricted what it can *put*
     // there too, and an ingest is the one verb where the layer arrives named
     // rather than being discovered by a query.
-    if (!withinDelegation(auth, id)) return undefined
+    if (!withinDelegation(auth, id, 'write')) return undefined
 
     // A layer that exists but is not writable and a layer that does not exist
     // return the same thing, so the caller cannot tell them apart.
@@ -1164,7 +1169,7 @@ export class NacreIngest implements Ingest {
         // The narrowing. A delegation restricted to one layer must not be able
         // to delete out of another, and this is a `write` path so rule 6 does
         // not help: the person's own `read` never came into it.
-        if (!withinDelegation(auth, layerId)) return false
+        if (!withinDelegation(auth, layerId, 'write')) return false
         if (plan.kind === 'scoped') {
           // deniedDocs first. `resolve` populates it precisely so a deny beats
           // an allow at any depth (rule 5), and checking only `layers` let a

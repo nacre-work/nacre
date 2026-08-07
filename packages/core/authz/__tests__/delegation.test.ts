@@ -2,6 +2,7 @@ import type { Permission } from '@nacre.work/core'
 import {
   administers,
   authenticate,
+  delegatedLayers,
   postgresVerification,
   PostgresDocuments,
   PostgresOAuthAuthorizations,
@@ -103,7 +104,8 @@ const present = async (token: string): Promise<AuthContext | Problem> =>
 /** Connect an application as `who`, optionally narrowed. Returns the token. */
 const connect = async (
   who: AuthContext,
-  layers: readonly string[] = [],
+  /** A bare id inherits the connection's ceiling; an object sets one for that layer. */
+  layers: readonly (string | { id: string; permissions?: readonly Permission[] })[] = [],
   /** The permission ceiling. Empty is "no ceiling", as it is at the endpoint. */
   permissions: readonly Permission[] = [],
 ): Promise<{ token: string; delegationId: string }> => {
@@ -111,7 +113,7 @@ const connect = async (
     who,
     CLIENT,
     { actsAs: 'user', userId: who.principal.id },
-    layers,
+    layers.map((l) => (typeof l === 'string' ? { id: l } : l)),
     permissions.length === 0 ? undefined : permissions,
   )
   return { token: await mint(who.principal.id, delegationId), delegationId }
@@ -316,14 +318,14 @@ when('delegation · a person lending their own reach', () => {
     const auth = await present(token)
     expect(auth).not.toBeInstanceOf(Problem)
     if (auth instanceof Problem) return
-    expect(auth.delegation?.layers).toEqual([LAYER_L])
+    expect(auth.delegation?.layers?.map((l) => l.id)).toEqual([LAYER_L])
 
     // Inside the traversal. `buildFilter` puts the narrowing in `must` beside
     // the permission constraint, so it can only ever remove — and the person's
     // own plan is unchanged, which is what "the narrowing narrows scopes, never
     // verbs" means.
     const filter = buildFilter(ORG, { kind: 'scoped', layers: [LAYER_L, LAYER_M], extraDocs: [], deniedDocs: [] },
-      { layers: [...(auth.delegation?.layers ?? [])] })
+      { layers: (auth.delegation?.layers ?? []).map((l) => l.id) })
     expect(filter.must).toContainEqual({ key: 'layer_id', match: { any: [LAYER_L] } })
 
     // And the path that has one row and no traversal to put a clause inside of.
@@ -497,7 +499,7 @@ when('delegation · a person lending their own reach', () => {
       context(PERSON),
       CLIENT,
       { actsAs: 'user', userId: PERSON },
-      [LAYER_L],
+      [{ id: LAYER_L }],
     )
     const code = 'code-' + id(12)
     await authorizations.approve(context(PERSON), {
@@ -528,7 +530,7 @@ when('delegation · a person lending their own reach', () => {
     const auth = await present(second.token)
     expect(auth).not.toBeInstanceOf(Problem)
     if (auth instanceof Problem) return
-    expect(auth.delegation?.layers).toEqual([LAYER_L])
+    expect(auth.delegation?.layers?.map((l) => l.id)).toEqual([LAYER_L])
 
     // And answering it with nothing means no narrowing, not an empty one.
     const third = await connect(context(PERSON), [])
@@ -536,6 +538,105 @@ when('delegation · a person lending their own reach', () => {
     expect(widened).not.toBeInstanceOf(Problem)
     if (widened instanceof Problem) return
     expect(widened.delegation?.layers).toBeUndefined()
+  })
+
+  it('T26 · a per-layer ceiling narrows that layer and leaves the other alone', async () => {
+    // The case the screen could not express: read the handbook, write to
+    // scratch. As two independent questions the only approximation was `write`
+    // on both, which is what this closes.
+    // The person holds read **and** write on both layers. Without that there
+    // would be nothing for the narrowing to narrow: `authority(delegation) =
+    // resolve(person)`, so a delegation cannot reach what its person cannot,
+    // and asserting otherwise would be asserting that a restriction grants.
+    // The first run of this case did exactly that and failed, correctly.
+    const c = await pool.connect()
+    try {
+      await c.query(
+        `INSERT INTO grants (org_id, principal_type, principal_id, scope_type, scope_id, permission, effect)
+         VALUES ($1,'user',$2,'layer',$3,'write','allow'),
+                ($1,'user',$2,'layer',$4,'write','allow')
+         ON CONFLICT DO NOTHING`,
+        [ORG, PERSON, LAYER_L, LAYER_M],
+      )
+    } finally {
+      c.release()
+    }
+
+    const { token } = await connect(
+      context(PERSON),
+      [
+        { id: LAYER_L, permissions: ['read'] },
+        { id: LAYER_M, permissions: ['write'] },
+      ],
+      ['read', 'write'],
+    )
+    const auth = await present(token)
+    expect(auth).not.toBeInstanceOf(Problem)
+    if (auth instanceof Problem) return
+
+    // The narrowing is one set **per permission** now, and this is the whole
+    // of it: the same delegation admits a different pair of layers for `read`
+    // than for `write`.
+    expect(delegatedLayers(auth, 'read')).toEqual([LAYER_L])
+    expect(delegatedLayers(auth, 'write')).toEqual([LAYER_M])
+
+    // Reading: L is in, M is out — despite M being the layer it may write.
+    expect(await documents.read(auth, DOC_IN_L)).toBeDefined()
+    expect(await documents.read(auth, DOC_IN_M)).toBeUndefined()
+
+    // Writing: the mirror image, which is rule 6 arriving through a narrowing
+    // rather than through a grant. A layer given only `read` is not writable
+    // even though it is the one the application can see.
+    expect(await documents.updateMetadata(auth, DOC_IN_L, { source: 'x' })).toBe(false)
+    expect(await documents.updateMetadata(auth, DOC_IN_M, { source: 'x' })).toBe(true)
+
+    // And inside the traversal, where invariant 2 lives. The clause carries the
+    // read set, so a search cannot reach the write-only layer.
+    const filter = buildFilter(
+      ORG,
+      { kind: 'scoped', layers: [LAYER_L, LAYER_M], extraDocs: [], deniedDocs: [] },
+      { layers: [...(delegatedLayers(auth, 'read') ?? [])] },
+    )
+    expect(filter.must).toContainEqual({ key: 'layer_id', match: { any: [LAYER_L] } })
+  })
+
+  it('T27 · a layer with no ceiling of its own inherits the connection\'s', async () => {
+    // Which is what every narrowing written before per-layer ceilings meant,
+    // and the reason the column is nullable rather than defaulted.
+    const { token } = await connect(
+      context(PERSON),
+      [{ id: LAYER_L, permissions: ['read'] }, LAYER_M],
+      ['read', 'write'],
+    )
+    const auth = await present(token)
+    expect(auth).not.toBeInstanceOf(Problem)
+    if (auth instanceof Problem) return
+
+    expect(delegatedLayers(auth, 'read')).toEqual([LAYER_L, LAYER_M])
+    expect(delegatedLayers(auth, 'write')).toEqual([LAYER_M])
+  })
+
+  it('T28 · a per-layer ceiling never reaches administration', async () => {
+    // `admin` inside one layer is not authority over the organization holding
+    // it. Minting a user is gated on the connection's ceiling and never on a
+    // layer's, so this delegation administers nothing — and the endpoint
+    // refuses the pair anyway, which is the belt to this brace.
+    const { token } = await connect(
+      context(PERSON),
+      [{ id: LAYER_L, permissions: ['admin'] }],
+      ['admin'],
+    )
+    const auth = await present(token)
+    expect(auth).not.toBeInstanceOf(Problem)
+    if (auth instanceof Problem) return
+
+    // The person is a `member` in this fixture, so `administers` is false on
+    // the role alone — and that is the point: the layer's `admin` did not
+    // promote them. Asserted through the same helper every handler calls.
+    expect(administers(auth)).toBe(false)
+
+    // What it *does* reach is the layer, which is the narrowing doing its job.
+    expect(delegatedLayers(auth, 'admin')).toEqual([LAYER_L])
   })
 
   it('nothing is granted to a delegation, and the database still says so', async () => {

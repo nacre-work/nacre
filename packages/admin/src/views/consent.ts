@@ -128,9 +128,20 @@ export async function consentView(root: HTMLElement): Promise<void> {
     ),
   )
 
-  /** Layer checkboxes, for narrowing a delegation. */
-  const narrowing = group('In these layers')
-  const boxes: HTMLInputElement[] = []
+  /**
+   * One row per layer, and a `read`/`write` box on each.
+   *
+   * It was one list of layers beside one set of permissions, and what those two
+   * questions could express together was their product: the same verbs applied
+   * to every layer. A person does not mean a product. "Read the handbook, write
+   * to scratch" needed `write` on the handbook to say, which is precisely the
+   * thing they were trying not to give.
+   *
+   * A row with nothing ticked is a layer that is not in the narrowing at all —
+   * the same meaning an unticked box had before.
+   */
+  const narrowing = group('It may, in each layer')
+  const rows: { id: string; read: HTMLInputElement; write: HTMLInputElement }[] = []
 
   /**
    * What the application may do, and the dimension people reach for first.
@@ -160,10 +171,21 @@ export async function consentView(root: HTMLElement): Promise<void> {
   const ceiling = group('It may')
   const verbs: HTMLInputElement[] = []
 
+  /**
+   * The connection-wide group asks what the application may do *everywhere*,
+   * and the rows below answer it per layer. Both at once is one question with
+   * two answers, so the group steps aside the moment any row is ticked — and
+   * comes back when the last one is cleared.
+   */
+  const showCeiling = (): void => {
+    const perLayer = rows.some((r) => r.read.checked || r.write.checked)
+    ceiling.el.hidden = asAgent.checked || perLayer
+  }
+
   const showAgentFields = (): void => {
     agentPanel.hidden = !asAgent.checked
     narrowing.el.hidden = asAgent.checked
-    ceiling.el.hidden = asAgent.checked
+    showCeiling()
   }
   asSelf.addEventListener('change', showAgentFields)
   asAgent.addEventListener('change', showAgentFields)
@@ -219,18 +241,42 @@ export async function consentView(root: HTMLElement): Promise<void> {
     // to: the delegation cannot reach anything else anyway, so offering more
     // would be offering a restriction that restricts nothing.
     narrowing.reset()
-    boxes.length = 0
+    rows.length = 0
     const layers = await api.layers.list()
     if (layers.length === 0) {
       narrowing.el.append(h('p', { class: 'hint' }, 'You do not read any layer yet, so there is nothing to restrict.'))
       return
     }
-    narrowing.el.append(h('p', { class: 'hint' }, 'Leave all unticked to give it everything you can read.'))
+    narrowing.el.append(
+      h('p', { class: 'hint' }, 'Leave every row empty to give it everything above, everywhere you can read.'),
+    )
+
+    const body = h('tbody', {})
     for (const layer of layers) {
-      const box = h('input', { type: 'checkbox', value: layer.id }) as HTMLInputElement
-      boxes.push(box)
-      narrowing.el.append(h('label', { class: 'choice' }, box, h('span', {}, `${layer.name} · ${layer.slug}`)))
+      const read = h('input', { type: 'checkbox', 'aria-label': `Read ${layer.name}` }) as HTMLInputElement
+      const write = h('input', { type: 'checkbox', 'aria-label': `Write ${layer.name}` }) as HTMLInputElement
+      // Ticking anything per layer answers the question the group above asks,
+      // so that group steps aside rather than sitting there contradicting it.
+      for (const box of [read, write]) box.addEventListener('change', showCeiling)
+      rows.push({ id: layer.id, read, write })
+      body.append(
+        h('tr', {},
+          h('td', {}, `${layer.name} · ${layer.slug}`),
+          h('td', { class: 'tick' }, read),
+          h('td', { class: 'tick' }, write),
+        ),
+      )
     }
+    narrowing.el.append(
+      h('table', { class: 'table matrix' },
+        h('thead', {}, h('tr', {},
+          h('th', {}, 'Layer'),
+          h('th', { class: 'tick' }, 'Read'),
+          h('th', { class: 'tick' }, 'Write'),
+        )),
+        body,
+      ),
+    )
   }
 
   const setBusy = (busy: boolean): void => {
@@ -263,12 +309,27 @@ export async function consentView(root: HTMLElement): Promise<void> {
         // None ticked is no narrowing, which is not the same as narrowed to
         // nothing — the second would be an application that can reach nothing,
         // and it is not a state this offers.
-        const layers = boxes.filter((b) => b.checked).map((b) => b.value)
+        const layers = rows
+          .map((r) => ({
+            id: r.id,
+            permissions: [...(r.read.checked ? ['read' as const] : []), ...(r.write.checked ? ['write' as const] : [])],
+          }))
+          .filter((l) => l.permissions.length > 0)
 
         // Permissions are the other way round: none ticked *is* an application
         // that can do nothing, so it is refused here rather than sent as an
         // empty array the server would have to interpret.
-        const permissions = verbs.filter((b) => b.checked).map((b) => b.value) as ('read' | 'write' | 'admin')[]
+        //
+        // With a per-layer answer given, the connection's ceiling is the
+        // **union** of it rather than a second thing to fill in. That is not a
+        // convenience: the server refuses a layer set the ceiling excludes, so
+        // sending anything narrower here would refuse the very rows the person
+        // just ticked — and anything wider would leave administration bounded
+        // by a verb they never granted anywhere.
+        const permissions =
+          layers.length > 0
+            ? (['read', 'write'] as const).filter((p) => layers.some((l) => l.permissions.includes(p)))
+            : (verbs.filter((b) => b.checked).map((b) => b.value) as ('read' | 'write' | 'admin')[])
         if (!asAgent.checked && permissions.length === 0) {
           message.textContent = 'Choose at least one thing the application may do.'
           return
