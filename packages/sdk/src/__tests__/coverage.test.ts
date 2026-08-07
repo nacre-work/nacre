@@ -74,7 +74,9 @@ function operations(): string[] {
 function clientPaths(): string[] {
   const source = readFileSync(CLIENT, 'utf8')
   const found = new Set<string>()
-  for (const [, raw] of source.matchAll(/path: [`'](\/v1\/[^`']*)[`']/g)) {
+  for (const match of source.matchAll(/path: [`'](\/v1\/[^`']*)[`']/g)) {
+    const raw = match[1]
+    if (raw === undefined) continue
     const normalized = raw
       .replace(/\/\$\{[^}]*\}/g, '/{}')
       .replace(/\$\{[^}]*\}/g, '')
