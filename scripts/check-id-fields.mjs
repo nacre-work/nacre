@@ -31,23 +31,6 @@ const ROOT = 'packages/admin/src'
 /** Where the field is legitimately built, and where the reasoning lives. */
 const DEFINES = ['packages/admin/src/pick.ts']
 
-/**
- * The one field left, and the reason is not about this screen.
- *
- * `embedding_providers` has no listing endpoint at all — the schema has offered
- * per-organization providers since migration 0001 and the API gives no route to
- * enumerate them, so the migration panel cannot offer a picker because there is
- * nothing to ask. That is the same shape `GET /v1/workspaces` closed: the model
- * offers something the product gives no route to, and the route people find
- * instead is `psql`.
- *
- * Written down here rather than left to a comment in the view, and checked in
- * both directions — an exemption that stops matching is reported, so this list
- * cannot outlive the endpoint that removes its reason. nacre#122.
- */
-const EXEMPT = [
-  { file: 'packages/admin/src/views/migrate.ts', text: "placeholder: 'provider id (uuid)'" },
-]
 
 /**
  * A text input whose placeholder promises an id.
@@ -80,11 +63,6 @@ for (const file of files) {
     // A comment explaining the rule is not a use of it.
     if (/^\s*(\/\/|\*)/.test(line)) return
     for (const match of line.matchAll(ASKS_FOR_AN_ID)) {
-      const excused = EXEMPT.find((e) => e.file === file && line.includes(e.text))
-      if (excused !== undefined) {
-        excused.seen = true
-        continue
-      }
       console.error(
         `::error file=${file},line=${i + 1}::${match[0].trim()} — a screen asks for an id. ` +
           'Nobody knows a uuid, and a wrong one comes back as the 404 that means "no such thing ' +
@@ -110,19 +88,5 @@ for (const file of DEFINES) {
   }
 }
 
-// An exemption that no longer matches has outlived its reason, and leaving it
-// makes the next person believe a field is still excused when it is not.
-for (const e of EXEMPT) {
-  if (e.seen === true) {
-    console.log(`exempt: ${e.file} — ${e.text}`)
-    continue
-  }
-  console.error(
-    `::error::${e.file} no longer contains ${e.text}, so its exemption in this check is stale. ` +
-      'Remove it.',
-  )
-  failed = true
-}
-
-if (!failed) console.log(`${scanned} views, ${EXEMPT.length} field(s) excused by name, none else asking for an id`)
+if (!failed) console.log(`${scanned} views, none asking for an id`)
 process.exit(failed ? 1 : 0)

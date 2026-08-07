@@ -59,6 +59,9 @@ import type {
   Layers,
   Page,
   PageResult,
+  EmbeddingProvider as EmbeddingProviderView,
+  EmbeddingProviderOutcome,
+  EmbeddingProviders,
   Workspace,
   WorkspaceOutcome,
   Workspaces,
@@ -1772,6 +1775,107 @@ export class PostgresLayers implements Layers {
  * who closed that terminal had no way forward that did not involve reading the
  * database directly.
  */
+/**
+ * Embedding providers, which had no API at all.
+ *
+ * `init` wrote one row and nothing else ever did, so a deployment had exactly
+ * one model and the documented way to add a second was `psql` — the shape this
+ * repository has closed twice before, at the workspace listing and at
+ * `/v1/users`. The capability was already built everywhere else: the schema has
+ * carried `embedding_providers.org_id` since migration 0001, and the search
+ * path, the worker and the reindex machinery were all taught to honour it.
+ *
+ * The **database** narrows both operations and this class does not repeat it.
+ * `org_isolation` (0002) shows a caller their own organization's rows and the
+ * installation default; the three restrictive policies from 0019 require a
+ * write to name the caller's own organization, so a tenant cannot create,
+ * change or remove the global row whatever this code passes.
+ */
+export class PostgresEmbeddingProviders implements EmbeddingProviders {
+  constructor(
+    private readonly pool: Pool,
+    private readonly role?: string,
+  ) {}
+
+  async list(auth: AuthContext): Promise<readonly EmbeddingProviderView[]> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        // The installation default last. It is the one every layer starts on,
+        // so it is the least interesting entry in a list somebody opened to
+        // find the model they added.
+        const { rows } = await client.query<{
+          id: string
+          name: string
+          model: string
+          dimensions: number
+          org_id: string | null
+        }>(
+          `SELECT id, name, model, dimensions, org_id
+             FROM embedding_providers
+            ORDER BY org_id IS NULL, name`,
+        )
+        return rows.map((r) => ({
+          id: r.id,
+          name: r.name,
+          model: r.model,
+          dimensions: Number(r.dimensions),
+          isDefault: r.org_id === null,
+        }))
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+
+  async create(
+    auth: AuthContext,
+    input: { name: string; endpoint: string; model: string; dimensions: number },
+  ): Promise<EmbeddingProviderOutcome> {
+    if (!administers(auth)) return { kind: 'denied' }
+
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        // `auth.orgId` and never NULL, so a tenant cannot write the global
+        // default. The restrictive policy refuses it anyway — this is the
+        // application saying the same thing, because a statement that relies
+        // only on a policy is one nobody reading it can check.
+        const { rows } = await client.query<{
+          id: string
+          name: string
+          model: string
+          dimensions: number
+        }>(
+          `INSERT INTO embedding_providers (org_id, name, endpoint, model, dimensions)
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT DO NOTHING
+           RETURNING id, name, model, dimensions`,
+          [auth.orgId, input.name, input.endpoint, input.model, input.dimensions],
+        )
+        const row = rows[0]
+        // By here the caller has proved they administer the organization, so
+        // there is nothing about visibility left to protect: a name already in
+        // use is a fact about the resource, and 409 says so.
+        if (row === undefined) return { kind: 'conflict' }
+
+        return {
+          kind: 'created',
+          provider: {
+            id: row.id,
+            name: row.name,
+            model: row.model,
+            dimensions: Number(row.dimensions),
+            isDefault: false,
+          },
+        }
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+}
+
 export class PostgresWorkspaces implements Workspaces {
   constructor(
     private readonly pool: Pool,
