@@ -393,6 +393,62 @@ export interface Workspace {
   readonly permissions: readonly Permission[]
 }
 
+/**
+ * An embedding provider, as a caller sees it.
+ *
+ * **No endpoint and no credentials reference.** Both are in the table and
+ * neither is on this type: the endpoint names an internal host, the credentials
+ * reference names a slot in a secret store, and nothing a caller does with this
+ * list needs either. It exists so a layer can be pointed at a model, which
+ * takes an id — auditing the deployment's configuration is a different job with
+ * a different reader.
+ */
+export interface EmbeddingProvider {
+  readonly id: string
+  readonly name: string
+  readonly model: string
+  readonly dimensions: number
+  /** The installation default: the row belonging to no organization. */
+  readonly isDefault: boolean
+}
+
+export type EmbeddingProviderOutcome =
+  | { readonly kind: 'created'; readonly provider: EmbeddingProvider }
+  | { readonly kind: 'denied' }
+  | { readonly kind: 'conflict' }
+
+export interface EmbeddingProviders {
+  /**
+   * This organization's providers and the installation default.
+   *
+   * Deliberately **not** `org_admin`. The caller who needs this is whoever may
+   * start a reindex, and that is `admin` on the *layer* — an organization role
+   * would hand them an empty picker and a 404 on the button, which is the
+   * defect the consent screen shipped with and this repository has now fixed
+   * twice.
+   *
+   * Widening it that far discloses nothing: a provider is installation
+   * configuration rather than tenant data, its model and dimensions are already
+   * implied by every layer's `vector_name`, and the endpoint is not on the
+   * type. The database narrows the rest — `org_isolation` shows a caller their
+   * own organization's rows and the global default, and never another
+   * tenant's.
+   */
+  list(auth: AuthContext): Promise<readonly EmbeddingProvider[]>
+  /**
+   * Add one, at `org_admin`.
+   *
+   * Creating a provider is installation configuration: it decides what a layer
+   * can be migrated onto, it can cost money, and — once an adapter can reach a
+   * hosted API — it decides where document text goes. That is an
+   * organization-wide act, unlike choosing among the ones that exist.
+   */
+  create(
+    auth: AuthContext,
+    input: { name: string; endpoint: string; model: string; dimensions: number },
+  ): Promise<EmbeddingProviderOutcome>
+}
+
 export type WorkspaceOutcome =
   | { readonly kind: 'created'; readonly workspace: Workspace }
   | { readonly kind: 'denied' }
@@ -830,6 +886,7 @@ export interface ApiOptions {
   /** Absent means the workspace paths answer 404, like any capability a surface lacks. */
   readonly oauth?: OAuthServer
   readonly workspaces?: Workspaces
+  readonly embeddingProviders?: EmbeddingProviders
   /** Layer reindex. Absent means the reindex paths answer 404. */
   readonly reindex?: Reindex
   /** The reindex recall gate's query set. Absent means those paths answer 404. */
@@ -2798,6 +2855,136 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         requestId,
       )
       return
+    }
+
+    if (instance === '/v1/embedding-providers' && options.embeddingProviders !== undefined) {
+      if (req.method === 'GET') {
+        // Not paged. A deployment has a handful of these — one per model it
+        // runs — and a cursor over three rows is machinery with nothing to do.
+        // No audit event either, on the layer listing's rule: this is
+        // configuration the caller can already infer from any layer.
+        const items = await options.embeddingProviders.list(auth)
+        send(
+          res,
+          200,
+          {
+            items: items.map((p) => ({
+              id: p.id,
+              name: p.name,
+              model: p.model,
+              dimensions: p.dimensions,
+              is_default: p.isDefault,
+            })),
+          },
+          requestId,
+        )
+        return
+      }
+
+      if (req.method === 'POST') {
+        const body_ = (body ?? {}) as Record<string, unknown>
+        const name = body_.name
+        const endpoint = body_.endpoint
+        const model = body_.model
+        const dimensions = body_.dimensions
+
+        if (
+          typeof name !== 'string' || name.trim() === '' ||
+          typeof endpoint !== 'string' || endpoint.trim() === '' ||
+          typeof model !== 'string' || model.trim() === ''
+        ) {
+          const problem = badRequest(instance, requestId, "'name', 'endpoint' and 'model' are required.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        // The endpoint is parsed rather than stored as typed. `minio:9000` was
+        // accepted by `new URL` once, as the scheme `minio:` with an empty
+        // host, and the failure surfaced far from here — so a value that cannot
+        // be an http(s) address is refused where the person can still fix it.
+        let parsed: URL
+        try {
+          parsed = new URL(endpoint)
+        } catch {
+          const problem = badRequest(instance, requestId, "'endpoint' must be an absolute http(s) URL.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.host === '') {
+          const problem = badRequest(instance, requestId, "'endpoint' must be an absolute http(s) URL.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        // The load-bearing field. A layer's collection slot is created from it,
+        // so a wrong number is a layer that accepts documents and fails every
+        // one of them in the worker while the API answers `queued` — which is a
+        // defect this repository has already had once, from the other side.
+        if (typeof dimensions !== 'number' || !Number.isInteger(dimensions) || dimensions < 1 || dimensions > 16_384) {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "'dimensions' must be a whole number between 1 and 16384, and must match what the model actually returns.",
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        const outcome = await options.embeddingProviders.create(auth, {
+          name: name.trim(),
+          endpoint: endpoint.trim(),
+          model: model.trim(),
+          dimensions,
+        })
+
+        if (outcome.kind === 'denied') {
+          await options.audit.write({
+            orgId: auth.orgId,
+            actor: `${auth.principal.type}:${auth.principal.id}`,
+            action: 'embedding_provider.create',
+            result: 'deny',
+            detail: { name: name.trim() },
+            requestId,
+          })
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        if (outcome.kind === 'conflict') {
+          const problem = new Problem({
+            type: 'https://nacre.work/errors/conflict',
+            title: 'Conflict',
+            status: 409,
+            detail: `A provider named '${name.trim()}' already exists in this organization.`,
+            instance,
+            requestId,
+          })
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `${auth.principal.type}:${auth.principal.id}`,
+          action: 'embedding_provider.create',
+          result: 'allow',
+          detail: { name: outcome.provider.name, model: outcome.provider.model },
+          requestId,
+        })
+        send(
+          res,
+          201,
+          {
+            id: outcome.provider.id,
+            name: outcome.provider.name,
+            model: outcome.provider.model,
+            dimensions: outcome.provider.dimensions,
+            is_default: outcome.provider.isDefault,
+          },
+          requestId,
+        )
+        return
+      }
     }
 
     if (instance === '/v1/workspaces' && options.workspaces !== undefined) {

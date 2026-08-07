@@ -224,6 +224,24 @@ components:
             carries source_url when the deployment stores bytes in object
             storage.
         metadata:   { type: object, additionalProperties: true, description: 'The document''s metadata, as supplied on ingest.' }
+    EmbeddingProvider:
+      type: object
+      required: [id, name, model, dimensions, is_default]
+      properties:
+        id:         { type: string, format: uuid }
+        name:       { type: string }
+        model:      { type: string }
+        dimensions:
+          type: integer
+          description: >
+            What the model returns, and what a layer's vector slot is created
+            with. Wrong here is a layer that accepts documents and fails every
+            one of them.
+        is_default:
+          type: boolean
+          description: >
+            The installation default — the row belonging to no organization,
+            readable by every tenant and writable by none.
     Workspace:
       type: object
       required: [id, slug, name, layer_count, created_at, permissions]

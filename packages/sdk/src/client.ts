@@ -6,6 +6,7 @@ import type {
   CreatedServiceAccount,
   CreatedUser,
   Document,
+  EmbeddingProvider,
   Grant,
   GrantInput,
   Group,
@@ -574,6 +575,44 @@ export class NacreClient {
         layerCount: Number(body.layer_count ?? 0),
         permissions: readPermissions(body.permissions),
       }
+    },
+  }
+
+  /**
+   * The embedding models a layer can be pointed at.
+   *
+   * Listing is open to anybody in the organization, because the caller who
+   * needs it is whoever may start a reindex — `admin` on the layer, not an
+   * organization role. Creating one is `org_admin`.
+   */
+  readonly embeddingProviders = {
+    list: async (): Promise<readonly EmbeddingProvider[]> => {
+      const body = (await this.#request({
+        method: 'GET',
+        path: '/v1/embedding-providers',
+        retryable: true,
+      })) as { items?: unknown[] }
+      return (body.items ?? []).map((p) => providerFrom(p as Record<string, unknown>))
+    },
+
+    /** `undefined` for a caller who is not an `org_admin` — the usual 404. */
+    create: async (input: {
+      name: string
+      endpoint: string
+      model: string
+      dimensions: number
+    }): Promise<EmbeddingProvider | undefined> => {
+      const body = await this.#maybe<Record<string, unknown>>({
+        method: 'POST',
+        path: '/v1/embedding-providers',
+        body: {
+          name: input.name,
+          endpoint: input.endpoint,
+          model: input.model,
+          dimensions: input.dimensions,
+        },
+      })
+      return body === undefined ? undefined : providerFrom(body)
     },
   }
 
@@ -1285,6 +1324,16 @@ function readPermissions(value: unknown): readonly Permission[] {
   const all: readonly Permission[] = ['read', 'write', 'admin']
   if (!Array.isArray(value)) return []
   return all.filter((p) => value.includes(p))
+}
+
+function providerFrom(p: Record<string, unknown>): EmbeddingProvider {
+  return {
+    id: String(p.id),
+    name: String(p.name ?? ''),
+    model: String(p.model ?? ''),
+    dimensions: Number(p.dimensions ?? 0),
+    isDefault: p.is_default === true,
+  }
 }
 
 function tokensFrom(t: Record<string, unknown>): Tokens {

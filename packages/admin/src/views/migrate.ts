@@ -2,6 +2,7 @@ import type { Layer, ReferenceQuery, ReindexStatus } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { clear, h } from '../dom.js'
+import { picker } from '../pick.js'
 
 /**
  * Moving a layer onto a different embedding model, and the gate in front of it.
@@ -283,11 +284,19 @@ function startSection(
   redraw: () => void,
 ): HTMLElement {
   const running = status?.status === 'running'
-  const provider = h('input', {
-    class: 'input mono',
-    placeholder: 'provider id (uuid)',
-    ...(running ? { disabled: true } : {}),
-  })
+  // The last field on any screen that asked a person to type a uuid, and it
+  // could not stop until `embedding_providers` had an API: there was nothing to
+  // list, because there was nothing to create either. `psql` was the route.
+  const provider = picker('model')
+  void provider.fill(async () =>
+    (await client().embeddingProviders.list()).map((p) => ({
+      id: p.id,
+      // Dimensions in the label, because they are what a person is choosing
+      // between when two providers run the same model family — and what a
+      // layer's vector slot is built from.
+      label: `${p.name} — ${p.model}, ${String(p.dimensions)}d${p.isDefault ? ' (default)' : ''}`,
+    })),
+  )
   const message = h('p', { class: 'form-message' })
 
   return h('section', { class: 'panel' },
@@ -297,11 +306,11 @@ function startSection(
       ' the name of the vector being built. Starting one back onto the provider',
       ' a layer came from is how a migration is undone — there is no cancel,',
       ' because a half-built vector is inert until the switch.'),
-    h('label', { class: 'field' }, h('span', {}, 'Provider'), provider),
+    h('div', { class: 'field' }, h('span', {}, 'Provider'), provider.el),
     running
       ? h('p', { class: 'muted' }, 'One is already running on this layer.')
       : h('button', { type: 'button', class: 'btn btn-primary', onclick: async (event: Event) => {
-          const id = provider.value.trim()
+          const id = provider.value()
           if (id === '') {
             message.className = 'form-message error'
             message.textContent = 'A provider id is required.'

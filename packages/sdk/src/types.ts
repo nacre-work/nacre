@@ -134,6 +134,23 @@ export interface Workspace {
   readonly permissions: readonly Permission[]
 }
 
+/**
+ * An embedding model this organization can point a layer at.
+ *
+ * No endpoint and no credentials reference: both are in the table and neither
+ * is on the wire. Choosing a provider takes an id; auditing the deployment's
+ * configuration is a different job with a different reader.
+ */
+export interface EmbeddingProvider {
+  readonly id: string
+  readonly name: string
+  readonly model: string
+  /** What the model returns, and what a layer's vector slot is created with. */
+  readonly dimensions: number
+  /** The installation default — readable by every tenant, writable by none. */
+  readonly isDefault: boolean
+}
+
 export interface LayerInput {
   readonly workspaceId: string
   readonly slug: string

@@ -1,6 +1,9 @@
 import type { Pool, PoolClient } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { PostgresEmbeddingProviders } from '@nacre.work/api'
+import type { AuthContext } from '@nacre.work/api'
+
 import { createPool } from '../../db/client.js'
 
 const url = process.env.NACRE_PG_URL
@@ -54,8 +57,10 @@ async function inTenantTx<T>(body: (c: PoolClient) => Promise<T>): Promise<T> {
     )
     await c.query(
       `INSERT INTO embedding_providers (id, org_id, name, endpoint, model, dimensions)
-       VALUES ($1, NULL, 'default', 'http://embedder:80', 'bge-m3', 1024)
-       ON CONFLICT (id) DO NOTHING`,
+       VALUES ($1, NULL, 'rls-default', 'http://embedder:80', 'bge-m3', 1024)
+       -- Any conflict, not only on the id: 0028 made (org_id, name) unique too,
+       -- so a committed global row collides on the name rather than the key.
+       ON CONFLICT DO NOTHING`,
       [GLOBAL],
     )
     await c.query('SET LOCAL ROLE nacre_app')
@@ -73,6 +78,98 @@ when('embedding_providers · the installation default is read-only to a tenant',
   })
   afterAll(async () => {
     await pool.end()
+  })
+
+  // ─── The API on top of those policies ────────────────────────────────────
+  //
+  // `embedding_providers` had no endpoint at all: `init` wrote one row and
+  // nothing else ever did, so a second model was reachable only through
+  // `psql` — the shape closed twice before at the workspace listing and at
+  // /v1/users. These run the real port against committed rows rather than
+  // inside the rolled-back transaction above, because `withOrg` takes its own
+  // connection and cannot join one.
+
+  const asAdmin: AuthContext = {
+    orgId: ORG,
+    principal: { type: 'user', id: '00000000-0000-0000-0000-0000000000e5' },
+    role: 'org_admin',
+  }
+  const asMember: AuthContext = { ...asAdmin, role: 'member' }
+
+  const seed = async (): Promise<void> => {
+    const c = await pool.connect()
+    try {
+      await c.query('SET ROLE nacre_worker')
+      await c.query(
+        `INSERT INTO organizations (id, slug, name, vector_collection)
+         VALUES ($1,'org-e','E','org_e') ON CONFLICT (id) DO NOTHING`,
+        [ORG],
+      )
+      await c.query(
+        `INSERT INTO embedding_providers (id, org_id, name, endpoint, model, dimensions)
+         VALUES ($1, NULL, 'rls-default', 'http://embedder:80', 'bge-m3', 1024)
+         ON CONFLICT (id) DO NOTHING`,
+        [GLOBAL],
+      )
+    } finally {
+      await c.query('RESET ROLE').catch(() => undefined)
+      c.release()
+    }
+  }
+
+  it('embedding_providers · listing shows the installation default to anybody in the organization', async () => {
+    await seed()
+    const providers = new PostgresEmbeddingProviders(pool, 'nacre_app')
+
+    // A member, not an org_admin. The caller who needs this is whoever may
+    // start a reindex — `admin` on the *layer* — so gating the list on an
+    // organization role would hand them an empty picker and a 404 on the
+    // button, which is the defect the consent screen shipped with.
+    const seen = await providers.list(asMember)
+    expect(seen.some((p) => p.id === GLOBAL && p.isDefault)) .toBe(true)
+
+    // And never an endpoint, on any of them. It names an internal host and
+    // nothing a caller does with this list needs it.
+    for (const p of seen) expect(Object.keys(p)).not.toContain('endpoint')
+  })
+
+  it('embedding_providers · a member cannot create one, and an org_admin can', async () => {
+    await seed()
+    const providers = new PostgresEmbeddingProviders(pool, 'nacre_app')
+
+    expect(await providers.create(asMember, {
+      name: 'nope', endpoint: 'http://e', model: 'm', dimensions: 8,
+    })).toEqual({ kind: 'denied' })
+
+    const name = `voyage-${String(Date.now())}`
+    const made = await providers.create(asAdmin, {
+      name, endpoint: 'https://api.voyageai.com/v1/embeddings', model: 'voyage-3', dimensions: 1024,
+    })
+    expect(made.kind).toBe('created')
+    if (made.kind !== 'created') return
+
+    // Belongs to the organization, never to the installation — which is what
+    // the restrictive policies from 0019 also refuse, so neither the statement
+    // nor the policy is load-bearing alone.
+    expect(made.provider.isDefault).toBe(false)
+    expect((await providers.list(asMember)).some((p) => p.id === made.provider.id)).toBe(true)
+
+    // The same name twice is a fact about the resource, not about visibility:
+    // the caller has already proved they administer the organization.
+    expect((await providers.create(asAdmin, {
+      name, endpoint: 'https://api.voyageai.com/v1/embeddings', model: 'voyage-3', dimensions: 1024,
+    })).kind).toBe('conflict')
+
+    const c = await pool.connect()
+    try {
+      await c.query('SET ROLE nacre_worker')
+      // By name, not by the one id: the case this exercises is a *second* row
+      // appearing, so deleting only the first would leave the duplicate behind.
+      await c.query('DELETE FROM embedding_providers WHERE org_id = $1 AND name = $2', [ORG, name])
+    } finally {
+      await c.query('RESET ROLE').catch(() => undefined)
+      c.release()
+    }
   })
 
   it('lets a tenant read the global default', async () => {

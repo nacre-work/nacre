@@ -34,6 +34,7 @@ import {
   PostgresLayers,
   PostgresReferenceQueries,
   PostgresReindex,
+  PostgresEmbeddingProviders,
   PostgresWorkspaces,
 } from './adapters.js'
 import { SignJWT } from 'jose'
@@ -326,6 +327,7 @@ async function main(): Promise<void> {
     jobs: new PostgresJobs(pool, APP_ROLE, principalsCache),
     layers: new PostgresLayers(pool, vectors, APP_ROLE, principalsCache),
     workspaces: new PostgresWorkspaces(pool, APP_ROLE, principalsCache),
+    embeddingProviders: new PostgresEmbeddingProviders(pool, APP_ROLE),
     grants: new PostgresGrants(pool, APP_ROLE, principalsCache),
     serviceAccounts: new PostgresServiceAccounts(pool, APP_ROLE),
     users: new PostgresUsers(pool, APP_ROLE),

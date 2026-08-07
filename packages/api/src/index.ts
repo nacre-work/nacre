@@ -71,6 +71,7 @@ export {
   PostgresDocuments,
   PostgresGrants,
   PostgresJobs,
+  PostgresEmbeddingProviders,
   PostgresLayers,
   PostgresWorkspaces,
   PostgresReferenceQueries,
