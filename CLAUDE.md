@@ -104,6 +104,16 @@ shape as a variable accepted and never read. Adding a path to the contract and
 not to the client fails, and the fix is a method or a written reason; the two
 `/.well-known` documents are the written reasons.
 
+It asks the other direction now, and that is what found
+`/v1/embedding-providers`: served by the API, reachable from the SDK, and
+absent from `docs/openapi.yaml`, which is normative here. Every assertion in
+that file started from the contract, so a client reaching *more* than the
+contract describes was invisible to all of them — the same defect as an SDK
+falling behind, arriving from the other side. The `EmbeddingProvider` schema
+was already in the document, referenced by no operation, so the route to a
+second embedding model was the one thing a self-hoster could not find by
+reading the contract. Which is the reader this product has.
+
 The admin UI signs in with an email and a password. It said "there is no login
 yet" in three places and asked an operator to paste a JWT that expires in an
 hour — months after sign-in landed. A session renews itself through the SDK's
