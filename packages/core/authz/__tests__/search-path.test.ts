@@ -5,6 +5,7 @@ import {
   HttpEmbedder,
   NacreSearchService,
   PostgresDocuments,
+  PostgresLayers,
   PostgresWorkspaces,
 } from '@nacre.work/api'
 import type { AuthContext } from '@nacre.work/api'
@@ -244,6 +245,56 @@ when('baseline · the search path', () => {
       title: null,
     })
     // Same call, other organization's token: absent, not forbidden.
+    expect(await documents.read(as(B), ids.docA)).toBeUndefined()
+  })
+
+  it('a failed document says why, and a working one carries no stale reason', async () => {
+    // The worker has written `documents.error` since it had a message worth
+    // writing, and no surface read it back — so five failed documents in a real
+    // deployment reported `failed` with `chunk_count: 0` and nothing else, and
+    // the reason was reachable only by whoever holds the host.
+    const documents = new PostgresDocuments(pool, noPayload, AS_APP)
+    const c = await pool.connect()
+    try {
+      await c.query(
+        `UPDATE documents SET status = 'failed', error = $2 WHERE id = $1`,
+        [ids.docA, 'the embedding endpoint at http://embedder/embeddings did not answer within 120 s'],
+      )
+    } finally {
+      c.release()
+    }
+
+    expect(await documents.read(as(A), ids.docA)).toMatchObject({
+      status: 'failed',
+      error: 'the embedding endpoint at http://embedder/embeddings did not answer within 120 s',
+    })
+
+    // And the layer says so too, which is the other half. `documentCount` stays
+    // a count of rows — right, and by itself indistinguishable between a layer
+    // that works and one where nothing does.
+    const layers = new PostgresLayers(
+      pool,
+      { vectorsOf: async () => ({}), tombstoneLayer: async () => undefined },
+      AS_APP,
+    )
+    const open = (await layers.list(as(A))).items.find((l) => l.slug === 'open')
+    expect(open).toMatchObject({ documentCount: 1, failedCount: 1 })
+
+    // A retry that succeeded leaves the column populated, because nothing
+    // clears it — so the status decides, not the column. Reporting the last
+    // failure beside `indexed` would describe a working document as broken.
+    const back = await pool.connect()
+    try {
+      await back.query(`UPDATE documents SET status = 'indexed' WHERE id = $1`, [ids.docA])
+    } finally {
+      back.release()
+    }
+    expect(await documents.read(as(A), ids.docA)).toMatchObject({ status: 'indexed', error: null })
+    const healthy = (await layers.list(as(A))).items.find((l) => l.slug === 'open')
+    expect(healthy).toMatchObject({ documentCount: 1, failedCount: 0 })
+
+    // And it is the document's own permission, so an unreachable document
+    // discloses no reason either — the 404 keeps meaning what rule 4 says.
     expect(await documents.read(as(B), ids.docA)).toBeUndefined()
   })
 

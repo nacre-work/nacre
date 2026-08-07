@@ -58,6 +58,7 @@ const document = (id: string, title: string): DocumentView => ({
   title,
   status: 'indexed',
   chunk_count: 3,
+      error: null,
   metadata: {},
   updated_at: '2026-01-01T00:00:00.000Z',
 })

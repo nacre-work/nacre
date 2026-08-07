@@ -142,9 +142,10 @@ export class PostgresDocuments implements Documents {
           metadata: Record<string, unknown> | null
           source_type: string
           source_ref: string | null
+          error: string | null
         }>(
           `SELECT d.id, d.title, d.layer_id, l.slug AS layer, d.status, d.chunk_count,
-                  d.updated_at, d.metadata, d.source_type, d.source_ref
+                  d.updated_at, d.metadata, d.source_type, d.source_ref, d.error
              FROM documents d
              JOIN layers l ON l.id = d.layer_id AND l.org_id = d.org_id
             WHERE d.org_id = $1 AND d.id = $2 AND d.deleted_at IS NULL`,
@@ -182,6 +183,15 @@ export class PostgresDocuments implements Documents {
           // tag has no way to tell a successful write from a dropped one — and
           // this field was dropped by the handler for as long as it existed.
           metadata: (row.metadata ?? {}) as Metadata,
+          // Why it failed, which the worker has always written and nothing has
+          // ever read back. An operator with five failed documents and this
+          // field empty has one route left, and it is `docker logs` — so the
+          // answer was reachable only by whoever holds the host.
+          //
+          // Only on `failed`. The column keeps the last error across a retry
+          // that succeeded, and reporting that beside `indexed` would describe
+          // a document that is fine as a document with a problem.
+          error: row.status === 'failed' ? row.error : null,
           // Minted here and nowhere earlier: everything above this line is the
           // permission check, so a link exists only for a caller who has just
           // been found to hold `read` on this document. `write` alone does not
@@ -1391,6 +1401,7 @@ interface LayerRow {
   workspace_id: string
   description: string | null
   document_count: string
+  failed_count: string
   created_at: Date
   /** Full precision, for the cursor. See `Position.createdAt`. */
   created_at_text: string
@@ -1458,7 +1469,10 @@ export class PostgresLayers implements Layers {
         const projection = `l.id, l.slug, l.name, l.workspace_id, l.description, l.created_at,
               l.created_at::text AS created_at_text,
               (SELECT count(*) FROM documents d
-                WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS document_count`
+                WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS document_count,
+              (SELECT count(*) FROM documents d
+                WHERE d.layer_id = l.id AND d.deleted_at IS NULL
+                  AND d.status = 'failed') AS failed_count`
 
         // Ordered by (created_at, id) rather than by slug, because that is the
         // cursor's sort key and a page has to be stable under inserts. Sorting
@@ -1492,6 +1506,7 @@ export class PostgresLayers implements Layers {
           workspaceId: r.workspace_id,
           description: r.description ?? '',
           documentCount: Number(r.document_count),
+          failedCount: Number(r.failed_count),
           createdAt: r.created_at.toISOString(),
         }))
 
@@ -1736,6 +1751,8 @@ export class PostgresLayers implements Layers {
             description: row.description ?? '',
             // Just created, so this is a fact rather than a query.
             documentCount: 0,
+            // A layer created a moment ago has nothing in it to have failed.
+            failedCount: 0,
             createdAt: row.created_at.toISOString(),
           },
         }

@@ -283,11 +283,43 @@ components:
         and a whole-document body here would be a second, unpaginated way to
         read everything.
       properties:
+        failed_count:
+          type: integer
+          description: >
+            Live documents in the layer that indexing **failed** on.
+
+
+            Beside `document_count` rather than folded into it. Rows are the
+            right definition of "documents in this layer" — counting only
+            indexed ones would swing while the worker catches up — and `failed`
+            is the one status that waits for a person rather than resolving
+            itself. A layer with documents and every one of them failed answers
+            every search with nothing, and looked identical to a healthy one.
+
+
+            Not per caller, on the same argument `document_count` makes.
         document_id: { type: string, format: uuid }
         layer:       { type: string, description: The layer slug }
         title:       { type: [string, 'null'] }
         status:      { type: string, enum: [pending, parsing, indexing, indexed, failed] }
         chunk_count: { type: integer }
+        error:
+          type: [string, 'null']
+          description: >
+            Why indexing failed, for a document whose `status` is `failed`.
+
+
+            The worker has written this since it had a message worth writing and
+            no surface read it back, so `failed` with `chunk_count: 0` was the
+            whole of what a caller could learn and the reason was reachable only
+            by whoever holds the host.
+
+
+            `null` for every other status, including a document that failed once
+            and succeeded on a retry: the column keeps the last error, and
+            reporting it beside `indexed` would describe a working document as a
+            broken one. It follows the document's own permission, so rule 6
+            keeps it away from a caller holding `write` alone.
         updated_at:  { type: string, format: date-time }
         metadata:
           allOf:
