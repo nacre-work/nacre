@@ -117,6 +117,11 @@ jobs:
       # the endpoint an administrator onboards a colleague with — and a comment
       # claiming 70. Nothing compared them.
       - run: pnpm lint:password
+      # Every Dockerfile is published and every published image is checked for
+      # both architectures. The embedding adapter's Dockerfile was written,
+      # built by this job on both, and named by no release step — so the service
+      # compiled and had no artifact anybody could pull.
+      - run: pnpm lint:images
       - run: pnpm migrate
       - run: pnpm test:unit
 

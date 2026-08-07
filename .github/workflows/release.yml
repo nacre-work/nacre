@@ -339,6 +339,22 @@ jobs:
             ghcr.io/nacre-work/nacre-parser:${{ needs.decide.outputs.version }}
             ghcr.io/nacre-work/nacre-parser:latest
 
+      # Absent from `airgapped` and absent from `minimal`, but published: the
+      # `hosted` Compose profile builds it from source and a Kubernetes
+      # deployment cannot, so without this the adapter is a service only one
+      # deployment shape can have. `lint:images` is what makes a new Dockerfile
+      # that nobody publishes a failure rather than a discovery.
+      - name: nacre-embedding-adapter (hosted embeddings)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.embedding-adapter
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/nacre-work/nacre-embedding-adapter:${{ needs.decide.outputs.version }}
+            ghcr.io/nacre-work/nacre-embedding-adapter:latest
+
       # The published manifest, read back rather than assumed.
       #
       # `platforms:` is a request, and a build that quietly produced one
@@ -349,7 +365,7 @@ jobs:
       - name: both architectures are actually in the manifest
         run: |
           set -euo pipefail
-          for image in nacre nacre-web nacre-parser; do
+          for image in nacre nacre-web nacre-parser nacre-embedding-adapter; do
             ref="ghcr.io/nacre-work/$image:${{ needs.decide.outputs.version }}"
             platforms="$(docker buildx imagetools inspect "$ref" --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}')"
             echo "$ref -> $platforms"
