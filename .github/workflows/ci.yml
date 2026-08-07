@@ -91,6 +91,17 @@ jobs:
       # today contain no LICENSE and no NOTICE.
       - run: pnpm lint:legal
       - run: pnpm lint:publish
+      # No handler compares a caller's role to a role name. This check was
+      # written with the permission ceiling and then wired into nothing at all,
+      # which is how it comes to be listed here alongside the check that found
+      # it — `lint:workflows` now fails on a `lint:*` script no workflow runs.
+      - run: pnpm lint:admin-gate
+      # Every class the admin UI puts on an element is one admin.css defines.
+      # A class name is a contract between a TypeScript string and a CSS
+      # selector with nothing in between: the consent screen shipped six uses
+      # of two classes that existed in no stylesheet, and the page still
+      # rendered — just with the checkboxes running together across the line.
+      - run: pnpm lint:admin-classes
       - run: pnpm migrate
       - run: pnpm test:unit
 

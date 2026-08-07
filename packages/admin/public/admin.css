@@ -181,6 +181,10 @@ a { color: var(--n-accent); }
   border-radius: var(--n-radius); border: 1px solid var(--n-border-color);
   color: var(--n-text-faint);
 }
+/* A tag for a principal that is switched off — revoked, or disabled. It read
+   identically to the neutral `sso` tag beside it, because the class existed in
+   two views and in no stylesheet. Deny, since this is a state and not a note. */
+.tag-off { border-color: var(--n-deny); color: var(--n-deny); }
 
 /* Permission chips. The one place a pill radius is allowed, and the colours
    carry information rather than mood — deny sits outside the mark palette
@@ -285,6 +289,66 @@ tr:hover .idcopy .btn, .idcopy .btn:focus-visible { opacity: 1; }
 }
 .form-message { min-height: 1.4em; margin: 0 0 8px; font-size: 13px; color: var(--n-text-muted); }
 .form-message.error { color: var(--n-deny); }
+
+/* A group of related choices, with the question above them.
+
+   A `<fieldset>` rather than a div with a heading, because the question is the
+   group's accessible name: "It may" has to reach a screen reader attached to
+   the checkboxes it governs, and a loose paragraph above them is not attached
+   to anything.
+
+   Laid out with margins and not with flex, deliberately. `<legend>` is rendered
+   by the fieldset's own box rather than as an ordinary child, and making the
+   fieldset a flex container is exactly where engines disagree about it. Block
+   layout with an adjacent-sibling margin has no such corner. */
+.field-group {
+  border: 0; padding: 0; margin: 0 0 18px;
+  /* A fieldset's default `min-inline-size: min-content` makes it refuse to
+     shrink, which shows up as a panel that scrolls sideways on a phone. */
+  min-inline-size: 0;
+}
+.field-group > legend {
+  font-family: var(--n-font-mono); font-size: 11px;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--n-text-faint);
+  padding: 0; margin-bottom: 10px;
+}
+.field-group > .hint { margin-bottom: 10px; }
+.field-group > .field:last-child { margin-bottom: 0; }
+/* A group that belongs to the choice above it, inset to the label column of a
+   `.choice` so the relationship is visible without a second heading. */
+.field-group.nested { margin-left: 26px; }
+
+/* One choice: the control, then the label beside it — never under it.
+
+   A `<label>` is inline by default, so a checkbox and two sentences of
+   explanation reflowed into a paragraph and the next choice carried on from
+   the end of the line. Grid rather than flex so the wrapped second line of a
+   label aligns with its first rather than with the box. */
+.choice {
+  display: grid; grid-template-columns: auto 1fr; gap: 10px;
+  align-items: baseline;
+  font-size: 14px; line-height: 1.5;
+}
+.choice + .choice { margin-top: 10px; }
+.choice > input { justify-self: center; }
+.choice .hint { margin: 0; max-width: none; }
+/* Whatever follows the last choice is not part of it. A `.note` sitting flush
+   against "As an agent" reads as that option's explanation rather than as the
+   screen's footnote. */
+.choice + .note, .choice + .field-group,
+/* A hidden group is still the previous element sibling, so the note that
+   follows the agent panel needs this arm as well as the one above. */
+.field-group + .note { margin-top: 16px; }
+
+/* `hidden` has to beat whatever a class sets, and above this line it did not.
+
+   The attribute's `display: none` comes from the user-agent stylesheet, so any
+   author rule with the same specificity wins on order alone — the moment
+   `.choice` and `.field-group` were given a display, `el.hidden = true` on the
+   consent screen became a no-op and the panel it hides stayed on the page.
+   Nothing here wants a hidden element laid out, so the exception is total. */
+[hidden] { display: none !important; }
 
 /* ─── Dialogs ─────────────────────────────────────────────────────────── */
 .dialog {
