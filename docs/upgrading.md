@@ -243,6 +243,44 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.10.0 — nothing to do, and generated passwords got stronger
+
+**No migration and no new configuration.** 0.9.0 runs against this database, so
+rolling back is safe.
+
+**Every password this product generates is stronger, and existing ones are
+unaffected.** There were two generators — one beside `init` and one behind
+`POST /v1/users` and `POST /v1/users/{id}/password` — with two different word
+lists, so the same product minted credentials at two strengths depending on
+which door they came through:
+
+| | words | strength |
+|---|---|---|
+| `init` | 60 | 41.9 bits |
+| the user endpoints | 28 | **35.3 bits** |
+
+The weaker one is the door an administrator onboards a colleague through. There
+is one list now, at 71 words and 43.4 bits, and the number is computed from the
+list rather than written in a comment — the old comment claimed "roughly 70".
+
+**Nothing to do.** A password already in use keeps working: this changes what
+new ones are drawn from, not how any of them are stored or checked. Online
+guessing was bounded three ways already — per address, per client, and by the
+cap on concurrent scrypt calls — so 35 bits was not a live hole; the number that
+improved is the offline one, against a stolen `password_hash` column.
+
+If you would rather not wait for the next rotation, `POST /v1/users/{id}/password`
+issues a new one at the new strength.
+
+**An organization slug is checked in one more place**, and it is a place a
+self-hosted installation never reached: `provisionOrganization` refuses a slug
+that is not 2–40 lowercase characters before it writes anything. `init` already
+refused those, so nothing that worked stops working — the check moved so that a
+caller which is not a CLI cannot skip it. Uppercase is the case that mattered:
+`organizations.slug` is `citext` and the collection name is not, so `ACME` over
+an existing `acme` would have found the row and left a second, empty collection
+behind.
+
 ### 0.9.0 — nothing to do, and one defect worth knowing about
 
 **No migration, no new configuration, and no behaviour an existing installation
