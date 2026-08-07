@@ -243,6 +243,66 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.8.0 — embeddings from a hosted API, and a collection that can be sharded
+
+**No migration.** The schema is unchanged, and 0.7.0 runs against this database,
+so rolling back is safe.
+
+**Nothing is required.** Both of this release's features are off unless a
+deployment asks for them, and an installation that changes nothing behaves
+exactly as it did.
+
+**`NACRE_QDRANT_SHARDS` and `NACRE_QDRANT_REPLICATION_FACTOR`**, both defaulting
+to `1`, are what a Qdrant collection is created with. They are **fixed at
+creation** — a collection cannot be resharded — so they decide the shape a
+deployment lives with, and changing either afterwards means building a new
+collection and copying every point into it. That is not impossible: the copy is
+what a model migration already does, moving every point without recomputing
+embeddings. It costs an organization-wide copy and the disk to hold both
+collections at once.
+
+Left at `1` they are omitted from the request entirely, so a collection this
+version creates is byte for byte what 0.7.0 created. Set them when the cluster
+exists and not in anticipation of one: shards above 1 on a single node buys
+segments and no parallelism, and a replication factor above the number of nodes
+cannot be met — Qdrant accepts the number and the collection stays
+under-replicated.
+
+They apply to what the process **creates** — a new organization's collection, a
+model migration's target, a `rebuild-collection` — and to nothing it reads. So
+raising them affects the next collection and never an existing one.
+
+**A new Compose profile, `hosted`,** is `minimal` plus an adapter that routes
+embeddings to a vendor's API — for a laptop with no GPU, where the honest
+alternative was "run one".
+
+Read this part before turning it on: **routing a model there means the text of
+your documents leaves your installation.** That is the opposite of what this
+product otherwise is, so it is never on by accident. There is no default vendor
+and no default endpoint; an unrouted model is refused by name rather than
+falling through to whichever vendor happens to be configured; with no routes at
+all the container refuses to start; and it is **absent from the `airgapped`
+profile** rather than disabled in it, so that profile keeps its rule by
+construction. `docs/config.md` has the whole surface.
+
+Routing needs no schema change: the request already carries `model`, and
+`embedding_providers.model` is the routing key. Point a provider's `endpoint` at
+`http://embedding-adapter:8091`. Two organizations can sit on two vendors with
+nothing new.
+
+You may not need it at all — anything already speaking OpenAI's embeddings
+contract works by pointing `embedding_providers.endpoint` straight at it, and
+always has.
+
+**`NACRE_PARSER_ALLOW_PRIVATE_URLS` is documented for the first time**, and it
+has existed and been read by the parser since binary ingest. It is off unless
+literally `true`, and it decides whether ingest-by-URL may reach a private
+address — so where it is set, any tenant who can call `POST /v1/documents` can
+make that container read the cloud metadata endpoint or the API beside it.
+Nothing changed in its behaviour; it was invisible because the check holding
+`docs/config.md` against the code could not see Python. Worth confirming you did
+not set it.
+
 ### 0.7.0 — a delegation can be restricted to reading
 
 **Run the migrator.** Migration 0026 adds one nullable column to
