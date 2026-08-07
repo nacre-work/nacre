@@ -94,7 +94,26 @@ export async function consentView(root: HTMLElement): Promise<void> {
 
   const asSelf = h('input', { type: 'radio', name: 'acts-as', value: 'self', checked: 'checked' }) as HTMLInputElement
   const asAgent = h('input', { type: 'radio', name: 'acts-as', value: 'agent' }) as HTMLInputElement
-  const agentPanel = h('div', { class: 'field-group' },
+
+  /**
+   * A labelled group of choices that can be emptied back to just its label.
+   *
+   * The label is a `<legend>`, which is what attaches the question to the
+   * controls answering it. Both of these were `<p class="hint">` sitting above
+   * a bare div, so "It may" and "In these layers" were unattached sentences —
+   * and since both groups are rebuilt by `load`, the label has to be part of
+   * what rebuilding puts back rather than something appended once beside it.
+   */
+  const group = (label: string): { el: HTMLFieldSetElement; reset: () => void } => {
+    const el = h('fieldset', { class: 'field-group nested' })
+    const reset = (): void => {
+      clear(el)
+      el.append(h('legend', {}, label))
+    }
+    reset()
+    return { el, reset }
+  }
+  const agentPanel = h('div', { class: 'field-group nested' },
     h('label', { class: 'field' }, 'Act as', chosen),
     h('label', { class: 'field' }, 'Or create', fresh),
     h('p', { class: 'hint' },
@@ -110,7 +129,7 @@ export async function consentView(root: HTMLElement): Promise<void> {
   )
 
   /** Layer checkboxes, for narrowing a delegation. */
-  const narrowing = h('div', { class: 'field-group' })
+  const narrowing = group('In these layers')
   const boxes: HTMLInputElement[] = []
 
   /**
@@ -131,20 +150,20 @@ export async function consentView(root: HTMLElement): Promise<void> {
   const verb = (value: string, label: string, note: string, checked: boolean): HTMLInputElement => {
     const box = h('input', { type: 'checkbox', value, ...(checked ? { checked: 'checked' } : {}) }) as HTMLInputElement
     verbs.push(box)
-    ceiling.append(
+    ceiling.el.append(
       h('label', { class: 'choice' }, box,
         h('span', {}, h('strong', {}, label), h('span', { class: 'hint' }, ' — ' + note)),
       ),
     )
     return box
   }
-  const ceiling = h('div', { class: 'field-group' })
+  const ceiling = group('It may')
   const verbs: HTMLInputElement[] = []
 
   const showAgentFields = (): void => {
     agentPanel.hidden = !asAgent.checked
-    narrowing.hidden = asAgent.checked
-    ceiling.hidden = asAgent.checked
+    narrowing.el.hidden = asAgent.checked
+    ceiling.el.hidden = asAgent.checked
   }
   asSelf.addEventListener('change', showAgentFields)
   asAgent.addEventListener('change', showAgentFields)
@@ -178,7 +197,7 @@ export async function consentView(root: HTMLElement): Promise<void> {
     // has no organization-wide administration to lend, so offering the box
     // would be offering something that resolves to nothing — and the honest
     // reading of a screen is that everything on it does something.
-    clear(ceiling)
+    ceiling.reset()
     verbs.length = 0
     verb('read', 'Search and read documents', 'what it can see is exactly what you can see', true)
     verb('write', 'Add and change documents', 'it can ingest and delete in the layers below', false)
@@ -199,18 +218,18 @@ export async function consentView(root: HTMLElement): Promise<void> {
     // The layers this person reads, which is the only sensible set to narrow
     // to: the delegation cannot reach anything else anyway, so offering more
     // would be offering a restriction that restricts nothing.
-    clear(narrowing)
+    narrowing.reset()
     boxes.length = 0
     const layers = await api.layers.list()
     if (layers.length === 0) {
-      narrowing.append(h('p', { class: 'hint' }, 'You do not read any layer yet, so there is nothing to restrict.'))
+      narrowing.el.append(h('p', { class: 'hint' }, 'You do not read any layer yet, so there is nothing to restrict.'))
       return
     }
-    narrowing.append(h('p', { class: 'hint' }, 'Leave all unticked to give it everything you can read.'))
+    narrowing.el.append(h('p', { class: 'hint' }, 'Leave all unticked to give it everything you can read.'))
     for (const layer of layers) {
       const box = h('input', { type: 'checkbox', value: layer.id }) as HTMLInputElement
       boxes.push(box)
-      narrowing.append(h('label', { class: 'choice' }, box, h('span', {}, `${layer.name} · ${layer.slug}`)))
+      narrowing.el.append(h('label', { class: 'choice' }, box, h('span', {}, `${layer.name} · ${layer.slug}`)))
     }
   }
 
@@ -316,10 +335,11 @@ export async function consentView(root: HTMLElement): Promise<void> {
             ' — it reaches exactly what you reach, checked again on every request.'),
         ),
       ),
-      h('p', { class: 'hint' }, 'It may'),
-      ceiling,
-      h('p', { class: 'hint' }, 'In these layers'),
-      narrowing,
+      // Each group carries its own question as a `<legend>`. They were two
+      // `<p class="hint">` above two bare divs, which read on the page as
+      // "It may" and "In these layers" left hanging as sentence fragments.
+      ceiling.el,
+      narrowing.el,
       agentChoice,
       agentPanel,
 

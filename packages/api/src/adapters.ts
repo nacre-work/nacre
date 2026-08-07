@@ -21,6 +21,7 @@ import {
   type Hit,
   type Metadata,
   type Narrowing,
+  type Permission,
   type QueryablePlan,
   type ReindexState,
 } from '@nacre.work/core'
@@ -1847,6 +1848,38 @@ export class PostgresWorkspaces implements Workspaces {
           return referenceAllows(context, { type: 'workspace', id: w.id }, 'read')
         })
 
+        /**
+         * What this caller holds on **this workspace**, asked per request and
+         * never derived from `users.role`.
+         *
+         * Authority over a workspace comes from a grant placed on the workspace
+         * scope, or from the role, and `referenceAllows` is the one thing that
+         * answers that — the same function the filter above uses for its third
+         * branch.
+         *
+         * The plan is deliberately *not* consulted. `resolve` flattens a grant
+         * set to the layers it reaches, so a workspace grant and a grant on a
+         * layer inside that workspace produce the same scoped plan: asking the
+         * plan cannot tell "admin on the workspace" from "admin on one layer in
+         * it", and reporting the second as the first would put "New layer" in
+         * front of a principal the server refuses. That was the first shape of
+         * this function, and the T-case is what caught it.
+         *
+         * `read` is added rather than asked, and that is the one thing here
+         * taken on trust from the filter above: a row only reaches this point
+         * because the caller can see the workspace — through a grant on it, or
+         * through a layer inside it, or by role. Either way `read` is true.
+         */
+        const permissionsOn = (w: { id: string }): Permission[] => {
+          const held = new Set<Permission>(['read'])
+          for (const permission of ['write', 'admin'] as const) {
+            if (referenceAllows(context, { type: 'workspace', id: w.id }, permission)) {
+              held.add(permission)
+            }
+          }
+          return (['read', 'write', 'admin'] as const).filter((p) => held.has(p))
+        }
+
         const fetched = page === undefined ? rows : rows.slice(0, page.limit)
         const items = reachable
           .filter((w) => fetched.some((f) => f.id === w.id))
@@ -1856,6 +1889,7 @@ export class PostgresWorkspaces implements Workspaces {
             name: w.name,
             layerCount: (w.layer_ids ?? []).length,
             createdAt: w.created_at.toISOString(),
+            permissions: permissionsOn(w),
           }))
 
         // From the last row **fetched**, not the last returned — the same rule
@@ -1928,6 +1962,10 @@ export class PostgresWorkspaces implements Workspaces {
             name: row.name,
             layerCount: 0,
             createdAt: row.created_at.toISOString(),
+            // Creating one is `org_admin`, and an `org_admin` reaches
+            // everything by role — so this is the whole set rather than a
+            // resolve call that could only agree with the check just made.
+            permissions: ['read', 'write', 'admin'],
           },
         }
       },

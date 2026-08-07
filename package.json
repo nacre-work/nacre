@@ -28,7 +28,9 @@
     "authz:pending": "tsx scripts/authz-pending.ts",
     "sync:legal": "node scripts/sync-package-legal.mjs",
     "lint:legal": "node scripts/sync-package-legal.mjs --check",
-    "lint:admin-gate": "node scripts/check-admin-gate.mjs"
+    "lint:admin-gate": "node scripts/check-admin-gate.mjs",
+    "lint:admin-classes": "node scripts/check-admin-classes.mjs",
+    "lint:admin-ids": "node scripts/check-id-fields.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Every workflow that gates a pull request can be asked for by hand.
+ * Every workflow that gates a pull request can be asked for by hand, and every
+ * check this repository has written is actually run by one.
  *
  * `ci.yml` carries the reason in its own comment: `pull_request` was the only
  * way to ask for a run, and that leaves no recourse when Actions stops
@@ -20,6 +21,18 @@
  *
  * A workflow with no `pull_request` trigger is out of scope: it gates nothing,
  * so there is nothing to be unable to ask for.
+ *
+ * The second half is the same rule one level up, and it was added because this
+ * repository had walked into it: `lint:admin-gate` — a check written precisely
+ * to close a "holds in N places, nothing knows N" hole — was in `package.json`
+ * and in no workflow at all. A check nobody runs is worse than an absent one,
+ * because the reason it was written gets recorded as handled.
+ *
+ * Deliberately "at least one workflow" rather than "a workflow that gates a
+ * pull request". Some checks are genuinely release-only — `lint:upgrading` asks
+ * whether `docs/upgrading.md` has a section for the version being tagged, and
+ * there is no version being tagged on a pull request. Requiring the stronger
+ * thing would be a rule people work around by weakening it.
  */
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -69,6 +82,31 @@ for (const file of files) {
 
 if (checked === 0) {
   console.error(`::error::no workflow in ${DIR} runs on pull_request; nothing gates a change here`)
+  failed = true
+}
+
+// ─── Every check is run by something ──────────────────────────────────────
+
+const every = files.map((file) => readFileSync(join(DIR, file), 'utf8')).join('\n')
+const manifest = JSON.parse(readFileSync('package.json', 'utf8'))
+const checks = Object.keys(manifest.scripts ?? {}).filter((name) => name.startsWith('lint:'))
+
+if (checks.length === 0) {
+  console.error('::error file=package.json::no lint:* script in package.json; that is not a pass')
+  failed = true
+}
+
+for (const name of checks) {
+  // The command as a workflow writes it. Bounded at the end so `lint:config`
+  // does not match a step running `lint:config-something-else`.
+  if (new RegExp(`pnpm ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`, 'm').test(every)) {
+    continue
+  }
+  console.error(
+    `::error file=package.json::${name} is defined and no workflow runs it. ` +
+      'A check that never runs records its own reason as handled — wire it into a workflow, ' +
+      'or delete it and say why in the commit.',
+  )
   failed = true
 }
 

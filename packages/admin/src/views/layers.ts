@@ -2,6 +2,7 @@ import type { Layer, Workspace } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { clear, h, shortId } from '../dom.js'
+import { picker } from '../pick.js'
 import { migratePanel } from './migrate.js'
 
 /**
@@ -16,6 +17,7 @@ import { migratePanel } from './migrate.js'
 
 export async function layersView(root: HTMLElement): Promise<void> {
   clear(root)
+  const create = newLayerButton(root)
   root.append(
     h('header', { class: 'view-head' },
       h('div', {},
@@ -23,7 +25,7 @@ export async function layersView(root: HTMLElement): Promise<void> {
         h('p', { class: 'lede' },
           'A layer is the unit permissions are granted on. Documents live in one, and a grant on a layer reaches every document in it.'),
       ),
-      h('button', { class: 'btn btn-primary', onclick: () => openCreate(root) }, 'New layer'),
+      create,
     ),
   )
 
@@ -57,8 +59,54 @@ const empty = (root: HTMLElement) =>
     // nothing it could not already work out.
     h('p', {}, 'A layer is what documents are ingested into and what a grant is issued on: '
       + 'make one, ingest into it, then grant a principal read on it.'),
-    h('button', { class: 'btn btn-primary', onclick: () => openCreate(root) }, 'New layer'),
+    newLayerButton(root),
   )
+
+/**
+ * "New layer", enabled only where it can work.
+ *
+ * It was always enabled, so a member pressed it, filled the dialog in and got
+ * the `404` invariant 4 owes an unreachable object — which reads as a broken
+ * application rather than as a permission they do not hold.
+ *
+ * Decided by **asking**, never by reading `role`. The role is the wrong answer
+ * twice over: creating a layer needs `admin` on the *workspace*, so an
+ * `org_admin` is not the only principal who may, and a member who can see a
+ * workspace with `read` may not. `GET /v1/workspaces` reports what this caller
+ * holds on each one, and the button is the same question the picker inside the
+ * dialog asks — one fact, asked once, in two places that agree because they
+ * read the same field.
+ *
+ * Disabled until the answer arrives, not enabled: a control that works and
+ * then stops is a click somebody already made.
+ */
+function newLayerButton(root: HTMLElement): HTMLButtonElement {
+  const button = h('button', {
+    class: 'btn btn-primary',
+    disabled: true,
+    title: 'Checking which workspaces you administer…',
+    onclick: () => openCreate(root),
+  }) as HTMLButtonElement
+  button.textContent = 'New layer'
+
+  void client()
+    .workspaces.list()
+    .then((workspaces: readonly Workspace[]) => {
+      const mine = workspaces.filter((w) => w.permissions.includes('admin'))
+      button.disabled = mine.length === 0
+      button.title = button.disabled
+        ? 'A layer is created inside a workspace, and you do not administer one.'
+        : ''
+    })
+    .catch(() => {
+      // The listing is the only thing that can answer, so a failure leaves the
+      // button off. Offering it on a guess is what this replaced.
+      button.disabled = true
+      button.title = 'Could not check which workspaces you administer.'
+    })
+
+  return button
+}
 
 function table(layers: readonly Layer[], root: HTMLElement): HTMLElement {
   return h('table', { class: 'table' },
@@ -198,41 +246,25 @@ function confirmDelete(layer: Layer, root: HTMLElement): void {
 }
 
 function openCreate(root: HTMLElement): void {
-  const workspace = h('input', { class: 'input', placeholder: 'workspace id (uuid)', required: true })
   const slug = h('input', { class: 'input', placeholder: 'handbook', required: true })
   const name = h('input', { class: 'input', placeholder: 'Handbook', required: true })
   const message = h('p', { class: 'form-message' })
 
-  // A layer needs a workspace *id*, and this asked an administrator to know one
-  // — so the field took a name, the server answered the 404 it owes an
+  // A layer needs a workspace *id*, and this asked an administrator to know
+  // one — so the field took a name, the server answered the 404 it owes an
   // unreachable object, and the screen said "no such workspace" to someone
   // looking straight at it. `GET /v1/workspaces` exists precisely so the id
-  // does not have to be carried by hand; it closed that gap in the API and
-  // this screen kept it open.
+  // does not have to be carried by hand.
   //
-  // The field stays editable behind the picker, which is the same shape the
-  // grants screen uses: the list is permission data and can legitimately be
-  // empty, and pasting an id from `init` must keep working.
-  const picker = h('select', { class: 'input', onchange: (e: Event) => {
-    const value = (e.target as HTMLSelectElement).value
-    if (value !== '') workspace.value = value
-  } }, h('option', { value: '' }, 'pick a workspace…'))
-
-  void client()
-    .workspaces.list()
-    .then((workspaces: readonly Workspace[]) => {
-      for (const w of workspaces) {
-        picker.append(h('option', { value: w.id }, `${w.slug} — ${w.name}`))
-      }
-      // One workspace is the common case — `init` creates exactly one — and
-      // making someone choose from a list of one is asking a question with a
-      // single answer.
-      const only = workspaces[0]
-      if (workspaces.length === 1 && only !== undefined) {
-        picker.value = only.id
-        workspace.value = only.id
-      }
-    })
+  // Only the workspaces this caller may administer. Creating a layer needs
+  // `admin` on the workspace, and the listing answers `read` — so a member who
+  // can see one was being offered it and refused on submit.
+  const workspace = picker('workspace')
+  void workspace.fill(async () =>
+    (await client().workspaces.list())
+      .filter((w: Workspace) => w.permissions.includes('admin'))
+      .map((w: Workspace) => ({ id: w.id, label: `${w.slug} — ${w.name}` })),
+  )
 
   const dialog = h('dialog', { class: 'dialog' },
     h('form', { method: 'dialog', onsubmit: async (e: Event) => {
@@ -240,8 +272,14 @@ function openCreate(root: HTMLElement): void {
       message.className = 'form-message'
       message.textContent = 'Creating…'
       try {
+        const chosen = workspace.value()
+        if (chosen === '') {
+          message.className = 'form-message error'
+          message.textContent = 'Choose the workspace this layer belongs to.'
+          return
+        }
         const created = await client().layers.create({
-          workspaceId: workspace.value.trim(),
+          workspaceId: chosen,
           slug: slug.value.trim(),
           name: name.value.trim(),
         })
@@ -260,7 +298,7 @@ function openCreate(root: HTMLElement): void {
       }
     } },
       h('h2', {}, 'New layer'),
-      h('label', { class: 'field' }, h('span', {}, 'Workspace'), picker, workspace),
+      h('div', { class: 'field' }, h('span', {}, 'Workspace'), workspace.el),
       h('label', { class: 'field' }, h('span', {}, 'Slug'), slug),
       h('label', { class: 'field' }, h('span', {}, 'Name'), name),
       h('p', { class: 'hint' },

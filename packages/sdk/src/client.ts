@@ -15,6 +15,7 @@ import type {
   Job,
   Layer,
   LayerInput,
+  Permission,
   RecallCheck,
   ReferenceQuery,
   ReferenceQueryInput,
@@ -552,6 +553,7 @@ export class NacreClient {
           slug: String(ws.slug),
           name: String(ws.name ?? ''),
           layerCount: Number(ws.layer_count ?? 0),
+          permissions: readPermissions(ws.permissions),
         }
       })
     },
@@ -570,6 +572,7 @@ export class NacreClient {
         slug: String(body.slug),
         name: String(body.name ?? ''),
         layerCount: Number(body.layer_count ?? 0),
+        permissions: readPermissions(body.permissions),
       }
     },
   }
@@ -1247,6 +1250,22 @@ export class NacreClient {
       return false
     }
   }
+}
+
+/**
+ * The permissions field, filtered to the three this model has.
+ *
+ * A server that grew a fourth would otherwise widen `Permission` at runtime
+ * while the type said three, and every client comparison against the unknown
+ * value would be silently false rather than a type error. An older server that
+ * omits the field entirely answers the empty set, which is the safe reading:
+ * "nothing is known to be permitted here" hides a control rather than offering
+ * one that cannot work.
+ */
+function readPermissions(value: unknown): readonly Permission[] {
+  const all: readonly Permission[] = ['read', 'write', 'admin']
+  if (!Array.isArray(value)) return []
+  return all.filter((p) => value.includes(p))
 }
 
 function tokensFrom(t: Record<string, unknown>): Tokens {

@@ -337,6 +337,25 @@ export interface Workspace {
    */
   readonly layerCount: number
   readonly createdAt: string
+  /**
+   * What **this** caller holds on this workspace, resolved for this request.
+   *
+   * Deliberately per-caller, which `layerCount` deliberately is not, and the
+   * difference is what each one would leak. A count that varied by who asked
+   * describes somebody else's grants; this describes only the asker's own, on
+   * an object they are already being shown.
+   *
+   * It exists because the admin UI had no way to ask "may I create a layer
+   * here?" other than reading a role — and the role is the wrong answer twice
+   * over: an `org_admin` is not the only principal who may (a grant of `admin`
+   * on the workspace is enough), and a caller who can *see* a workspace with
+   * `read` may not. So "New layer" was offered to people whose next click was
+   * a `404` that invariant 4 makes indistinguishable from a broken screen.
+   *
+   * A set rather than a level, on rule 6: permissions are unordered here, so
+   * `['write']` is a real answer and a ladder would have lost it.
+   */
+  readonly permissions: readonly Permission[]
 }
 
 export type WorkspaceOutcome =
@@ -2722,6 +2741,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
               name: w.name,
               layer_count: w.layerCount,
               created_at: w.createdAt,
+              permissions: w.permissions,
             })),
             next_cursor: nextCursor,
           },
@@ -2783,6 +2803,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             name: created.name,
             layer_count: created.layerCount,
             created_at: created.createdAt,
+            permissions: created.permissions,
           },
           requestId,
         )

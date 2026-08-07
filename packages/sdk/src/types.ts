@@ -111,6 +111,16 @@ export interface Workspace {
   readonly name: string
   /** Live layers in it, not layers you may read — a per-caller count would leak grants. */
   readonly layerCount: number
+  /**
+   * What *this* caller holds on this workspace, resolved for this request.
+   *
+   * Per-caller on purpose, which `layerCount` deliberately is not. It answers
+   * "may I create a layer here?" — a question the caller's role cannot answer,
+   * since a grant of `admin` on the workspace is enough and seeing one with
+   * `read` is not. Reaching a layer inside it never reports as authority over
+   * the workspace.
+   */
+  readonly permissions: readonly Permission[]
 }
 
 export interface LayerInput {
