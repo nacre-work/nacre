@@ -243,6 +243,70 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.9.0 — nothing to do, and one defect worth knowing about
+
+**No migration, no new configuration, and no behaviour an existing installation
+will notice.** 0.8.0 runs against this database, so rolling back is safe.
+
+What changed is where provisioning lives: creating an organization is one
+function in `@nacre.work/core` now, and the `init` command is a caller rather
+than the definition. The command's arguments, output and idempotency are
+unchanged.
+
+**The defect that move found affects installations with more than one
+organization.** The installation default embedding provider — the
+`embedding_providers` row with a `NULL` `org_id` — is created once and reused
+by every organization after it. `init` was ignoring the model it was handed
+whenever one existed, but still building the new organization's Qdrant
+collection out of `NACRE_DEFAULT_EMBEDDING_MODEL` and
+`NACRE_DEFAULT_EMBEDDING_DIM`.
+
+So if you changed either of those between running `init` for one organization
+and running it for another, the second organization has a collection whose
+named vector no layer will ever write to. The worker takes that name from
+`layers.provider_id`, so **every document in that organization fails in the
+worker forever while the API reports `queued`**.
+
+Whether you are affected:
+
+```sql
+SELECT o.slug, o.vector_collection, p.model, p.dimensions
+  FROM organizations o
+  JOIN layers l ON l.org_id = o.id AND l.deleted_at IS NULL
+  JOIN embedding_providers p ON p.id = l.provider_id
+ WHERE o.deleted_at IS NULL
+ GROUP BY 1,2,3,4;
+```
+
+Then ask Qdrant which named vectors each of those collections actually has —
+`GET /collections/{name}` — and compare against `v_{model}_{dimensions}` with
+every character outside `[A-Za-z0-9]` replaced by an underscore. A collection
+missing the slot its layers name is the case.
+
+The repair is `rebuild-collection --org {slug}`, which reads the real collection
+name and the per-layer slots from Postgres, recreates the collection with them,
+and requeues every live document. It re-embeds, so it costs what a first ingest
+of that organization cost.
+
+**It refuses while the collection is still there**, deliberately — rebuilding
+over a live one deletes every vector in it, and that refusal is what stops the
+command being run against a healthy organization by mistake. Here the collection
+does exist and holds nothing worth keeping, since no document in it was ever
+indexed, so drop it first:
+
+```bash
+curl -X DELETE "$NACRE_QDRANT_URL/collections/$(psql "$NACRE_PG_URL" -tAc \
+  "SELECT vector_collection FROM organizations WHERE slug = 'the-slug'")"
+node packages/api/dist/rebuild-collection.js --org the-slug
+```
+
+Stop the worker first, as `runbooks` say for every rebuild: a running worker and
+a recreated collection is a race.
+
+New organizations created from 0.9.0 onward get a collection named after the
+provider they actually resolved, and `init` now says so out loud when the
+installation default differs from what the configuration asked for.
+
 ### 0.8.0 — embeddings from a hosted API, and a collection that can be sharded
 
 **No migration.** The schema is unchanged, and 0.7.0 runs against this database,
