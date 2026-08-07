@@ -244,6 +244,26 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.11.0 — the hosted-embeddings sidecar has an image
+
+**Nothing to do**, no migration and no new configuration. 0.10.0 runs against
+this database, so rolling back is safe.
+
+`ghcr.io/nacre-work/nacre-embedding-adapter` is published from this release
+onwards. The service shipped in 0.8.0 and its Dockerfile was built by CI on both
+architectures from the day it was written — and named by no release step, so
+there was no artifact to pull. `docker compose --profile hosted` built it from
+source and hid that; anything not building from source could not have hosted
+embeddings at all.
+
+Nothing about the service changed. If you are on the `hosted` Compose profile
+you can keep building it or start pulling it; if you deploy any other way, this
+is the release that makes the profile available to you.
+
+`lint:images` is what stops the next Dockerfile arriving the same way: every one
+under `docker/` must be named by a step that pushes, and every image pushed must
+be in the loop that reads its manifest back and asserts both architectures.
+
 ### 0.10.0 — nothing to do, and generated passwords got stronger
 
 **No migration and no new configuration.** 0.9.0 runs against this database, so
