@@ -417,6 +417,26 @@ no grant at all, so a ceiling consulted after that line does not bound the one
 principal it exists for. Checked by moving it after and watching a read-only
 delegation of an administrator answer `all` on write.
 
+**The ceiling is per layer now**, because the two questions the screen asked
+were independent and what they could express together was their *product*. A
+person does not mean a product: they mean "read the handbook, write to scratch",
+and as a rectangle that costs `write` on the handbook.
+
+The resolver did not change, and that is the design rather than luck.
+`oauth_consents.permissions` stays the gate on everything the token may exercise
+at all, applied before rule 3; a per-layer set is a **narrowing**, the same
+mechanism `layers` already was. So the layer filter became a function of the
+permission — `layers(p) = { L : p ∈ ceiling(L) }` — at the `must` inside the
+index traversal and at each of the four paths where a layer id and a document
+meet. `withinDelegation` takes the permission as a required argument, which
+makes every existing call site a compile error until it says which one it means.
+
+A per-layer set that the connection's ceiling excludes could never take effect,
+so consent refuses it naming both sets rather than storing a control that does
+nothing. And it never confers administration: `admin` inside one layer is not
+authority over the organization holding it, so `administers` reads the
+connection's ceiling and never a layer's.
+
 `admin` is a ceiling value and is deliberately **not** on the consent screen.
 The MCP surface has no administrative tool at all — its five tools resolve with
 `read` or `write` — so the box would do nothing where the person is looking and

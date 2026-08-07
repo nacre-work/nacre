@@ -28,7 +28,18 @@ export interface AuthContext {
    */
   readonly delegation?: {
     readonly id: string
-    readonly layers?: readonly string[]
+    /**
+     * The narrowing, and each layer's own ceiling where the person set one.
+     *
+     * `undefined` means no narrowing — never "narrowed to nothing", which is a
+     * different state and is deliberately not expressible. A layer with no
+     * `permissions` of its own inherits the connection's, which is what every
+     * narrowing written before per-layer ceilings meant and still means.
+     */
+    readonly layers?: readonly {
+      readonly id: string
+      readonly permissions?: readonly Permission[]
+    }[]
     /**
      * The permissions this token may exercise. Absent means no ceiling.
      *
@@ -59,7 +70,13 @@ export interface Delegations {
     orgId: string,
     id: string,
   ): Promise<
-    | { userId: string; role: OrgRole; layers?: readonly string[]; permissions?: readonly Permission[] }
+    | {
+        userId: string
+        role: OrgRole
+        /** The narrowing, each layer carrying its own ceiling where one was set. */
+        layers?: readonly { readonly id: string; readonly permissions?: readonly Permission[] }[]
+        permissions?: readonly Permission[]
+      }
     | undefined
   >
 }
@@ -182,9 +199,41 @@ export function administersTenants(auth: AuthContext): boolean {
  * its target — where the same restriction has to hold and there is no traversal
  * to put it inside of.
  */
-export function withinDelegation(auth: AuthContext, layerId: string): boolean {
+export function withinDelegation(
+  auth: AuthContext,
+  layerId: string,
+  permission: Permission,
+): boolean {
+  const admitted = delegatedLayers(auth, permission)
+  return admitted === undefined || admitted.includes(layerId)
+}
+
+/**
+ * The layers this delegation admits for one permission, or `undefined` for no
+ * narrowing at all.
+ *
+ * The permission argument is the whole of per-layer ceilings: a narrowing used
+ * to be one set of layer ids and is now one set *per permission*, because
+ * "read the handbook, write to scratch" is what a person means and a single set
+ * cannot say it.
+ *
+ * Required rather than optional, so every existing call site is a compile error
+ * until it says which permission it is asking about. That is the check here —
+ * the rule has to hold in five places and nothing else knows five.
+ *
+ * An empty result is a real answer and not the same as `undefined`: it means
+ * the narrowing exists and no layer in it admits this permission, which every
+ * caller turns into the same nothing an unreachable object gets.
+ */
+export function delegatedLayers(
+  auth: AuthContext,
+  permission: Permission,
+): readonly string[] | undefined {
   const narrowing = auth.delegation?.layers
-  return narrowing === undefined || narrowing.includes(layerId)
+  if (narrowing === undefined) return undefined
+  return narrowing
+    .filter((l) => l.permissions === undefined || l.permissions.includes(permission))
+    .map((l) => l.id)
 }
 
 /**

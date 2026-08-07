@@ -38,6 +38,7 @@ export {
   delegationPermits,
   findTenantOverride,
   rejectTenantOverride,
+  delegatedLayers,
   withinDelegation,
 } from './auth.js'
 export type { AuthContext, Delegations, VerifyOptions } from './auth.js'

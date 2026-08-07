@@ -64,14 +64,14 @@ describe('a delegated token', () => {
     const token = await sign({ org: ORG, principal_type: 'user', role: 'member', del: DEL }, USER)
 
     const auth = await verify(token, {
-      delegations: delegations({ userId: USER, role: 'member', layers: ['layer-a'] }, seen),
+      delegations: delegations({ userId: USER, role: 'member', layers: [{ id: 'layer-a' }] }, seen),
     })
 
     expect(auth).not.toBeInstanceOf(Problem)
     if (auth instanceof Problem) return
     // The principal is the person, which is what makes `resolve` unchanged.
     expect(auth.principal).toEqual({ type: 'user', id: USER })
-    expect(auth.delegation).toEqual({ id: DEL, layers: ['layer-a'] })
+    expect(auth.delegation).toEqual({ id: DEL, layers: [{ id: 'layer-a' }] })
     // Looked up in the organization the token names, never one from elsewhere.
     expect(seen).toEqual({ orgId: ORG, id: DEL })
   })

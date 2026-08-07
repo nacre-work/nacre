@@ -430,6 +430,55 @@ administrative delegation, and that is a *weaker* act than the service account
 they could mint instead: a delegation stops the moment they are disabled, and a
 key pasted into a config file does not.
 
+#### Per layer
+
+The two dimensions above are independent questions, and what they can express
+together is their **product**: one set of permissions applied to every chosen
+layer. A person does not mean a product. They mean "read the handbook, write to
+scratch", and expressing that as a rectangle costs `write` on the handbook.
+
+So a layer in the narrowing may carry a ceiling of its own:
+
+```
+ceiling(L) = ceiling ∩ (ceiling(L) if given, else ceiling)
+```
+
+The intersection is the whole of it, and it has three consequences worth
+stating rather than deriving.
+
+**It is a narrowing, not a second ceiling.** `oauth_consents.permissions`
+remains the gate on everything the token may exercise at all, applied by the
+resolver before rule 3, exactly as before — this specification's previous
+paragraph is unchanged and so is the code implementing it. A per-layer set that
+named a permission the connection's ceiling excludes could therefore never take
+effect, so `POST /v1/oauth/consent` **refuses** one, naming both sets. Storing
+it and letting the resolver quietly win is how a control that does nothing gets
+shipped.
+
+**The layer filter becomes a function of the permission.** Where the narrowing
+was a set of layer ids, it is now one set per permission:
+
+```
+layers(p) = { L ∈ narrowing : p ∈ ceiling(L) }
+```
+
+Every place the old set was used takes `p` now: the `must` on `layer_id` inside
+the index traversal, and each path where a layer id and a document meet — a
+document fetched by id, a retag, a delete, an ingest naming its target.
+`layers(p) = ∅` is the same answer as a narrowing nothing survives: empty
+results, no error naming a layer. Invariant 2 is untouched, because the clause
+is still inside the traversal and still only ever removes.
+
+**It never confers administration.** `administers` reads the connection's
+ceiling and never this, because a permission granted *inside one layer* is not
+authority over the organization that holds it. A delegation with `admin` on one
+layer and `{read}` at the connection cannot mint a credential — and the
+subset rule above is what makes that statement hold rather than merely be true
+of the code today.
+
+A layer with no set of its own inherits the connection's ceiling, which is what
+every narrowing written before this meant and still means.
+
 **`platform_admin` is never delegable.** It spans tenants in the multi-tenancy
 module, so a delegation of it would be an escalation out of the organization the
 consent screen is scoped to — the same argument that already refuses minting one

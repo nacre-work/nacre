@@ -52,6 +52,7 @@ import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, t
 import type { Login, Tokens } from './login.js'
 import type {
   ConsentSubject,
+  LayerNarrowing,
   MintRequest,
   OAuthAuthorizations,
   OAuthClients,
@@ -863,6 +864,53 @@ class BodyTooLarge extends Error {}
 const MAX_TOP_K = 50
 const isStringArray = (value: unknown): value is readonly string[] =>
   Array.isArray(value) && value.every((v) => typeof v === 'string')
+
+/**
+ * A delegation's narrowing, as `POST /v1/oauth/consent` accepts it.
+ *
+ * Two spellings of the same field, because a bare layer id is what an entry
+ * meant before a layer could carry a ceiling of its own — and it still means
+ * exactly that, "inherit the connection's ceiling". So the older form is the
+ * shorter spelling rather than a compatibility branch to be removed later.
+ *
+ * `INVALID` rather than `undefined` for a malformed value, because `undefined`
+ * is a real answer here: it is "no narrowing", and conflating the two would
+ * turn a typo into an application that reaches everything its person does.
+ */
+const INVALID = Symbol('invalid')
+
+const readNarrowing = (value: unknown): readonly LayerNarrowing[] | undefined | typeof INVALID => {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) return INVALID
+
+  const out: LayerNarrowing[] = []
+  for (const entry of value as readonly unknown[]) {
+    if (typeof entry === 'string') {
+      out.push({ id: entry })
+      continue
+    }
+    if (typeof entry !== 'object' || entry === null) return INVALID
+    const { id, permissions } = entry as { id?: unknown; permissions?: unknown }
+    if (typeof id !== 'string') return INVALID
+    if (permissions === undefined) {
+      out.push({ id })
+      continue
+    }
+    // Empty is refused rather than read as "no ceiling here". A layer the
+    // delegation may do nothing in is a layer that should not be in the
+    // narrowing at all, and the column's CHECK refuses one too — this is the
+    // same rule arriving as a 400 instead of as a constraint violation.
+    if (
+      !isStringArray(permissions) ||
+      permissions.length === 0 ||
+      permissions.some((p) => !(PERMISSIONS as readonly string[]).includes(p))
+    ) {
+      return INVALID
+    }
+    out.push({ id, permissions: permissions as readonly Permission[] })
+  }
+  return out
+}
 
 const boundedTopK = (value: unknown): number => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 10
@@ -3584,9 +3632,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // is stored and read on the authentication path, and a slug is renameable
       // — a narrowing that follows a rename is one that silently changes what a
       // person approved.
-      const narrowing = consent['layers']
-      if (narrowing !== undefined && !isStringArray(narrowing)) {
-        const problem = badRequest(instance, requestId, "'layers' must be an array of layer ids.")
+      //
+      // Each entry is a layer id, or `{ id, permissions }` where the person set
+      // a ceiling for that layer alone. A bare id means "inherit the
+      // connection's ceiling", which is what every entry meant before per-layer
+      // ceilings existed — so the older shape is still the shorter spelling of
+      // the same thing rather than a compatibility branch.
+      const narrowing = readNarrowing(consent['layers'])
+      if (narrowing === INVALID) {
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'layers' must be an array of layer ids, or of { id, permissions } objects " +
+            'whose permissions are a non-empty subset of read, write and admin.',
+        )
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
@@ -3676,8 +3735,30 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         const readable = options.layers === undefined
           ? []
           : (await options.layers.list(auth, { limit: 500, after: undefined })).items.map((l) => l.id)
-        if (narrowing.some((id) => !readable.includes(id))) {
+        if (narrowing.some((l) => !readable.includes(l.id))) {
           const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+      }
+
+      // A per-layer ceiling that the connection's ceiling excludes could never
+      // take effect: `oauth_consents.permissions` gates the resolver before
+      // rule 3, so the resolver would win and the entry would be a control that
+      // does nothing. Refused here, naming both sets, rather than stored.
+      if (delegating && isStringArray(ceiling)) {
+        const allowed = ceiling as readonly string[]
+        const outside = narrowing?.find((l) =>
+          l.permissions?.some((p: Permission) => !allowed.includes(p)),
+        )
+        if (outside !== undefined) {
+          const problem = badRequest(
+            instance,
+            requestId,
+            `A layer may not be given more than the connection: ${
+              outside.permissions?.join(', ') ?? ''
+            } against a ceiling of ${(ceiling as readonly string[]).join(', ')}.`,
+          )
           send(res, problem.status, problem.toJSON(), requestId)
           return
         }
@@ -3734,7 +3815,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           ...(delegating
             ? {
                 delegation_id: consentId,
-                layers: narrowing ?? [],
+                layers: (narrowing ?? []).map((l) => l.id),
                 // Recorded because it is the answer to "why can this
                 // application not delete anything", asked six months later.
                 permissions: isStringArray(ceiling) ? ceiling : 'no ceiling',

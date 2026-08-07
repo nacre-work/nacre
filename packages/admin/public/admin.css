@@ -328,6 +328,18 @@ tr:hover .idcopy .btn, .idcopy .btn:focus-visible { opacity: 1; }
    `.choice` so the relationship is visible without a second heading. */
 .field-group.nested { margin-left: 26px; }
 
+/* One row per thing, one narrow column per verb. The verb columns are sized to
+   their heading and pushed right, so the names stay left-aligned and readable
+   however many layers there are. */
+.table.matrix { margin: 0; max-width: 48ch; }
+.table.matrix td, .table.matrix th { padding: 6px 8px; }
+.table.matrix td:first-child { width: 100%; }
+.tick { text-align: center; white-space: nowrap; }
+th.tick {
+  font-family: var(--n-font-mono); font-size: 11px;
+  letter-spacing: 0.06em; text-transform: uppercase;
+}
+
 /* One choice: the control, then the label beside it — never under it.
 
    A `<label>` is inline by default, so a checkbox and two sentences of

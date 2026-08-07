@@ -831,8 +831,17 @@ export class NacreClient {
     codeChallenge: string
     /** Absent means the client acts as the signed-in person. */
     serviceAccountId?: string
-    /** Layer ids a delegation is restricted to. Empty means no restriction. */
-    layers?: readonly string[]
+    /**
+     * Layers a delegation is restricted to. Empty means no restriction.
+     *
+     * A bare id inherits the connection's ceiling — which is what every entry
+     * meant before a layer could carry one — and an object sets a ceiling for
+     * that layer alone. The per-layer set is intersected with `permissions`
+     * and never replaces it; one naming a permission the connection excludes
+     * is refused with a `400` rather than stored as a control that does
+     * nothing.
+     */
+    layers?: readonly (string | { id: string; permissions?: readonly Permission[] })[]
     /**
      * Permissions a delegation may exercise. Omit for no ceiling.
      *
@@ -853,7 +862,15 @@ export class NacreClient {
         redirect_uri: input.redirectUri,
         code_challenge: input.codeChallenge,
         ...(input.serviceAccountId === undefined ? {} : { service_account_id: input.serviceAccountId }),
-        ...(input.layers === undefined || input.layers.length === 0 ? {} : { layers: [...input.layers] }),
+        ...(input.layers === undefined || input.layers.length === 0
+          ? {}
+          : {
+              layers: input.layers.map((l) =>
+                typeof l === 'string'
+                  ? l
+                  : { id: l.id, ...(l.permissions === undefined ? {} : { permissions: [...l.permissions] }) },
+              ),
+            }),
         ...(input.permissions === undefined ? {} : { permissions: [...input.permissions] }),
         ...(input.state === undefined ? {} : { state: input.state }),
         ...(input.resource === undefined ? {} : { resource: input.resource }),
