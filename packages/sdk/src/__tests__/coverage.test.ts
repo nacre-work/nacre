@@ -23,6 +23,7 @@ import { NacreClient } from '../client.js'
  */
 
 const OPENAPI = fileURLToPath(new URL('../../../../docs/openapi.yaml', import.meta.url))
+const CLIENT = fileURLToPath(new URL('../client.ts', import.meta.url))
 
 /**
  * The paths, read by scanning rather than parsing.
@@ -59,6 +60,37 @@ function operations(): string[] {
 }
 
 /**
+ * The paths this client actually calls, read out of the source.
+ *
+ * Every request goes through one private `#request`, and every call site spells
+ * its path as a literal or a template — so the set of paths the client can
+ * reach is enumerable, which is the property this needs and the API server's
+ * routing does not have.
+ *
+ * A `${…}` occupying a whole segment is a path parameter and becomes `{}`; one
+ * appended to a segment is a query string (`/v1/audit${suffix}`) and is
+ * dropped, because a query string is not part of a path in the contract.
+ */
+function clientPaths(): string[] {
+  const source = readFileSync(CLIENT, 'utf8')
+  const found = new Set<string>()
+  for (const match of source.matchAll(/path: [`'](\/v1\/[^`']*)[`']/g)) {
+    const raw = match[1]
+    if (raw === undefined) continue
+    const normalized = raw
+      .replace(/\/\$\{[^}]*\}/g, '/{}')
+      .replace(/\$\{[^}]*\}/g, '')
+    found.add(normalized.slice('/v1'.length))
+  }
+  return [...found].sort()
+}
+
+/** `/groups/{id}/members/{type}` and `/groups/{}/members/{}` are one path. */
+function shape(path: string): string {
+  return path.replace(/\{[^}]*\}/g, '{}')
+}
+
+/**
  * How each operation is reached, or why it is not.
  *
  * A string names the client member. `null` is a deliberate absence and the
@@ -83,6 +115,9 @@ const COVERAGE: Record<string, string | null> = {
   'DELETE /oauth/consents/{id}': 'connections.end',
   'GET /workspaces': 'workspaces.list',
   'POST /workspaces': 'workspaces.create',
+
+  'GET /embedding-providers': 'embeddingProviders.list',
+  'POST /embedding-providers': 'embeddingProviders.create',
 
   'GET /layers': 'layers.list',
   'POST /layers': 'layers.create',
@@ -175,6 +210,34 @@ describe('the client covers the contract', () => {
       .map(([op, name]) => `${op} -> ${String(name)}`)
 
     expect(broken).toEqual([])
+  })
+
+  it('reads the paths out of the client at all', () => {
+    // Same guard as above, for the same reason: a scan that matched nothing
+    // makes the assertion below vacuously true.
+    expect(clientPaths().length).toBeGreaterThan(20)
+    expect(clientPaths()).toContain('/search')
+  })
+
+  it('calls no path the contract does not describe', () => {
+    // The direction this file did not have, and the one that let a whole
+    // resource go undocumented. `/v1/embedding-providers` was served by the
+    // API and reachable from this client for a release, and `docs/openapi.yaml`
+    // — which is normative here — never mentioned it. Nothing failed, because
+    // every test above starts from the contract: a client that reaches *more*
+    // than the contract describes is invisible to all of them.
+    //
+    // It is the same defect as an SDK falling behind, arriving from the other
+    // side, and the same fix: adding a call to a path the contract does not
+    // carry is a failing test, and the repair is a contract entry.
+    const described = new Set(operations().map((op) => shape(op.slice(op.indexOf(' ') + 1))))
+    const undocumented = clientPaths().filter((path) => !described.has(shape(path)))
+
+    expect(
+      undocumented,
+      `${undocumented.join(', ')} — the client calls these and docs/openapi.yaml does not ` +
+        'describe them. The contract is normative: add the path there.',
+    ).toEqual([])
   })
 
   it('claims coverage of nothing the contract does not describe', () => {

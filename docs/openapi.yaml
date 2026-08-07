@@ -227,10 +227,16 @@ components:
     EmbeddingProvider:
       type: object
       required: [id, name, model, dimensions, is_default]
+      description: >
+        An embedding model a layer can be put on. **Neither the endpoint nor any
+        credential reference appears here**, and that is the shape rather than an
+        omission: choosing a model takes an id, and where a deployment sends text
+        is a question for its operator rather than for every caller who lists the
+        models available to them.
       properties:
         id:         { type: string, format: uuid }
-        name:       { type: string }
-        model:      { type: string }
+        name:       { type: string, description: Unique within the organization }
+        model:      { type: string, description: Sent to the endpoint as-is }
         dimensions:
           type: integer
           description: >
@@ -1255,6 +1261,99 @@ paths:
                   access_token_ttl_seconds: { type: integer }
         '404':
           $ref: '#/components/responses/NotFoundOrForbidden'
+  /embedding-providers:
+    get:
+      summary: The embedding models this organization can put a layer on.
+      description: >
+        This organization's providers and the installation default, which every
+        tenant can read and none can write. Not paged: a deployment has a
+        handful of these, one per model it runs, and a cursor over three rows is
+        machinery with nothing to do.
+
+
+        **No endpoint and no credential are on the wire, in either direction of
+        this resource.** Choosing a model takes an id; auditing where a
+        deployment sends text is a different job with a different reader, and
+        the endpoint is a URL an operator set rather than a fact about the
+        model. Reading this is not an audited event, on the layer listing's
+        rule: it describes what a caller could already infer from any layer.
+      responses:
+        '200':
+          description: Every provider this caller may put a layer on
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/EmbeddingProvider' }
+    post:
+      summary: Add an embedding provider. `org_admin` only.
+      description: >
+        The route to a second model. `embedding_providers.org_id` has been in
+        the schema since the first migration and the search path, the worker and
+        the reindex machinery all honour it — but only `init` ever wrote a row,
+        so the documented way to add one was `psql`.
+
+
+        A provider belongs to the organization rather than to a workspace inside
+        it, so the gate is the role and never `admin` on a scope: someone
+        holding `admin` on one layer must not be able to add a model every other
+        layer can be moved onto. The database narrows it again — a tenant cannot
+        create, change or remove the installation default whatever this
+        endpoint passes.
+
+
+        `dimensions` is the load-bearing field and is checked rather than
+        trusted. A layer's vector slot is created from it, so a number that does
+        not match what the model actually returns is a layer that accepts
+        documents and fails every one of them in the worker while this API
+        answers `queued`.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, endpoint, model, dimensions]
+              properties:
+                name:
+                  type: string
+                  description: Unique within the organization
+                endpoint:
+                  type: string
+                  format: uri
+                  description: >
+                    An absolute `http(s)` URL, parsed rather than stored as
+                    typed — `minio:9000` was once accepted by a URL parser as
+                    the scheme `minio:` with an empty host, and the failure
+                    surfaced far from where it could be fixed. Point it at the
+                    embedding adapter to route this model to a hosted vendor.
+                model:
+                  type: string
+                  description: >
+                    Sent to the endpoint as-is, and the routing key when the
+                    endpoint is the embedding adapter.
+                dimensions:
+                  type: integer
+                  minimum: 1
+                  maximum: 16384
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmbeddingProvider' }
+        '409':
+          description: >
+            The name is already in use in this organization. Deliberately not a
+            404: the caller has proved they administer the organization, so this
+            is a fact about the resource rather than about what they can see.
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /workspaces:
     get:
       summary: >
