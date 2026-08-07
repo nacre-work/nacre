@@ -111,6 +111,24 @@ export interface Config {
   readonly pgPoolMax: number
   readonly qdrantUrl: string
   readonly qdrantApiKey: string | undefined
+  /**
+   * Shards per collection, and copies of each shard.
+   *
+   * Both are **fixed when a collection is created** and Qdrant cannot change
+   * either afterwards, so these decide the shape a deployment will live with
+   * until it copies every point into a new collection. That copy is real work
+   * and it is also machinery that exists — a model migration does exactly it,
+   * moving vectors without recomputing them — so getting this wrong is
+   * expensive rather than fatal.
+   *
+   * Both default to 1, which is what every collection created before these
+   * existed has. Raising shards on a single node is worse than leaving it: more
+   * segments, no more parallelism, and nowhere to rebalance to. Raising the
+   * replication factor above the number of nodes leaves the collection unable
+   * to meet it.
+   */
+  readonly qdrantShards: number
+  readonly qdrantReplicationFactor: number
   readonly vectorTenancy: 'collection' | 'shared'
   readonly redisUrl: string
 
@@ -863,6 +881,8 @@ export function loadConfig(env: Env = process.env): Config {
     pgPoolMax: r.number('NACRE_PG_POOL_MAX', 20, { min: 1, max: 1000 }),
     qdrantUrl: r.url('NACRE_QDRANT_URL'),
     qdrantApiKey: r.optional('NACRE_QDRANT_API_KEY'),
+    qdrantShards: r.number('NACRE_QDRANT_SHARDS', 1, { min: 1, max: 1024 }),
+    qdrantReplicationFactor: r.number('NACRE_QDRANT_REPLICATION_FACTOR', 1, { min: 1, max: 16 }),
     vectorTenancy: r.oneOf('NACRE_VECTOR_TENANCY', ['collection', 'shared'] as const, 'collection'),
     redisUrl: r.required('NACRE_REDIS_URL'),
 

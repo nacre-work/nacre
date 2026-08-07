@@ -26,6 +26,7 @@ import {
   queryAudit,
   S3,
   VectorStore,
+  vectorStoreOptions,
   withOrg,
   type Config,
 } from '@nacre.work/core'
@@ -69,11 +70,7 @@ export function buildServices(
 ): Services {
   const principalsCache = options.principalsCache
   const pool = createPool({ connectionString: config.pgUrl, max: config.pgPoolMax })
-  const vectors = new VectorStore(
-    config.qdrantApiKey === undefined
-      ? { url: config.qdrantUrl }
-      : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
-  )
+  const vectors = new VectorStore(vectorStoreOptions(config))
   // The same reranker the REST surface uses. Two surfaces over one index
   // answering in different orders is the kind of difference nobody reports as
   // a bug and everybody notices.

@@ -15,6 +15,7 @@ import {
   Registry,
   S3,
   VectorStore,
+  vectorStoreOptions,
   pendingMigrations,
   withOrg,
   ConfigError,
@@ -81,11 +82,7 @@ async function main(): Promise<void> {
   const jwt = loadJwtKeys()
 
   const pool = createPool({ connectionString: config.pgUrl, max: config.pgPoolMax })
-  const vectors = new VectorStore(
-    config.qdrantApiKey === undefined
-      ? { url: config.qdrantUrl }
-      : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
-  )
+  const vectors = new VectorStore(vectorStoreOptions(config))
   // Absent when a deployment has none, which is supported and is the default:
   // document bytes then live in `documents.source_ref`. `loadConfig` refuses a
   // half-configured block, so this is either fully usable or not there at all.

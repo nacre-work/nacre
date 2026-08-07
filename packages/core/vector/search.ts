@@ -2,7 +2,7 @@ import { QdrantClient } from '@qdrant/js-client-rest'
 
 import { buildFilter, METADATA_PREFIX, type Narrowing, type QueryablePlan } from '../authz/filter.js'
 import { logger } from '../logging.js'
-import { buildHybridQuery, collectionConfig, collectionName, PAYLOAD_INDEXES, vectorParams, type Branch } from './query.js'
+import { buildHybridQuery, collectionConfig, collectionName, PAYLOAD_INDEXES, vectorParams, type Branch, type CollectionShape } from './query.js'
 
 /**
  * What Qdrant actually said.
@@ -21,6 +21,14 @@ export function explainQdrant(cause: unknown): string {
 export interface VectorStoreOptions {
   readonly url: string
   readonly apiKey?: string
+  /**
+   * How every collection this store creates is laid out across the cluster.
+   *
+   * Absent is Qdrant's own default of one shard and one copy, which is what
+   * every collection created before this had — so a deployment that says
+   * nothing gets exactly what it had.
+   */
+  readonly shape?: CollectionShape
 }
 
 export interface SearchRequest {
@@ -189,9 +197,38 @@ export class MetadataIndexer {
  * is a post-filter that also costs more, and it is the specific mistake
  * invariant I2 is written against.
  */
+/**
+ * `VectorStoreOptions` from a loaded configuration, in one place.
+ *
+ * Five call sites built this literal by hand — the API, the worker, the MCP
+ * transport, `init` and `rebuild-collection` — each spelling out the same
+ * `apiKey === undefined ? … : …` dance. Adding the collection shape to it would
+ * have been five edits with nothing that knows there are five, and the two that
+ * create collections are `init` and the worker: miss one and an organization's
+ * first collection is shaped differently from the one a reindex builds for it.
+ *
+ * The `undefined` branch is not tidiness either. `exactOptionalPropertyTypes`
+ * distinguishes absent from present-and-undefined, and the Qdrant client means
+ * it: passing `apiKey: undefined` is not the same as omitting it.
+ */
+export function vectorStoreOptions(config: {
+  readonly qdrantUrl: string
+  readonly qdrantApiKey: string | undefined
+  readonly qdrantShards: number
+  readonly qdrantReplicationFactor: number
+}): VectorStoreOptions {
+  return {
+    url: config.qdrantUrl,
+    ...(config.qdrantApiKey === undefined ? {} : { apiKey: config.qdrantApiKey }),
+    shape: { shards: config.qdrantShards, replicationFactor: config.qdrantReplicationFactor },
+  }
+}
+
 export class VectorStore {
   readonly #client: QdrantClient
   readonly #metadataIndexes: MetadataIndexer
+  /** Applied to every collection this store creates, and to none it reads. */
+  readonly #shape: CollectionShape
 
   constructor(options: VectorStoreOptions) {
     // exactOptionalPropertyTypes distinguishes "absent" from "present and
@@ -203,6 +240,7 @@ export class VectorStore {
         : { url: options.url, apiKey: options.apiKey },
     )
     this.#metadataIndexes = new MetadataIndexer(this.#client)
+    this.#shape = options.shape ?? {}
   }
 
   /**
@@ -218,7 +256,10 @@ export class VectorStore {
     const existing = await this.#client.getCollections()
     if (existing.collections.some((c) => c.name === name)) return name
 
-    await this.#client.createCollection(name, collectionConfig(vectorName, size) as never)
+    await this.#client.createCollection(
+      name,
+      collectionConfig({ name: vectorName, size }, this.#shape) as never,
+    )
 
     // Created here rather than left to an operator: a filter that falls back to
     // a scan is a latency problem that only shows up at a customer's volume.
@@ -280,12 +321,10 @@ export class VectorStore {
     const vectors: Record<string, unknown> = {}
     for (const slot of slots) vectors[slot.name] = vectorParams(slot.size)
 
-    await this.#client.createCollection(collection, {
-      vectors: vectors as never,
-      sparse_vectors: { bm25: {} },
-      optimizers_config: { default_segment_number: 4 },
-      on_disk_payload: true,
-    } as never)
+    await this.#client.createCollection(
+      collection,
+      collectionConfig(vectors as Record<string, unknown>, this.#shape) as never,
+    )
 
     for (const index of PAYLOAD_INDEXES) {
       await this.#client.createPayloadIndex(collection, {
@@ -499,12 +538,13 @@ export class VectorStore {
 
     // Rebuilt rather than resumed. See the note above.
     await this.#client.deleteCollection(input.to).catch(() => undefined)
-    await this.#client.createCollection(input.to, {
-      vectors: vectors as never,
-      sparse_vectors: { bm25: {} },
-      optimizers_config: { default_segment_number: 4 },
-      on_disk_payload: true,
-    } as never)
+    // The copy a reindex builds gets the same shape as everything else. It was
+    // spelled out inline here, which is how `collectionConfig` came to be one
+    // place that two of the three creations did not go through.
+    await this.#client.createCollection(
+      input.to,
+      collectionConfig(vectors as Record<string, unknown>, this.#shape) as never,
+    )
 
     for (const index of PAYLOAD_INDEXES) {
       await this.#client.createPayloadIndex(input.to, {

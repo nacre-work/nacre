@@ -82,7 +82,7 @@ when('saturation · top_k returns k permitted results', () => {
       // Absent is the expected state on a fresh runner.
     })
     try {
-      await client.createCollection(name, collectionConfig(VECTOR, DIM) as never)
+      await client.createCollection(name, collectionConfig({ name: VECTOR, size: DIM }) as never)
     } catch (cause) {
       throw new Error(`createCollection rejected: ${explain(cause)}`, { cause })
     }

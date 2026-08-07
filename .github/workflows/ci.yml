@@ -106,6 +106,12 @@ jobs:
       # who has it copied it out of the picker directly above, and the one who
       # does not gets the 404 that means "no such thing, or not yours".
       - run: pnpm lint:admin-ids
+      # Every collection is built by collectionConfig(). Shard count and
+      # replication factor are fixed at creation, so a collection built from an
+      # inline literal is shaped unlike every other one and can only be
+      # reshaped by copying every point — and two of the three creation sites
+      # were exactly that literal, spelled out again.
+      - run: pnpm lint:collection-config
       - run: pnpm migrate
       - run: pnpm test:unit
 
