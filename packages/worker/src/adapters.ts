@@ -1529,3 +1529,57 @@ export async function recordCheck(
     role === undefined ? {} : { role },
   )
 }
+
+/** See the call site. Two minutes, and never unbounded. */
+export const EMBED_TIMEOUT_MS = 120_000
+
+/**
+ * Why the embedder did not answer, in the words an operator needs.
+ *
+ * Three causes and two messages, because one of them means the opposite of the
+ * other two. `ENOTFOUND` and `ECONNREFUSED` mean *no service*, and "this
+ * deployment must supply one" is right — it is the first failure anyone
+ * following the quickstart meets, since the documented `minimal` profile
+ * starts no embedder.
+ *
+ * `AbortSignal.timeout` rejects with a `TimeoutError`, which is proof the
+ * endpoint **exists**: something accepted the connection and then took too
+ * long. The message that was here said "could not be reached … must supply
+ * one" for that case too, and the first person to hit it lost a morning
+ * looking for a container that was running — on a Mac, healthy, emulated, at
+ * 300 % CPU. Naming the URL matters as much either way: the endpoint comes
+ * from an `embedding_providers` row, so "which one" is a question the message
+ * has to answer.
+ *
+ * Exported so it can be tested against real causes rather than invented ones —
+ * a fake `TimeoutError` proves only that the test knows what the code checks.
+ */
+export function embeddingFailure(cause: unknown, endpoint: URL, providerName: string): Error {
+  // undici nests the real reason; `AbortSignal.timeout` does not.
+  const inner = (cause as { cause?: unknown })?.cause
+  const reason = String(inner ?? cause)
+  const timedOut =
+    (cause as { name?: unknown })?.name === 'TimeoutError' ||
+    (inner as { name?: unknown })?.name === 'TimeoutError'
+
+  if (timedOut) {
+    return new Error(
+      `the embedding endpoint at ${endpoint.href} did not answer within ` +
+        `${EMBED_TIMEOUT_MS / 1000} s: ${reason}. It accepted the connection, so it is ` +
+        `running — it is too slow, not absent. It is the endpoint on embedding provider ` +
+        `${providerName}. A CPU-only embedder is the usual cause, and an emulated one the ` +
+        'usual cause of that: on Apple Silicon the images with no arm64 build run under ' +
+        'Rosetta, and docs/apple-silicon.md gives the arrangement that does not.',
+      { cause },
+    )
+  }
+
+  return new Error(
+    `the embedding endpoint at ${endpoint.href} could not be reached: ${reason}. ` +
+      `It is the endpoint on embedding provider ${providerName}; the installation ` +
+      'default comes from NACRE_DEFAULT_EMBEDDING_ENDPOINT and this deployment must ' +
+      'supply one — the minimal Compose profile deliberately starts no embedder.',
+    { cause },
+  )
+}
+

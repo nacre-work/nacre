@@ -37,6 +37,8 @@ import {
   QdrantVectorWriter,
   recordCheck,
   recordReindexPass,
+  embeddingFailure,
+  EMBED_TIMEOUT_MS,
 } from './adapters.js'
 import { ingest } from './ingest.js'
 import { collectOnce } from './collect.js'
@@ -58,8 +60,6 @@ import { retireOnce, retireVectorsOnce } from './retire.js'
 
 const APP_ROLE = 'nacre_app'
 
-/** See the call site. Two minutes, and never unbounded. */
-const EMBED_TIMEOUT_MS = 120_000
 const IDLE_MS = 2000
 
 // Garbage collection. docs/architecture.md asks for "at least hourly", and this
@@ -415,14 +415,7 @@ async function main(): Promise<void> {
         // one that accepts and never answers. Naming the URL matters as much:
         // the endpoint comes from an `embedding_providers` row, so "which one"
         // is the question the message has to answer.
-        const reason = String((cause as { cause?: unknown })?.cause ?? cause)
-        throw new Error(
-          `the embedding endpoint at ${endpoint.href} could not be reached: ${reason}. ` +
-            `It is the endpoint on embedding provider ${provider.name}; the installation ` +
-            'default comes from NACRE_DEFAULT_EMBEDDING_ENDPOINT and this deployment must ' +
-            'supply one — the minimal Compose profile deliberately starts no embedder.',
-          { cause },
-        )
+        throw embeddingFailure(cause, endpoint, provider.name)
       }
 
       if (!response.ok) {
