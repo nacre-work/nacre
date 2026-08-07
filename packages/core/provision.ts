@@ -24,6 +24,40 @@ import type { VectorStore } from './vector/search.js'
  * Refusing to continue from that would leave no way forward but manual SQL.
  */
 
+/**
+ * The rule a slug has to meet, in the one place every caller passes through.
+ *
+ * It lived in the `init` command's argument parser, which was the only caller
+ * that existed. `collectionName` has its own guard and it is *looser* — it
+ * accepts uppercase, underscores and any length, because its job is "can this
+ * go in a URL path" and it has to keep answering that for slugs written before
+ * any rule existed.
+ *
+ * The gap between the two is reachable the moment a slug arrives in a request
+ * body rather than from a terminal. `organizations.slug` is `citext`, so `ACME`
+ * and `acme` are the same row — but `collectionName` is case-sensitive, so they
+ * are two collection names. Provisioning `ACME` over an existing `acme` finds
+ * the row, reports it as already existing, leaves `vector_collection` pointing
+ * at `org_acme`, and creates a second empty `org_ACME` that nothing will ever
+ * read. Length is the same shape: nothing stopped a two-hundred-character slug
+ * becoming a collection name.
+ *
+ * So the rule is here, `provisionOrganization` applies it before anything else,
+ * and no caller can be the one that forgot.
+ */
+export function organizationSlugError(slug: string): string | undefined {
+  // The slug becomes the Qdrant collection name, so the characters it may
+  // contain are not a matter of taste: one with a slash or a quote in it
+  // reaches a URL path and a JSON body.
+  if (!/^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/.test(slug)) {
+    return (
+      'must be 2-40 characters of lowercase letters, digits and hyphens, not starting or ' +
+      `ending with one: ${slug}`
+    )
+  }
+  return undefined
+}
+
 export interface ProvisionOptions {
   readonly slug: string
   readonly name: string
@@ -277,6 +311,12 @@ export async function provisionOrganization(
   provider: ProviderSpec,
   log: Log = () => undefined,
 ): Promise<ProvisionResult> {
+  // Before anything else, and by the function rather than by its callers. The
+  // CLI checks the same rule to produce a usage message; this is what makes the
+  // check hold for a caller that is not a CLI.
+  const wrong = organizationSlugError(options.slug)
+  if (wrong !== undefined) throw new Error(`organization slug ${wrong}`)
+
   const collection = collectionName(options.slug)
   const ids = await provisionInPostgres(pool, options, provider, collection, log)
 
