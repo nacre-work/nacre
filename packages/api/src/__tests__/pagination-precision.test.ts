@@ -147,22 +147,35 @@ when('a cursor built from a truncated timestamp', () => {
   // The timestamps this schema writes really do carry sub-millisecond digits.
   // If this ever stops being true the tests below stop testing anything, so it
   // is asserted rather than assumed.
+  //
+  // Over every row in the fixture rather than over `LIMIT 1`, because `now()`
+  // does occasionally land on an exact millisecond — roughly once in a thousand
+  // — and one row that did made this fail while the defect it guards was
+  // entirely unchanged. A flaky assertion on a required check is worse than no
+  // assertion: it teaches everyone to re-run. What is actually claimed is that
+  // the schema writes microseconds, so asking every row is both the honest
+  // question and the stable one.
   it('is a real risk: now() writes microseconds a Date cannot hold', async () => {
     const client = await pool.connect()
     try {
       const { rows } = await client.query<{ ts: Date; text: string }>(
-        `SELECT created_at AS ts, created_at::text AS text FROM layers WHERE org_id = $1 LIMIT 1`,
+        `SELECT created_at AS ts, created_at::text AS text FROM layers WHERE org_id = $1`,
         [ORG],
       )
-      const row = rows[0] as { ts: Date; text: string }
-      expect(row.text).not.toBe(row.ts.toISOString())
-      const { rows: cmp } = await client.query<{ less: boolean }>(
-        `SELECT ($1::timestamptz < $2::timestamptz) AS less`,
-        [row.ts.toISOString(), row.text],
-      )
-      // The truncated value sorts *before* the row it came from, which is what
-      // makes the row match its own cursor.
-      expect((cmp[0] as { less: boolean }).less).toBe(true)
+      expect(rows.length).toBeGreaterThan(1)
+
+      const truncated = rows.filter((row) => row.text !== row.ts.toISOString())
+      expect(truncated.length).toBeGreaterThan(0)
+
+      for (const row of truncated) {
+        const { rows: cmp } = await client.query<{ less: boolean }>(
+          `SELECT ($1::timestamptz < $2::timestamptz) AS less`,
+          [row.ts.toISOString(), row.text],
+        )
+        // The truncated value sorts *before* the row it came from, which is
+        // what makes the row match its own cursor.
+        expect((cmp[0] as { less: boolean }).less).toBe(true)
+      }
     } finally {
       client.release()
     }
