@@ -4,6 +4,14 @@
 #              Embeddings come from an endpoint you name. Runs on a laptop.
 #   full       plus minio, an embedder, and a reranker. The typical install.
 #   airgapped  everything local, zero outbound traffic, local OIDC.
+#   hosted     minimal, plus the adapter that routes embeddings to a vendor's
+#              API. Its own profile because typing it is the decision: routing
+#              a model there means the text of your documents leaves your
+#              installation, and that is never something a profile somebody
+#              else named should turn on. Deliberately not composable with
+#              `airgapped` in any arrangement this repository ships — the
+#              adapter is simply absent from that profile, and `lint:compose`
+#              asserts it.
 #
 # Services with no `profiles` key belong to every profile — that is how Compose
 # works, and it is why the eight unprofiled services (the migrate job and mcp
@@ -233,6 +241,36 @@ services:
       dockerfile: docker/Dockerfile.parser
     restart: unless-stopped
     expose: ["8090"]
+
+  # ─────────────────────────── hosted ───────────────────────────
+
+  # One protocol in, several vendors out. The worker and the search path speak
+  # OpenAI's embeddings contract and nothing else; this routes a model name to a
+  # vendor that does not, without the core learning three protocols and without
+  # a vendor credential reaching Postgres — and therefore every dump.
+  #
+  # Point an `embedding_providers` row's endpoint at `http://embedding-adapter:8091`
+  # and give it the model you routed. No migration, no new column: the request
+  # already carries `model`, and that is the routing key.
+  #
+  # It starts with **nothing configured** and refuses to boot that way, naming
+  # NACRE_EMBED_ROUTES. There is no default vendor and no fallback, because
+  # which one sees your documents is not a decision this file makes. Nothing is
+  # seeded in .env.example for the same reason.
+  embedding-adapter:
+    profiles: [hosted]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.embedding-adapter
+    restart: unless-stopped
+    # Its own env_file rather than the shared `x-app` anchor: that anchor also
+    # carries the database and Qdrant settings, and this service reaches
+    # neither. A credential-holding container should be handed the credentials
+    # it needs and no others.
+    env_file:
+      - path: .env
+        required: false
+    expose: ["8091"]
 
   # ─────────────────────────── full ───────────────────────────
 

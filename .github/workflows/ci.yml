@@ -115,24 +115,45 @@ jobs:
       - run: pnpm migrate
       - run: pnpm test:unit
 
-  # The one Python component, and it had no job at all — no tests, no lint, and
-  # nothing checking that it still imports. It is also the only component that
-  # fetches a URL a tenant chose, which makes it the one place in the system
-  # where an authenticated caller picks the destination of an outbound request.
-  parser:
-    name: parser
+  # The Python components. Both of them sit at the edges the rest of the system
+  # is careful about: the parser is where an authenticated caller picks the
+  # destination of an outbound request, and the embedding adapter is where an
+  # installation's document text leaves it.
+  #
+  # **Discovered rather than listed.** This job named `parser` alone for as long
+  # as there was one sidecar, and adding a second is exactly when a hard-coded
+  # name becomes a component with no tests running — the shape this repository
+  # keeps finding. The loop below fails if it finds none, so a rename cannot
+  # turn it into a job that passes having tested nothing.
+  sidecars:
+    name: sidecars
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      # One pinned dependency, and everything else stays standard library: this
-      # process runs hostile input through whatever it depends on, so it depends
-      # on as little as possible. The one it has is now a compiled extension
-      # rather than a pure-Python package — see requirements.txt for why that
-      # was decided rather than drifted into.
-      - run: pip install -r services/parser/requirements.txt
-      - run: python -m unittest discover -s services/parser -t . -v
+      - name: Test every sidecar under services/
+        run: |
+          set -euo pipefail
+          found=0
+          for dir in services/*/; do
+            [ -f "${dir}app.py" ] || continue
+            found=$((found + 1))
+            echo "::group::${dir}"
+            # A pinned manifest where there is one. The parser has a single
+            # dependency because it runs hostile input; the adapter has none at
+            # all, because it sees every document's text.
+            if [ -f "${dir}requirements.txt" ]; then
+              pip install -r "${dir}requirements.txt"
+            fi
+            python -m unittest discover -s "${dir%/}" -t . -v
+            echo "::endgroup::"
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no sidecar found under services/; this job tested nothing"
+            exit 1
+          fi
+          echo "$found sidecar(s) tested"
 
   # The public repo must build and test without access to nacre-enterprise.
   # If this job fails, the open/commercial boundary has leaked.
@@ -194,6 +215,14 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.parser
+          push: false
+          platforms: linux/arm64,linux/amd64
+
+      - name: nacre-embedding-adapter — both architectures
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.embedding-adapter
           push: false
           platforms: linux/arm64,linux/amd64
 

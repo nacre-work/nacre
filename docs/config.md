@@ -40,7 +40,19 @@ NACRE_RERANKER_ENDPOINT=http://reranker:80
 NACRE_RERANKER_ENABLED=false          # true needs an endpoint; minimal has none
 NACRE_RERANK_CANDIDATES=50            # fetched from the index, cut to top_k after scoring
 NACRE_PARSER_ENDPOINT=http://parser:8090
+NACRE_PARSER_ALLOW_PRIVATE_URLS=      # read by the parser sidecar; see below
 NACRE_OAUTH_CONSENT_URL=              # optional; where a browser picks the agent
+
+# ─── the embedding adapter (`hosted` profile only, nothing has a default) ───
+NACRE_EMBED_ROUTES=                   # `model=vendor`, comma-separated. Required.
+NACRE_EMBED_OPENAI_COMPATIBLE_ENDPOINT=
+NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY=
+NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY_FILE=
+NACRE_EMBED_CLOUDFLARE_ACCOUNT=
+NACRE_EMBED_CLOUDFLARE_API_KEY=
+NACRE_EMBED_CLOUDFLARE_API_KEY_FILE=
+NACRE_EMBED_GOOGLE_API_KEY=
+NACRE_EMBED_GOOGLE_API_KEY_FILE=
 # Both model endpoints are base URLs and **a path on one is kept**: the route is
 # resolved under it, so `https://api.openai.com/v1` calls /v1/embeddings and
 # `http://embedder:80` calls /embeddings. Until 0.5.2 the route was appended from
@@ -589,6 +601,104 @@ chosen: that stack runs a single Qdrant container, and both bullets above say
 what a number above `1` does to it. The chart is where they belong, and
 `nacre-infra` carries them as `qdrant.shards` and `qdrant.replicationFactor`.
 
+### `NACRE_PARSER_ALLOW_PRIVATE_URLS`
+
+Read by the **parser sidecar**, not by `loadConfig`, and off unless it is
+literally `true`.
+
+Ingest by URL makes the parser fetch whatever `POST /v1/documents` was given, so
+by default it refuses any URL resolving anywhere private: loopback, link-local
+(`169.254.169.254`, the cloud metadata endpoint), the private ranges, multicast
+and the reserved blocks, in v4 and v6 alike, and again after every redirect.
+
+Set it where a deployment genuinely indexes an internal wiki, and set it knowing
+what it means: **any tenant who can call `POST /v1/documents` can then reach
+anything that container can** — the API beside it, the vector store, the
+metadata endpoint. It is the one variable here that turns an authenticated
+caller into the chooser of an outbound request's destination.
+
+It went undocumented from the day it was added, because the check that holds
+this reference against the code knew about TypeScript and the parser is Python.
+That is fixed on both sides: `lint:config` reads the sidecars now too.
+
+### The embedding adapter
+
+**Routing a model here means the text of your documents leaves your
+installation.**
+
+That sentence is the whole of the decision. A self-hoster on a laptop has no
+good embedder — bge-m3 under emulation blows the worker's budget, and "run a
+GPU" is not an answer for someone trying the product — and a hosted API is the
+alternative. It is a real trade and it is the opposite of what this product
+otherwise is, so it is never made by default, never made by a fallback, and
+never made by a profile somebody else named.
+
+- **Nothing has a default.** No vendor, no endpoint, no route.
+- **An unrouted model is refused by name** and never falls through to whichever
+  vendor happens to be configured.
+- **With no routes at all the container refuses to start**, naming
+  `NACRE_EMBED_ROUTES`.
+- **It is absent from `airgapped` rather than disabled in it.** A service that
+  is not there cannot connect to anything; a runtime check on a URL is a check
+  that has to be right. `pnpm lint:compose` asserts the absence.
+
+It is a sidecar rather than a branch in the worker for three reasons: a vendor
+credential would otherwise reach Postgres and therefore every dump; the least
+observable loop in the system would grow three response shapes and three error
+vocabularies; and the next vendor would be a migration.
+
+**Routing needs no schema change at all.** The request already carries `model`,
+and `embedding_providers.model` is a string you already fill in, so that is the
+routing key. Point a provider's `endpoint` at the adapter and give it the model
+you routed:
+
+```
+NACRE_EMBED_ROUTES=text-embedding-3-small=openai-compatible,@cf/baai/bge-m3=cloudflare
+NACRE_EMBED_OPENAI_COMPATIBLE_ENDPOINT=https://api.openai.com/v1
+NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY_FILE=/run/secrets/openai
+NACRE_EMBED_CLOUDFLARE_ACCOUNT=…
+NACRE_EMBED_CLOUDFLARE_API_KEY_FILE=/run/secrets/cloudflare
+```
+
+```bash
+docker compose --profile hosted up -d
+```
+
+```
+POST /v1/embedding-providers
+{"name": "openai", "endpoint": "http://embedding-adapter:8091",
+ "model": "text-embedding-3-small", "dimensions": 1536}
+```
+
+Two organizations can then sit on two vendors with no new machinery, which is
+what `embedding_providers.org_id` has offered since migration 0001.
+
+| `vendor` | Upstream |
+|---|---|
+| `openai-compatible` | Anything answering OpenAI's `/embeddings`: OpenAI, Together, Voyage, DeepInfra, vLLM, a self-hosted TEI |
+| `cloudflare` | Workers AI |
+| `google` | Generative Language API |
+
+The first is named for the protocol rather than for a company, which is why its
+endpoint is required rather than defaulted at one vendor.
+
+`_API_KEY` and `_API_KEY_FILE` together is refused rather than resolved by
+precedence — two answers to one question leaves the losing one configured,
+apparently in use, and ignored, which is the same rule `NACRE_JWT_SECRET` beside
+a key reference gets.
+
+Nothing here is seeded in `.env.example`, deliberately: a seeded route is this
+repository choosing a vendor on your behalf, which is the one thing this whole
+surface exists not to do.
+
+**You may not need it.** Anything already speaking OpenAI's contract works by
+pointing `embedding_providers.endpoint` straight at it, and always has — the
+adapter adds the vendors that do not, plus a credential. LiteLLM in front of
+that endpoint is the documented alternative and needs no code from this
+repository at all; the adapter exists because this repository has twice chosen
+to own a small thing rather than take a dependency on the path that reads other
+people's documents, and there is exactly one operation here.
+
 ## Compose profiles
 
 | Profile | Contains | For |
@@ -596,6 +706,7 @@ what a number above `1` does to it. The chart is where they belong, and
 | `minimal` | api, mcp, worker, the migrate job, parser, postgres, qdrant, redis; embeddings via an external endpoint | pilot, laptop, no GPU |
 | `full` | plus minio, embedder (TEI), reranker | typical deployment |
 | `airgapped` | everything local; email/password sign-in; models pre-seeded | closed network |
+| `hosted` | `minimal` plus the embedding adapter | a laptop with no GPU, embeddings from a vendor's API |
 
 MinIO appears only in `full`, and that is a licensing decision as much as a
 packaging one — see [licensing.md](./licensing.md).

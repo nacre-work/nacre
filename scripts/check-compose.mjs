@@ -16,7 +16,28 @@ const EXPECTED = {
   minimal: ['api', 'mcp', 'migrate', 'parser', 'postgres', 'qdrant', 'redis', 'web', 'worker'],
   full: ['api', 'embedder', 'mcp', 'migrate', 'minio', 'minio-init', 'parser', 'postgres', 'qdrant', 'redis', 'reranker', 'web', 'worker'],
   airgapped: ['api', 'embedder', 'keycloak', 'mcp', 'migrate', 'parser', 'postgres', 'qdrant', 'redis', 'reranker', 'web', 'worker'],
+  hosted: ['api', 'embedding-adapter', 'mcp', 'migrate', 'parser', 'postgres', 'qdrant', 'redis', 'web', 'worker'],
 }
+
+/**
+ * The one service that talks to somebody else's API, and the profile that
+ * forbids talking to anyone.
+ *
+ * `airgapped`'s rule is no outbound connection at all — telemetry, update
+ * checks and model downloads included. The embedding adapter's whole job is an
+ * outbound connection, so the rule is kept by the service being **absent** from
+ * that profile rather than switched off inside it. A service that is not there
+ * cannot connect to anything; a runtime check on a URL is a check that has to
+ * be right, and this repository has twice found one that was not.
+ *
+ * It is out of `minimal` and `full` too, and that is the same statement made
+ * about consent rather than about airgapping: routing a model to a hosted
+ * vendor means the text of an installation's documents leaves it, and nobody
+ * should get that by typing the name of a profile that means "the typical
+ * install".
+ */
+const ADAPTER = 'embedding-adapter'
+const NO_ADAPTER = ['minimal', 'full', 'airgapped']
 
 let failed = false
 
@@ -58,6 +79,27 @@ for (const heavy of ['embedder', 'reranker']) {
 if (minimal.includes('minio')) {
   console.error('::error::minio is AGPLv3 and must not be on the default path')
   failed = true
+}
+
+// The structural half of "off unless configured". Asserted against EXPECTED
+// rather than only against the rendered profiles, so moving the adapter into a
+// profile fails here even if somebody updates the list to match.
+for (const profile of NO_ADAPTER) {
+  if (EXPECTED[profile].includes(ADAPTER)) {
+    console.error(
+      `::error::${ADAPTER} is in ${profile}. Routing a model to a hosted vendor means the text ` +
+        'of an installation\'s documents leaves it, so it belongs to the `hosted` profile and to ' +
+        'no other — and `airgapped` keeps its rule by the service being absent rather than ' +
+        'switched off, because a service that is not there cannot connect to anything.',
+    )
+    failed = true
+  }
+}
+if (!EXPECTED.hosted.includes(ADAPTER)) {
+  console.error(`::error::${ADAPTER} is in no profile, so this check now asserts nothing`)
+  failed = true
+} else if (!failed) {
+  console.log(`${ADAPTER}: only in hosted, so airgapped stays airgapped by construction`)
 }
 
 /**
