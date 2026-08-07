@@ -2,6 +2,7 @@ import type { Group, GroupMember, User } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { ago, clear, copyableId, copyText, h, shortId } from '../dom.js'
+import { picker } from '../pick.js'
 
 /**
  * People: the users and groups a grant is issued to.
@@ -396,16 +397,25 @@ async function membersPanel(group: Group, root: HTMLElement): Promise<void> {
     h('option', { value: 'user' }, 'user'),
     h('option', { value: 'group' }, 'group'),
   )
-  const picker = h('select', { class: 'input' }, h('option', { value: '' }, 'pick one…'))
-  const memberId = h('input', { class: 'input', placeholder: 'principal id (uuid)', required: true })
+  // A group holds users and other groups, so the list follows the type. The
+  // group being edited is not offered as a member of itself.
+  const member = picker('member')
 
-  // The picker fills the field rather than replacing it, the same shape the
-  // grants screen uses: the list can legitimately be empty, and pasting an id
-  // has to keep working.
-  picker.onchange = (e: Event) => {
-    const value = (e.target as HTMLSelectElement).value
-    if (value !== '') memberId.value = value
+  const fillMember = (): void => {
+    void member.fill(async () =>
+      type.value === 'group'
+        ? (await client().groups.list())
+            .filter((g: Group) => g.id !== group.id)
+            .map((g: Group) => ({ id: g.id, label: `${g.name} — ${String(g.memberCount)} member(s)` }))
+        : (await client().users.list()).map((u: User) => ({
+            id: u.id,
+            label: u.disabledAt === null ? u.email : `${u.email} (disabled)`,
+          })),
+    )
   }
+
+  type.addEventListener('change', fillMember)
+  fillMember()
 
   const dialog = h('dialog', { class: 'dialog dialog-wide' },
     h('h2', {}, `${group.name} — members`),
@@ -417,9 +427,15 @@ async function membersPanel(group: Group, root: HTMLElement): Promise<void> {
       message.className = 'form-message'
       message.textContent = 'Adding…'
       try {
+        const chosen = member.value()
+        if (chosen === '') {
+          message.className = 'form-message error'
+          message.textContent = 'Choose who to add.'
+          return
+        }
         const added = await client().groups.addMember(group.id, {
           type: type.value === 'group' ? 'group' : 'user',
-          id: memberId.value.trim(),
+          id: chosen,
         })
         if (!added) {
           message.className = 'form-message error'
@@ -428,7 +444,7 @@ async function membersPanel(group: Group, root: HTMLElement): Promise<void> {
         }
         message.className = 'form-message'
         message.textContent = ''
-        memberId.value = ''
+        fillMember()
         await fill()
       } catch (error) {
         message.className = 'form-message error'
@@ -436,8 +452,7 @@ async function membersPanel(group: Group, root: HTMLElement): Promise<void> {
       }
     } },
       type,
-      picker,
-      memberId,
+      h('div', { class: 'field grow' }, member.el),
       h('button', { type: 'submit', class: 'btn btn-primary' }, 'Add'),
     ),
     message,
@@ -448,27 +463,6 @@ async function membersPanel(group: Group, root: HTMLElement): Promise<void> {
       } }, 'Done'),
     ),
   )
-
-  async function fillPicker(): Promise<void> {
-    const wanted = type.value === 'group' ? 'group' : 'user'
-    clear(picker)
-    picker.append(h('option', { value: '' }, 'pick one…'))
-    try {
-      if (wanted === 'user') {
-        for (const u of await client().users.list()) {
-          picker.append(h('option', { value: u.id }, u.email))
-        }
-      } else {
-        for (const g of await client().groups.list()) {
-          if (g.id === group.id) continue
-          picker.append(h('option', { value: g.id }, g.name))
-        }
-      }
-    } catch {
-      // The field behind it still takes an id. A picker that failed to load is
-      // not a reason to make the panel unusable.
-    }
-  }
 
   async function fill(): Promise<void> {
     try {
@@ -503,12 +497,11 @@ async function membersPanel(group: Group, root: HTMLElement): Promise<void> {
     )
   }
 
-  type.onchange = () => void fillPicker()
 
   document.body.append(dialog)
   dialog.addEventListener('close', () => dialog.remove())
   dialog.showModal()
-  await Promise.all([fill(), fillPicker()])
+  await fill()
 }
 
 /**

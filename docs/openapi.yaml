@@ -226,7 +226,7 @@ components:
         metadata:   { type: object, additionalProperties: true, description: 'The document''s metadata, as supplied on ingest.' }
     Workspace:
       type: object
-      required: [id, slug, name, layer_count, created_at]
+      required: [id, slug, name, layer_count, created_at, permissions]
       properties:
         id:          { type: string, format: uuid }
         slug:        { type: string, description: Unique within the organization }
@@ -237,6 +237,27 @@ components:
             Live layers in it — not "layers this caller may read". A count that
             varied by who asked would leak the shape of somebody else's grants.
         created_at:  { type: string, format: date-time }
+        permissions:
+          type: array
+          items: { type: string, enum: [read, write, admin] }
+          description: >
+            What **this** caller holds on this workspace, resolved for this
+            request. Per-caller on purpose, which `layer_count` is deliberately
+            not: a count that varies by who asked describes somebody else's
+            grants, while this describes only the asker's own, on an object
+            they are already being shown.
+
+
+            It answers "may I create a layer here?", which has no other answer.
+            The role does not give it — a grant of `admin` on the workspace is
+            enough, and a caller who can see one with `read` may not — so a
+            client deciding from `role` offers a control whose next request is
+            a 404.
+
+
+            A set rather than a level: permissions are unordered here, so
+            `["write"]` is a real answer. Reaching a *layer* inside a workspace
+            never reports as authority over the workspace itself.
     Layer:
       type: object
       required: [id, slug, name, workspace_id, document_count]

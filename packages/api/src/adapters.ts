@@ -21,6 +21,7 @@ import {
   type Hit,
   type Metadata,
   type Narrowing,
+  type Permission,
   type QueryablePlan,
   type ReindexState,
 } from '@nacre.work/core'
@@ -1847,6 +1848,30 @@ export class PostgresWorkspaces implements Workspaces {
           return referenceAllows(context, { type: 'workspace', id: w.id }, 'read')
         })
 
+        /**
+         * What this caller holds on this workspace, asked the same way the
+         * filter above asks: through the resolver, per request, never cached
+         * and never derived from `users.role`.
+         *
+         * `read` is already known — a row that reached here satisfied it — but
+         * it is asked again rather than assumed, because the two answers come
+         * from different branches above and a shortcut here would be a third
+         * copy of a predicate that has to agree with them.
+         */
+        const permissionsOn = (w: { id: string; layer_ids: string[] | null }): Permission[] =>
+          (['read', 'write', 'admin'] as const).filter((permission) => {
+            const p = activeResolver().resolve(context, permission)
+            if (p.kind === 'all') return true
+            if (p.kind === 'scoped' && (w.layer_ids ?? []).some((id) => p.layers.includes(id))) {
+              // Reaching a layer inside it is not authority over the workspace.
+              // `admin` on one layer must not report as `admin` here, or the
+              // screen that reads this would offer "New layer" to a principal
+              // the server refuses.
+              return permission === 'read'
+            }
+            return referenceAllows(context, { type: 'workspace', id: w.id }, permission)
+          })
+
         const fetched = page === undefined ? rows : rows.slice(0, page.limit)
         const items = reachable
           .filter((w) => fetched.some((f) => f.id === w.id))
@@ -1856,6 +1881,7 @@ export class PostgresWorkspaces implements Workspaces {
             name: w.name,
             layerCount: (w.layer_ids ?? []).length,
             createdAt: w.created_at.toISOString(),
+            permissions: permissionsOn(w),
           }))
 
         // From the last row **fetched**, not the last returned — the same rule
@@ -1928,6 +1954,10 @@ export class PostgresWorkspaces implements Workspaces {
             name: row.name,
             layerCount: 0,
             createdAt: row.created_at.toISOString(),
+            // Creating one is `org_admin`, and an `org_admin` reaches
+            // everything by role — so this is the whole set rather than a
+            // resolve call that could only agree with the check just made.
+            permissions: ['read', 'write', 'admin'],
           },
         }
       },

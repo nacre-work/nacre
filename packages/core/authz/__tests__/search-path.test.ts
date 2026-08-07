@@ -300,6 +300,28 @@ when('baseline · the search path', () => {
     expect((await workspaces.list(as(A, ids.erin))).items).toEqual([])
   })
 
+  it('the workspace listing says what the caller holds, and a layer inside is not authority over it', async () => {
+    // `permissions` exists so a client can ask "may I create a layer here?".
+    // The role cannot answer it — a grant of `admin` on the workspace is
+    // enough, and reaching a *layer* inside one is not — so getting the second
+    // half wrong would put "New layer" in front of every reader, and their next
+    // request is the 404 invariant 4 owes an unreachable object.
+    const workspaces = new PostgresWorkspaces(pool, AS_APP)
+
+    // dave's only grant is `admin` on wsA itself. admin implies both.
+    const [forDave] = (await workspaces.list(as(A, ids.dave))).items
+    expect(forDave?.id).toBe(ids.wsA)
+    expect([...(forDave?.permissions ?? [])].sort()).toEqual(['admin', 'read', 'write'])
+
+    // alice reaches wsA only through grants on layers in it. She may read the
+    // workspace — that is what put it in her list — and holds nothing on the
+    // workspace itself. This is the assertion that fails if the scoped branch
+    // is allowed to answer for anything but `read`.
+    const [forAlice] = (await workspaces.list(as(A, ids.alice))).items
+    expect(forAlice?.id).toBe(ids.wsA)
+    expect([...(forAlice?.permissions ?? [])]).toEqual(['read'])
+  })
+
   it('creating a workspace is org_admin, and nobody else', async () => {
     const workspaces = new PostgresWorkspaces(pool, AS_APP)
 

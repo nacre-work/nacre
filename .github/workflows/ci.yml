@@ -102,6 +102,10 @@ jobs:
       # of two classes that existed in no stylesheet, and the page still
       # rendered — just with the checkboxes running together across the line.
       - run: pnpm lint:admin-classes
+      # And no screen asks a person to type an id. Nobody knows a uuid: the one
+      # who has it copied it out of the picker directly above, and the one who
+      # does not gets the 404 that means "no such thing, or not yours".
+      - run: pnpm lint:admin-ids
       - run: pnpm migrate
       - run: pnpm test:unit
 

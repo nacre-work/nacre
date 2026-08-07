@@ -2,6 +2,7 @@ import type { Grant, Group, Layer, ServiceAccount, User, Workspace } from '@nacr
 
 import { client, explain } from '../api.js'
 import { chip, clear, h, shortId } from '../dom.js'
+import { picker } from '../pick.js'
 
 /**
  * Grants.
@@ -143,97 +144,77 @@ function openIssue(root: HTMLElement): void {
     h('option', { value: 'group' }, 'group'),
     h('option', { value: 'service_account' }, 'service account'),
   )
-  const principalId = h('input', { class: 'input', placeholder: 'principal id (uuid)', required: true })
   const scopeType = h('select', { class: 'input' },
     h('option', { value: 'layer' }, 'layer'),
     h('option', { value: 'workspace' }, 'workspace'),
   )
-  const scopeId = h('input', { class: 'input', placeholder: 'scope id (uuid)', required: true })
   const permission = h('select', { class: 'input' },
     ...PERMISSIONS.map((p) => h('option', { value: p }, p)),
   )
   const message = h('p', { class: 'form-message' })
 
-  // A convenience only. Picking fills the id in, and the field stays editable
-  // because either list is permission data and can legitimately be empty.
-  //
   // It follows the scope type rather than only listing layers. Workspaces had
   // no list on this screen — which was once true of the API as well — so
   // granting on one meant knowing a uuid, the same hole the layer dialog had.
-  const scopePicker = h('select', { class: 'input', onchange: (e: Event) => {
-    const value = (e.target as HTMLSelectElement).value
-    if (value !== '') scopeId.value = value
-  } })
+  const scope = picker('scope')
 
-  const fillScopePicker = (): void => {
+  const fillScope = (): void => {
     const type = scopeType.value
-    scopePicker.replaceChildren(h('option', { value: '' }, `pick a ${type}…`))
-    if (type === 'workspace') {
-      void client().workspaces.list().then((workspaces: readonly Workspace[]) => {
-        for (const w of workspaces) {
-          scopePicker.append(h('option', { value: w.id }, `${w.slug} — ${w.name}`))
-        }
-      })
-    } else {
-      void client().layers.list().then((layers: readonly Layer[]) => {
-        for (const l of layers) scopePicker.append(h('option', { value: l.id }, `${l.slug} — ${l.name}`))
-      })
-    }
+    void scope.fill(async () =>
+      type === 'workspace'
+        ? (await client().workspaces.list()).map((w: Workspace) => ({
+            id: w.id,
+            label: `${w.slug} — ${w.name}`,
+          }))
+        : (await client().layers.list()).map((l: Layer) => ({ id: l.id, label: `${l.slug} — ${l.name}` })),
+    )
   }
 
-  scopeType.addEventListener('change', fillScopePicker)
-  fillScopePicker()
+  scopeType.addEventListener('change', fillScope)
+  fillScope()
 
-  // The same shortcut for the principal, which had none — so the scope could be
-  // picked from a list and the principal had to be a uuid somebody carried by
-  // hand. Somebody typed a service account's *name* into it, and the only
-  // answer was about the field that was correct.
+  // The same for the principal, which had no picker at all — so the scope came
+  // from a list and the principal had to be a uuid somebody carried by hand.
+  // Somebody typed a service account's *name* into it, and the only answer was
+  // about the field that was correct.
   //
   // It could not have been built until all three types were listable: service
   // accounts always were, users and groups only since `/v1/users` and
   // `/v1/groups` landed. Before that this picker would have had one working
   // option out of three, which is worse than none.
-  const principalPicker = h('select', { class: 'input', onchange: (e: Event) => {
-    const value = (e.target as HTMLSelectElement).value
-    if (value !== '') principalId.value = value
-  } })
+  //
+  // Listing users and groups is `org_admin` and `admin` on a scope is not, so
+  // this can legitimately fail for a caller who may nonetheless issue the
+  // grant — and that refusal is the one case where a field taking an id is
+  // still the right control. `picker` shows it there and only there.
+  const principal = picker('principal')
 
-  const fillPrincipalPicker = (): void => {
+  const fillPrincipal = (): void => {
     const type = principalType.value
-    const label = type === 'service_account' ? 'service account' : type
-    principalPicker.replaceChildren(h('option', { value: '' }, `pick a ${label}…`))
-    // Listing users and groups needs org_admin, and admin on a scope is not
-    // that — so this can legitimately fail for a caller who may nonetheless
-    // issue the grant. The field behind it still takes an id, which is why the
-    // failure is silent here rather than an error on a form that is fine.
-    if (type === 'user') {
-      void client().users.list().then((users: readonly User[]) => {
-        for (const u of users) {
-          principalPicker.append(h('option', { value: u.id },
-            u.disabledAt === null ? u.email : `${u.email} (disabled)`))
-        }
-      }).catch(() => undefined)
-    } else if (type === 'group') {
-      void client().groups.list().then((groups: readonly Group[]) => {
-        for (const g of groups) {
-          principalPicker.append(h('option', { value: g.id }, `${g.name} — ${String(g.memberCount)} member(s)`))
-        }
-      }).catch(() => undefined)
-    } else {
-      void client().serviceAccounts.list().then((accounts: readonly ServiceAccount[]) => {
-        // A revoked account is not offered: its key stopped working and is
-        // never reissued, so a grant to it can never be exercised — and the
-        // server refuses one now rather than storing a row that does nothing.
-        for (const a of accounts) {
-          if (a.revokedAt !== null) continue
-          principalPicker.append(h('option', { value: a.id }, `${a.name} — ${a.keyPrefix}…`))
-        }
-      }).catch(() => undefined)
-    }
+    void principal.fill(async () => {
+      if (type === 'user') {
+        return (await client().users.list()).map((u: User) => ({
+          id: u.id,
+          label: u.disabledAt === null ? u.email : `${u.email} (disabled)`,
+        }))
+      }
+      if (type === 'group') {
+        return (await client().groups.list()).map((g: Group) => ({
+          id: g.id,
+          label: `${g.name} — ${String(g.memberCount)} member(s)`,
+        }))
+      }
+      // A revoked account is not offered: its key stopped working and is never
+      // reissued, so a grant to it can never be exercised — and the server
+      // refuses one now rather than storing a row that does nothing.
+      return (await client().serviceAccounts.list())
+        .filter((a: ServiceAccount) => a.revokedAt === null)
+        .map((a: ServiceAccount) => ({ id: a.id, label: `${a.name} — ${a.keyPrefix}…` }))
+    })
   }
 
-  principalType.addEventListener('change', fillPrincipalPicker)
-  fillPrincipalPicker()
+  principalType.addEventListener('change', fillPrincipal)
+  fillPrincipal()
 
   const dialog = h('dialog', { class: 'dialog' },
     h('form', { method: 'dialog', onsubmit: async (e: Event) => {
@@ -241,11 +222,18 @@ function openIssue(root: HTMLElement): void {
       message.className = 'form-message'
       message.textContent = 'Issuing…'
       try {
+        const who = principal.value()
+        const what = scope.value()
+        if (who === '' || what === '') {
+          message.className = 'form-message error'
+          message.textContent = who === '' ? 'Choose a principal.' : 'Choose a scope.'
+          return
+        }
         const issued = await client().grants.issue({
           principalType: principalType.value as 'user' | 'group' | 'service_account',
-          principalId: principalId.value.trim(),
+          principalId: who,
           scopeType: scopeType.value as 'workspace' | 'layer',
-          scopeId: scopeId.value.trim(),
+          scopeId: what,
           permission: permission.value as 'read' | 'write' | 'admin',
         })
         if (issued === undefined) {
@@ -265,14 +253,12 @@ function openIssue(root: HTMLElement): void {
       h('h2', {}, 'Issue a grant'),
       h('div', { class: 'row' },
         h('label', { class: 'field' }, h('span', {}, 'Principal type'), principalType),
-        h('label', { class: 'field grow' }, h('span', {}, 'Principal'), principalId),
+        h('div', { class: 'field grow' }, h('span', {}, 'Principal'), principal.el),
       ),
-      h('label', { class: 'field' }, h('span', {}, 'Principal shortcut'), principalPicker),
       h('div', { class: 'row' },
         h('label', { class: 'field' }, h('span', {}, 'Scope type'), scopeType),
-        h('label', { class: 'field grow' }, h('span', {}, 'Scope'), scopeId),
+        h('div', { class: 'field grow' }, h('span', {}, 'Scope'), scope.el),
       ),
-      h('label', { class: 'field' }, h('span', {}, 'Scope shortcut'), scopePicker),
       h('label', { class: 'field' }, h('span', {}, 'Permission'), permission),
       h('p', { class: 'hint' },
         'Requires admin on the scope being granted, not admin in general. Document scope and deny effect are commercial capabilities and are refused here.'),

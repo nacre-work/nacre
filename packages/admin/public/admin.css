@@ -281,6 +281,15 @@ tr:hover .idcopy .btn, .idcopy .btn:focus-visible { opacity: 1; }
 .row { display: flex; gap: 12px; align-items: flex-end; }
 .row > .field { margin-bottom: 12px; }
 
+/* One control's worth of space, whichever of the four things is in it — a
+   select, a name, a sentence, or the id field that appears only when the list
+   could not be read. Sized so swapping between them does not move the form. */
+.pick { display: flex; flex-direction: column; gap: 4px; min-height: 34px; justify-content: center; }
+.pick > .hint, .pick > .muted { margin: 0; font-size: 13px; }
+/* The one thing there was to choose. Not a disabled select: a control that
+   cannot be operated still invites operating it. */
+.picked { margin: 0; font-size: 14px; }
+
 .hint { font-size: 13px; color: var(--n-text-muted); margin: 0 0 12px; max-width: 60ch; }
 .warn {
   font-size: 14px; color: var(--n-text);
