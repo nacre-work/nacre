@@ -179,14 +179,61 @@ export function vectorParams(size: number) {
   }
 }
 
-export function collectionConfig(vectorName: string, size: number) {
+/**
+ * How a collection is laid out across the cluster.
+ *
+ * Both are **fixed at creation**, which is why they are a seam rather than a
+ * setting: Qdrant cannot reshard a live collection, so the only way to change
+ * either afterwards is to build a new collection and copy every point into it.
+ * That machinery exists — it is what a model migration does, and it moves
+ * vectors without recomputing them — so this is not a one-way door. It is a
+ * door that costs an organization-wide copy, and a deployment that knows its
+ * shape on day one should not have to pay it.
+ *
+ * Both default to Qdrant's own default of 1, which is what every collection
+ * created before this had. A single-node deployment wants exactly that, and
+ * raising `shards` on one is worse than leaving it: more segments, no more
+ * parallelism, and a rebalance that has nowhere to go.
+ */
+export interface CollectionShape {
+  /** Shards per collection. Fixed at creation; 1 unless a cluster wants more. */
+  readonly shards?: number
+  /** Copies of each shard. Fixed at creation; needs that many nodes to be met. */
+  readonly replicationFactor?: number
+}
+
+/**
+ * Every collection this system creates, in one place.
+ *
+ * It was one place in name only: this function existed and **one** of the three
+ * `createCollection` calls used it, while the reindex copy and the slot-adding
+ * copy each spelled the same object out inline. So a field added here reached a
+ * third of the collections — the "holds in N places with nothing that knows N"
+ * shape, and the reason `lint:collection-config` now refuses a call that does
+ * not come through here.
+ */
+export function collectionConfig(
+  vectors: Record<string, unknown> | { name: string; size: number },
+  shape: CollectionShape = {},
+) {
+  const one = vectors as { name?: unknown; size?: unknown }
+  const named =
+    typeof one.name === 'string' && typeof one.size === 'number'
+      ? { [one.name]: vectorParams(one.size) }
+      : (vectors as Record<string, unknown>)
+
   return {
-    vectors: {
-      [vectorName]: vectorParams(size),
-    },
+    vectors: named,
     sparse_vectors: { bm25: {} },
     optimizers_config: { default_segment_number: 4 },
     on_disk_payload: true,
+    // Omitted rather than sent as 1, so a collection created by this build is
+    // byte-for-byte what one created by the last build was unless a deployment
+    // asked for something else.
+    ...(shape.shards === undefined ? {} : { shard_number: shape.shards }),
+    ...(shape.replicationFactor === undefined
+      ? {}
+      : { replication_factor: shape.replicationFactor }),
   }
 }
 

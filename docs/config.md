@@ -19,6 +19,8 @@ NACRE_PG_URL=postgres://nacre:***@postgres:5432/nacre
 NACRE_PG_POOL_MAX=20
 NACRE_QDRANT_URL=http://qdrant:6333
 NACRE_QDRANT_API_KEY=
+NACRE_QDRANT_SHARDS=1                  # fixed at collection creation
+NACRE_QDRANT_REPLICATION_FACTOR=1      # fixed at collection creation
 NACRE_VECTOR_TENANCY=collection        # collection | shared
 NACRE_REDIS_URL=redis://redis:6379/0
 
@@ -553,6 +555,39 @@ able to check them.
 
 Every token carries `kid`, derived from the public bytes rather than configured,
 so two processes agree on it without anyone keeping two settings in step.
+
+### `NACRE_QDRANT_SHARDS` and `NACRE_QDRANT_REPLICATION_FACTOR`
+
+Both are **fixed when a collection is created.** Qdrant cannot reshard a live
+collection, so these decide the shape a deployment lives with — and changing
+either afterwards means building a new collection and copying every point into
+it.
+
+That is not a one-way door, and it is worth knowing which kind of door it is.
+The copy is machinery this system already has: a model migration builds a new
+collection carrying both vector slots and moves every point across **without
+recomputing embeddings**, then switches `organizations.vector_collection` in one
+statement. So a deployment that outgrows one shard can get to more, at the cost
+of an organization-wide copy and the disk to hold both collections at once.
+
+Both default to `1`, which is what every collection created before these
+variables existed has, and what a single-node deployment should keep:
+
+- **shards above 1 on one node is worse than leaving it.** More segments, no
+  more parallelism, and a rebalance with nowhere to go.
+- **a replication factor above the number of nodes cannot be met.** Qdrant
+  accepts the number and the collection stays under-replicated.
+
+Set them when the cluster exists, not in anticipation of one. They apply to
+every collection the process creates — a new organization's, and the target of a
+model migration — and to nothing it reads, so raising them affects what is
+created next and never what is already there.
+
+They are deliberately absent from `.env.example` and from `docker-compose.yml`,
+which is the one place in this repository where the answer is known rather than
+chosen: that stack runs a single Qdrant container, and both bullets above say
+what a number above `1` does to it. The chart is where they belong, and
+`nacre-infra` carries them as `qdrant.shards` and `qdrant.replicationFactor`.
 
 ## Compose profiles
 

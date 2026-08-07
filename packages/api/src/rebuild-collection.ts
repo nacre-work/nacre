@@ -1,4 +1,4 @@
-import { ConfigError, createPool, loadConfig, VectorStore } from '@nacre.work/core'
+import { ConfigError, createPool, loadConfig, VectorStore, vectorStoreOptions } from '@nacre.work/core'
 import type { Pool } from 'pg'
 import { pathToFileURL } from 'node:url'
 
@@ -201,11 +201,7 @@ async function main(): Promise<void> {
 
     // Qdrant before the requeue, and only when the read succeeded: the collection
     // has to exist before a worker can claim a document and write to it.
-    const vectors = new VectorStore(
-      config.qdrantApiKey === undefined
-        ? { url: config.qdrantUrl }
-        : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
-    )
+    const vectors = new VectorStore(vectorStoreOptions(config))
     await vectors.rebuildCollection(schema.collection, schema.slots, schema.metadataKeys)
     say('collection rebuilt', { collection: schema.collection })
 

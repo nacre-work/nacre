@@ -7,6 +7,7 @@ import {
   loadJwtKeys,
   vectorName,
   VectorStore,
+  vectorStoreOptions,
 } from '@nacre.work/core'
 import { SignJWT } from 'jose'
 import type { Pool } from 'pg'
@@ -307,11 +308,7 @@ async function main(): Promise<void> {
     // `ensureCollection` is already idempotent and already creates the payload
     // indexes, which is the part worth not reimplementing: a filter that falls
     // back to a scan is a latency problem that only appears at volume.
-    const vectors = new VectorStore(
-      config.qdrantApiKey === undefined
-        ? { url: config.qdrantUrl }
-        : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
-    )
+    const vectors = new VectorStore(vectorStoreOptions(config))
     await vectors.ensureCollection(parsed.slug, vector, config.embeddingDim)
     say('collection ready', { collection, vector, dimensions: config.embeddingDim })
 

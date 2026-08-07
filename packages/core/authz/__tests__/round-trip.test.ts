@@ -113,7 +113,7 @@ when('pipeline round trip · the worker and the search path agree', () => {
 
     const name = collectionName(SLUG)
     await client.deleteCollection(name).catch(() => {})
-    await client.createCollection(name, collectionConfig(VECTOR, DIM) as never)
+    await client.createCollection(name, collectionConfig({ name: VECTOR, size: DIM }) as never)
     for (const ix of PAYLOAD_INDEXES) {
       await client.createPayloadIndex(name, {
         field_name: ix.field_name,

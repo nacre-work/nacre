@@ -11,6 +11,7 @@ import {
   logger,
   S3,
   VectorStore,
+  vectorStoreOptions,
   loadConfig,
   withOrg,
 } from '@nacre.work/core'
@@ -264,11 +265,7 @@ async function main(): Promise<void> {
   // implementation. `copyCollection` lives there because the API needs
   // `vectorsOf` from the same place, and two copies of "what does a collection
   // look like" is how the two ends of a migration end up disagreeing.
-  const store = new VectorStore(
-    config.qdrantApiKey === undefined
-      ? { url: config.qdrantUrl }
-      : { url: config.qdrantUrl, apiKey: config.qdrantApiKey },
-  )
+  const store = new VectorStore(vectorStoreOptions(config))
   const documents = new PostgresDocumentStore(pool, APP_ROLE)
 
   // Absent when a deployment has none, which is the supported default: document
