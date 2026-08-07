@@ -176,12 +176,13 @@ when('provisionOrganization', () => {
     const c = await pool2.connect()
     try {
       for (const slug of slugs) await c.query(`DELETE FROM organizations WHERE slug = $1`, [slug])
-      // Only providers nothing points at: one a layer is built on cannot be
-      // removed, because those vectors were made by it.
-      await c.query(
-        `DELETE FROM embedding_providers p WHERE p.org_id IS NULL
-           AND NOT EXISTS (SELECT 1 FROM layers l WHERE l.provider_id = p.id)`,
-      )
+      // Deliberately nothing else. An earlier version cleared every
+      // unreferenced NULL-`org_id` provider to get a known starting state, and
+      // that is another suite's fixture: the installation default is global, so
+      // a test that deletes one is a test that reaches into every other. These
+      // cases assert the invariant against whatever provider was resolved
+      // rather than against a particular one, which is what makes the reach
+      // unnecessary.
     } finally {
       c.release()
     }
