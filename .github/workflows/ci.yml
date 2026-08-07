@@ -112,6 +112,11 @@ jobs:
       # reshaped by copying every point — and two of the three creation sites
       # were exactly that literal, spelled out again.
       - run: pnpm lint:collection-config
+      # One generated-password implementation, and one word list. There were
+      # two, with two different strengths — 41.9 bits from `init` and 35.3 from
+      # the endpoint an administrator onboards a colleague with — and a comment
+      # claiming 70. Nothing compared them.
+      - run: pnpm lint:password
       - run: pnpm migrate
       - run: pnpm test:unit
 

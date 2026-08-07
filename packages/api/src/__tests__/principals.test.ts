@@ -1,8 +1,8 @@
-import { createPool, verifyPassword, withOrg } from '@nacre.work/core'
+import { createPool, generatePassword, verifyPassword, withOrg } from '@nacre.work/core'
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { generatePassword, looksLikeEmail, PostgresGroups, PostgresUsers } from '../principals.js'
+import { looksLikeEmail, PostgresGroups, PostgresUsers } from '../principals.js'
 
 /**
  * Users and groups, against the database.

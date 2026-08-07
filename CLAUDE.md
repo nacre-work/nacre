@@ -586,6 +586,20 @@ it to `indexed`, and asserts the extracted phrase comes back out of a search —
 with a constant-vector stub embedder, so relevance decides nothing and the
 phrase is there only if it came out of the PDF.
 
+**A generated password comes from one list, and the number is computed.** There
+were two implementations of the same six-words-and-a-number generator, each with
+its own word list — 60 words beside `init` and 28 beside the user endpoints — so
+the product minted credentials at two strengths depending on which door they
+came through. The weaker one, 35.3 bits, is the door an administrator onboards a
+colleague through and resets a lost password with. The stronger one described
+itself as "roughly 70 bits" and was 41.9.
+
+One list now, the union of the two at 71 words, and `PASSWORD_ENTROPY_BITS` is
+derived from it rather than written down — so a comment cannot go on claiming a
+number the list stopped supporting. `lint:password` refuses a second word list
+or a second generator, matched on content rather than on a variable name,
+because the name is the part somebody writing one would change.
+
 **Provisioning an organization is one function, in the core.** `initialize`
 lived beside the `init` CLI, and the CLI is one caller rather than the
 definition — a control plane minting tenants through an API is another, and two

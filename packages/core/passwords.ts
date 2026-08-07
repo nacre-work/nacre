@@ -1,4 +1,10 @@
-import { randomBytes, scrypt as scryptCallback, timingSafeEqual, type ScryptOptions } from 'node:crypto'
+import {
+  randomBytes,
+  randomInt,
+  scrypt as scryptCallback,
+  timingSafeEqual,
+  type ScryptOptions,
+} from 'node:crypto'
 import { promisify } from 'node:util'
 
 /**
@@ -255,4 +261,74 @@ export async function spendVerificationTime(password: string): Promise<false> {
   decoy ??= await hashPassword(randomBytes(32).toString('base64url'))
   await verifyPassword(password, decoy)
   return false
+}
+
+/**
+ * A generated password: six words and a number, from the CSPRNG.
+ *
+ * **Generated and never accepted**, everywhere this is used. `init` runs in a
+ * terminal and an argument ends up in a shell history and in `ps`. And an
+ * administrator who chooses a colleague's password knows it — "the person who
+ * onboarded you can sign in as you" is not a property worth having, while a
+ * value the process invented and showed once is nobody's to keep.
+ *
+ * Six words rather than a random string of the same strength, because this gets
+ * typed into a sign-in form by a person at least once and read aloud more often
+ * than anyone plans. A base64 string gets copied wrong, and the recovery from
+ * that is re-running `init` against a live installation.
+ *
+ * ## One list, and the number is computed rather than claimed
+ *
+ * There were two of these — a 60-word list beside `init` and a 28-word one
+ * beside the user endpoints — so the same product minted credentials at two
+ * different strengths depending on which door they came through, and the
+ * weaker one was the door an administrator uses to onboard a colleague. The
+ * comment on the stronger one said "roughly 70 bits"; it was 41.9. Nothing
+ * compared them, which is this repository's most repeated shape: a property
+ * that has to hold in N places with nothing that knows N.
+ *
+ * So the list is one list — the union of the two, since either alone was a
+ * choice somebody had already made — and `PASSWORD_ENTROPY_BITS` is derived
+ * from it rather than written down. A test asserts a floor against the computed
+ * value, so growing or shrinking the list cannot quietly move the strength
+ * while a comment goes on saying otherwise.
+ */
+export const PASSWORD_WORDS = [
+  'abalone', 'anchor', 'aragonite', 'aurora', 'basalt', 'beacon', 'bloom', 'bramble',
+  'brine', 'calcite', 'cinder', 'clover', 'compass', 'coral', 'crest', 'current',
+  'delta', 'drift', 'ember', 'estuary', 'fathom', 'ferry', 'fjord', 'granite', 'harbor',
+  'harbour', 'haven', 'iridescent', 'iris', 'keel', 'kelp', 'lagoon', 'lantern',
+  'ledger', 'lichen', 'lustre', 'mantle', 'marlin', 'meadow', 'mica', 'nacre',
+  'nautilus', 'obsidian', 'onyx', 'opal', 'orbit', 'pearl', 'pelagic', 'pillar',
+  'plover', 'prism', 'quarry', 'quartz', 'reef', 'ripple', 'salt', 'sextant', 'shale',
+  'shoal', 'silt', 'slate', 'sound', 'spindrift', 'stratum', 'tide', 'trawler',
+  'trench', 'vellum', 'wharf', 'willow', 'zephyr',
+] as const
+
+/** Words in a generated password. */
+export const PASSWORD_WORD_COUNT = 6
+
+/** The two-digit suffix, `10`–`99`. */
+const SUFFIX_RANGE = 90
+
+/**
+ * What one of these is actually worth, from the list rather than from a memory.
+ *
+ * Online guessing against `/v1/auth/login` is bounded three ways already — per
+ * address, per client, and by the cap on concurrent scrypt calls — so this
+ * number is about the offline case: somebody holding the `password_hash`
+ * column. scrypt at OWASP's minimum over this much true entropy is the claim,
+ * and stating it exactly is what lets the next person judge it.
+ */
+export const PASSWORD_ENTROPY_BITS =
+  PASSWORD_WORD_COUNT * Math.log2(PASSWORD_WORDS.length) + Math.log2(SUFFIX_RANGE)
+
+export function generatePassword(): string {
+  // randomInt rather than Math.random or a modulo of randomBytes: one is not a
+  // CSPRNG and the other is biased unless the range divides evenly.
+  const chosen = Array.from(
+    { length: PASSWORD_WORD_COUNT },
+    () => PASSWORD_WORDS[randomInt(PASSWORD_WORDS.length)],
+  )
+  return `${chosen.join('-')}-${String(randomInt(10, 10 + SUFFIX_RANGE))}`
 }

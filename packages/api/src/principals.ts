@@ -1,6 +1,4 @@
-import { randomInt } from 'node:crypto'
-
-import { hashPassword, withOrg } from '@nacre.work/core'
+import { generatePassword, hashPassword, withOrg } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
 import type { AuthContext } from './auth.js'
@@ -133,31 +131,6 @@ export interface Groups {
 }
 
 const UUID = /^[0-9a-f-]{36}$/i
-
-/**
- * A generated password, in the same shape `init` prints.
- *
- * Generated and never taken from the request, for the reason `init` gives and
- * one more. An administrator who chooses a colleague's password knows it, and
- * "the person who onboarded you can sign in as you" is not a property worth
- * having; a value the process invented and showed once is nobody's to keep.
- *
- * Six words rather than a random string because this gets typed into a sign-in
- * form by a person at least once, and read aloud more often than anyone plans.
- */
-const WORDS = [
-  'abalone', 'aragonite', 'bloom', 'brine', 'calcite', 'compass', 'coral',
-  'crest', 'current', 'drift', 'estuary', 'fathom', 'ferry', 'harbour',
-  'iridescent', 'keel', 'lagoon', 'ledger', 'lustre', 'mantle', 'nacre',
-  'pelagic', 'prism', 'reef', 'shoal', 'sound', 'stratum', 'tide',
-] as const
-
-export function generatePassword(): string {
-  // randomInt rather than Math.random or a modulo of randomBytes: one is not a
-  // CSPRNG and the other is biased unless the range divides evenly.
-  const chosen = Array.from({ length: 6 }, () => WORDS[randomInt(WORDS.length)])
-  return `${chosen.join('-')}-${String(randomInt(10, 100))}`
-}
 
 /**
  * An email address, checked only enough to refuse what cannot be one.
