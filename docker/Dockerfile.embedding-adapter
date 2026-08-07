@@ -1,0 +1,20 @@
+# The embedding adapter: one protocol in, several vendors out.
+#
+# No `pip install` line, and that is the point rather than an omission. This
+# process sees the text of every document routed through it, which is the same
+# argument that keeps the parser at one dependency and put the S3 signer in the
+# core by hand. There is one operation here — embed a batch — and the escape
+# hatch for anyone who would rather have the dependency is LiteLLM in front of
+# the existing endpoint, which needs no code from this repository at all.
+#
+# It holds vendor credentials and reaches no database. Nothing about those
+# credentials is in Postgres, so nothing about them is in a dump.
+FROM python:3.13-slim
+WORKDIR /app
+
+RUN adduser --system --group nacre
+USER nacre
+
+COPY --chown=nacre:nacre services/embedding_adapter services/embedding_adapter
+EXPOSE 8091
+CMD ["python", "-m", "services.embedding_adapter"]

@@ -586,6 +586,44 @@ it to `indexed`, and asserts the extracted phrase comes back out of a search —
 with a constant-vector stub embedder, so relevance decides nothing and the
 phrase is there only if it came out of the PDF.
 
+**Embeddings can come from a hosted API, and nothing about that is a default.**
+A self-hoster on a laptop has no good embedder — bge-m3 under emulation blows
+the worker's 120 s budget — and the alternative is somebody else's GPU. The
+vendor differences live in a sidecar rather than in the worker: a `protocol`
+column and a three-way branch would put a vendor credential's name in Postgres
+and therefore in every dump, grow the least observable loop in the system by
+three response shapes, and make the next vendor a migration.
+
+Routing needs no schema at all. The request already carries `model`, and
+`embedding_providers.model` is a string an operator already fills in, so that is
+the routing key — two organizations on two vendors with nothing new. Point a
+provider's `endpoint` at the adapter.
+
+The rules it is held to are the whole of the feature. No default vendor, no
+default endpoint, no route that nobody wrote; an unrouted model is refused by
+name and never falls through to whichever vendor happens to be configured; with
+no routes at all the container refuses to start. It is **absent from the
+`airgapped` profile** rather than disabled in it, because a service that is not
+there cannot connect to anything and a runtime check on a URL is a check that
+has to be right — `lint:compose` asserts the absence, against the expected
+service list as well as the rendered one, so moving it in fails even with the
+list updated to match. And `docs/config.md` states the trade in those words:
+**the text of your documents leaves your installation.**
+
+Standard library only, which is the argument that keeps the parser at one
+dependency: this process sees every document's text and there is one operation
+here. LiteLLM in front of the existing endpoint stays the documented escape
+hatch, since anything OpenAI-shaped already needs no code from us.
+
+Writing it found that `lint:config` could see half the code it applied to. The
+check knew about TypeScript readers and the sidecars are Python, so
+`NACRE_PARSER_ALLOW_PRIVATE_URLS` — which decides whether an authenticated
+tenant can point that service at the cloud metadata endpoint — had been read by
+a shipped container and documented nowhere since the day it was added. It reads
+the sidecars now, and the `parser` CI job became `sidecars`, discovering them
+rather than naming one: a hard-coded name becomes a component with no tests
+running at exactly the moment a second one exists.
+
 **Object storage is wired.** `NACRE_S3_*` spent its whole life in
 `docs/config.md` and in the `full` Compose profile while `loadConfig` did not
 mention it, so a wrong endpoint or a missing credential was silent and MinIO sat

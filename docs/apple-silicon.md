@@ -222,8 +222,23 @@ still. So "it works" is a report about one runtime and not a property of the
 architecture, and the embedder is on the request path for every ingest and every
 search.
 
-Use `minimal` with a host-native embedder. If you want object storage without
-the rest of `full`, MinIO is arm64 and can be started on its own:
+Use `minimal` with a host-native embedder — or, if you would rather not run a
+model at all, the `hosted` profile, which is the same stack plus an adapter that
+routes embeddings to a vendor's API:
+
+```bash
+docker compose --profile hosted up -d
+```
+
+It is off unless configured and has no default vendor, because routing a model
+there means **the text of your documents leaves your installation**. That is a
+real trade and it is the opposite of what this product otherwise is, so it is
+never made by accident; [config.md](./config.md) has the whole surface. If your
+documents are ones you would not send to a third party, the host-native embedder
+above is the arrangement.
+
+If you want object storage without the rest of `full`, MinIO is arm64 and can be
+started on its own:
 
 ```bash
 docker compose --profile minimal up -d

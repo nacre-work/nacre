@@ -16,12 +16,20 @@
  *   2. every NACRE_ variable in `.env.example` is documented.
  *
  * The reverse — documented but unread — is deliberately NOT asserted: the
- * reference legitimately carries variables no core file reads (the commercial
- * modules' NACRE_SSO_, NACRE_EMA_ and NACRE_AUDIT_SIEM_ families, the parser
- * sidecar's NACRE_PARSER_ ones, and variables named only to say they are refused
- * or gone).
+ * reference legitimately carries variables nothing in this repository reads (the
+ * commercial modules' NACRE_SSO_, NACRE_EMA_ and NACRE_AUDIT_SIEM_ families, and
+ * variables named only to say they are refused or gone).
  * Asserting that direction would be a wall of false positives, and a check that
  * cries wolf gets switched off.
+ *
+ * **The sidecars are readers too**, and were not held to this until a second one
+ * existed. The check knew about TypeScript and the parser is Python, so
+ * `NACRE_PARSER_ALLOW_PRIVATE_URLS` — which decides whether an authenticated
+ * tenant can point that service at the cloud metadata endpoint — was read by a
+ * shipped container and documented nowhere. Nothing was wrong with the rule;
+ * the check simply could not see half the code it applied to, which is this
+ * repository's own shape one level up: a property that has to hold in N places
+ * with something that knows only some of them.
  *
  * Extraction is precise rather than a bare grep for the prefix: a variable is
  * "read" only where it is the operand of an env access — `r.method('NACRE_X')`
@@ -29,7 +37,8 @@
  * NACRE_ name inside a refusal message is not a read and does not count, which
  * is why those messages do not trip this.
  */
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 
 // The files that read the process environment. Config is centralized in
 // config.ts; these two entry points reach for one variable each before it is
@@ -42,6 +51,21 @@ const READERS = [
   'packages/mcp/src/stdio-main.ts',
 ]
 
+// The sidecars, discovered rather than listed: a third one added and not named
+// here is exactly the gap this half of the check exists to close, and a list is
+// the thing that does not get the entry.
+const SIDECARS = 'services'
+const pythonUnder = (dir) => {
+  const found = []
+  for (const entry of readdirSync(dir)) {
+    if (entry === '__pycache__') continue
+    const path = join(dir, entry)
+    if (statSync(path).isDirectory()) found.push(...pythonUnder(path))
+    else if (path.endsWith('.py') && !path.endsWith('test_app.py')) found.push(path)
+  }
+  return found
+}
+
 const DOCS = 'docs/config.md'
 const ENV_EXAMPLE = '.env.example'
 
@@ -53,6 +77,26 @@ function readsIn(source) {
   // Direct access: env.NACRE_X, process.env.NACRE_X, env['NACRE_X'].
   for (const m of source.matchAll(/(?:process\.)?env(?:\.|\[')(NACRE_[A-Z0-9_]+)/g)) found.add(m[1])
   return found
+}
+
+/**
+ * The same question asked of Python, and asked more loosely on purpose.
+ *
+ * On the TypeScript side a variable counts only where it is the operand of an
+ * env access, because `config.ts` names variables in refusal messages that are
+ * about being refused. The sidecars have no such messages, and matching only
+ * `os.environ.get("NACRE_X")` would have exempted the whole of the embedding
+ * adapter: its names live in a vendor table and are read through a helper, so
+ * the literal and the access are in different functions by design.
+ *
+ * A `NACRE_` name written anywhere in a sidecar's source is therefore a name an
+ * operator can be asked to set, and being asked to set something the reference
+ * does not explain is the defect this whole file exists for. Over-matching a
+ * name that appears only in a comment costs a documentation entry for a
+ * variable that exists; under-matching costs the check.
+ */
+function pythonReadsIn(source) {
+  return namesIn(source)
 }
 
 /** Every NACRE_ name mentioned anywhere in `source` (the documentation side). */
@@ -79,6 +123,32 @@ if (undocumentedReads.length > 0) {
   failed = true
 } else {
   console.log(`${DOCS}: documents all ${read.size} variable(s) the core reads`)
+}
+
+const sidecarFiles = pythonUnder(SIDECARS)
+if (sidecarFiles.length === 0) {
+  console.error(`::error::no Python found under ${SIDECARS}/; this half of the check compared nothing`)
+  failed = true
+}
+
+const sidecarRead = new Set()
+for (const file of sidecarFiles) {
+  for (const name of pythonReadsIn(readFileSync(file, 'utf8'))) sidecarRead.add(name)
+}
+
+const undocumentedSidecar = [...sidecarRead].filter((v) => !documented.has(v)).sort()
+if (undocumentedSidecar.length > 0) {
+  console.error(
+    `::error::${undocumentedSidecar.length} variable(s) read by a sidecar but not in ${DOCS}: ` +
+      `${undocumentedSidecar.join(', ')}. A sidecar ships in the same stack as the core and its ` +
+      'configuration is the operator\'s too. Document it, or stop reading it.',
+  )
+  failed = true
+} else {
+  console.log(
+    `${DOCS}: documents all ${sidecarRead.size} variable(s) the sidecars read ` +
+      `(${sidecarFiles.length} file(s))`,
+  )
 }
 
 const seeded = namesIn(readFileSync(ENV_EXAMPLE, 'utf8'))
