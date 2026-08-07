@@ -66,7 +66,7 @@ export type { Config } from './config.js'
 export { acrossOrganizations, createPool, whileAuthenticating, withOrg } from './db/client.js'
 export type { DbOptions, WithOrgOptions } from './db/client.js'
 export { migrate, loadMigrations, migrationNames, pendingMigrations } from './db/migrate.js'
-export { provisionInPostgres, provisionOrganization } from './provision.js'
+export { organizationSlugError, provisionInPostgres, provisionOrganization } from './provision.js'
 export type { ProviderSpec, ProvisionOptions, ProvisionResult } from './provision.js'
 export { loadGrants, loadGroupsVersion, loadScopeTree, PostgresGroupGraph } from './authz/store.js'
 export {

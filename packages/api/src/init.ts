@@ -5,6 +5,7 @@ import {
   hashPassword,
   loadConfig,
   loadJwtKeys,
+  organizationSlugError,
   provisionOrganization,
   VectorStore,
   vectorStoreOptions,
@@ -50,11 +51,11 @@ export function parseArgs(argv: readonly string[]): Options | string {
   if (slug === undefined || email === undefined) {
     return 'usage: nacre-init --org <slug> --email <address> [--name <display name>] [--workspace <slug>]'
   }
-  // The slug becomes the Qdrant collection name, so the characters it may
-  // contain are not a matter of taste.
-  if (!/^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/.test(slug)) {
-    return `--org must be 2-40 characters of lowercase letters, digits and hyphens, not starting or ending with one: ${slug}`
-  }
+  // The same rule `provisionOrganization` applies, asked here only to turn it
+  // into a usage message. The function refuses regardless, which is what keeps
+  // this from being the copy that drifts.
+  const wrong = organizationSlugError(slug)
+  if (wrong !== undefined) return `--org ${wrong}`
   if (!email.includes('@')) return `--email does not look like an address: ${email}`
 
   return {

@@ -2,7 +2,7 @@ import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { createPool } from '../db/client.js'
-import { provisionInPostgres, provisionOrganization } from '../provision.js'
+import { organizationSlugError, provisionInPostgres, provisionOrganization } from '../provision.js'
 import { vectorName } from '../vector/query.js'
 
 /**
@@ -264,6 +264,64 @@ when('provisionOrganization', () => {
       for (const row of rows) expect(row.vector_collection).toBe(`org_${row.slug}`)
     } finally {
       c.release()
+    }
+  })
+})
+
+describe('organizationSlugError', () => {
+  it('refuses what would not survive being a collection name', () => {
+    for (const bad of ['Acme', 'a', 'has space', 'has/slash', '-leading', 'trailing-', 'x'.repeat(41), 'a_b']) {
+      expect(organizationSlugError(bad), bad).toBeDefined()
+    }
+    for (const good of ['ac', 'acme', 'acme-corp', 'a1-b2', 'x'.repeat(40)]) {
+      expect(organizationSlugError(good), good).toBeUndefined()
+    }
+  })
+
+  it('refuses uppercase, which citext and collectionName disagree about', () => {
+    // `organizations.slug` is citext, so `ACME` and `acme` are one row. But
+    // `collectionName` is case-sensitive, so they are two collection names.
+    // Provisioning `ACME` over an existing `acme` would find the row, report it
+    // as already existing, leave `vector_collection` pointing at `org_acme`,
+    // and create a second empty `org_ACME` that nothing ever reads.
+    expect(organizationSlugError('ACME')).toBeDefined()
+    expect(organizationSlugError('acme')).toBeUndefined()
+  })
+})
+
+when('provisionOrganization refuses a slug before touching anything', () => {
+  it('does not write a row or ask for a collection', async () => {
+    const pool3 = createPool({ connectionString: url as string })
+    let asked = 0
+    const vectors = {
+      ensureCollection: async () => {
+        asked += 1
+        return 'never'
+      },
+    }
+    try {
+      await expect(
+        provisionOrganization(
+          pool3,
+          vectors,
+          { slug: 'Not A Slug', name: 'x', email: 'x@y.test', workspace: 'default' },
+          { endpoint: 'http://embedder.test', model: 'bge-m3', dimensions: 8 },
+        ),
+      ).rejects.toThrow(/organization slug/)
+      expect(asked).toBe(0)
+
+      const c = await pool3.connect()
+      try {
+        const { rows } = await c.query<{ n: string }>(
+          `SELECT count(*)::text AS n FROM organizations WHERE slug = $1`,
+          ['Not A Slug'],
+        )
+        expect(rows[0]?.n).toBe('0')
+      } finally {
+        c.release()
+      }
+    } finally {
+      await pool3.end()
     }
   })
 })
