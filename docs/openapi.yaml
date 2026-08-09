@@ -1015,6 +1015,13 @@ paths:
         '204': { description: Deleted }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /.well-known/jwks.json:
+    # At the origin, not under /v1. RFC 8615 fixes where a well-known document
+    # lives, and the `WWW-Authenticate` on every 401 already names this exact
+    # path — a client sent to /v1/.well-known/jwks.json reaches the authenticated
+    # surface and is answered 401, which is the one status a key document must
+    # never give a client that has no credential yet.
+    servers:
+      - url: https://nacre.work
     get:
       summary: >
         The public half of the signing key (RFC 7517). Unauthenticated, because
@@ -1056,6 +1063,11 @@ paths:
         '404':
           description: This deployment signs with a shared secret; there is nothing to publish.
   /.well-known/oauth-protected-resource:
+    # At the origin, for the reason above and one more: this is the document a
+    # client reads *because* it got a 401, so reaching it must not need the
+    # credential it is trying to work out how to obtain.
+    servers:
+      - url: https://nacre.work
     get:
       summary: >
         Protected resource metadata (RFC 9728). Unauthenticated, because it is
@@ -2309,6 +2321,11 @@ paths:
                     type: object
                     additionalProperties: { type: boolean }
   /metrics:
+    # At the origin, which the description below has always said and the base
+    # never reflected: under the global /v1 server this reads as /v1/metrics,
+    # where the authenticated surface answers 401 to a scraper.
+    servers:
+      - url: https://nacre.work
     get:
       summary: Prometheus exposition. Scraped, not called.
       description: >
