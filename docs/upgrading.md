@@ -244,6 +244,24 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.12.0 — three documents moved in the contract, not in the server
+
+**Nothing to do**, no migration and no new configuration. 0.11.0 runs against
+this database, so rolling back is safe. Nothing the server does changed.
+
+What changed is `docs/openapi.yaml`, and it is worth a line because a generated
+client may have been wrong. The contract declares one server,
+`https://nacre.work/v1`, and `/metrics` and both `/.well-known` documents are
+served at the **origin root** — with no per-path override, a client generated
+from the contract asked for `/v1/.well-known/jwks.json`, which is under the
+authenticated surface and answers `401`. Not 404: the address exists as far as
+the auth gate is concerned, and it demands a credential.
+
+If you generate a client from this file, regenerate it. If you fetch those
+three by hand, you were already using the right addresses — they are what the
+`WWW-Authenticate` header on every 401 has always named, and what RFC 8615
+fixes for a well-known document.
+
 ### 0.11.0 — the hosted-embeddings sidecar has an image
 
 **Nothing to do**, no migration and no new configuration. 0.10.0 runs against
