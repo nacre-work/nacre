@@ -699,6 +699,34 @@ of every layer to move vectors that did not need to move. The weights are
 identical and only the vendor's spelling differs, so the spelling is what this
 moves. `GET /health` on the adapter reports any substitution in effect.
 
+### When the adapter answers 502
+
+**502 from the adapter means the vendor failed, not the adapter.** It is the one
+status this service uses for "somebody else's service did not answer", so a
+search or an ingest failing with
+
+```
+the embedding endpoint at http://embedding-adapter:8091/embeddings answered 502: cloudflare answered 429
+```
+
+has nothing wrong with the route, the credential or the container — those had to
+work for the request to get that far. The part after the colon is the adapter's
+own sentence and it names the vendor and what the vendor said; the adapter logs
+the same line, so `docker logs` or `kubectl logs` on that container has it too,
+with a `"level":"error"`.
+
+The half after the colon is why anything is knowable here: it was absent, and
+what an operator got instead was a sentence naming the one process in the chain
+that had not decided anything, with the adapter's log holding only its startup
+line. A 429 in particular is a quota, and it is the failure a deployment reaches
+*after* it works — the free Workers AI allocation is a daily budget, and
+indexing spends it before a search asks for one more vector.
+
+The adapter never puts a vendor's response body in either the reply or the log,
+because a vendor's error can quote the input it rejected and the input is
+document text. Its own message — the vendor's name and status — is all that
+travels, and the core bounds it again on the way into a log.
+
 **`voyage` has its own entry although its wire format is OpenAI's**, and the
 reason is who asks for it. [Anthropic publishes no embeddings
 API](#there-is-no-anthropic-vendor-and-there-cannot-be) and points at Voyage

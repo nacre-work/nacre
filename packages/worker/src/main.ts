@@ -6,6 +6,7 @@ import {
   acrossOrganizations,
   ConfigError,
   createPool,
+  endpointReason,
   endpointUrl,
   modelEndpointRefused,
   installGuards,
@@ -418,7 +419,12 @@ async function main(): Promise<void> {
       }
 
       if (!response.ok) {
-        throw modelEndpointRefused('embedding', endpoint, response.status)
+        throw modelEndpointRefused(
+          'embedding',
+          endpoint,
+          response.status,
+          await endpointReason(response),
+        )
       }
       const body = (await response.json()) as { data?: { embedding?: number[] }[] }
       return (body.data ?? []).map((d) => d.embedding ?? [])

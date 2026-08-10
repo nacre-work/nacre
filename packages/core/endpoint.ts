@@ -58,12 +58,19 @@ export function endpointUrl(base: string | URL, route: string): URL {
  * failure arrives in a job's `error` column and in a log, where whoever meets
  * it is not reading `docs/config.md` and does not yet know they should.
  */
-export function modelEndpointRefused(kind: 'embedding' | 'reranker', at: URL, status: number): Error {
+export function modelEndpointRefused(
+  kind: 'embedding' | 'reranker',
+  at: URL,
+  status: number,
+  reason?: string,
+): Error {
   const what = kind === 'embedding' ? 'the embedding endpoint' : 'the reranker'
+  const head =
+    `${what} at ${at.href} answered ${String(status)}` + (reason === undefined ? '' : `: ${reason}`)
 
   if (status === 401 || status === 403) {
     return new Error(
-      `${what} at ${at.href} answered ${String(status)}, which means it wants a credential. ` +
+      `${head}. That means it wants a credential. ` +
         'Nacre sends none: this request carries only a content-type, and there is no column ' +
         'on embedding_providers to hold a key — a vendor credential there would reach every ' +
         'database dump. Pointing an endpoint straight at a hosted vendor therefore cannot ' +
@@ -74,5 +81,49 @@ export function modelEndpointRefused(kind: 'embedding' | 'reranker', at: URL, st
     )
   }
 
-  return new Error(`${what} at ${at.href} answered ${String(status)}`)
+  return new Error(head)
+}
+
+/** How much of an endpoint's own reason travels into a message. */
+const REASON_LIMIT = 200
+
+/**
+ * The endpoint's own reason for refusing, where it gave one.
+ *
+ * A status alone is where this failure used to end, and an operator met it as
+ * `the embedding endpoint at http://embedding-adapter:8091/embeddings answered
+ * 502` — a sentence that names the one process in the chain that did *not*
+ * decide anything. 502 is the embedding adapter's word for "somebody else's
+ * service failed", and the adapter already knows which vendor and what it said:
+ * its body carries `{"error": {"message": "cloudflare answered 429"}}`. Both
+ * ends threw that away, so the fact existed for the length of one HTTP response
+ * and then nowhere at all.
+ *
+ * Same argument as the parser's, in `packages/worker/src/adapters.ts`: a
+ * refusal whose reason does not travel is a refusal nobody can act on. The
+ * difference worth naming is that the parser is always ours and this endpoint
+ * is whatever an operator configured — a hosted vendor, Ollama, a TEI
+ * container, the adapter — so the safety argument cannot be "we wrote it".
+ *
+ * It is the bound instead. A vendor's error can quote the input it rejected and
+ * the input is document text, which must not reach a log; so this takes one
+ * declared field rather than the body, collapses it to a line, and cuts it at
+ * `REASON_LIMIT`. The adapter — the endpoint this product ships and the one
+ * that fronts every hosted vendor — is safe by construction beyond that, since
+ * its own `_post_json` never puts an upstream body in an error.
+ *
+ * Both spellings, because both are on the wire here: OpenAI's
+ * `{error: {message}}`, which the adapter answers, and TEI's `{error}`, which
+ * the reranker path meets whenever a deployment points at a real TEI container.
+ */
+export async function endpointReason(response: Response): Promise<string | undefined> {
+  const body: unknown = await response.json().catch(() => undefined)
+  const error = (body as { error?: unknown } | undefined)?.error
+  const message =
+    typeof error === 'string' ? error : (error as { message?: unknown } | undefined)?.message
+  if (typeof message !== 'string') return undefined
+
+  const line = message.replace(/\s+/g, ' ').trim()
+  if (line === '') return undefined
+  return line.length > REASON_LIMIT ? `${line.slice(0, REASON_LIMIT)}…` : line
 }

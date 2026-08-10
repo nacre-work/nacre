@@ -12,13 +12,16 @@ vectors attached to the wrong chunks.
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 import urllib.error
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
+from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 
 from services.embedding_adapter import app
@@ -85,6 +88,55 @@ def upstream(answers):
         return _Response(json.dumps(answer).encode())
 
     return patch.object(app.urllib.request, "urlopen", fake), calls
+
+
+@contextmanager
+def running(routes=None, reranker=None):
+    """
+    The adapter on a real port, with everything it prints captured.
+
+    Driven over HTTP rather than by calling the handler, because what is being
+    tested is what an operator reads in `docker logs` — and that is produced by
+    `_refuse`, which nothing reaches except through a request. `http.client` and
+    not `urllib`, because the upstream stub replaces `urllib.request.urlopen`
+    and a test client going through it would answer its own request.
+    """
+
+    class Isolated(app.Handler):
+        pass
+
+    Isolated.routes = routes or {}
+    Isolated.reranker = reranker
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Isolated)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    printed = io.StringIO()
+    try:
+        # The shutdown is inside the redirect: a line printed while the server
+        # is stopping still belongs to the test that caused it.
+        with redirect_stdout(printed):
+            try:
+                yield server.server_address[1], printed
+            finally:
+                server.shutdown()
+    finally:
+        server.server_close()
+
+
+def post(port: int, path: str, body: dict):
+    """One request, returning `(status, parsed body)`."""
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.request("POST", path, json.dumps(body), {"content-type": "application/json"})
+        response = connection.getresponse()
+        return response.status, json.loads(response.read())
+    finally:
+        connection.close()
+
+
+def lines(printed: io.StringIO) -> list[dict]:
+    """Every log line, parsed. One JSON object per line is the whole format."""
+    return [json.loads(line) for line in printed.getvalue().splitlines() if line.strip()]
 
 
 class Configuration(unittest.TestCase):
@@ -663,6 +715,104 @@ class Documentation(unittest.TestCase):
 
     def test_the_configuration_reference_lists_every_vendor(self):
         self._assert_tables(os.path.join(self.ROOT, "docs", "config.md"))
+
+
+class Logging(unittest.TestCase):
+    """
+    What an operator can find out from this container when it refuses.
+
+    Before these, the answer was nothing at all. `log_message` is silenced
+    deliberately — the default logs a request line, and a logger that grows one
+    line is how document text ends up beside it — but no refusal wrote anything
+    either, so a deployment whose vendor had started answering 429 had a log
+    holding exactly the line it printed at startup. The caller's log said `the
+    embedding endpoint at http://embedding-adapter:8091/embeddings answered
+    502`, which names this service: the one process in the chain that did not
+    decide anything.
+    """
+
+    def routes(self):
+        with env(
+            NACRE_EMBED_ROUTES="bge-m3=cloudflare:@cf/baai/bge-m3",
+            NACRE_EMBED_CLOUDFLARE_ACCOUNT="acc123",
+            NACRE_EMBED_CLOUDFLARE_API_KEY="cf-test",
+        ):
+            return app.load_routes()
+
+    def test_a_vendor_refusal_names_the_vendor_and_its_status(self):
+        failure = urllib.error.HTTPError(
+            "https://api.cloudflare.com/", 429, "Too Many Requests", {}, io.BytesIO(b"{}"),
+        )
+        patcher, _ = upstream([failure])
+        with patcher, running(self.routes()) as (port, printed):
+            status, body = post(port, "/embeddings", {"model": "bge-m3", "input": ["hello"]})
+
+        self.assertEqual(status, 502)
+        self.assertIn("cloudflare answered 429", body["error"]["message"])
+
+        # The same sentence in the log, because a caller that discards the body
+        # must not be the only place the fact exists.
+        logged = lines(printed)
+        self.assertEqual(len(logged), 1, f"expected one line, got {logged}")
+        self.assertEqual(logged[0]["level"], "error")
+        self.assertEqual(logged[0]["status"], 502)
+        self.assertIn("cloudflare answered 429", logged[0]["msg"])
+
+    def test_the_vendors_own_body_reaches_neither_the_reply_nor_the_log(self):
+        # The property that makes logging every refusal safe: a vendor's error
+        # can quote the input it rejected, and the input is document text.
+        failure = urllib.error.HTTPError(
+            "https://api.cloudflare.com/",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(b'{"errors":[{"message":"cannot embed: the quarterly revenue was"}]}'),
+        )
+        patcher, _ = upstream([failure])
+        with patcher, running(self.routes()) as (port, printed):
+            _, body = post(port, "/embeddings", {"model": "bge-m3", "input": ["the quarterly revenue was"]})
+
+        self.assertNotIn("quarterly", json.dumps(body))
+        self.assertNotIn("quarterly", printed.getvalue())
+
+    def test_a_successful_request_logs_nothing(self):
+        # The reason `log_message` is silenced, kept true now that there is a
+        # logger to grow: one line per embed is one line per document.
+        patcher, _ = upstream([{"success": True, "result": {"data": [[1.0, 2.0]]}}])
+        with patcher, running(self.routes()) as (port, printed):
+            status, body = post(port, "/embeddings", {"model": "bge-m3", "input": ["hello"]})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["data"][0]["embedding"], [1.0, 2.0])
+        self.assertEqual(printed.getvalue(), "")
+
+    def test_the_callers_own_mistake_is_a_warning_and_not_an_error(self):
+        # An unrouted model is a 404 and somebody's configuration; a vendor
+        # failing is a 502 and nobody here can fix it. An operator grepping for
+        # `"level":"error"` must not find the first.
+        patcher, _ = upstream([])
+        with patcher, running(self.routes()) as (port, printed):
+            status, _ = post(port, "/embeddings", {"model": "not-routed", "input": ["hello"]})
+
+        self.assertEqual(status, 404)
+        logged = lines(printed)
+        self.assertEqual([entry["level"] for entry in logged], ["warn"])
+        self.assertIn("not-routed", logged[0]["msg"])
+
+    def test_an_unexpected_failure_logs_its_type_and_never_its_text(self):
+        # The one branch whose message cannot be trusted: it is an exception
+        # this file did not raise, and this process holds every document's text.
+        def explode(*_args, **_kwargs):
+            raise RuntimeError("the quarterly revenue was")
+
+        with patch.object(app, "embed", explode), running(self.routes()) as (port, printed):
+            status, body = post(port, "/embeddings", {"model": "bge-m3", "input": ["hello"]})
+
+        self.assertEqual(status, 500)
+        self.assertEqual(body["error"]["message"], "the embedding request could not be completed")
+        logged = lines(printed)
+        self.assertEqual(logged[0]["exception"], "RuntimeError")
+        self.assertNotIn("quarterly", printed.getvalue())
 
 
 if __name__ == "__main__":

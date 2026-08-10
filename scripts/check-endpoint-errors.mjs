@@ -88,6 +88,23 @@ for (const path of callers) {
     )
     failed = true
   }
+
+  // The second half of the same property, and the one that was missing in all
+  // three at once. A status is what the *transport* did; the endpoint's own
+  // body is what it decided, and 502 from the embedding adapter means "somebody
+  // else's service failed" — with the vendor and its status sitting in a body
+  // every caller discarded. An operator got a sentence naming the one process
+  // in the chain that did not decide anything, and no log anywhere held more.
+  if (!/\bendpointReason\b/.test(text)) {
+    console.error(
+      `::error file=${path}::${path} reports a model endpoint's refusal without reading the ` +
+        'reason it gave. Pass `await endpointReason(response)` to modelEndpointRefused — a bare ' +
+        'status is not actionable when the endpoint is a proxy, and the adapter this product ' +
+        'ships is one. endpointReason takes one declared field and bounds it, so a vendor that ' +
+        'quotes the input it rejected cannot put document text in a log.',
+    )
+    failed = true
+  }
 }
 
 if (!failed) {
