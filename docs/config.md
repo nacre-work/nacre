@@ -273,6 +273,30 @@ Three things deliberately do not go through it:
   that are `info` elsewhere. stdout carries JSON-RPC frames and nothing else; a
   log line in the middle of the stream is a frame the client cannot parse.
 
+#### Why a 401 happened
+
+The response never says — one status, one title and one sentence for every
+reason, because distinguishing "expired" from "the connection was forgotten"
+tells whoever is guessing which guess was closest. The **log** says, on a line
+reading `authentication refused` with the `request_id` the caller was given:
+
+| `reason` | What to look at |
+|---|---|
+| `no_bearer` | Nothing. A request arrived with no `Authorization` header. |
+| `service_keys_unavailable` | This process was wired without the port that resolves a `nacre_sk_` key, so **every** agent key fails here. A deployment problem, not a credential one. |
+| `service_key_rejected` | The key is unknown or revoked — `service_accounts`. |
+| `unverifiable` | No configured key verified the signature: another installation's token, a rotation that dropped the previous key, or an expiry. |
+| `claims_incomplete` | It verified and does not say who it is. A token this deployment signed and no longer understands — check for a version skew between processes. |
+| `delegation_claim_malformed` | A `del` claim that is not a string. |
+| `delegations_unavailable` | This process was wired without the delegations port, so every *delegated* token fails while service-account keys keep working. |
+| `delegation_unresolved` | `oauth_consents` by the logged `delegation` id: no such row, `revoked_at` set (the connection was forgotten), or its person disabled. |
+| `delegation_subject_mismatch` | The token's subject and the connection's differ; both ids are on the line. |
+
+The line carries ids and never the credential. `no_bearer` and `unverifiable`
+are `debug` because an anonymous caller can produce them at will and a log that
+floods is one somebody turns off; every other reason needs a token this
+deployment signed, so it says something about the deployment and is `info`.
+
 ### Modules
 
 `NACRE_MODULES` is a comma-separated list of package names to load at startup.
