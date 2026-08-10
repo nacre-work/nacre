@@ -275,7 +275,14 @@ when('delegation · a person lending their own reach', () => {
     // And renewal refuses without **spending** the token. Disabling is
     // reversible and docs/authz.md is explicit that the grant survives it, so
     // burning the refresh token would make re-enabling a reconnection.
-    expect(await refreshTokens.rotate(refresh)).toBeUndefined()
+    //
+    // `'suspended'` and not `undefined`, which is what this asserted and what
+    // was only half the property. Keeping the row alive does nothing on its own
+    // if the refusal reaches the client as `invalid_grant` — RFC 6749's "this
+    // grant is dead" — because the client then discards the token this branch
+    // exists to preserve. The endpoint turns this answer into a `503` with
+    // `Retry-After`; the distinction has to survive the port to get there.
+    expect(await refreshTokens.rotate(refresh)).toBe('suspended')
 
     await disabled(false)
     const restored = await present(token)

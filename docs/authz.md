@@ -200,7 +200,7 @@ both of the ways this document already guards against, plus one that is its own.
 |---|---|---|
 | T16 | A user with grants across two layers, a document-scoped grant and one deny delegates | the delegation resolves exactly what the user resolves — no document more, none fewer |
 | T17 | A grant is revoked from the user while a delegation is live | gone from the delegation on the next request, with no renewal in between |
-| T18 | The user is disabled, then re-enabled | every delegation refuses with `401` while disabled, and works again after — the grant itself untouched throughout |
+| T18 | The user is disabled, then re-enabled | every delegation refuses with `401` while disabled, and works again after — the grant itself untouched throughout, and the renewal refuses as **suspended** rather than as a dead grant, without spending the token |
 | T19 | The application is forgotten while the user's own token keeps working | the delegation refuses; the user is unaffected |
 | T20 | A delegation narrowed to layer L, whose user also reads layer M | nothing from M, and never more from L than the user would get |
 | T21 | A `platform_admin` attempts to delegate | refused at consent, and a token minted around it refused at validation |
