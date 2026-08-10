@@ -244,6 +244,46 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.14.3 — the adapter says which credential it is holding
+
+**Nothing to do**, no migration and no new configuration. Only relevant if you
+route embeddings or reranking through the embedding adapter.
+
+0.14.2 named the variable. The question that leaves is the one an operator
+cannot answer from outside: **a rotated token and a redeployed container fail
+identically whether the new token is wrong or the old one is still in the
+environment.** Same 401, same message. A `docker compose` `environment:` entry
+overriding an `env_file:`, or a Deployment that did not roll, both produce the
+second.
+
+The adapter now reports a fingerprint of each credential it loaded — never the
+credential — at startup, in `GET /health`, and in the refusal:
+
+```
+cloudflare answered 401, rejecting this adapter's credential sha256:1d4bedd426ab
+from NACRE_EMBED_CLOUDFLARE_API_KEY[_FILE]
+```
+
+`printf %s "$TOKEN" | sha256sum | cut -c1-12` on the token you deployed answers
+it. This is the shape the core already logs for the JWT signing key, and the
+argument is the same: anyone who can read this log can read the environment it
+came from, so it grants nothing that was not already granted.
+
+`GET /health` gained a `credentials` object and its `rerank` object gained a
+`credential` field. Both are fingerprints. If you parse `/health`, nothing was
+removed.
+
+**And 0.14.2's message was too long for its own reader.** The core bounds an
+endpoint's reason at 200 characters, because a vendor's error can quote the
+input it rejected — a bound that applies to the adapter's messages too, since
+nothing on that side can tell whose message it is. The credential refusal was
+337 characters for `cloudflare` and 250 for `openai-compatible`, so its tail was
+cut. It is 145 at worst now, and the guidance that used to be prose is a
+structured field on the adapter's own log line, which has no bound. A test holds
+every entry in both vendor tables against the bound read out of the core, so
+the next variable name long enough to overflow fails there rather than in
+somebody's log.
+
 ### 0.14.2 — a vendor's 401 names the variable that holds the credential
 
 **Nothing to do**, no migration and no new configuration. Only useful if you

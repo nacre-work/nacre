@@ -16,6 +16,7 @@ import http.client
 import io
 import json
 import os
+import re
 import tempfile
 import threading
 import unittest
@@ -562,8 +563,11 @@ class RejectedCredential(unittest.TestCase):
 
         said = str(caught.exception)
         self.assertIn("cloudflare answered 401", said)
-        self.assertIn("NACRE_EMBED_CLOUDFLARE_API_KEY", said)
-        self.assertIn("NACRE_EMBED_CLOUDFLARE_API_KEY_FILE", said)
+        # `[_FILE]` rather than both spellings: the core bounds this at 200
+        # characters and the pair for `openai-compatible` is 79 of them. Both
+        # names in full are on the log line beside it, which has no bound.
+        self.assertIn("NACRE_EMBED_CLOUDFLARE_API_KEY[_FILE]", said)
+        self.assertIn("sha256:", said)
 
     def test_the_rerank_path_names_its_own_variable_and_not_the_other(self):
         # The reason `key_vars` is carried rather than derived from the vendor
@@ -603,6 +607,69 @@ class RejectedCredential(unittest.TestCase):
         with patcher, self.assertRaises(app.UpstreamError) as caught:
             app.embed(self.embed_routes(), "bge-m3", ["hello"])
         self.assertNotIn("NACRE_EMBED", str(caught.exception))
+
+
+class RefusalsFitTheCoresBound(unittest.TestCase):
+    """
+    A message this service writes has to survive the core reading it.
+
+    Two ends, and nothing held them together. The adapter composes a refusal;
+    `endpointReason` in the core takes one declared field and cuts it at
+    `REASON_LIMIT`, because a vendor's error can quote the input it rejected.
+    So a message written here longer than that bound is a message an operator
+    reads with the end missing — and the end is where the last thing added
+    always goes.
+
+    That already happened: the first version of the credential refusal was 337
+    characters and lost its final clause, with no margin left before a vendor
+    with longer variable names would have lost a variable *name*. Found by
+    measuring rather than by reading, which is why this asks every entry in
+    both tables rather than the one that prompted it.
+
+    The bound is read out of the core rather than written down here. A number
+    copied into a second language is the drift this whole file exists against.
+    """
+
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    ROOT = os.path.dirname(os.path.dirname(HERE))
+
+    def bound(self) -> int:
+        source = os.path.join(self.ROOT, "packages", "core", "endpoint.ts")
+        with open(source, encoding="utf-8") as handle:
+            found = re.search(r"^const REASON_LIMIT = (\d+)$", handle.read(), re.M)
+        self.assertIsNotNone(
+            found,
+            f"{source} no longer declares REASON_LIMIT. It is the bound this check compares "
+            "against; renaming it does not make the messages fit, it makes this stop looking.",
+        )
+        return int(found.group(1))
+
+    def test_every_credential_refusal_fits(self):
+        limit = self.bound()
+        # Both tables, because `cloudflare` is in each under different variables
+        # and the rerank names are the longer pair. The vendor that prompted
+        # this is not the one closest to the bound.
+        for table in (app.VENDORS, app.RERANKERS):
+            for vendor, spec in table.items():
+                cfg = {
+                    "vendor": vendor,
+                    "key_vars": tuple(spec["key"]),
+                    "key_fingerprint": "sha256:0123456789ab",
+                }
+                # 503 is the widest plausible status; every one is three digits.
+                built = app._rejected_credential(app.UpstreamError(f"{vendor} answered 401", 401), cfg)
+                said = str(built)
+                self.assertLessEqual(
+                    len(said),
+                    limit,
+                    f"the {vendor} credential refusal is {len(said)} characters and the core cuts "
+                    f"an endpoint's reason at {limit}. What an operator reads would end "
+                    f"mid-sentence: {said[:limit]}…",
+                )
+                # And the parts that must be inside the bound, rather than only
+                # the length being right.
+                self.assertIn(spec["key"][0], said)
+                self.assertIn("sha256:0123456789ab", said)
 
 
 class Rerank(unittest.TestCase):
@@ -880,6 +947,44 @@ class Logging(unittest.TestCase):
         logged = lines(printed)
         self.assertEqual([entry["level"] for entry in logged], ["warn"])
         self.assertIn("not-routed", logged[0]["msg"])
+
+    def test_a_rejected_credential_is_logged_with_its_fingerprint(self):
+        # Over a real socket, because what is being checked is the line an
+        # operator reads in `docker logs` — and the fingerprint is the only way
+        # to answer "did the token I deployed reach this container", which a
+        # rotation that silently did not take makes indistinguishable from a
+        # token that is simply wrong.
+        failure = urllib.error.HTTPError(
+            "https://api.cloudflare.com/", 401, "Unauthorized", {}, io.BytesIO(b"{}"),
+        )
+        patcher, _ = upstream([failure])
+        with patcher, running(self.routes()) as (port, printed):
+            status, body = post(port, "/embeddings", {"model": "bge-m3", "input": ["hello"]})
+
+        self.assertEqual(status, 502)
+        self.assertIn("rejecting this adapter's credential sha256:", body["error"]["message"])
+
+        logged = lines(printed)[0]
+        self.assertTrue(logged["credential"].startswith("sha256:"))
+        self.assertEqual(
+            logged["variables"],
+            ["NACRE_EMBED_CLOUDFLARE_API_KEY", "NACRE_EMBED_CLOUDFLARE_API_KEY_FILE"],
+        )
+        self.assertIn("sha256sum", logged["hint"])
+        # The credential is in neither, which is the whole point of a
+        # fingerprint rather than a prefix of the token.
+        self.assertNotIn("cf-test", printed.getvalue())
+        self.assertNotIn("cf-test", json.dumps(body))
+
+    def test_a_quota_carries_no_extra_fields_at_all(self):
+        failure = urllib.error.HTTPError("https://api.cloudflare.com/", 429, "", {}, io.BytesIO(b"{}"))
+        patcher, _ = upstream([failure])
+        with patcher, running(self.routes()) as (port, printed):
+            post(port, "/embeddings", {"model": "bge-m3", "input": ["hello"]})
+
+        logged = lines(printed)[0]
+        self.assertNotIn("credential", logged)
+        self.assertNotIn("hint", logged)
 
     def test_an_unexpected_failure_logs_its_type_and_never_its_text(self):
         # The one branch whose message cannot be trusted: it is an exception

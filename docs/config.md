@@ -769,6 +769,46 @@ A token that worked and then stopped is usually one that expired or was rolled.
 Worth checking second: a secret updated in the store reaches a running container
 only on restart, so the file the adapter read at startup can be the old one.
 
+**Which of those two it is, is a question the adapter answers.** It reports a
+fingerprint of each credential it loaded — never the credential — at startup, in
+`GET /health`, and in the refusal itself:
+
+```json
+{"level":"info","msg":"embedding adapter listening","credentials":{"cloudflare":"sha256:1d4bedd426ab"}}
+```
+
+```
+cloudflare answered 401, rejecting this adapter's credential sha256:1d4bedd426ab
+from NACRE_EMBED_CLOUDFLARE_API_KEY[_FILE]
+```
+
+Compare it with the token you deployed:
+
+```bash
+printf %s "$TOKEN" | sha256sum | cut -c1-12
+```
+
+Equal means this container holds what you think it does and the credential
+itself is what the vendor is refusing. Different means the rotation did not
+reach it — a `docker compose` `environment:` entry overriding an `env_file:`,
+or a Deployment that did not roll. Without the fingerprint those two failures
+are identical from outside, which is why a rotation that silently did not take
+is the hardest of these to find. Twelve hex characters of SHA-256 give away
+nothing: confirming a token against it needs the token already, and deriving
+one is a preimage search.
+
+The same shape the core already logs for the JWT signing key, `"jwt_key":
+"sha256:…"`, and for the same reason.
+
+**Cloudflare has two credential types and only one of them works here.** An
+**API Token** is sent as `Authorization: Bearer …`, which is what this adapter
+sends. A **Global API Key** is a different scheme — `X-Auth-Email` plus
+`X-Auth-Key` — and offering one as a bearer token is a `401` from a credential
+that is perfectly valid elsewhere. Alongside that, the token needs `Account →
+Workers AI` permission and must be scoped to the account in
+`NACRE_EMBED_CLOUDFLARE_ACCOUNT`, which is the 32-character account **ID** and
+not the account name.
+
 A 429 is the other one worth knowing about in advance, because it is the failure
 a deployment reaches *after* it works — the free Workers AI allocation is a
 daily budget, and indexing spends it before a search asks for one more vector.

@@ -53,6 +53,7 @@ anything OpenAI-shaped needs no code from us at all.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.error
@@ -90,6 +91,10 @@ class UpstreamError(Exception):
     def __init__(self, message: str, status: int | None = None) -> None:
         super().__init__(message)
         self.status = status
+        # Log-only, never sent. The reply is read through something that bounds
+        # it and a log line is not, so this is where anything the message has no
+        # room for goes. Set by `_credential_context`.
+        self.fields: dict[str, object] = {}
 
 
 # ─────────────────────────── the vendors ───────────────────────────
@@ -408,6 +413,29 @@ RERANKERS = {
 MAX_RERANK_TEXTS = 512
 
 
+def _credential_context(error: UpstreamError, cfg: dict) -> UpstreamError:
+    """
+    Attach what the log should carry and the message must not.
+
+    The message is read through the core, which bounds it at 200 characters; a
+    log line here has no bound and is JSON. So the guidance and both variable
+    names in full go on it as fields, rather than as prose competing for those
+    200 characters with the two facts that have to arrive.
+    """
+    if error.status in (401, 403):
+        error.fields = {
+            "credential": cfg["key_fingerprint"],
+            "variables": list(cfg["key_vars"]),
+            "hint": (
+                "the vendor rejected this credential rather than the request. Compare the "
+                "fingerprint with sha256sum of the token you deployed, cut to twelve characters: "
+                "equal means this container holds what you think and the credential itself is "
+                "the problem, different means the rotation did not reach it."
+            ),
+        }
+    return error
+
+
 def _rejected_credential(error: UpstreamError, cfg: dict) -> UpstreamError:
     """
     Turn a vendor's 401 or 403 into the variable an operator has to look at.
@@ -431,11 +459,17 @@ def _rejected_credential(error: UpstreamError, cfg: dict) -> UpstreamError:
     if error.status not in (401, 403):
         return error
     inline, from_file = cfg["key_vars"]
+    # Facts only, and in the order a reader needs them. This is read through
+    # the core's log, and the core bounds an endpoint's reason at 200
+    # characters because a *vendor's* message can quote the input it rejected —
+    # a bound that applies to ours too, since nothing on that side can tell the
+    # two apart. `NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY_FILE` is 42 characters
+    # on its own, so prose here is what gets cut off the end, and the end is
+    # where the last thing added always goes. What to *do* with the fingerprint
+    # lives in the log line beside this one, which has no bound, and in
+    # docs/config.md. `[_FILE]` rather than both spellings for the same reason.
     return UpstreamError(
-        f"{error} — it rejected the credential this adapter holds, rather than refusing the "
-        f"request. Check {inline} or {from_file}: a token that worked and stopped is usually one "
-        "that expired or was rolled, and a secret updated in the store reaches a running "
-        "container only on restart.",
+        f"{error}, rejecting this adapter's credential {cfg['key_fingerprint']} from {inline}[_FILE]",
         status=error.status,
     )
 
@@ -459,7 +493,7 @@ def rerank(cfg: dict | None, query: str, texts: list[str]) -> list[float]:
     try:
         scored = RERANKERS[vendor]["call"](query, texts, cfg["model"], cfg)
     except UpstreamError as error:
-        raise _rejected_credential(error, cfg) from error
+        raise _credential_context(_rejected_credential(error, cfg), cfg) from error
 
     scores: list[float | None] = [None] * len(texts)
     for index, score in scored:
@@ -527,16 +561,46 @@ def _secret(vendor: str, inline_var: str, file_var: str, named_by: str = "a rout
     )
 
 
+def _fingerprint(secret: str) -> str:
+    """
+    Which credential this process is holding, without printing it.
+
+    The core already answers this question for the JWT signing key and logs
+    `"jwt_key":"sha256:dfdff7afb059"` at startup. This service, which holds a
+    third party's billing credential, answered it for nothing — and that is the
+    one question an operator cannot resolve any other way. A rotated token and a
+    redeployed container fail *identically* whether the new token is wrong or
+    the old one is still in the environment: same 401, same message, same
+    everything. `docker compose` config precedence and a Deployment that did not
+    roll both produce the second, and neither is visible from outside.
+
+    Compare it with `sha256sum` of the token you meant to deploy, cut to twelve
+    characters. Equal means the container has what you think and the credential
+    itself is the problem; different means the deploy did not take.
+
+    Twelve hex characters of SHA-256, and it is not a way in. Deriving the token
+    from it is a preimage search; *confirming* one needs the token already, and
+    anyone holding that has whatever it opens. Same argument the core's key line
+    rests on, which is why the format is the same.
+    """
+    return "sha256:" + hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
+
+
 def _vendor_credentials(vendor: str, spec: dict, named_by: str = "a route") -> dict:
     """The credential and the settings one vendor entry requires, or a refusal."""
+    api_key = _secret(vendor, *spec["key"], named_by=named_by)
     cfg = {
         "vendor": vendor,
-        "api_key": _secret(vendor, *spec["key"], named_by=named_by),
+        "api_key": api_key,
         # Kept so a 401 can name them. The pair is not derivable from the vendor
         # name: `cloudflare` appears in both tables with different variables —
         # NACRE_EMBED_CLOUDFLARE_API_KEY and NACRE_RERANK_CLOUDFLARE_API_KEY —
         # which is the same confusion `named_by` above exists for.
         "key_vars": tuple(spec["key"]),
+        # From the value already read, never by reading again: a second read of
+        # a file is a second answer, and a fingerprint of something other than
+        # the credential in use is worse than none.
+        "key_fingerprint": _fingerprint(api_key),
     }
     for setting, variable in spec["settings"].items():
         value = _env(variable)
@@ -712,7 +776,7 @@ def embed(routes: dict[str, dict], model: str, texts: list[str]) -> list[list[fl
         try:
             got = spec["call"](chunk, upstream, cfg)
         except UpstreamError as error:
-            raise _rejected_credential(error, cfg) from error
+            raise _credential_context(_rejected_credential(error, cfg), cfg) from error
         if not isinstance(got, list) or len(got) != len(chunk):
             raise UpstreamError(
                 f"{cfg['vendor']} returned {len(got) if isinstance(got, list) else 'no'} vectors "
@@ -811,7 +875,7 @@ class Handler(BaseHTTPRequestHandler):
             self._refuse(404, str(error))
             return
         except UpstreamError as error:
-            self._refuse(502, str(error))
+            self._refuse(502, str(error), **error.fields)
             return
         except Exception as error:  # noqa: BLE001
             # The type and never the text, on the same argument the body makes:
@@ -851,10 +915,21 @@ class Handler(BaseHTTPRequestHandler):
                     # whose reranker is not the one they meant finds out here
                     # rather than from search results that quietly did not move.
                     "rerank": (
-                        {"vendor": self.reranker["vendor"], "model": self.reranker["model"]}
+                        {
+                            "vendor": self.reranker["vendor"],
+                            "model": self.reranker["model"],
+                            "credential": self.reranker["key_fingerprint"],
+                        }
                         if self.reranker
                         else None
                     ),
+                    # Which credential is loaded, per vendor, never the
+                    # credential. An operator who rotated a token and
+                    # redeployed has no other way to tell whether the container
+                    # took it — the failure is identical either way.
+                    "credentials": {
+                        cfg["vendor"]: cfg["key_fingerprint"] for cfg in self.routes.values()
+                    },
                 },
             )
         else:
@@ -901,7 +976,7 @@ class Handler(BaseHTTPRequestHandler):
             # 502: the caller's request was fine and somebody else's service was
             # not. A worker reading this knows to retry rather than to give up
             # on the document.
-            self._refuse(502, str(error))
+            self._refuse(502, str(error), **error.fields)
             return
         except Exception as error:  # noqa: BLE001
             # Never the exception text. This process holds every document's text
@@ -958,6 +1033,11 @@ def serve() -> None:
                 "port": port,
                 "models": sorted(routes),
                 "rerank": f"{reranker['vendor']}:{reranker['model']}" if reranker else None,
+                # Not the credentials — their fingerprints, so a rotation that
+                # did not reach this container is visible in the first line of
+                # its log rather than in a 401 an hour later.
+                "credentials": {cfg["vendor"]: cfg["key_fingerprint"] for cfg in routes.values()}
+                | ({f"rerank:{reranker['vendor']}": reranker["key_fingerprint"]} if reranker else {}),
                 "note": "text routed through this service leaves this installation",
             },
         ),
