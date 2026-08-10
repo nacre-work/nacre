@@ -112,24 +112,18 @@ def _post_json(url: str, body: dict, headers: dict[str, str], vendor: str) -> di
         raise UpstreamError(f"{vendor} answered something that is not JSON") from error
 
 
-def _openai(texts: list[str], model: str, cfg: dict) -> list[list[float]]:
+def _openai_shaped(url: str, texts: list[str], model: str, api_key: str, vendor: str) -> list[list[float]]:
     """
-    Anything speaking OpenAI's embeddings contract.
+    `{model, input}` in, `{data: [{index, embedding}]}` out.
 
-    Named for the protocol rather than for the company, because that is what it
-    is: Together, Voyage, DeepInfra, vLLM and a self-hosted TEI all answer here,
-    which is why the endpoint is required configuration rather than a default
-    pointing at one vendor.
+    Shared by two vendors rather than copied, because the `index` sort below is
+    the part that must not drift: it is the difference between a batch that came
+    back in order and one that silently did not.
     """
-    body = _post_json(
-        cfg["endpoint"].rstrip("/") + "/embeddings",
-        {"model": model, "input": texts},
-        {"authorization": f"Bearer {cfg['api_key']}"},
-        "openai-compatible",
-    )
+    body = _post_json(url, {"model": model, "input": texts}, {"authorization": f"Bearer {api_key}"}, vendor)
     rows = body.get("data")
     if not isinstance(rows, list):
-        raise UpstreamError("openai-compatible answered without a `data` array")
+        raise UpstreamError(f"{vendor} answered without a `data` array")
 
     # Sorted by `index` rather than trusted in arrival order. The field exists
     # in the contract precisely because the order is not promised, and a
@@ -138,9 +132,45 @@ def _openai(texts: list[str], model: str, cfg: dict) -> list[list[float]]:
     try:
         rows = sorted(rows, key=lambda r: int(r["index"])) if all("index" in r for r in rows) else rows
     except (TypeError, ValueError) as error:
-        raise UpstreamError("openai-compatible answered with an unreadable `index`") from error
+        raise UpstreamError(f"{vendor} answered with an unreadable `index`") from error
 
     return [r.get("embedding") for r in rows]
+
+
+def _openai(texts: list[str], model: str, cfg: dict) -> list[list[float]]:
+    """
+    Anything speaking OpenAI's embeddings contract.
+
+    Named for the protocol rather than for the company, because that is what it
+    is: Together, DeepInfra, vLLM and a self-hosted TEI all answer here, which is
+    why the endpoint is required configuration rather than a default pointing at
+    one vendor.
+    """
+    return _openai_shaped(
+        cfg["endpoint"].rstrip("/") + "/embeddings",
+        texts,
+        model,
+        cfg["api_key"],
+        "openai-compatible",
+    )
+
+
+def _voyage(texts: list[str], model: str, cfg: dict) -> list[list[float]]:
+    """
+    Voyage AI, whose embeddings endpoint is OpenAI-shaped.
+
+    It has its own entry rather than being a note under `openai-compatible`
+    because of **who asks for it**: Anthropic publishes no embeddings API at all
+    and points at Voyage instead, so "embeddings from Anthropic" resolves here.
+    A vendor nobody can find is a vendor nobody uses, and the endpoint is not
+    something an operator should have to know to type.
+
+    Naming the vendor is choosing the endpoint, exactly as it is for `cloudflare`
+    and `google`. That is not the "no silent defaults for URLs" rule being bent:
+    that rule is about `NACRE_DEFAULT_EMBEDDING_ENDPOINT`, where a default would
+    guess *which company* sees the documents. Here the operator wrote the name.
+    """
+    return _openai_shaped("https://api.voyageai.com/v1/embeddings", texts, model, cfg["api_key"], "voyage")
 
 
 def _cloudflare(texts: list[str], model: str, cfg: dict) -> list[list[float]]:
@@ -217,7 +247,192 @@ VENDORS = {
         "settings": {},
         "batch": 100,
     },
+    "voyage": {
+        "call": _voyage,
+        "key": ("NACRE_EMBED_VOYAGE_API_KEY", "NACRE_EMBED_VOYAGE_API_KEY_FILE"),
+        "settings": {},
+        "batch": 128,
+    },
 }
+
+
+# ─────────────────────────── reranking ───────────────────────────
+#
+# A cross-encoder scores (query, text) pairs. Three vendors answer in one shape
+# and Cloudflare in another; all four are reduced to **one score per input, in
+# input order**, which is what `packages/api/src/rerank.ts` reads.
+#
+# This service answers TEI's `/rerank` rather than a shape of its own, so the
+# core needs no code at all: `NACRE_RERANKER_ENDPOINT` points here instead of at
+# a TEI container and nothing else changes. A second protocol in the API would
+# have been a second thing to keep in step with the first, for no gain — the
+# whole argument that put the vendor differences in a sidecar.
+#
+# Scores are the vendors' normalized relevance rather than TEI's raw logits, and
+# that is safe for one reason worth stating: the caller uses them to **order**
+# an already-permitted candidate set and never as a threshold. `raw_scores` is
+# accepted and ignored, because there is no raw score to give.
+
+
+def _rerank_relevance(url: str, body: dict, headers: dict, vendor: str, field: str) -> list[tuple[int, float]]:
+    """
+    The `[{index, relevance_score}]` family: Cohere, Jina and Voyage.
+
+    They differ in the name of the array and in nothing else this reads.
+    """
+    answer = _post_json(url, body, headers, vendor)
+    rows = answer.get(field)
+    if not isinstance(rows, list):
+        raise UpstreamError(f"{vendor} answered without a `{field}` array")
+
+    scored: list[tuple[int, float]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise UpstreamError(f"{vendor} answered with a result that is not an object")
+        index, score = row.get("index"), row.get("relevance_score")
+        if not isinstance(index, int) or isinstance(index, bool) or not isinstance(score, (int, float)):
+            raise UpstreamError(f"{vendor} answered with a result carrying no index and relevance_score")
+        scored.append((index, float(score)))
+    return scored
+
+
+def _rerank_cohere(query: str, texts: list[str], model: str, cfg: dict) -> list[tuple[int, float]]:
+    return _rerank_relevance(
+        "https://api.cohere.com/v2/rerank",
+        {"model": model, "query": query, "documents": texts},
+        {"authorization": f"Bearer {cfg['api_key']}"},
+        "cohere",
+        "results",
+    )
+
+
+def _rerank_jina(query: str, texts: list[str], model: str, cfg: dict) -> list[tuple[int, float]]:
+    return _rerank_relevance(
+        "https://api.jina.ai/v1/rerank",
+        {"model": model, "query": query, "documents": texts},
+        {"authorization": f"Bearer {cfg['api_key']}"},
+        "jina",
+        "results",
+    )
+
+
+def _rerank_voyage(query: str, texts: list[str], model: str, cfg: dict) -> list[tuple[int, float]]:
+    return _rerank_relevance(
+        "https://api.voyageai.com/v1/rerank",
+        {"model": model, "query": query, "documents": texts},
+        {"authorization": f"Bearer {cfg['api_key']}"},
+        "voyage",
+        "data",
+    )
+
+
+def _rerank_cloudflare(query: str, texts: list[str], model: str, cfg: dict) -> list[tuple[int, float]]:
+    """
+    Cloudflare Workers AI, which answers `{result: {response: [{id, score}]}}`.
+
+    `id` is the position in `contexts`, so it plays the part `index` plays for
+    the other three.
+    """
+    answer = _post_json(
+        f"https://api.cloudflare.com/client/v4/accounts/{quote(cfg['account'], safe='')}"
+        f"/ai/run/{quote(model, safe='/@.')}",
+        {"query": query, "contexts": [{"text": text} for text in texts]},
+        {"authorization": f"Bearer {cfg['api_key']}"},
+        "cloudflare",
+    )
+    # 200 with `success: false` for a model that does not exist, as on the
+    # embeddings path — the status alone is not the verdict.
+    if answer.get("success") is False:
+        raise UpstreamError(f"cloudflare refused the rerank request for model {model}")
+    result = answer.get("result")
+    rows = result.get("response") if isinstance(result, dict) else None
+    if not isinstance(rows, list):
+        raise UpstreamError("cloudflare answered without a `result.response` array")
+
+    scored: list[tuple[int, float]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise UpstreamError("cloudflare answered with a result that is not an object")
+        index, score = row.get("id"), row.get("score")
+        if not isinstance(index, int) or isinstance(index, bool) or not isinstance(score, (int, float)):
+            raise UpstreamError("cloudflare answered with a result carrying no id and score")
+        scored.append((index, float(score)))
+    return scored
+
+
+RERANKERS = {
+    "cloudflare": {
+        "call": _rerank_cloudflare,
+        "key": ("NACRE_RERANK_CLOUDFLARE_API_KEY", "NACRE_RERANK_CLOUDFLARE_API_KEY_FILE"),
+        "settings": {"account": "NACRE_RERANK_CLOUDFLARE_ACCOUNT"},
+    },
+    "cohere": {
+        "call": _rerank_cohere,
+        "key": ("NACRE_RERANK_COHERE_API_KEY", "NACRE_RERANK_COHERE_API_KEY_FILE"),
+        "settings": {},
+    },
+    "jina": {
+        "call": _rerank_jina,
+        "key": ("NACRE_RERANK_JINA_API_KEY", "NACRE_RERANK_JINA_API_KEY_FILE"),
+        "settings": {},
+    },
+    "voyage": {
+        "call": _rerank_voyage,
+        "key": ("NACRE_RERANK_VOYAGE_API_KEY", "NACRE_RERANK_VOYAGE_API_KEY_FILE"),
+        "settings": {},
+    },
+}
+
+# Refused rather than split, which is the opposite of the embeddings path and
+# deliberately so.
+#
+# Splitting a batch of embeddings is safe because each vector is computed from
+# one text and nothing else. A reranker is not promised to be: a vendor that
+# normalizes scores across the documents it was given in one call would produce
+# two sets that cannot be compared, and the result is a **silently** wrong
+# ordering — the failure mode this whole file is written against. A refusal
+# names the limit; a split would not.
+#
+# Well above `NACRE_RERANK_CANDIDATES`, which is 50 by default, and below every
+# one of the four vendors' own document limits.
+MAX_RERANK_TEXTS = 512
+
+
+def rerank(cfg: dict | None, query: str, texts: list[str]) -> list[float]:
+    """
+    One score per text, in input order.
+
+    The completeness check is the point. `HttpReranker` refuses an answer that
+    scores fewer inputs than it sent, because a missing score sinks that chunk
+    to the bottom of the results — a quality loss with no error anywhere. This
+    makes the same check one hop earlier, where the vendor can be named.
+    """
+    if cfg is None:
+        raise RouteError(
+            "this adapter has no reranker configured. Set NACRE_RERANK_VENDOR and "
+            f"NACRE_RERANK_MODEL; vendors: {', '.join(sorted(RERANKERS))}. See docs/config.md.",
+        )
+
+    vendor = cfg["vendor"]
+    scored = RERANKERS[vendor]["call"](query, texts, cfg["model"], cfg)
+
+    scores: list[float | None] = [None] * len(texts)
+    for index, score in scored:
+        if index < 0 or index >= len(texts):
+            raise UpstreamError(f"{vendor} scored index {index} for {len(texts)} inputs")
+        if scores[index] is not None:
+            raise UpstreamError(f"{vendor} scored index {index} twice")
+        scores[index] = score
+
+    missing = sum(1 for s in scores if s is None)
+    if missing:
+        raise UpstreamError(
+            f"{vendor} scored {len(texts) - missing} of {len(texts)} inputs. "
+            "Every candidate must be scored: an unscored one sinks to the bottom of the results "
+            "with no error anywhere.",
+        )
+
+    return [s for s in scores if s is not None]
 
 
 # ─────────────────────────── configuration ───────────────────────────
@@ -227,7 +442,7 @@ def _env(name: str) -> str:
     return (os.environ.get(name) or "").strip()
 
 
-def _secret(vendor: str, inline_var: str, file_var: str) -> str:
+def _secret(vendor: str, inline_var: str, file_var: str, named_by: str = "a route") -> str:
     """
     A vendor credential, from a file where the platform has a secret store.
 
@@ -256,28 +471,94 @@ def _secret(vendor: str, inline_var: str, file_var: str) -> str:
     if inline:
         return inline
 
+    # `named_by` rather than always "a route", because reranking has none: it is
+    # selected by NACRE_RERANK_VENDOR, and a refusal saying "a route names the
+    # cloudflare vendor" sends the reader looking through NACRE_EMBED_ROUTES for
+    # something that is not there. Found by starting the container with the
+    # credentials still empty, which is the state every first run is in.
     raise ConfigError(
-        f"a route names the {vendor} vendor and neither {inline_var} nor {file_var} is set. "
+        f"{named_by} names the {vendor} vendor and neither {inline_var} nor {file_var} is set. "
         "See docs/config.md.",
     )
 
 
-def load_routes() -> dict[str, dict]:
+def _vendor_credentials(vendor: str, spec: dict, named_by: str = "a route") -> dict:
+    """The credential and the settings one vendor entry requires, or a refusal."""
+    cfg = {"vendor": vendor, "api_key": _secret(vendor, *spec["key"], named_by=named_by)}
+    for setting, variable in spec["settings"].items():
+        value = _env(variable)
+        if not value:
+            raise ConfigError(f"{named_by} names the {vendor} vendor and {variable} is not set.")
+        cfg[setting] = value
+    return cfg
+
+
+def load_reranker() -> dict | None:
+    """
+    Read `NACRE_RERANK_VENDOR` and `NACRE_RERANK_MODEL`, or answer None.
+
+    **One reranker per adapter, not a routing table**, and that asymmetry with
+    embeddings is forced rather than chosen: TEI's `/rerank` request carries a
+    query and texts and **no model name**, because a TEI container is one model.
+    There is therefore no routing key in the request to dispatch on. Inventing
+    one would mean changing the core's reranker client, which is the thing this
+    service exists to avoid.
+
+    Half-configured is refused rather than half-honoured. A vendor with no model
+    would have to guess which cross-encoder, and a model with no vendor has
+    nowhere to go.
+    """
+    vendor = _env("NACRE_RERANK_VENDOR")
+    model = _env("NACRE_RERANK_MODEL")
+
+    if not vendor and not model:
+        return None
+    if not vendor or not model:
+        missing, given = ("NACRE_RERANK_VENDOR", "NACRE_RERANK_MODEL") if not vendor else (
+            "NACRE_RERANK_MODEL",
+            "NACRE_RERANK_VENDOR",
+        )
+        raise ConfigError(
+            f"{given} is set and {missing} is not. Reranking needs both — a vendor with no model "
+            "would be a guess about which cross-encoder, and a model with no vendor has nowhere "
+            "to go.",
+        )
+    if vendor not in RERANKERS:
+        raise ConfigError(
+            f"NACRE_RERANK_VENDOR names `{vendor}`, which does not exist. "
+            f"Rerank vendors: {', '.join(sorted(RERANKERS))}. "
+            "OpenAI, Anthropic and Google publish no reranking API, so none of them can be one.",
+        )
+
+    cfg = _vendor_credentials(vendor, RERANKERS[vendor], named_by="NACRE_RERANK_VENDOR")
+    cfg["model"] = model
+    return cfg
+
+
+def load_routes(required: bool = True) -> dict[str, dict]:
     """
     Read `NACRE_EMBED_ROUTES` and everything the vendors it names require.
 
     Validated here in full and never per request, which is the rule the core
     states for its own configuration: a deployment that is wrong should fail
     where somebody is watching, not on the first document somebody indexes.
+
+    `required=False` is how `serve` asks for a rerank-only adapter: the two jobs
+    are independent, and a deployment that reranks through a vendor and embeds
+    locally should not have to invent an embedding route to start.
     """
     raw = _env("NACRE_EMBED_ROUTES")
     if not raw:
+        if not required:
+            return {}
         raise ConfigError(
             "NACRE_EMBED_ROUTES is not set, and routing is the whole of this service's job. "
             "It is a comma-separated list of `model=vendor`, for example "
             "`text-embedding-3-small=openai-compatible`. There is deliberately no default: "
             "which vendor sees your documents is not a decision this container makes. "
-            f"Vendors: {', '.join(sorted(VENDORS))}. See docs/config.md.",
+            f"Vendors: {', '.join(sorted(VENDORS))}. "
+            "A rerank-only adapter is the other way to start: set NACRE_RERANK_VENDOR and "
+            "NACRE_RERANK_MODEL instead. See docs/config.md.",
         )
 
     routes: dict[str, dict] = {}
@@ -302,16 +583,7 @@ def load_routes() -> dict[str, dict]:
                 "the second entry would be silently unreachable.",
             )
 
-        spec = VENDORS[vendor]
-        cfg = {"vendor": vendor, "api_key": _secret(vendor, *spec["key"])}
-        for setting, variable in spec["settings"].items():
-            value = _env(variable)
-            if not value:
-                raise ConfigError(
-                    f"a route names the {vendor} vendor and {variable} is not set.",
-                )
-            cfg[setting] = value
-        routes[model] = cfg
+        routes[model] = _vendor_credentials(vendor, VENDORS[vendor])
 
     if not routes:
         raise ConfigError("NACRE_EMBED_ROUTES is set and contains no route")
@@ -333,10 +605,18 @@ def embed(routes: dict[str, dict], model: str, texts: list[str]) -> list[list[fl
     """
     cfg = routes.get(model)
     if cfg is None:
+        # The empty case is its own sentence, found by starting a rerank-only
+        # adapter and asking it to embed: "This installation routes: ." is a
+        # message that answers nothing at the moment somebody needs it most.
+        routed = (
+            f"This installation routes: {', '.join(sorted(routes))}."
+            if routes
+            else "This adapter has no embedding routes at all — it is configured for reranking only."
+        )
         raise RouteError(
-            f"no route for the model `{model}`. This installation routes: "
-            f"{', '.join(sorted(routes))}. Add it to NACRE_EMBED_ROUTES — there is no default "
-            "vendor, because which one sees your documents is not a guess this service makes.",
+            f"no route for the model `{model}`. {routed} Add it to NACRE_EMBED_ROUTES — there is "
+            "no default vendor, because which one sees your documents is not a guess this "
+            "service makes.",
         )
 
     spec = VENDORS[cfg["vendor"]]
@@ -363,8 +643,10 @@ def embed(routes: dict[str, dict], model: str, texts: list[str]) -> list[list[fl
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     routes: dict[str, dict] = {}
+    reranker: dict | None = None
 
-    def _reply(self, status: int, body: dict) -> None:
+    # `list` as well as `dict`, because TEI's /rerank answers a bare array.
+    def _reply(self, status: int, body: dict | list) -> None:
         payload = json.dumps(body).encode("utf-8")
         self.send_response(status)
         self.send_header("content-type", "application/json")
@@ -377,29 +659,99 @@ class Handler(BaseHTTPRequestHandler):
         # this service's success can read its failure without a second branch.
         self._reply(status, {"error": {"message": message}})
 
+    def _body(self) -> dict | None:
+        """The request body, or None having already refused."""
+        length = int(self.headers.get("content-length") or 0)
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            self._refuse(400, "body is not JSON")
+            return None
+        if not isinstance(body, dict):
+            self._refuse(400, "body is not an object")
+            return None
+        return body
+
+    def _rerank(self) -> None:
+        """
+        TEI's `/rerank`: `{query, texts}` in, `[{index, score}]` out.
+
+        The response is a bare array and not an object, because that is what TEI
+        answers and what `packages/api/src/rerank.ts` parses — this endpoint is
+        a drop-in for a TEI container or it is nothing.
+        """
+        body = self._body()
+        if body is None:
+            return
+
+        query = body.get("query")
+        texts = body.get("texts")
+        if not isinstance(query, str) or not query:
+            self._refuse(400, "`query` is required")
+            return
+        if not isinstance(texts, list) or not all(isinstance(t, str) for t in texts):
+            self._refuse(400, "`texts` must be an array of strings")
+            return
+        if not texts:
+            # TEI answers an empty list for an empty input and the caller never
+            # sends one; matching it costs a line and avoids a vendor call.
+            self._reply(200, [])
+            return
+        if len(texts) > MAX_RERANK_TEXTS:
+            self._refuse(413, f"`texts` carries {len(texts)} items; the limit is {MAX_RERANK_TEXTS}")
+            return
+
+        try:
+            scores = rerank(self.reranker, query, texts)
+        except RouteError as error:
+            self._refuse(404, str(error))
+            return
+        except UpstreamError as error:
+            self._refuse(502, str(error))
+            return
+        except Exception:  # noqa: BLE001
+            self._refuse(500, "the rerank request could not be completed")
+            return
+
+        self._reply(200, [{"index": i, "score": s} for i, s in enumerate(scores)])
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
             # The routed models are worth answering with: an operator whose
             # `NACRE_EMBED_ROUTES` did not parse the way they meant finds out
             # here rather than from a document that will not index. They are
             # model names, which are not secret; no credential is reported.
-            self._reply(200, {"status": "ok", "models": sorted(self.routes)})
+            self._reply(
+                200,
+                {
+                    "status": "ok",
+                    "models": sorted(self.routes),
+                    # The vendor and model, never the credential. An operator
+                    # whose reranker is not the one they meant finds out here
+                    # rather than from search results that quietly did not move.
+                    "rerank": (
+                        {"vendor": self.reranker["vendor"], "model": self.reranker["model"]}
+                        if self.reranker
+                        else None
+                    ),
+                },
+            )
         else:
             self._refuse(404, "not found")
 
     def do_POST(self) -> None:  # noqa: N802
-        # `/embeddings` and `/v1/embeddings` both, because `endpointUrl` appends
-        # to whatever base an operator configured and both spellings are ones
-        # they will write.
-        if self.path.rstrip("/") not in ("/embeddings", "/v1/embeddings"):
+        # Both spellings of each path, because `endpointUrl` appends to whatever
+        # base an operator configured and both are ones they will write.
+        path = self.path.rstrip("/")
+        if path in ("/rerank", "/v1/rerank"):
+            self._rerank()
+            return
+        if path not in ("/embeddings", "/v1/embeddings"):
             self._refuse(404, "not found")
             return
 
-        length = int(self.headers.get("content-length") or 0)
-        try:
-            body = json.loads(self.rfile.read(length) or b"{}")
-        except json.JSONDecodeError:
-            self._refuse(400, "body is not JSON")
+        body = self._body()
+        if body is None:
             return
 
         model = body.get("model")
@@ -456,7 +808,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve() -> None:
     try:
-        routes = load_routes()
+        # The reranker first, because whether it is configured decides whether
+        # an empty NACRE_EMBED_ROUTES is a refusal or a rerank-only adapter.
+        reranker = load_reranker()
+        routes = load_routes(required=reranker is None)
     except ConfigError as error:
         # Before there is a logger and before there is a port: a deployment
         # that cannot route has nothing to serve, and the operator is watching
@@ -465,6 +820,7 @@ def serve() -> None:
         raise SystemExit(1) from error
 
     Handler.routes = routes
+    Handler.reranker = reranker
     port = int(os.environ.get("PORT", "8091"))
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)  # noqa: S104
     print(
@@ -473,6 +829,7 @@ def serve() -> None:
                 "msg": "embedding adapter listening",
                 "port": port,
                 "models": sorted(routes),
+                "rerank": f"{reranker['vendor']}:{reranker['model']}" if reranker else None,
                 "note": "text routed through this service leaves this installation",
             },
         ),
