@@ -91,6 +91,11 @@ jobs:
       # today contain no LICENSE and no NOTICE.
       - run: pnpm lint:legal
       - run: pnpm lint:publish
+      # Here and not only at release, which is where it lived and where it is
+      # too late: the pull request that bumps the version is the one that knows
+      # whether docs/upgrading.md gained a section for it, and running the check
+      # only after the merge left main at a version that could not ship.
+      - run: pnpm lint:upgrading
       # No handler compares a caller's role to a role name. This check was
       # written with the permission ceiling and then wired into nothing at all,
       # which is how it comes to be listed here alongside the check that found

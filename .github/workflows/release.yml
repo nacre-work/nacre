@@ -114,6 +114,18 @@ jobs:
       - run: pnpm lint:compose
       - run: pnpm lint:entrypoints
       - run: pnpm lint:legal
+      # The nine below ran on every pull request and not here, which made this
+      # job the smaller suite the comment above says it must never be. They are
+      # not listed by hand anywhere: `lint:workflows` compares the two sets.
+      - run: pnpm lint:config
+      - run: pnpm lint:images
+      - run: pnpm lint:password
+      - run: pnpm lint:collection-config
+      - run: pnpm lint:endpoint-errors
+      - run: pnpm lint:admin-gate
+      - run: pnpm lint:admin-classes
+      - run: pnpm lint:admin-ids
+      - run: pnpm lint:workflows
       - run: pnpm migrate
       - run: pnpm test:unit
 

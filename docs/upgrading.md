@@ -244,6 +244,43 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.14.1 — a refusal says why, in the log
+
+**Nothing to do**, no migration and no new configuration. 0.14.0 runs against
+this database, so rolling back is safe. Both changes are about what a log holds
+when something refuses, and neither changes what goes on the wire.
+
+**A model endpoint's own reason now travels.** A vendor refusing reached you as
+`the embedding endpoint at http://embedding-adapter:8091/embeddings answered
+502` — which names the one process in the chain that did not decide anything.
+502 is the embedding adapter's word for "somebody else's service failed", and
+which vendor and what it said were in its response body, which the core
+discarded. The message now carries it:
+
+```
+… answered 502: cloudflare answered 429
+```
+
+**And the adapter logs its refusals.** Its whole log was the line it printed at
+startup, so a container answering 502 to every request looked healthy in
+`docker logs`. Every refusal is a line now — `"level":"error"` for 5xx,
+`"level":"warn"` for a request that was the caller's mistake, and still nothing
+at all on success. If your deployment does not route through the adapter this
+changes nothing you will see.
+
+Neither ever carries the vendor's response body. A vendor's error can quote the
+input it rejected and the input is document text, so the adapter forwards only
+its own sentence and the core takes one declared field, bounded at 200
+characters.
+
+**Authentication refusals say why in the log too.** The 401 on the wire is
+unchanged and stays unchanged deliberately — invariant 4 makes "no permission"
+and "no such object" indistinguishable, and a 401 that explained itself would
+be a probing oracle. The log now carries the reason with the request id, so
+"this client cannot connect" is answerable from the server side. A missing
+bearer and an unverifiable token log at `debug`, so a scanner on a public port
+does not fill a disk; raise `NACRE_LOG_LEVEL` to `debug` to see those two.
+
 ### 0.14.0 — disabling somebody is reversible on the wire, and the connections list says who
 
 **Nothing to do**, no migration and no new configuration. 0.13.0 runs against

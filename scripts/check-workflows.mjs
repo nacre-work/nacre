@@ -28,11 +28,17 @@
  * and in no workflow at all. A check nobody runs is worse than an absent one,
  * because the reason it was written gets recorded as handled.
  *
- * Deliberately "at least one workflow" rather than "a workflow that gates a
- * pull request". Some checks are genuinely release-only — `lint:upgrading` asks
- * whether `docs/upgrading.md` has a section for the version being tagged, and
- * there is no version being tagged on a pull request. Requiring the stronger
- * thing would be a rule people work around by weakening it.
+ * That half asks only for "at least one workflow", and the paragraph here used
+ * to argue the weaker thing was right: `lint:upgrading` was called genuinely
+ * release-only, because "there is no version being tagged on a pull request".
+ * **That reasoning was wrong and it cost a release.** The check reads the
+ * version out of `package.json`, and the pull request that bumps it is where
+ * the version changes — so on a release pull request it has everything it needs
+ * and would have refused there, and on an ordinary one it asks about the current
+ * version, whose section exists. Instead it ran only after the merge, `main`
+ * carried a version that could not ship, and the fix was a second pull request.
+ * The fourth section below is that rule stated properly, and this one is left
+ * as the weaker floor it always was.
  * The third is the same rule again, arriving from a different direction: CI
  * must not edit a configuration file in place. The e2e job configured its
  * embedder with `sed -i 's#^NACRE_DEFAULT_EMBEDDING_ENDPOINT=.*#…#' .env`, and
@@ -142,6 +148,83 @@ for (const name of checks) {
       'or delete it and say why in the commit.',
   )
   failed = true
+}
+
+// ─── The release runs exactly what a pull request runs ────────────────────
+
+// The rule was already written down, in a comment inside the release job:
+// "A release that ran a smaller suite than a pull request would be the one
+// artifact nobody can take back, tested least." It was true of the two suites
+// the comment was about and false in nine other places — `lint:config`,
+// `lint:password`, `lint:endpoint-errors` and six more ran on every pull
+// request and not at release.
+//
+// The other direction is worse and is what produced this check. `lint:upgrading`
+// ran **only** at release, so a release pull request passed every check it had
+// and then failed after the merge, with `main` carrying a version that could not
+// ship and the fix being a second pull request. That is the same shape the
+// enterprise repository already names for its module count, arriving here.
+//
+// So: symmetric, and computed rather than listed. A rule stated only in a
+// comment is the signal it wants to be a check — this repository's own words,
+// and the third time that has been the finding.
+const RELEASE = 'release.yml'
+
+/**
+ * Every `pnpm lint:*` a workflow file runs.
+ *
+ * Scoped to the checks and deliberately not to the suites, because the suites
+ * decompose and this rule would be wrong about them rather than about the
+ * tree: the ACL job runs `test:acl:group` once per named group and the release
+ * runs `test:acl` whole, which is the same tests through a different door. A
+ * check that reports twelve problems and no drift is one that stops being
+ * read — that already happened once here, to the mirror check next door.
+ */
+function gates(file) {
+  const text = readFileSync(join(DIR, file), 'utf8')
+  const found = new Set()
+  for (const match of text.matchAll(/run:\s*pnpm\s+(?:run\s+)?(lint:[\w:.-]+)/g)) found.add(match[1])
+  return found
+}
+
+if (!files.includes(RELEASE)) {
+  console.error(
+    `::error::${DIR}/${RELEASE} is gone. This check compares what a release runs against what a ` +
+      'pull request runs, and with no release workflow it compares nothing. Rename the constant ' +
+      'here if the file moved.',
+  )
+  failed = true
+} else {
+  const released = gates(RELEASE)
+  const requested = new Set(
+    files
+      .filter((file) => file !== RELEASE && /^\s{2}pull_request:/m.test(readFileSync(join(DIR, file), 'utf8')))
+      .flatMap((file) => [...gates(file)]),
+  )
+
+  for (const name of [...requested].sort()) {
+    if (released.has(name)) continue
+    console.error(
+      `::error file=${DIR}/${RELEASE}::every pull request runs \`pnpm ${name}\` and the release ` +
+        'does not. The release is the artifact nobody can take back, so it must not be the one ' +
+        'tested least — add the step to the publish job.',
+    )
+    failed = true
+  }
+
+  for (const name of [...released].sort()) {
+    if (requested.has(name)) continue
+    console.error(
+      `::error file=${DIR}/${RELEASE}::\`pnpm ${name}\` runs at release and on no pull request, ` +
+        'so the only way to fail it is after a merge — on a commit that is already the release. ' +
+        'Add it to a workflow that runs on pull_request.',
+    )
+    failed = true
+  }
+
+  if (!failed) {
+    console.log(`${RELEASE}: runs the same ${String(released.size)} pnpm gate(s) a pull request does`)
+  }
 }
 
 // ─── No in-place edit of a file a workflow did not write ──────────────────
