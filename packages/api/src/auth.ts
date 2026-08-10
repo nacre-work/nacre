@@ -1,5 +1,6 @@
 import {
   authProviders,
+  logger,
   type OrgRole,
   type Permission,
   type Principal,
@@ -312,6 +313,46 @@ const ROLES: readonly OrgRole[] = ['platform_admin', 'org_admin', 'member']
 const PRINCIPAL_TYPES = ['user', 'group', 'service_account'] as const
 
 /**
+ * Why a 401 happened, in the log and never in the response.
+ *
+ * The response stays one status, one title and one sentence for every reason —
+ * that is invariant 4's argument applied to credentials, and nothing here
+ * weakens it. What it left, though, was a refusal nobody can diagnose: no audit
+ * event, no distinguishable message, and a metric that counts what was
+ * presented rather than why it failed. An operator whose agent stopped working
+ * has, today, exactly one observable: a 401. That is the wrong amount of
+ * information for the person who runs the server, and it is the reason a
+ * report of this kind takes a conversation instead of a `grep`.
+ *
+ * The line goes to the server's own log with the `request_id` the caller was
+ * given, so the two can be put together deliberately by somebody who can read
+ * both — and nowhere else.
+ */
+type Refusal =
+  | 'no_bearer'
+  | 'service_keys_unavailable'
+  | 'service_key_rejected'
+  | 'unverifiable'
+  | 'claims_incomplete'
+  | 'delegation_claim_malformed'
+  | 'delegations_unavailable'
+  | 'delegation_unresolved'
+  | 'delegation_subject_mismatch'
+
+/**
+ * The reasons an anonymous caller can produce at will, and which are therefore
+ * logged at `debug`.
+ *
+ * A scanner sending garbage to `/v1/*` would otherwise write a line per
+ * request at the default level, and a log that floods is one that gets turned
+ * off — taking the useful lines with it. Everything **not** in this set is
+ * reachable only by presenting a token this deployment signed, so it says
+ * something about the deployment's own state rather than about the internet,
+ * and it is worth a line where an operator will see it.
+ */
+const NOISY: ReadonlySet<Refusal> = new Set<Refusal>(['no_bearer', 'unverifiable'])
+
+/**
  * Verify a bearer token into an AuthContext.
  *
  * Every failure path returns 401 with the same shape. Distinguishing "expired"
@@ -324,9 +365,31 @@ export async function authenticate(
   instance: string,
   requestId: string,
 ): Promise<AuthContext | Problem> {
+  /**
+   * One 401 out, one line in the log.
+   *
+   * `detail` is passed through unchanged, so the two callers that say
+   * something other than "the token is not valid" keep saying it and every
+   * other refusal stays byte-identical to its neighbours.
+   *
+   * `fields` carries ids and never the credential. A token is a bearer secret
+   * and a log is a place secrets get copied out of; the same rule the rest of
+   * this repository applies to document text applies here with more force.
+   */
+  const refuse = (
+    reason: Refusal,
+    detail: string,
+    fields?: Record<string, unknown>,
+  ): Problem => {
+    const line = { reason, instance, request_id: requestId, ...fields }
+    if (NOISY.has(reason)) logger.debug('authentication refused', line)
+    else logger.info('authentication refused', line)
+    return unauthorized(instance, requestId, detail)
+  }
+
   const bearer = authorization?.startsWith('Bearer ') ? authorization.slice(7) : undefined
   if (bearer === undefined) {
-    return unauthorized(instance, requestId, 'A bearer token is required.')
+    return refuse('no_bearer', 'A bearer token is required.')
   }
 
   // A service account key is opaque and has nothing to verify locally, so it
@@ -335,10 +398,14 @@ export async function authenticate(
   // "revoked key" and "wrong audience" and "expired" must be one answer.
   if (bearer.startsWith('nacre_sk_')) {
     if (options.serviceKeys === undefined) {
-      return unauthorized(instance, requestId, 'The token is not valid.')
+      // A `nacre_sk_` key presented to a process wired without the port that
+      // resolves one. Every agent key 401s here and the response cannot say so
+      // — this is the shape that made the MCP transport refuse every key while
+      // REST and STDIO accepted the same one.
+      return refuse('service_keys_unavailable', 'The token is not valid.')
     }
     const resolved = await options.serviceKeys.resolve(bearer)
-    return resolved ?? unauthorized(instance, requestId, 'The token is not valid.')
+    return resolved ?? refuse('service_key_rejected', 'The token is not valid.')
   }
 
   // The current key first, then whatever a rotation left behind. Every one of
@@ -382,7 +449,7 @@ export async function authenticate(
       }
       if (resolved !== undefined) return resolved
     }
-    return unauthorized(instance, requestId, 'The token is not valid.')
+    return refuse('unverifiable', 'The token is not valid.')
   }
 
   const org = claims.org
@@ -400,7 +467,11 @@ export async function authenticate(
   ) {
     // A token that verifies but does not say who it is cannot be evaluated, and
     // rule I3 makes that a denial rather than a default.
-    return unauthorized(instance, requestId, 'The token is not valid.')
+    //
+    // Which claim was wrong is not logged. The signature held, so this is a
+    // token this deployment signed and then stopped understanding — a version
+    // skew rather than an attack — and the reason alone says that.
+    return refuse('claims_incomplete', 'The token is not valid.')
   }
 
   const base: AuthContext = {
@@ -423,13 +494,27 @@ export async function authenticate(
   // `group_members` and `grants` — and not on `users`. Behind that cache a
   // disabled user's delegations would keep working for the TTL, which is the
   // lag the ACL tag cache was removed for.
-  if (typeof claims.del !== 'string' || options.delegations === undefined) {
-    return unauthorized(instance, requestId, 'The token is not valid.')
+  if (typeof claims.del !== 'string') {
+    return refuse('delegation_claim_malformed', 'The token is not valid.', { org })
+  }
+  if (options.delegations === undefined) {
+    // The failure `postgresVerification` exists to prevent, and the one that
+    // was described as arriving "days later, with nothing in a log". A process
+    // wired without this port refuses every delegated token with the 401 a
+    // forgery gets, so the symptom is "this client cannot connect" and the
+    // cause is a missing field in one process's options. Now it says so.
+    return refuse('delegations_unavailable', 'The token is not valid.', { org, delegation: claims.del })
   }
 
   const delegation = await options.delegations.resolve(org, claims.del)
   if (delegation === undefined) {
-    return unauthorized(instance, requestId, 'The token is not valid.')
+    // One row answers for four states — no such connection, forgotten,
+    // the person disabled, the person a platform_admin — and the caller is
+    // told none of them. Neither is the log, deliberately: `resolve` returns
+    // one `undefined` and inventing a distinction here would mean a second
+    // implementation of the query. What the id buys is the row itself, which
+    // an operator can look up and read all four from.
+    return refuse('delegation_unresolved', 'The token is not valid.', { org, delegation: claims.del })
   }
 
   // The token says who it acts for and the row says who it was issued for. They
@@ -437,7 +522,15 @@ export async function authenticate(
   // trusted: a token whose subject no longer matches its connection is refused,
   // not resolved as whichever of the two the code happened to read.
   if (delegation.userId !== sub || type !== 'user') {
-    return unauthorized(instance, requestId, 'The token is not valid.')
+    return refuse('delegation_subject_mismatch', 'The token is not valid.', {
+      org,
+      delegation: claims.del,
+      // Both ids, because the whole content of this refusal is that they
+      // disagree, and an operator holding one of them can find neither.
+      token_subject: sub,
+      connection_subject: delegation.userId,
+      principal_type: type,
+    })
   }
 
   return {
