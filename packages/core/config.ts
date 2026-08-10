@@ -132,8 +132,24 @@ export interface Config {
   readonly vectorTenancy: 'collection' | 'shared'
   readonly redisUrl: string
 
-  readonly embeddingEndpoint: string
-  readonly embeddingModel: string
+  /**
+   * What a **new** organization's embedding provider is made of, and read by
+   * `init` alone.
+   *
+   * Optional here, and that is a fix rather than a relaxation. These three were
+   * `required`, so the API, the MCP transport and the worker each refused to
+   * start without three values none of them reads — every one of those
+   * processes takes its endpoint, model and width from the layer's
+   * `embedding_providers` row, which is the whole point of that table. The
+   * effect was an operator having to invent an embedder to run a stack whose
+   * embedder was already configured in the database, and the values they
+   * invented then looked authoritative and were not.
+   *
+   * `init` refuses by name when they are missing, which is where the
+   * requirement actually is.
+   */
+  readonly embeddingEndpoint: string | undefined
+  readonly embeddingModel: string | undefined
   readonly embeddingDim: number
   readonly parserEndpoint: string
   readonly rerankerEndpoint: string | undefined
@@ -771,6 +787,23 @@ class Reader {
       .filter((entry) => entry !== '')
   }
 
+  /**
+   * A URL, and **an http or https one** — the second half is the part that
+   * catches anything.
+   *
+   * `new URL('embedder:80')` succeeds. It reads as the scheme `embedder:` with
+   * the path `80` and an empty host, so a deployment that forgot `http://`
+   * starts, reports itself healthy, and builds every request against a URL with
+   * nowhere to send it. That is the likeliest thing to be wrong in any variable
+   * naming a service, and it was checked for exactly one of the eight: the S3
+   * endpoint, whose own comment said "so it is the one thing worth checking
+   * twice" about a mistake that is no more likely there than in
+   * `NACRE_QDRANT_URL` or `NACRE_PARSER_ENDPOINT`.
+   *
+   * One check that asks every caller, rather than a second copy beside the
+   * first — which is this repository's standing answer to a fix that landed in
+   * one place and not in its sibling.
+   */
   url(key: string, { required = true } = {}): string {
     const raw = required ? this.required(key) : (this.optional(key) ?? '')
     if (raw === '') return ''
@@ -778,6 +811,14 @@ class Reader {
       new URL(raw)
     } catch {
       this.problems.push(`${key} is not a URL: ${JSON.stringify(raw)}`)
+      return raw
+    }
+    if (!/^https?:$/.test(safeProtocol(raw))) {
+      this.problems.push(
+        `${key} must be an http or https URL, and is ${JSON.stringify(raw)}. ` +
+          'A bare host and port parses as a URL — the host ends up empty and every ' +
+          'request goes nowhere.',
+      )
     }
     return raw
   }
@@ -828,19 +869,10 @@ function s3From(r: Reader, env: Env): Config['s3'] {
     return undefined
   }
 
-  // `r.url` only asks whether `new URL` parses, and `minio:9000` does — it
-  // reads as the scheme `minio:` with the path `9000`, with an empty host. That
-  // would start, and then every request would be built against a URL with
-  // nowhere to send it. A missing `http://` is the likeliest thing to be wrong
-  // in this variable, so it is the one thing worth checking twice.
+  // The `minio:9000` check that used to live here is inside `r.url` now, so it
+  // asks every variable naming a service rather than this one. Two copies would
+  // report one mistake twice.
   const endpoint = r.url('NACRE_S3_ENDPOINT')
-  if (endpoint !== '' && !/^https?:$/.test(safeProtocol(endpoint))) {
-    r.problems.push(
-      `NACRE_S3_ENDPOINT must be an http or https URL, and is ${JSON.stringify(endpoint)}. ` +
-        'A bare host and port parses as a URL — the host ends up empty and every ' +
-        'request goes nowhere.',
-    )
-  }
 
   return {
     endpoint,
@@ -886,8 +918,10 @@ export function loadConfig(env: Env = process.env): Config {
     vectorTenancy: r.oneOf('NACRE_VECTOR_TENANCY', ['collection', 'shared'] as const, 'collection'),
     redisUrl: r.required('NACRE_REDIS_URL'),
 
-    embeddingEndpoint: r.url('NACRE_DEFAULT_EMBEDDING_ENDPOINT'),
-    embeddingModel: r.required('NACRE_DEFAULT_EMBEDDING_MODEL'),
+    // Still validated as a URL when it is set — an unparseable one is a
+    // refusal here, not a surprise inside `init`.
+    embeddingEndpoint: r.url('NACRE_DEFAULT_EMBEDDING_ENDPOINT', { required: false }) || undefined,
+    embeddingModel: r.optional('NACRE_DEFAULT_EMBEDDING_MODEL'),
     embeddingDim: r.number('NACRE_DEFAULT_EMBEDDING_DIM', 1024, { min: 8, max: 16384 }),
     parserEndpoint: r.url('NACRE_PARSER_ENDPOINT'),
     rerankerEndpoint: r.optional('NACRE_RERANKER_ENDPOINT'),
