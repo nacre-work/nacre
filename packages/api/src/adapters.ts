@@ -16,6 +16,7 @@ import {
   VectorStore,
   vectorName,
   withOrg,
+  endpointReason,
   endpointUrl,
   modelEndpointRefused,
   type CacheStore,
@@ -906,7 +907,7 @@ export class HttpEmbedder implements Embedder {
     })
 
     if (!response.ok) {
-      throw modelEndpointRefused('embedding', at, response.status)
+      throw modelEndpointRefused('embedding', at, response.status, await endpointReason(response))
     }
 
     const body = (await response.json()) as { data?: { embedding?: unknown }[] }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { endpointUrl, modelEndpointRefused } from '../endpoint.js'
+import { endpointReason, endpointUrl, modelEndpointRefused } from '../endpoint.js'
 
 /**
  * What an operator is told when a model endpoint refuses.
@@ -86,4 +86,86 @@ describe('modelEndpointRefused', () => {
       expect(modelEndpointRefused('embedding', at, status).message).toContain(at.href)
     }
   })
+
+  it("carries the endpoint's own reason where it gave one", () => {
+    // The case this exists for, and it is a real one: the embedding adapter's
+    // 502 means an upstream failed, and which upstream and how is in its body.
+    const message = modelEndpointRefused(
+      'embedding',
+      new URL('http://embedding-adapter:8091/embeddings'),
+      502,
+      'cloudflare answered 429',
+    ).message
+
+    expect(message).toContain('502')
+    expect(message).toContain('cloudflare answered 429')
+  })
+
+  it('carries it on a credential refusal too, ahead of the explanation', () => {
+    // 401 has a paragraph of its own, and the endpoint's sentence is the part
+    // that is specific to this deployment — so it goes before the general
+    // advice rather than after it, where nobody reads.
+    const message = modelEndpointRefused('reranker', at, 401, 'missing api key').message
+    const said = message.indexOf('missing api key')
+
+    expect(said).toBeGreaterThan(-1)
+    expect(said).toBeLessThan(message.indexOf('embedding_providers'))
+  })
+})
+
+describe('endpointReason', () => {
+  const answering = (body: string, type = 'application/json') =>
+    new Response(body, { status: 502, headers: { 'content-type': type } })
+
+  it("reads OpenAI's shape, which is what the adapter answers", async () => {
+    const reason = await endpointReason(
+      answering(JSON.stringify({ error: { message: 'cloudflare answered 429' } })),
+    )
+    expect(reason).toBe('cloudflare answered 429')
+  })
+
+  it("reads TEI's shape, which is what a real TEI container answers", async () => {
+    // The reranker path meets this one whenever a deployment points at TEI
+    // rather than at the adapter, and TEI's error is a bare string.
+    const reason = await endpointReason(
+      answering(JSON.stringify({ error: 'Input validation error', error_type: 'validation' })),
+    )
+    expect(reason).toBe('Input validation error')
+  })
+
+  it('collapses a message onto one line', async () => {
+    // It goes into a log line and into `documents.error`; a stack trace pasted
+    // into a JSON string would break the first and be unreadable in the second.
+    const reason = await endpointReason(
+      answering(JSON.stringify({ error: { message: 'first\n  second\ttab  ' } })),
+    )
+    expect(reason).toBe('first second tab')
+  })
+
+  it('bounds it, because a vendor can quote the input it rejected', async () => {
+    // The safety argument for forwarding at all. The endpoint is whatever an
+    // operator configured — the adapter never quotes an upstream body, but a
+    // hosted vendor reached directly may quote document text, and this message
+    // reaches a log.
+    const reason = await endpointReason(
+      answering(JSON.stringify({ error: { message: 'x'.repeat(5000) } })),
+    )
+    expect(reason).toHaveLength(201)
+    expect(reason?.endsWith('…')).toBe(true)
+  })
+
+  for (const [what, body] of [
+    ['a body that is not JSON', '<html>502 Bad Gateway</html>'],
+    ['a body with no error field', JSON.stringify({ detail: 'nope' })],
+    ['an error that is neither a string nor an object with one', JSON.stringify({ error: 42 })],
+    ['a message that is only whitespace', JSON.stringify({ error: { message: '   ' } })],
+    ['an empty body', ''],
+  ] as const) {
+    it(`says nothing rather than something wrong for ${what}`, async () => {
+      // Every one of these is a real answer from something in this position —
+      // an nginx in front of a wedged container answers the first. `undefined`
+      // leaves the message exactly as it was before this existed.
+      expect(await endpointReason(answering(body))).toBeUndefined()
+    })
+  }
 })

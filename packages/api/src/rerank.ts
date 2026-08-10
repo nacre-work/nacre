@@ -43,7 +43,7 @@
  * line rather than a silent fallback.
  */
 
-import { endpointUrl, modelEndpointRefused } from '@nacre.work/core'
+import { endpointReason, endpointUrl, modelEndpointRefused } from '@nacre.work/core'
 
 export interface Reranker {
   /**
@@ -86,7 +86,9 @@ export class HttpReranker implements Reranker {
       signal: abort,
     })
 
-    if (!response.ok) throw modelEndpointRefused('reranker', at, response.status)
+    if (!response.ok) {
+      throw modelEndpointRefused('reranker', at, response.status, await endpointReason(response))
+    }
 
     const body = (await response.json()) as unknown
     if (!Array.isArray(body)) throw new Error('the reranker did not answer with a list')

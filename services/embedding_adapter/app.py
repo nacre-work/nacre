@@ -685,9 +685,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _refuse(self, status: int, message: str) -> None:
+    def _log(self, level: str, message: str, **fields: object) -> None:
+        print(json.dumps({"level": level, "msg": message, **fields}), flush=True)
+
+    def _refuse(self, status: int, message: str, **fields: object) -> None:
         # OpenAI-shaped, because the whole contract is: a caller that can read
         # this service's success can read its failure without a second branch.
+        #
+        # And logged, which it was not. This container's whole log was the line
+        # it printed at startup: `log_message` is silenced deliberately, and no
+        # refusal wrote anything — so a deployment whose vendor started
+        # answering 429 had the reason nowhere. The caller's log said `answered
+        # 502`, naming this service, which is the one process in the chain that
+        # did not decide anything.
+        #
+        # Every message reaching here is safe to log for the same reason it is
+        # safe to send: `_post_json` never puts a vendor's body in an error, so
+        # each is a literal or one of this file's own exceptions. That is the
+        # rule rather than a judgement per call site — what may go on the wire
+        # may go in the log, and nothing else does either.
+        self._log("error" if status >= 500 else "warn", message, status=status, **fields)
         self._reply(status, {"error": {"message": message}})
 
     def _body(self) -> dict | None:
@@ -740,8 +757,17 @@ class Handler(BaseHTTPRequestHandler):
         except UpstreamError as error:
             self._refuse(502, str(error))
             return
-        except Exception:  # noqa: BLE001
-            self._refuse(500, "the rerank request could not be completed")
+        except Exception as error:  # noqa: BLE001
+            # The type and never the text, on the same argument the body makes:
+            # this process holds every document's text in memory and a traceback
+            # is the last place it should surface. A class name is not text, and
+            # it is the difference between a bug here and a container out of
+            # memory.
+            self._refuse(
+                500,
+                "the rerank request could not be completed",
+                exception=type(error).__name__,
+            )
             return
 
         self._reply(200, [{"index": i, "score": s} for i, s in enumerate(scores)])
@@ -821,10 +847,16 @@ class Handler(BaseHTTPRequestHandler):
             # on the document.
             self._refuse(502, str(error))
             return
-        except Exception:  # noqa: BLE001
+        except Exception as error:  # noqa: BLE001
             # Never the exception text. This process holds every document's text
-            # in memory and a traceback is the last place it should surface.
-            self._refuse(500, "the embedding request could not be completed")
+            # in memory and a traceback is the last place it should surface. The
+            # type is not text, and it separates a bug here from a container out
+            # of memory.
+            self._refuse(
+                500,
+                "the embedding request could not be completed",
+                exception=type(error).__name__,
+            )
             return
 
         self._reply(
@@ -865,6 +897,7 @@ def serve() -> None:
     print(
         json.dumps(
             {
+                "level": "info",
                 "msg": "embedding adapter listening",
                 "port": port,
                 "models": sorted(routes),
