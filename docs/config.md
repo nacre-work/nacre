@@ -800,6 +800,16 @@ one is a preimage search.
 The same shape the core already logs for the JWT signing key, `"jwt_key":
 "sha256:…"`, and for the same reason.
 
+**A credential the container cannot use is refused at startup, by name.** Two
+shapes reach a vendor as a `401` from a token that is correct where it came
+from, and both are quoting accidents rather than wrong credentials: a value
+wrapped in quotes — `NACRE_..._API_KEY="cf-token"` written where the quoting is
+not removed, which a Kubernetes manifest value and a secret store round-tripping
+JSON both do — and one carrying a line break or a non-ASCII character from a
+paste. Neither is guessed at and neither is stripped: the refusal names the
+variable, because a service that quietly repairs a credential hides the
+deployment that produced it.
+
 **Cloudflare has two credential types and only one of them works here.** An
 **API Token** is sent as `Authorization: Bearer …`, which is what this adapter
 sends. A **Global API Key** is a different scheme — `X-Auth-Email` plus

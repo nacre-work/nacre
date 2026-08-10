@@ -416,6 +416,77 @@ class Voyage(unittest.TestCase):
         self.assertNotIn("endpoint", routes["voyage-3"])
 
 
+class UnusableCredential(unittest.TestCase):
+    """
+    A credential that cannot work as a bearer token is refused at startup.
+
+    Both cases produce a 401 from a credential that is correct where it came
+    from, which is the most expensive failure this service has: the dashboard
+    looks right, the vendor is fine, and the operator checks the token five
+    times. Found while diagnosing exactly that — a rotated, valid, correctly
+    scoped Cloudflare token still answering 401.
+    """
+
+    def test_a_quoted_credential_is_refused_naming_the_variable(self):
+        for quote_char in ('"', "'"):
+            with self.subTest(quote=quote_char), env(
+                NACRE_EMBED_ROUTES="bge-m3=cloudflare",
+                NACRE_EMBED_CLOUDFLARE_ACCOUNT="acc123",
+                NACRE_EMBED_CLOUDFLARE_API_KEY=f"{quote_char}cf-token{quote_char}",
+            ), self.assertRaises(app.ConfigError) as caught:
+                app.load_routes()
+            said = str(caught.exception)
+            self.assertIn("NACRE_EMBED_CLOUDFLARE_API_KEY", said)
+            self.assertIn("quotes", said)
+
+    def test_a_credential_from_a_file_is_held_to_the_same_rule(self):
+        # The file form is where a quoted value is *more* likely, since a secret
+        # store round-tripping JSON is a common way to acquire the quotes.
+        with tempfile.NamedTemporaryFile("w", suffix=".key", delete=False) as handle:
+            handle.write('"cf-token"\n')
+            path = handle.name
+        try:
+            with env(
+                NACRE_EMBED_ROUTES="bge-m3=cloudflare",
+                NACRE_EMBED_CLOUDFLARE_ACCOUNT="acc123",
+                NACRE_EMBED_CLOUDFLARE_API_KEY_FILE=path,
+            ), self.assertRaises(app.ConfigError) as caught:
+                app.load_routes()
+            self.assertIn("NACRE_EMBED_CLOUDFLARE_API_KEY_FILE", str(caught.exception))
+        finally:
+            os.unlink(path)
+
+    def test_a_control_character_is_refused(self):
+        with env(
+            NACRE_EMBED_ROUTES="bge-m3=cloudflare",
+            NACRE_EMBED_CLOUDFLARE_ACCOUNT="acc123",
+            NACRE_EMBED_CLOUDFLARE_API_KEY="cf-tok\nen",
+        ), self.assertRaises(app.ConfigError) as caught:
+            app.load_routes()
+        self.assertIn("control character", str(caught.exception))
+
+    def test_a_non_latin1_character_is_refused_by_position(self):
+        with env(
+            NACRE_EMBED_ROUTES="bge-m3=cloudflare",
+            NACRE_EMBED_CLOUDFLARE_ACCOUNT="acc123",
+            NACRE_EMBED_CLOUDFLARE_API_KEY="cf-tokеn",  # Cyrillic е
+        ), self.assertRaises(app.ConfigError) as caught:
+            app.load_routes()
+        self.assertIn("HTTP header cannot carry", str(caught.exception))
+
+    def test_an_ordinary_token_is_untouched(self):
+        # The rule must not reach a real credential. Cloudflare's are 40
+        # characters of [A-Za-z0-9_-]; a quote is not in that set, which is why
+        # the check can be certain rather than heuristic.
+        with env(
+            NACRE_EMBED_ROUTES="bge-m3=cloudflare",
+            NACRE_EMBED_CLOUDFLARE_ACCOUNT="acc123",
+            NACRE_EMBED_CLOUDFLARE_API_KEY="v1.0-abc_DEF-123",
+        ):
+            routes = app.load_routes()
+        self.assertEqual(routes["bge-m3"]["api_key"], "v1.0-abc_DEF-123")
+
+
 class UpstreamModelMapping(unittest.TestCase):
     """
     `model=vendor:upstream-model`, and the reason it exists.

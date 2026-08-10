@@ -546,9 +546,9 @@ def _secret(vendor: str, inline_var: str, file_var: str, named_by: str = "a rout
             raise ConfigError(f"{file_var} names {path}, which could not be read: {error}") from error
         if not secret:
             raise ConfigError(f"{file_var} names {path}, which is empty")
-        return secret
+        return _usable(secret, file_var)
     if inline:
-        return inline
+        return _usable(inline, inline_var)
 
     # `named_by` rather than always "a route", because reranking has none: it is
     # selected by NACRE_RERANK_VENDOR, and a refusal saying "a route names the
@@ -559,6 +559,50 @@ def _secret(vendor: str, inline_var: str, file_var: str, named_by: str = "a rout
         f"{named_by} names the {vendor} vendor and neither {inline_var} nor {file_var} is set. "
         "See docs/config.md.",
     )
+
+
+def _usable(secret: str, variable: str) -> str:
+    """
+    Refuse a credential that cannot work as a bearer token, at startup, by name.
+
+    Both of these produce a `401` from a credential that is perfectly valid
+    where it came from, which is the most expensive kind of failure this
+    service can have: nothing on the vendor's side is wrong, nothing in the
+    dashboard looks off, and the operator checks the token five times.
+
+    **Surrounding quotes.** `_env` strips whitespace and not quotes, so
+    `NACRE_..._API_KEY="cf-token"` written where quoting is not removed —
+    a Kubernetes manifest value, a `docker run -e VAR='"x"'`, a wrapper that
+    re-exports — sends `Authorization: Bearer "cf-token"`. No vendor's token
+    contains a quote character, so this is a quoting accident every time and
+    guessing at the intent by stripping them would hide it.
+
+    **Anything a header cannot carry.** A control character or a byte outside
+    latin-1 raises inside the HTTP client, several layers from the variable that
+    holds it — a newline in the middle of a pasted secret is the usual way.
+    Refusing here names the variable instead.
+    """
+    if len(secret) > 1 and secret[0] == secret[-1] and secret[0] in "\"'":
+        raise ConfigError(
+            f"{variable} is wrapped in {secret[0]} quotes. The quotes are part of the value here "
+            "and would be sent as part of the credential, which is a 401 from a token that is "
+            "otherwise correct — no vendor's token contains a quote character. Remove them "
+            "rather than relying on this service to guess.",
+        )
+    try:
+        secret.encode("latin-1")
+    except UnicodeEncodeError as error:
+        raise ConfigError(
+            f"{variable} holds a character an HTTP header cannot carry, at position "
+            f"{error.start}. A credential pasted with a line break or a non-ASCII character "
+            "fails inside the HTTP client rather than here, several layers from this variable.",
+        ) from error
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in secret):
+        raise ConfigError(
+            f"{variable} holds a control character. A credential pasted with a line break in the "
+            "middle is the usual way, and it fails inside the HTTP client rather than here.",
+        )
+    return secret
 
 
 def _fingerprint(secret: str) -> str:

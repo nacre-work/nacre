@@ -273,6 +273,19 @@ came from, so it grants nothing that was not already granted.
 `credential` field. Both are fingerprints. If you parse `/health`, nothing was
 removed.
 
+**A credential the container cannot use is now refused at startup**, which is
+the other half of the same incident. `NACRE_..._API_KEY="cf-token"` — quoted
+where the quoting is not removed, as a Kubernetes manifest value or a secret
+store round-tripping JSON both do — sent `Authorization: Bearer "cf-token"` and
+got a `401` from a token that was correct. So did one carrying a line break
+from a paste, which failed inside the HTTP client several layers from the
+variable holding it. Both are refused by name now, and neither is repaired:
+stripping the quotes would hide the deployment that added them.
+
+If your credential is quoted and has been working, it has not been — the
+container would be failing every request. If it is quoted and this refusal is
+new to you, remove the quotes before upgrading.
+
 **And 0.14.2's message was too long for its own reader.** The core bounds an
 endpoint's reason at 200 characters, because a vendor's error can quote the
 input it rejected — a bound that applies to the adapter's messages too, since
