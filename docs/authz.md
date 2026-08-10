@@ -200,7 +200,7 @@ both of the ways this document already guards against, plus one that is its own.
 |---|---|---|
 | T16 | A user with grants across two layers, a document-scoped grant and one deny delegates | the delegation resolves exactly what the user resolves — no document more, none fewer |
 | T17 | A grant is revoked from the user while a delegation is live | gone from the delegation on the next request, with no renewal in between |
-| T18 | The user is disabled, then re-enabled | every delegation refuses with `401` while disabled, and works again after — the grant itself untouched throughout |
+| T18 | The user is disabled, then re-enabled | every delegation refuses with `401` while disabled, and works again after — the grant itself untouched throughout, and the renewal refuses as **suspended** rather than as a dead grant, without spending the token |
 | T19 | The application is forgotten while the user's own token keeps working | the delegation refuses; the user is unaffected |
 | T20 | A delegation narrowed to layer L, whose user also reads layer M | nothing from M, and never more from L than the user would get |
 | T21 | A `platform_admin` attempts to delegate | refused at consent, and a token minted around it refused at validation |
@@ -546,6 +546,24 @@ than contradicting it: the *grant* survives a disabling, exactly as
 `PostgresGrants.issue` intends. What does not survive is the ability to exercise
 it through a delegation while its holder cannot sign in. Disabling is reversible,
 so this is too.
+
+Which puts a requirement on the **wire**, not only on the table. The refresh
+token is deliberately not spent while the person is disabled, so the same one
+works the moment they are enabled — and that is only half the promise, because
+the other half is the client not throwing it away. `/oauth/token` therefore
+answers **`503` with `Retry-After` and `temporarily_unavailable`** for this
+case, and never `invalid_grant`: RFC 6749 defines that code as "this grant is
+dead", so a conforming client discards the token, and the refusal meant to make
+re-enabling a *restoration* would have made it a reconnection. RFC 6749 does not
+define `temporarily_unavailable` for the token endpoint — §8.5 is what admits
+one — and the status is what carries the behaviour anyway: a client that has
+never seen the code still reads `503` as "ask again".
+
+It says more than the other refusals do. A holder learns the account is
+suspended rather than that its token is bad, and that is accepted rather than
+overlooked: the holder is an application the person connected, the same fact is
+on their sign-in screen, and the alternative is an administrative control that
+reads as reversible and is not.
 
 **A user is never deleted, and that is structural rather than policy.**
 `audit_events` names a user id and `grants.created_by` references `users(id)`

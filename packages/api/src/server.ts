@@ -2012,6 +2012,44 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           return
         }
         const rotated = await oauth.refreshTokens.rotate(presented)
+        if (rotated === 'suspended') {
+          // The one refusal that is not final, and therefore the one that must
+          // not be `invalid_grant`.
+          //
+          // Disabling a person suspends their delegations and deliberately does
+          // **not** spend the refresh token, so that re-enabling them is a
+          // restoration rather than a reconnection. That promise was
+          // unreachable: `invalid_grant` is RFC 6749's "this grant is dead", so
+          // every conforming client discarded the token the server had gone out
+          // of its way to keep, and the connection could only ever come back
+          // through the consent screen. Found by driving the whole flow —
+          // connect, disable, re-enable — against a running server.
+          //
+          // `503` with `Retry-After` is what an HTTP client already understands
+          // as "not now, ask again", so a client that has never heard of
+          // `temporarily_unavailable` still does the right thing: RFC 6749 does
+          // not define that code for this endpoint, and §8.5 is what permits
+          // one, but the status is what carries the behaviour.
+          //
+          // It does say more than the other refusals do — a holder learns the
+          // account is suspended rather than that the token is bad. That is
+          // accepted rather than overlooked: the holder is an application the
+          // person connected, the same fact is on their sign-in screen, and the
+          // alternative is a control that reads as reversible and is not.
+          send(
+            res,
+            503,
+            {
+              error: 'temporarily_unavailable',
+              error_description:
+                'The person this connection acts as is currently disabled. This is not permanent and the ' +
+                'refresh token has not been spent — try again later.',
+            },
+            requestId,
+            { 'retry-after': '60', 'cache-control': 'no-store', pragma: 'no-cache' },
+          )
+          return
+        }
         if (rotated === undefined) {
           // One answer for expired, revoked, unknown and replayed. A client can
           // act on exactly one thing — start the flow again — and telling them
