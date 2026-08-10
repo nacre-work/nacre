@@ -85,6 +85,21 @@ export interface Embedder {
   embed(texts: readonly string[]): Promise<readonly (readonly number[])[]>
 }
 
+/**
+ * When re-sending a document puts it back in the queue.
+ *
+ * Written once and interpolated three times, because the three columns it
+ * decides — status, attempts, error — have to agree and Postgres cannot see one
+ * SET column's new value from another. Three copies of a predicate that must
+ * match is the shape this repository keeps removing.
+ *
+ * A hash change and a metadata change were always here. `failed` is the one
+ * that was missing, and the one a caller actually retries with.
+ */
+const REQUEUE = `documents.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                   OR documents.metadata IS DISTINCT FROM EXCLUDED.metadata
+                   OR documents.status = 'failed'`
+
 export class PostgresDocuments implements Documents {
   constructor(
     private readonly pool: Pool,
@@ -1115,9 +1130,24 @@ export class NacreIngest implements Ingest {
              -- change — and the cheaper path is a payload-only write like the
              -- ACL retag sweep does. Not built; docs/api.md says so rather than
              -- letting an operator discover it from a bill.
-             status       = CASE WHEN documents.content_hash IS DISTINCT FROM EXCLUDED.content_hash
-                                   OR documents.metadata IS DISTINCT FROM EXCLUDED.metadata
-                                 THEN 'pending' ELSE documents.status END,
+             -- A failed status is in the predicate now, and it is the half
+             -- that was missing. A failure is not a property of the bytes: the
+             -- embedder was unreachable, the parser refused a file that has
+             -- since been fixed, the model server was restarting. Re-sending
+             -- the same document is exactly how a caller retries once the cause
+             -- is repaired, and without this it did nothing at all -- the row
+             -- kept its old status and its old error text, while the response
+             -- said queued. An operator read a three-day-old message and
+             -- concluded the fix had not landed. Reported that way.
+             --
+             -- The predicate is one string used three times rather than three
+             -- copies that have to agree; see REQUEUE above.
+             status       = CASE WHEN ${REQUEUE} THEN 'pending' ELSE documents.status END,
+             -- Reset with it, or the retry inherits a counter already at the
+             -- attempt bound and fails on arrival, and the stale error outlives
+             -- the run that replaced it.
+             attempts     = CASE WHEN ${REQUEUE} THEN 0 ELSE documents.attempts END,
+             error        = CASE WHEN ${REQUEUE} THEN NULL ELSE documents.error END,
              deleted_at   = NULL,
              updated_at   = now()
            RETURNING id, content_hash, status`,
