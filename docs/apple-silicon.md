@@ -253,6 +253,45 @@ through `psql` is the `admin-global` module's job and is commercial; that this
 leaves the open product with SQL as the only route is a gap and is named here as
 one rather than left to be discovered.
 
+### The endpoint, and **only** the endpoint
+
+That `UPDATE` is safe for the address and for nothing else. **Do not change
+`model` or `dimensions` in a provider row a layer is using**, and the reason is
+not caution — it is that the row is not where the model is recorded.
+
+A layer's named vector is derived from the model: `v_{model}_{dimensions}`, so
+`bge-m3` at 1024 is the slot `v_bge_m3_1024` and `@cf/baai/bge-m3` at 1024 is a
+*different* slot. Qdrant cannot add a named vector to a collection that exists,
+so editing the row leaves every layer pointing at a slot that is not there —
+which is the "layers naming a vector that did not exist" failure, arriving from
+the operator's side. Ingest fails on every document, forever, and the API
+answers `queued` while it does.
+
+**Changing the model is a reindex, and the product does it for you.** Create a
+provider and move each layer onto it:
+
+```bash
+curl -X POST "$NACRE/v1/embedding-providers" -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"name":"cloudflare","endpoint":"http://embedding-adapter:8091",
+       "model":"@cf/baai/bge-m3","dimensions":1024}'
+
+curl -X POST "$NACRE/v1/layers/$LAYER/reindex" -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d '{"provider_id":"…"}'
+```
+
+That replaces the collection with one carrying both slots, copies every point
+across without recomputing an embedding, moves the pointer, and re-embeds one
+layer at a time. Search stays available throughout, the old collection stays as
+the rollback window (`NACRE_COLLECTION_RETENTION_DAYS`), and a layer with a
+reference query set is gated on recall before it switches. The admin UI has the
+same thing on the layer screen.
+
+This section only told you to change the endpoint, and somebody changing the
+*vendor* read it as covering that too — the endpoint and the model move together
+when the vendor does, because a vendor's model id is its own. It cost a
+half-broken installation to find out.
+
 ## Why not `--profile full`
 
 `full` adds MinIO, an embedder and a reranker. MinIO is arm64. The other two are
