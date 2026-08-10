@@ -691,13 +691,29 @@ Nothing here is seeded in `.env.example`, deliberately: a seeded route is this
 repository choosing a vendor on your behalf, which is the one thing this whole
 surface exists not to do.
 
-**You may not need it.** Anything already speaking OpenAI's contract works by
-pointing `embedding_providers.endpoint` straight at it, and always has — the
-adapter adds the vendors that do not, plus a credential. LiteLLM in front of
-that endpoint is the documented alternative and needs no code from this
-repository at all; the adapter exists because this repository has twice chosen
-to own a small thing rather than take a dependency on the path that reads other
-people's documents, and there is exactly one operation here.
+**You may not need it — but read the next paragraph before deciding that.**
+Anything already speaking OpenAI's contract works by pointing
+`embedding_providers.endpoint` straight at it, and always has: a TEI or a vLLM
+you run, an Ollama on your laptop, a colleague's server on the network.
+
+**What the direct path cannot do is authenticate.** The request carries a
+content-type and nothing else — no `Authorization` header — and there is
+nowhere to put one, because `embedding_providers` has no column for a
+credential and deliberately never will: a vendor key there would reach every
+database dump, which is the whole reason the adapter is a sidecar rather than
+a branch in the worker. So an endpoint pointed straight at OpenAI, Voyage,
+Together or any other hosted vendor **cannot work**, however correct the URL
+is, and this paragraph used to say the opposite by omission — with OpenAI named
+in the vendor table directly above it. Somebody read it, did the thing it
+implies, and got a `401` that explained none of this. The refusal now names the
+cause; `modelEndpointRefused` is where it is written, and `lint:endpoint-errors`
+keeps all three callers going through it.
+
+So: **no credential wanted → point straight at it. Credential wanted → the
+adapter, or a proxy.** LiteLLM in front is the documented alternative and needs
+no code from this repository at all; the adapter exists because this repository
+has twice chosen to own a small thing rather than take a dependency on the path
+that reads other people's documents, and there is exactly one operation here.
 
 ## Compose profiles
 

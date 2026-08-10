@@ -122,6 +122,11 @@ jobs:
       # built by this job on both, and named by no release step — so the service
       # compiled and had no artifact anybody could pull.
       - run: pnpm lint:images
+      # Every caller of a model endpoint an operator configured reports a
+      # refusal through one function. A bare status is the wrong answer on 401
+      # and 403, where the cause is that this client sends no credential and has
+      # nowhere to hold one — which an operator cannot work out from `401`.
+      - run: pnpm lint:endpoint-errors
       - run: pnpm migrate
       - run: pnpm test:unit
 

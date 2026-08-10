@@ -7,6 +7,7 @@ import {
   ConfigError,
   createPool,
   endpointUrl,
+  modelEndpointRefused,
   installGuards,
   logger,
   S3,
@@ -416,7 +417,7 @@ async function main(): Promise<void> {
       }
 
       if (!response.ok) {
-        throw new Error(`the embedding endpoint at ${endpoint.href} answered ${response.status}`)
+        throw modelEndpointRefused('embedding', endpoint, response.status)
       }
       const body = (await response.json()) as { data?: { embedding?: number[] }[] }
       return (body.data ?? []).map((d) => d.embedding ?? [])

@@ -43,7 +43,7 @@
  * line rather than a silent fallback.
  */
 
-import { endpointUrl } from '@nacre.work/core'
+import { endpointUrl, modelEndpointRefused } from '@nacre.work/core'
 
 export interface Reranker {
   /**
@@ -78,14 +78,15 @@ export class HttpReranker implements Reranker {
     // server is wedged; the caller treats a timeout as a degradation.
     const abort = AbortSignal.timeout(this.timeoutMs)
 
-    const response = await fetch(endpointUrl(this.endpoint, 'rerank'), {
+    const at = endpointUrl(this.endpoint, 'rerank')
+    const response = await fetch(at, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query, texts: [...texts], raw_scores: false }),
       signal: abort,
     })
 
-    if (!response.ok) throw new Error(`the reranker answered ${response.status}`)
+    if (!response.ok) throw modelEndpointRefused('reranker', at, response.status)
 
     const body = (await response.json()) as unknown
     if (!Array.isArray(body)) throw new Error('the reranker did not answer with a list')
