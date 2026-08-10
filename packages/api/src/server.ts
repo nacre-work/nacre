@@ -3755,6 +3755,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             service_account_id: c.subject.actsAs === 'service_account' ? c.subject.serviceAccountId : null,
             service_account_name: c.serviceAccountName,
             approved_by: c.approvedBy,
+            // The address beside the id, because the id answers "which row"
+            // and every reader of this list is asking "who". Not a privacy
+            // widening: an `org_admin` can already list every user with their
+            // address, and everybody else sees only their own connections.
+            approved_by_email: c.approvedByEmail,
+            approver_disabled: c.approverDisabled,
             // Empty means the delegation reaches everything its approver does.
             layers: c.layers,
             created_at: c.createdAt,

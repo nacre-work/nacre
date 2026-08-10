@@ -948,6 +948,11 @@ export class NacreClient {
             serviceAccountId: c.service_account_id == null ? null : String(c.service_account_id),
             serviceAccountName: c.service_account_name == null ? null : String(c.service_account_name),
             approvedBy: String(c.approved_by),
+            // Null rather than the string "null", which is the defect the two
+            // lines above already record — a `String(...)` over an absent field
+            // renders on the screen.
+            approvedByEmail: c.approved_by_email == null ? null : String(c.approved_by_email),
+            approverDisabled: c.approver_disabled === true,
             layers: Array.isArray(c.layers) ? c.layers.map(String) : [],
             permissions: Array.isArray(c.permissions)
               ? (c.permissions.map(String) as ('read' | 'write' | 'admin')[])

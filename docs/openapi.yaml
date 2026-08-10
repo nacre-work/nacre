@@ -450,7 +450,7 @@ components:
             always `member`; anything it reaches, it reaches through a grant.
     Connection:
       type: object
-      required: [id, client_id, client_name, acts_as, service_account_id, service_account_name, approved_by, created_at, layers, permissions]
+      required: [id, client_id, client_name, acts_as, service_account_id, service_account_name, approved_by, approved_by_email, approver_disabled, created_at, layers, permissions]
       properties:
         id: { type: string, format: uuid }
         client_id: { type: string }
@@ -470,6 +470,20 @@ components:
           description: Null for a delegation, which names no agent.
         service_account_name: { type: [string, 'null'] }
         approved_by: { type: string, format: uuid }
+        approved_by_email:
+          type: [string, 'null']
+          description: |
+            The approver's address. `approved_by` answers which row; a reader of
+            this list is asking who, and on an administrator's list every
+            delegation is somebody else's. Null only where the row points at a
+            user this organization no longer has.
+        approver_disabled:
+          type: boolean
+          description: |
+            Whether that person is disabled right now. A delegation of a
+            disabled person is refused on every request and its renewal is
+            refused too, so a connection that looks live and answers nothing
+            has exactly one explanation and this is it.
         layers:
           type: array
           items: { type: string, format: uuid }
