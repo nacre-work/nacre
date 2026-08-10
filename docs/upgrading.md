@@ -244,6 +244,85 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.13.0 — one command on every platform, and reranking through a vendor
+
+**No migration.** 0.12.1 runs against this database, so rolling back is safe.
+There is **one thing to remove** before upgrading, and it applies to exactly one
+kind of deployment.
+
+**Remove `COMPOSE_FILE` from `.env` if it names `docker-compose.apple-silicon.yml`.**
+That overlay is deleted in this release, and Compose exits on a file it cannot
+open — before it starts anything, so the failure is at least immediate and names
+the path. The two keys the overlay carried are in `docker-compose.yml`
+unconditionally now: `host.docker.internal` on the application services, and
+`platform: linux/amd64` on the two Text Embeddings Inference services, which
+publish no arm64 image. Both are inert where they are not needed, so
+`docker compose --profile minimal up -d` is the whole command on macOS and Linux
+alike. If you set `COMPOSE_FILE` for any other reason, see "Local overrides" in
+[config.md](./config.md) — naming it turns off the automatic `docker-compose.override.yml`,
+silently, and that is unchanged.
+
+`.env.example` is regrouped, and if you copy a fresh one there is one difference
+worth knowing: the embedder is now **three commented choices** rather than a
+half-filled default. Uncomment one — a host-native endpoint, the `full`
+profile's own TEI, or the adapter — because there is no endpoint worth shipping
+as a default and `init` refuses by name until there is one. Your existing `.env`
+is unaffected.
+
+**The API and the worker no longer require `NACRE_DEFAULT_EMBEDDING_ENDPOINT`
+and `NACRE_DEFAULT_EMBEDDING_MODEL` to start.** Only `init` does, which is the
+one command that has to decide what a *new* organization's first provider is;
+every other process resolves an embedder out of `embedding_providers` in
+Postgres and always did. Nothing you have set stops working — this only removes
+a refusal that had nothing behind it, and it is what lets a deployment run
+entirely on providers created through `/v1/embedding-providers`.
+
+New, and off unless you configure it:
+
+- **Reranking through a hosted vendor.** `HttpReranker` speaks Text Embeddings
+  Inference's `/rerank`, so a deployment with no GPU had nowhere to point
+  `NACRE_RERANKER_ENDPOINT`. The embedding adapter answers that shape now, which
+  means **the core needs no code**: point `NACRE_RERANKER_ENDPOINT` at the
+  adapter instead of at a TEI container and nothing else changes. Vendors are
+  `cloudflare`, `cohere`, `jina` and `voyage`, one per adapter, chosen with
+  `NACRE_RERANK_VENDOR` and `NACRE_RERANK_MODEL`. Credentials are separate from
+  the embedding ones even where the vendor is the same, because an adapter that
+  only reranks must not have to set an embedding variable.
+- **`voyage` as an embedding vendor.** Its wire format is OpenAI's and it still
+  has its own entry, because Anthropic publishes no embeddings API and points at
+  Voyage — so that is where "embeddings from Anthropic" has to land, and it
+  should not require knowing a URL.
+- **A route may name the vendor's own spelling of the model**:
+  `NACRE_EMBED_ROUTES=bge-m3=cloudflare:@cf/baai/bge-m3`. The left-hand side
+  stays the routing key and stays what a caller sends. This is what lets an
+  installation already indexed against `bge-m3` move onto a vendor's copy of the
+  same weights **without a reindex** — a layer's named vector is derived from the
+  model, so renaming the model is a different slot and therefore a collection
+  replaced and every point copied, to move vectors that did not need to move.
+  Every existing `model=vendor` is exactly what it was; a trailing colon is
+  refused rather than read as "no substitution", and `GET /health` reports the
+  substitution so a typo surfaces before a vendor answers 400.
+
+Both of those are in the adapter, which is `--profile hosted` and is absent from
+`minimal`, `full` and `airgapped` rather than switched off in them. Routing a
+model through it means the text of your documents leaves your installation, and
+that is not something a profile name should hand you.
+
+Three fixes worth knowing about:
+
+- **The `web` front door resolves its upstreams per request.** nginx resolves a
+  literal `proxy_pass` name once at load and caches it forever, so restarting
+  `api` or `mcp` — anything that changes a container's address — left the
+  console proxying to an address nothing was on, until `web` was restarted too.
+- **Re-sending a document that failed retries it.** The ingest upsert compared
+  only the content hash, so a document that failed for a transient reason — an
+  embedder that was down — was answered `queued` and never re-queued. Sending
+  the identical bytes again is the obvious thing to try and it did nothing.
+- **A reindex with nothing to re-embed finishes.** A layer whose documents were
+  all already on the target model left the migration in progress forever,
+  because the completion check only ran after a claim and there was never
+  anything to claim.
+
 ### 0.12.1 — a 401 from a model endpoint explains itself
 
 **Nothing to do**, no migration and no new configuration. 0.12.0 runs against
