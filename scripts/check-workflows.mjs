@@ -86,6 +86,31 @@ for (const file of files) {
     continue
   }
 
+  // A `branches:` filter on `pull_request` needs `edited` in `types:`.
+  //
+  // Retargeting a pull request is an `edited` event and nothing else — no
+  // `opened`, no `synchronize`, no push — so a filtered workflow that lists
+  // only the three default types never runs for a pull request that arrived at
+  // its branch by being moved there. That is the ordinary end of a stack: each
+  // one is opened against its parent, filtered out, and retargeted to main when
+  // the parent merges. The gate is then not red, it is *absent*, which is the
+  // state a required check exists to make impossible.
+  //
+  // Unfiltered workflows are out of scope: they run whatever the base is, so
+  // the head SHA has already been checked by the time the base moves.
+  const scoped = /^\s{4}branches:/m.test(source)
+  const types = /^\s{4}types:\s*(\[.*\]|.*)$/m.exec(source)
+  if (scoped && !(types !== null && types[1].includes('edited'))) {
+    console.error(
+      `::error file=${DIR}/${file}::${file} filters pull_request on \`branches:\` and does not ` +
+        'list `edited` in `types:`. Changing a pull request\'s base fires `edited` and nothing ' +
+        'else, so one retargeted onto that branch is never checked at all — the gate goes ' +
+        'missing rather than failing. Add `types: [opened, synchronize, reopened, edited]`.',
+    )
+    failed = true
+    continue
+  }
+
   console.log(`${file}: gates pull requests, and can be started by hand`)
 }
 
