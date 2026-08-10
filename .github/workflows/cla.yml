@@ -14,6 +14,16 @@ name: cla
 on:
   pull_request:
     branches: [main]
+    # `edited` on top of the three defaults, and it is the `branches:` filter
+    # above that makes it load-bearing rather than noise. A pull request opened
+    # against another branch — the ordinary shape of a stack — is filtered out,
+    # and **changing its base to main is an `edited` event and nothing else**:
+    # no `opened`, no `synchronize`, no push. So the pull request arrives at
+    # main having never been asked for a signature, and the gate is not red, it
+    # is absent. Found on a stacked pull request retargeted after its parent
+    # merged. The cost is a seven-second job re-running when somebody edits a
+    # title.
+    types: [opened, synchronize, reopened, edited]
   # Manual, for the same reason `ci.yml` grew it and this file did not: when
   # Actions stops scheduling `pull_request` runs there is no failed run to
   # re-run and nothing queued to wait for, and a required check with no way to
