@@ -91,6 +91,36 @@ async function main(): Promise<void> {
   const pool = createPool({ connectionString: config.pgUrl, max: 2 })
   const vectors = new VectorStore(vectorStoreOptions(config))
 
+  // The requirement lives here, because this is the only thing that reads them.
+  //
+  // They used to be required by `loadConfig`, which meant the API, the MCP
+  // transport and the worker all refused to start without an embedder none of
+  // them consults — each takes endpoint, model and width from the layer's
+  // `embedding_providers` row. Refusing here instead keeps invariant "validate
+  // at startup, not on first use": this *is* the startup of the one command
+  // that needs them.
+  //
+  // Named individually rather than as a group, since an operator who set two of
+  // three should be told which one is missing.
+  if (!config.embeddingEndpoint || !config.embeddingModel) {
+    const missing = [
+      config.embeddingEndpoint ? '' : 'NACRE_DEFAULT_EMBEDDING_ENDPOINT',
+      config.embeddingModel ? '' : 'NACRE_DEFAULT_EMBEDDING_MODEL',
+    ].filter(Boolean)
+    throw new Error(
+      `${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not set, and ` +
+        'creating an organization means writing an embedding provider row it will use for ' +
+        'every layer. There is no default: an endpoint this deployment does not have is a ' +
+        'stack that comes up healthy and fails every document. See docs/config.md.',
+    )
+  }
+
+  const defaults = {
+    endpoint: config.embeddingEndpoint,
+    model: config.embeddingModel,
+    dimensions: config.embeddingDim,
+  }
+
   try {
     // Both stores, in the order that survives a failure between them, and with
     // the collection's slot named after the provider that was actually
@@ -100,11 +130,7 @@ async function main(): Promise<void> {
       pool,
       vectors,
       { ...parsed, passwordHash },
-      {
-        endpoint: config.embeddingEndpoint,
-        model: config.embeddingModel,
-        dimensions: config.embeddingDim,
-      },
+      defaults,
       say,
     )
 

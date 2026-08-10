@@ -56,12 +56,52 @@ describe('configuration', () => {
       'NACRE_PG_URL',
       'NACRE_QDRANT_URL',
       'NACRE_REDIS_URL',
-      'NACRE_DEFAULT_EMBEDDING_ENDPOINT',
       'NACRE_PARSER_ENDPOINT',
       'NACRE_CANONICAL_URL',
     ]) {
       const env = { ...COMPLETE, [key]: undefined }
       expect(problems(env).join('\n'), `${key} must be required`).toContain(key)
+    }
+  })
+
+  it('the default embedder is optional here and still validated when set', () => {
+    // NACRE_DEFAULT_EMBEDDING_ENDPOINT is off that list deliberately, and this
+    // is not the "silent default" the rule forbids — there is no default. It is
+    // read by `init` and by nothing else: the API, the MCP transport and the
+    // worker each take endpoint, model and width from the layer's
+    // `embedding_providers` row. Requiring it of every process meant an
+    // operator inventing an embedder to start a stack whose embedder was
+    // already in the database, and the invented value looked authoritative.
+    //
+    // `init` refuses by name instead, which is where the requirement is.
+    expect(
+      problems({ ...COMPLETE, NACRE_DEFAULT_EMBEDDING_ENDPOINT: undefined, NACRE_DEFAULT_EMBEDDING_MODEL: undefined }),
+      'a process that never reads them must not refuse to start',
+    ).toEqual([])
+
+    // Optional is not unchecked. A bad value is still a refusal at boot rather
+    // than a surprise in the middle of `init`, and `embedder:80` is the bad
+    // value people actually write: it *parses*, as the scheme `embedder:` with
+    // an empty host.
+    expect(problems({ ...COMPLETE, NACRE_DEFAULT_EMBEDDING_ENDPOINT: 'embedder:80' }).join('\n')).toContain(
+      'NACRE_DEFAULT_EMBEDDING_ENDPOINT must be an http or https URL',
+    )
+  })
+
+  it('every URL variable rejects a missing scheme, not just the S3 endpoint', () => {
+    // The check lived on NACRE_S3_ENDPOINT alone, under a comment calling a
+    // missing `http://` "the one thing worth checking twice" — true of that
+    // variable and equally true of the other seven, none of which had it.
+    for (const key of [
+      'NACRE_CANONICAL_URL',
+      'NACRE_QDRANT_URL',
+      'NACRE_PARSER_ENDPOINT',
+      'NACRE_DEFAULT_EMBEDDING_ENDPOINT',
+    ]) {
+      const found = problems({ ...COMPLETE, [key]: 'somehost:6333' }).join('\n')
+      expect(found, `${key} must refuse a bare host and port`).toContain(
+        `${key} must be an http or https URL`,
+      )
     }
   })
 
@@ -195,20 +235,18 @@ describe('configuration', () => {
     return env
   }
 
-  it('.env.example leaves exactly one variable for the operator', async () => {
+  it('.env.example boots as it ships, with nothing to fill in first', async () => {
     const env = await envExample()
 
-    // Named, not counted: a second blank appearing silently is the regression
-    // this catches, and "one problem" would not say which.
-    expect(problems(env)).toEqual(['NACRE_DEFAULT_EMBEDDING_ENDPOINT is not set'])
-  })
-
-  it('and supplying that one is enough to boot in development', async () => {
-    const env = await envExample()
-    expect(
-      problems({ ...env, NACRE_DEFAULT_EMBEDDING_ENDPOINT: 'http://embedder:80' }),
-      'copying .env.example and naming an embedder must be enough to start',
-    ).toEqual([])
+    // Named, not counted: a blank appearing silently is the regression this
+    // catches, and "no problems" would not say which one arrived.
+    //
+    // It used to leave exactly one — NACRE_DEFAULT_EMBEDDING_ENDPOINT — because
+    // every process required it. They do not read it, so they no longer refuse
+    // to start without it and `init` refuses instead. What an operator must
+    // configure before creating an organization is unchanged; where they find
+    // out is now the command that needs it rather than four that do not.
+    expect(problems(env), 'copying .env.example must be enough to start the processes').toEqual([])
   })
 })
 
