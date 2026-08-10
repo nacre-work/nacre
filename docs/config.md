@@ -742,9 +742,36 @@ with a `"level":"error"`.
 The half after the colon is why anything is knowable here: it was absent, and
 what an operator got instead was a sentence naming the one process in the chain
 that had not decided anything, with the adapter's log holding only its startup
-line. A 429 in particular is a quota, and it is the failure a deployment reaches
-*after* it works — the free Workers AI allocation is a daily budget, and
-indexing spends it before a search asks for one more vector.
+line.
+
+What the vendor's status means, and they are three different problems:
+
+| The adapter says | What it is | Where to look |
+|---|---|---|
+| `<vendor> answered 401`/`403` | the credential this adapter holds was **rejected** | the message names the two variables that could hold it |
+| `<vendor> answered 429` | a quota or a rate limit | the vendor's dashboard; nothing here is misconfigured |
+| `<vendor> answered 5xx` | the vendor's own outage | their status page |
+| `<vendor> could not be reached: …` | DNS or egress from this container | the network, not the vendor |
+
+**A 401 here is the opposite of a 401 from an endpoint you configured
+directly.** That one means the endpoint wants a credential and Nacre sends none
+— there is no column for one, deliberately, which is what the adapter exists
+for. This one means the adapter *did* send a credential and the vendor said no.
+The two read alike and point opposite ways, so the message spells it out and
+names the variables: `cloudflare answered 401 — it rejected the credential this
+adapter holds … Check NACRE_EMBED_CLOUDFLARE_API_KEY or
+NACRE_EMBED_CLOUDFLARE_API_KEY_FILE`. The pair is carried from the table entry
+that resolved it rather than derived from the vendor's name, because
+`cloudflare` is in both tables under different variables and naming the wrong
+one sends you to a variable that is not in play.
+
+A token that worked and then stopped is usually one that expired or was rolled.
+Worth checking second: a secret updated in the store reaches a running container
+only on restart, so the file the adapter read at startup can be the old one.
+
+A 429 is the other one worth knowing about in advance, because it is the failure
+a deployment reaches *after* it works — the free Workers AI allocation is a
+daily budget, and indexing spends it before a search asks for one more vector.
 
 The adapter never puts a vendor's response body in either the reply or the log,
 because a vendor's error can quote the input it rejected and the input is

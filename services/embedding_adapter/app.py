@@ -79,7 +79,17 @@ class RouteError(Exception):
 
 
 class UpstreamError(Exception):
-    """The vendor refused, or did not answer."""
+    """
+    The vendor refused, or did not answer.
+
+    Carries the status where there was one, because 401 and 403 mean something
+    the other statuses do not: the credential this adapter holds was rejected,
+    and the operator's next step is a variable rather than a status page.
+    """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 # ─────────────────────────── the vendors ───────────────────────────
@@ -103,7 +113,7 @@ def _post_json(url: str, body: dict, headers: dict[str, str], vendor: str) -> di
     except urllib.error.HTTPError as error:
         # The status and nothing from the body: a vendor's error message can
         # quote the input it rejected, and the input is document text.
-        raise UpstreamError(f"{vendor} answered {error.code}") from error
+        raise UpstreamError(f"{vendor} answered {error.code}", status=error.code) from error
     except urllib.error.URLError as error:
         raise UpstreamError(f"{vendor} could not be reached: {error.reason}") from error
     except (TimeoutError, OSError) as error:
@@ -398,6 +408,38 @@ RERANKERS = {
 MAX_RERANK_TEXTS = 512
 
 
+def _rejected_credential(error: UpstreamError, cfg: dict) -> UpstreamError:
+    """
+    Turn a vendor's 401 or 403 into the variable an operator has to look at.
+
+    `cloudflare answered 401` is already the whole of what this service knows,
+    and it is still one step short: a 401 from a *vendor* is not the 401 the
+    core's own helper explains — that one means "this endpoint wants a
+    credential and Nacre sends none", and this one means the opposite, that the
+    credential this adapter holds was rejected. The two read alike and point
+    opposite ways.
+
+    Which variable holds it is not derivable from the vendor's name. Cloudflare
+    is in both tables, so a rerank failure naming NACRE_EMBED_CLOUDFLARE_API_KEY
+    sends the reader to a variable that is not the one in play. `key_vars` is
+    carried from the table entry that resolved the credential for that reason.
+
+    Only 401 and 403. A 429 is a quota and a 500 is the vendor's own outage, and
+    a paragraph about credentials on either would be noise on the failures an
+    operator can do nothing about.
+    """
+    if error.status not in (401, 403):
+        return error
+    inline, from_file = cfg["key_vars"]
+    return UpstreamError(
+        f"{error} — it rejected the credential this adapter holds, rather than refusing the "
+        f"request. Check {inline} or {from_file}: a token that worked and stopped is usually one "
+        "that expired or was rolled, and a secret updated in the store reaches a running "
+        "container only on restart.",
+        status=error.status,
+    )
+
+
 def rerank(cfg: dict | None, query: str, texts: list[str]) -> list[float]:
     """
     One score per text, in input order.
@@ -414,7 +456,10 @@ def rerank(cfg: dict | None, query: str, texts: list[str]) -> list[float]:
         )
 
     vendor = cfg["vendor"]
-    scored = RERANKERS[vendor]["call"](query, texts, cfg["model"], cfg)
+    try:
+        scored = RERANKERS[vendor]["call"](query, texts, cfg["model"], cfg)
+    except UpstreamError as error:
+        raise _rejected_credential(error, cfg) from error
 
     scores: list[float | None] = [None] * len(texts)
     for index, score in scored:
@@ -484,7 +529,15 @@ def _secret(vendor: str, inline_var: str, file_var: str, named_by: str = "a rout
 
 def _vendor_credentials(vendor: str, spec: dict, named_by: str = "a route") -> dict:
     """The credential and the settings one vendor entry requires, or a refusal."""
-    cfg = {"vendor": vendor, "api_key": _secret(vendor, *spec["key"], named_by=named_by)}
+    cfg = {
+        "vendor": vendor,
+        "api_key": _secret(vendor, *spec["key"], named_by=named_by),
+        # Kept so a 401 can name them. The pair is not derivable from the vendor
+        # name: `cloudflare` appears in both tables with different variables —
+        # NACRE_EMBED_CLOUDFLARE_API_KEY and NACRE_RERANK_CLOUDFLARE_API_KEY —
+        # which is the same confusion `named_by` above exists for.
+        "key_vars": tuple(spec["key"]),
+    }
     for setting, variable in spec["settings"].items():
         value = _env(variable)
         if not value:
@@ -656,7 +709,10 @@ def embed(routes: dict[str, dict], model: str, texts: list[str]) -> list[list[fl
     vectors: list[list[float]] = []
     for start in range(0, len(texts), size):
         chunk = texts[start : start + size]
-        got = spec["call"](chunk, upstream, cfg)
+        try:
+            got = spec["call"](chunk, upstream, cfg)
+        except UpstreamError as error:
+            raise _rejected_credential(error, cfg) from error
         if not isinstance(got, list) or len(got) != len(chunk):
             raise UpstreamError(
                 f"{cfg['vendor']} returned {len(got) if isinstance(got, list) else 'no'} vectors "
