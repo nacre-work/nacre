@@ -363,6 +363,52 @@ class Voyage(unittest.TestCase):
         self.assertNotIn("endpoint", routes["voyage-3"])
 
 
+class UpstreamModelMapping(unittest.TestCase):
+    """
+    `model=vendor:upstream-model`, and the reason it exists.
+
+    A layer's named vector is derived from the model — `v_{model}_{dimensions}`
+    — so an installation already indexed against `bge-m3` cannot be pointed at
+    Cloudflare's copy of the same weights by renaming the model: that is a
+    different slot and a reindex of every layer. The weights are identical and
+    only the vendor's spelling differs, so the spelling is what moves.
+    """
+
+    def test_the_vendor_is_asked_for_the_upstream_name(self):
+        with env(
+            NACRE_EMBED_ROUTES="bge-m3=cloudflare:@cf/baai/bge-m3",
+            NACRE_EMBED_CLOUDFLARE_API_KEY="k",
+            NACRE_EMBED_CLOUDFLARE_ACCOUNT="acc",
+        ):
+            routes = app.load_routes()
+
+        patcher, calls = upstream([{"success": True, "result": {"data": [[1.0]]}}])
+        with patcher:
+            self.assertEqual(app.embed(routes, "bge-m3", ["x"]), [[1.0]])
+
+        # The caller's name routes; the vendor's name is what goes out.
+        self.assertIn("@cf/baai/bge-m3", calls[0]["url"])
+        self.assertNotIn("/ai/run/bge-m3", calls[0]["url"])
+
+    def test_without_a_mapping_the_route_key_is_still_what_is_sent(self):
+        with env(
+            NACRE_EMBED_ROUTES="@cf/baai/bge-m3=cloudflare",
+            NACRE_EMBED_CLOUDFLARE_API_KEY="k",
+            NACRE_EMBED_CLOUDFLARE_ACCOUNT="acc",
+        ):
+            routes = app.load_routes()
+        self.assertEqual(routes["@cf/baai/bge-m3"]["upstream_model"], "@cf/baai/bge-m3")
+
+    def test_a_trailing_colon_is_refused(self):
+        with env(
+            NACRE_EMBED_ROUTES="bge-m3=cloudflare:",
+            NACRE_EMBED_CLOUDFLARE_API_KEY="k",
+            NACRE_EMBED_CLOUDFLARE_ACCOUNT="acc",
+        ), self.assertRaises(app.ConfigError) as caught:
+            app.load_routes()
+        self.assertIn("upstream model", str(caught.exception))
+
+
 class RerankConfiguration(unittest.TestCase):
     def test_neither_variable_is_no_reranker_rather_than_an_error(self):
         with env(NACRE_EMBED_ROUTES="m=google", NACRE_EMBED_GOOGLE_API_KEY="g"):
