@@ -155,10 +155,19 @@ services:
       NACRE_API_UPSTREAM: "api:8080"
       NACRE_MCP_UPSTREAM: "mcp:8081"
       NGINX_PORT: "80"
-    # Both, and `depends_on` is what makes them resolvable rather than what
-    # makes them ready: nginx resolves an upstream name once, at load, and exits
-    # if it cannot. A `web` that started before `mcp` existed would fail to boot
-    # rather than 502 until it appeared.
+    # Both, and `depends_on` is now ordering rather than a requirement.
+    #
+    # It used to be load-bearing: nginx resolved an upstream name once at load
+    # and exited if it could not, so a `web` that started before `mcp` existed
+    # failed to boot. The same property had a worse half nobody had met yet —
+    # the address was then cached forever, so recreating `api` (which changing
+    # `.env` is enough to do) left this container dialling the previous one's
+    # IP address, answering 502 on every console request with everything
+    # healthy. The proxy resolves per request now; see docker/nginx.conf.template.
+    #
+    # Kept because starting the front door after the things it fronts is still
+    # the order you want, and because a 502 during startup is noise even when
+    # it clears by itself.
     depends_on:
       api: { condition: service_started }
       mcp: { condition: service_started }
