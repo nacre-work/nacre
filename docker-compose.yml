@@ -31,6 +31,33 @@ x-app: &app
     context: .
     dockerfile: docker/Dockerfile
   restart: unless-stopped
+  # `host.docker.internal`, made to resolve — on every platform, because it is
+  # not a Mac thing.
+  #
+  # This lived in a `docker-compose.apple-silicon.yml` overlay that an operator
+  # had to select with COMPOSE_FILE, and both of its keys are no-ops where they
+  # are not needed: `host-gateway` is supported by Docker on Linux, and the
+  # `platform:` below is a no-op on an amd64 host. An overlay whose contents are
+  # harmless everywhere is a second file, a second command and a documented
+  # footgun (naming COMPOSE_FILE silently drops docker-compose.override.yml) in
+  # exchange for nothing. One file, one command, every platform.
+  #
+  # Docker Desktop resolves this name on its own and the line changes nothing
+  # there. Colima, Rancher Desktop, OrbStack and podman do not all agree, and
+  # the failure without it is an `EAI_AGAIN` deep in a log that names no cause.
+  #
+  # On the **anchor** rather than on the two services the overlay named. Every
+  # process that reaches an embedder needs it, and the overlay had `api` and
+  # `worker` while `packages/mcp/src/services.ts` builds `HttpEmbedder.pool()`
+  # too — so MCP search would have failed on exactly the runtimes this line
+  # exists for, while REST search worked. `migrate` gets it and does not need
+  # it, which costs nothing; one place that knows the list beats three that
+  # have to agree.
+  #
+  # Deliberately **not** a default for NACRE_DEFAULT_EMBEDDING_ENDPOINT. That
+  # ships empty and the processes refuse to start without it, which is the "no
+  # silent defaults for URLs" rule in docs/config.md.
+  extra_hosts: ["host.docker.internal:host-gateway"]
   # Optional so a fresh clone resolves without copying .env first, and so CI
   # can validate the file. Values still come from .env when it exists, and from
   # the environment otherwise.
@@ -333,9 +360,24 @@ services:
         done;
         echo "the bucket was never created" >&2; exit 1
 
+  # The two services with no arm64 image at all, and the only two that state a
+  # platform.
+  #
+  # Text Embeddings Inference publishes linux/amd64 only — checked against the
+  # registry for cpu-1.6, cpu-1.7, cpu-1.8 and cpu-latest. Without this key an
+  # arm64 host (an M-series Mac, a Graviton node) asks for its own architecture
+  # and the pull fails with `no matching manifest for linux/arm64/v8`; with it,
+  # the amd64 image runs under emulation. On an amd64 host the key does nothing
+  # at all, which is what lets it live in the file everyone uses.
+  #
+  # Stating the platform is not a claim that it works: whether an x86 build with
+  # vector instructions runs under Rosetta 2 or QEMU is a question about your
+  # runtime. docs/apple-silicon.md recommends the arrangement that avoids it —
+  # an embedder on the host, reached through `host.docker.internal` above.
   embedder:
     profiles: [full, airgapped]
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    platform: linux/amd64
     restart: unless-stopped
     command: ["--model-id", "BAAI/bge-m3"]
     volumes: ["models:/data"]
@@ -350,6 +392,7 @@ services:
   reranker:
     profiles: [full, airgapped]
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    platform: linux/amd64
     restart: unless-stopped
     command: ["--model-id", "BAAI/bge-reranker-base"]
     volumes: ["models:/data"]
