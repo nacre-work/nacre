@@ -33,6 +33,15 @@
  * whether `docs/upgrading.md` has a section for the version being tagged, and
  * there is no version being tagged on a pull request. Requiring the stronger
  * thing would be a rule people work around by weakening it.
+ * The third is the same rule again, arriving from a different direction: CI
+ * must not edit a configuration file in place. The e2e job configured its
+ * embedder with `sed -i 's#^NACRE_DEFAULT_EMBEDDING_ENDPOINT=.*#…#' .env`, and
+ * the day `.env.example` turned that line into three commented choices the
+ * pattern stopped matching anything. A substitution that matches nothing exits
+ * 0, so the job carried on and `init` refused an unconfigured embedder several
+ * steps later — the failure was real, loud and in the wrong place. Append the
+ * lines instead, or put the substitution in a script that fails when its
+ * pattern is absent.
  */
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -108,6 +117,28 @@ for (const name of checks) {
       'or delete it and say why in the commit.',
   )
   failed = true
+}
+
+// ─── No in-place edit of a file a workflow did not write ──────────────────
+
+// `sed -i` and friends. Matched on the flag rather than on the file being
+// edited, because the file is the part that varies and the silence is the part
+// that does not: every one of these exits 0 having changed nothing.
+const IN_PLACE = /(?:^|[\s|;&(])(?:sed\s+(?:-[^\s-]*i|--in-place)|perl\s+-[^\s]*i)/
+
+for (const file of files) {
+  const lines = readFileSync(join(DIR, file), 'utf8').split('\n')
+  lines.forEach((line, index) => {
+    if (line.trimStart().startsWith('#')) return
+    if (!IN_PLACE.test(line)) return
+    console.error(
+      `::error file=${DIR}/${file},line=${index + 1}::${file} edits a file in place. ` +
+        'A substitution whose pattern matches nothing exits 0, so the job carries on with the ' +
+        'edit silently unapplied and fails somewhere else. Append the lines the job needs, or ' +
+        'move the substitution into a script that fails when its pattern is absent.',
+    )
+    failed = true
+  })
 }
 
 process.exit(failed ? 1 : 0)
