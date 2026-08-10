@@ -178,10 +178,16 @@ export interface OAuthRefreshTokens {
    * Refuses an expired token, a revoked connection, and — loudly — a **replay**:
    * a token already spent means two holders have it and there is no way to tell
    * which is genuine, so the whole family is ended rather than the one token.
+   *
+   * `'suspended'` is the one refusal that is **not** final, and it is a distinct
+   * answer because the caller has to say so on the wire. Every other reason
+   * means the token is dead and the client must start again; this one means the
+   * same token will work when the person is enabled, so answering it the same
+   * way is what makes a reversible act irreversible in practice.
    */
   rotate(
     token: string,
-  ): Promise<(MintRequest & { readonly consentId: string; readonly family: string }) | undefined>
+  ): Promise<(MintRequest & { readonly consentId: string; readonly family: string }) | 'suspended' | undefined>
 }
 
 export interface OAuthAuthorizations {
@@ -573,7 +579,7 @@ export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
 
   async rotate(
     token: string,
-  ): Promise<(MintRequest & { readonly consentId: string; readonly family: string }) | undefined> {
+  ): Promise<(MintRequest & { readonly consentId: string; readonly family: string }) | 'suspended' | undefined> {
     // The same split as an authorization code, and for the same reason: the
     // endpoint holds a bearer secret and no organization, so the lookup crosses
     // tenants and is **read-only** — that restriction is what keeps the one
@@ -647,9 +653,15 @@ export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
         // person is reversible — docs/authz.md is explicit that the grant
         // survives it — so burning their applications' refresh tokens on the
         // way past would make re-enabling them a reconnection rather than a
-        // restoration. The application retries, and the day it is allowed to,
-        // the same token works.
-        if (row.suspended) return undefined
+        // restoration.
+        //
+        // Said as its own answer rather than as "no". Keeping the row alive is
+        // only half of "the application retries and the same token works": the
+        // other half is the client not throwing the token away, and a client
+        // decides that from what the endpoint returned. `invalid_grant` means
+        // dead — so this branch, which existed to make the token survive,
+        // arrived at a caller as an instruction to discard it.
+        if (row.suspended) return 'suspended' as const
 
         // Spent, in the statement that reads it: two concurrent exchanges race
         // for one row and exactly one wins.

@@ -109,6 +109,24 @@ when('the OAuth consent flow, against the database', () => {
     return { verifier, challenge: createHash('sha256').update(verifier, 'utf8').digest('base64url') }
   }
 
+  /**
+   * The rotation, narrowed past the one answer that is not a refusal and not a
+   * token. Cases that are not about suspension say so by going through this.
+   */
+  const granted = <T>(rotated: T | 'suspended'): Exclude<T, 'suspended'> => {
+    expect(rotated).not.toBe('suspended')
+    return rotated as Exclude<T, 'suspended'>
+  }
+
+  const setDisabled = async (id: string, disabled: boolean): Promise<void> => {
+    const c = await pool.connect()
+    try {
+      await c.query('UPDATE users SET disabled_at = $2 WHERE id = $1', [id, disabled ? new Date() : null])
+    } finally {
+      c.release()
+    }
+  }
+
   it('exchanges a code for authority over the agent, not over the approver', async () => {
     const clientId = await register('a laptop agent')
     const { verifier, challenge } = pkce()
@@ -272,7 +290,10 @@ when('the OAuth consent flow, against the database', () => {
     expect(await refresh.rotate(t1)).toBeUndefined()
     // ...and the other is untouched, which is the whole distinction between
     // forgetting an application and revoking an agent.
-    expect((await refresh.rotate(t2))?.subject).toEqual({ actsAs: 'service_account', serviceAccountId: agent.account.id })
+    expect(granted(await refresh.rotate(t2))?.subject).toEqual({
+      actsAs: 'service_account',
+      serviceAccountId: agent.account.id,
+    })
 
     // Ending it twice is not an error the second time, it is a no.
     expect(await consents.revoke(admin, c1)).toBe(false)
@@ -306,7 +327,7 @@ when('the OAuth consent flow, against the database', () => {
     const first = generateCode()
     await refresh.issue(ORG, consentId, first, undefined, new Date(Date.now() + 60_000))
 
-    const rotated = await refresh.rotate(first)
+    const rotated = granted(await refresh.rotate(first))
     expect(rotated?.subject).toEqual({ actsAs: 'service_account', serviceAccountId: agent.account.id })
     const second = generateCode()
     await refresh.issue(ORG, consentId, second, rotated!.family, new Date(Date.now() + 60_000))
@@ -316,6 +337,53 @@ when('the OAuth consent flow, against the database', () => {
     // continues — the whole family goes, not just the token.
     expect(await refresh.rotate(first)).toBeUndefined()
     expect(await refresh.rotate(second)).toBeUndefined()
+  })
+
+  it('suspends a delegation while its person is disabled, and restores it', async () => {
+    // The promise docs/authz.md makes about disabling somebody: it is
+    // reversible, so the connections they approved are *suspended* rather than
+    // ended, and re-enabling is a restoration rather than a reconnection.
+    //
+    // The refusal was indistinguishable from a dead token — same `undefined`,
+    // and therefore the same `invalid_grant` on the wire — so the half of the
+    // promise that lives in the client was never kept: nothing retries a token
+    // it was told is invalid. Suspension is its own answer now, and this is the
+    // case that says so.
+    const person = '0a111111-1111-4111-8111-1111111111b7'
+    const c = await pool.connect()
+    try {
+      await c.query(
+        `INSERT INTO users (id, org_id, email, role) VALUES ($1,$2,$3,'member')
+         ON CONFLICT (id) DO UPDATE SET disabled_at = NULL`,
+        [person, ORG, 'suspendable@example.test'],
+      )
+    } finally {
+      c.release()
+    }
+
+    const app = await register('an app a person connected')
+    const consentId = await consents.record(
+      { orgId: ORG, principal: { type: 'user', id: person }, role: 'member' },
+      app,
+      { actsAs: 'user', userId: person },
+    )
+    const token = generateCode()
+    await refresh.issue(ORG, consentId, token, undefined, new Date(Date.now() + 60_000))
+
+    await setDisabled(person, true)
+    // Not `undefined`: the distinction is the whole point, because the caller
+    // turns one into "start again" and the other into "not yet".
+    expect(await refresh.rotate(token)).toBe('suspended')
+    // And asked twice, because a suspension that spent the token on the way
+    // past would answer differently the second time — which is exactly what
+    // would make re-enabling a reconnection.
+    expect(await refresh.rotate(token)).toBe('suspended')
+
+    await setDisabled(person, false)
+    // The same token, never reissued and never replaced.
+    const restored = granted(await refresh.rotate(token))
+    expect(restored?.subject).toEqual({ actsAs: 'user', userId: person })
+    expect(restored?.consentId).toBe(consentId)
   })
 
   it('shows a member their own connections and an administrator the organization\'s', async () => {
