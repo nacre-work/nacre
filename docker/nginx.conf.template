@@ -30,8 +30,8 @@
 # `/metrics` is still deliberately not proxied: it is not something the console's
 # origin exposes, and a scrape belongs on the process it is scraping.
 #
-# A **template**, rendered by the nginx image's own entrypoint, and the two
-# variables are why. This file used to hardcode `proxy_pass http://api:8080` —
+# A **template**, rendered by the nginx image's own entrypoint, and the upstream
+# names are why. This file used to hardcode `proxy_pass http://api:8080` —
 # a Compose service name — and `listen 80`. Neither survives leaving Compose:
 # in Kubernetes the API is `{release}-nacre-api` and a container that does not
 # run as root cannot bind 80. So the image was buildable, publishable, and
@@ -61,10 +61,41 @@ server {
     listen ${NGINX_PORT};
     server_name _;
 
-    # Resolved once, at load. The name has to exist before nginx starts, which
-    # `depends_on` gives in Compose and a Service name gives in Kubernetes.
+    # Resolved per request, and that is a fix rather than a preference.
+    #
+    # nginx resolves a *literal* upstream name once, at load, and caches the
+    # address for the life of the process. This file said so and treated it as
+    # a property; it is a defect. Recreating the `api` container gives it a new
+    # address — and `docker compose up -d` recreates it whenever its
+    # configuration hash moves, which editing `.env` is enough to do — while
+    # this container keeps running and keeps dialling the old one. The result
+    # is a console that answers 502 on every request, permanently, with `api`
+    # healthy, `web` healthy, and nothing in either log naming the cause. It
+    # was found by an operator being unable to sign in, not by any check.
+    #
+    # A variable in `proxy_pass` moves resolution to request time, which needs
+    # a resolver. NGINX_LOCAL_RESOLVERS is exported by the image's own
+    # `15-local-resolvers.envsh` from `/etc/resolv.conf` — Docker's embedded
+    # DNS in Compose, the cluster's in Kubernetes, with nothing hardcoded
+    # either way. See the Dockerfile, which enables that script.
+    #
+    # `valid=10s` bounds how long a moved address stays wrong. No `ipv6=` flag:
+    # the default asks for both records and uses what comes back, which is
+    # right on a v4-only Compose network and on a dual-stack cluster alike.
+    #
+    # The trade, stated: an upstream name that does not resolve is now a 502
+    # per request instead of a refusal to start. That is the better failure —
+    # it recovers by itself when the name appears, where the old one needed
+    # someone to notice a container had exited.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s;
+    set $nacre_api ${NACRE_API_UPSTREAM};
+    set $nacre_mcp ${NACRE_MCP_UPSTREAM};
+
+    # No URI part on any `proxy_pass` below, with a variable exactly as without
+    # one: the client's request URI is passed through unchanged. Adding even a
+    # `/` would rewrite it and take `/v1/` off the front of every API call.
     location /v1/ {
-        proxy_pass http://${NACRE_API_UPSTREAM};
+        proxy_pass http://$nacre_api;
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -75,7 +106,7 @@ server {
     # under the same prefix. Serving the bundle without proxying these would
     # give an origin where the console works and no application can connect.
     location /.well-known/ {
-        proxy_pass http://${NACRE_API_UPSTREAM};
+        proxy_pass http://$nacre_api;
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -92,7 +123,7 @@ server {
     # console — which is this same origin, so `NACRE_OAUTH_CONSENT_URL` needs no
     # value at all here.
     location /oauth/ {
-        proxy_pass http://${NACRE_API_UPSTREAM};
+        proxy_pass http://$nacre_api;
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -112,7 +143,7 @@ server {
     # the index and an embedder, and nginx's 60-second default would cut a slow
     # one off with a 504 that names nothing.
     location /mcp {
-        proxy_pass http://${NACRE_MCP_UPSTREAM};
+        proxy_pass http://$nacre_mcp;
         proxy_http_version 1.1;
         proxy_buffering off;
         proxy_read_timeout 300s;

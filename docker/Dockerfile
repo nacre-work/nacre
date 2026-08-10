@@ -64,11 +64,31 @@ COPY --from=build /app/packages/admin/dist /usr/share/nginx/html
 # name — instead of hardcoding the first and being undeployable in the second.
 COPY docker/nginx.conf.template /etc/nginx/templates/default.conf.template
 
-# Only these three are substituted. Left unset, the entrypoint replaces every
+# The image's own resolver script, which ships disabled.
+#
+# `/docker-entrypoint.d/15-local-resolvers.envsh` reads the nameservers out of
+# `/etc/resolv.conf` and exports NGINX_LOCAL_RESOLVERS — and its first line
+# returns unless this variable is set. It runs before the envsubst step (15 <
+# 20), so the template below can name the variable it exports.
+#
+# That is what lets the proxy resolve its upstream **per request** instead of
+# once at load. Without it, recreating the `api` container — which a plain
+# `docker compose up -d` does whenever its configuration hash changes — leaves
+# this process dialling the previous container's IP address forever: every
+# console request answers 502, every healthcheck stays green, and nothing in
+# any log names the cause. Found exactly that way.
+#
+# Reading resolv.conf rather than hardcoding Docker's 127.0.0.11 is what keeps
+# the image deployable in both places: Compose's embedded DNS and a cluster's
+# resolver are both simply whatever that file says.
+ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
+
+# Only these four are substituted. Left unset, the entrypoint replaces every
 # `$name` in the template, and nginx's own `$host`, `$scheme`, `$uri` and
 # `$proxy_add_x_forwarded_for` would be rendered as empty strings — a config
-# that loads and forwards nothing useful.
-ENV NGINX_ENVSUBST_FILTER='^(NACRE_API_UPSTREAM|NACRE_MCP_UPSTREAM|NGINX_PORT)$'
+# that loads and forwards nothing useful. It is also what keeps the template's
+# own `$nacre_api` and `$nacre_mcp` intact, since they are not on this list.
+ENV NGINX_ENVSUBST_FILTER='^(NACRE_API_UPSTREAM|NACRE_MCP_UPSTREAM|NGINX_LOCAL_RESOLVERS|NGINX_PORT)$'
 # Compose's shape as the default, because that is the one anybody meets first.
 ENV NACRE_API_UPSTREAM=api:8080
 ENV NACRE_MCP_UPSTREAM=mcp:8081
