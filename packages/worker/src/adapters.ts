@@ -934,6 +934,38 @@ export async function countRetiredCollections(pool: Pool): Promise<number> {
  * not re-parse a source or re-chunk anything — so the text and the point ids
  * are the whole input, and fetching them per document would be a query each.
  */
+/**
+ * Every layer whose reindex is running, with no regard for outstanding work.
+ *
+ * The sibling of `claimReindexable`, and the reason it is a separate query
+ * rather than a flag on that one: that query answers "what is there to
+ * re-embed" by joining documents, so a layer with none produces no row at all
+ * — which is exactly the layer whose completion nobody was asking about.
+ */
+export async function pendingReindexes(
+  pool: Pool,
+): Promise<readonly { orgId: string; layerId: string; shadowVector: string }[]> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{
+      org_id: string
+      layer_id: string
+      shadow_vector: string
+    }>(
+      `SELECT l.org_id, l.id AS layer_id, l.reindex_state ->> 'shadow_vector' AS shadow_vector
+         FROM layers l
+         JOIN organizations o ON o.id = l.org_id
+        WHERE l.reindex_state ->> 'status' = 'running'
+          AND l.reindex_state ->> 'phase'  = 'embedding'
+          AND l.deleted_at IS NULL
+          AND o.deleted_at IS NULL`,
+    )
+
+    return rows
+      .filter((r) => r.shadow_vector !== null)
+      .map((r) => ({ orgId: r.org_id, layerId: r.layer_id, shadowVector: r.shadow_vector }))
+  })
+}
+
 export async function claimReindexable(
   pool: Pool,
   limit: number,

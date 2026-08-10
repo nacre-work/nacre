@@ -28,6 +28,7 @@ import {
   failReindex,
   finishCopy,
   finishReindexIfDone,
+  pendingReindexes,
   forgetCollection,
   forgetVector,
   HttpParser,
@@ -484,6 +485,7 @@ async function main(): Promise<void> {
       markReindexed(pool, orgId, documentId, shadow, APP_ROLE),
     finishIfDone: (orgId: string, layerId: string, shadow: string) =>
       finishReindexIfDone(pool, orgId, layerId, shadow, APP_ROLE),
+    pending: () => pendingReindexes(pool),
     recordPass: (input: {
       orgId: string
       layerId: string

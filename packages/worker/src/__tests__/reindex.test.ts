@@ -61,12 +61,45 @@ const ports = (
       recorded.finished.push(layerId)
       return true
     },
+    // Nothing running by default, so every existing case still asserts what it
+    // did: the empty-claim path is only reached when a test says so.
+    pending: async () => [],
     onError: (t) => recorded.errors.push(t.documentId),
     ...over,
   }
 }
 
 describe('reindexOnce', () => {
+  it('finishes a reindex that has nothing to re-embed', async () => {
+    // The defect this exists for. Completion was evaluated only as a side
+    // effect of finishing a document, so a reindex with no documents to
+    // re-embed was never asked whether it was done and sat in `embedding`
+    // forever — the operator watching a progress number that would never move,
+    // while the layer went on answering with the provider being migrated away
+    // from.
+    //
+    // It hid behind the first layer in an organization completing for an
+    // unrelated reason: that one triggers the collection copy, and `finishCopy`
+    // evaluates the same predicate. Every later layer needs no copy. Found by
+    // migrating a second one.
+    const p = ports([], {
+      pending: async () => [{ orgId: 'o', layerId: 'empty-layer', shadowVector: 'v_new_1024' }],
+    })
+
+    const result = await reindexOnce(p, 10)
+
+    expect(result).toMatchObject({ reindexed: 0, failed: 0, switched: 1 })
+    expect(p.recorded.finished).toEqual(['empty-layer'])
+  })
+
+  it('asks nothing when there is neither work nor a running reindex', async () => {
+    const p = ports([])
+    const result = await reindexOnce(p, 10)
+
+    expect(result).toEqual({ reindexed: 0, failed: 0, switched: 0 })
+    expect(p.recorded.finished).toEqual([])
+  })
+
   it('writes the shadow vector onto the existing points and then marks', async () => {
     const p = ports([target()])
     const result = await reindexOnce(p, 10)
