@@ -523,6 +523,88 @@ class RerankConfiguration(unittest.TestCase):
         self.assertNotIn("a route", message)
 
 
+class RejectedCredential(unittest.TestCase):
+    """
+    A 401 from a vendor names the variable that holds the credential.
+
+    `cloudflare answered 401` was the whole of it, and it is one step short of
+    actionable — a 401 from a vendor means the key this adapter holds was
+    rejected, which is the opposite of what the core's own 401 helper explains
+    ("this endpoint wants a credential and Nacre sends none"). The two read
+    alike and point opposite ways.
+    """
+
+    def embed_routes(self):
+        with env(
+            NACRE_EMBED_ROUTES="bge-m3=cloudflare:@cf/baai/bge-m3",
+            NACRE_EMBED_CLOUDFLARE_ACCOUNT="acc123",
+            NACRE_EMBED_CLOUDFLARE_API_KEY="cf-test",
+        ):
+            return app.load_routes()
+
+    def rerank_cfg(self):
+        with env(
+            NACRE_RERANK_VENDOR="cloudflare",
+            NACRE_RERANK_MODEL="@cf/baai/bge-reranker-base",
+            NACRE_RERANK_CLOUDFLARE_ACCOUNT="acc123",
+            NACRE_RERANK_CLOUDFLARE_API_KEY="cf-test",
+        ):
+            return app.load_reranker()
+
+    @staticmethod
+    def refusal(status: int):
+        return urllib.error.HTTPError("https://api.cloudflare.com/", status, "", {}, io.BytesIO(b"{}"))
+
+    def test_it_names_the_embedding_variable_on_401(self):
+        patcher, _ = upstream([self.refusal(401)])
+        with patcher, self.assertRaises(app.UpstreamError) as caught:
+            app.embed(self.embed_routes(), "bge-m3", ["hello"])
+
+        said = str(caught.exception)
+        self.assertIn("cloudflare answered 401", said)
+        self.assertIn("NACRE_EMBED_CLOUDFLARE_API_KEY", said)
+        self.assertIn("NACRE_EMBED_CLOUDFLARE_API_KEY_FILE", said)
+
+    def test_the_rerank_path_names_its_own_variable_and_not_the_other(self):
+        # The reason `key_vars` is carried rather than derived from the vendor
+        # name: `cloudflare` is in both tables under different variables, and a
+        # message naming the wrong one sends the reader somewhere with nothing
+        # in it. Same defect `named_by` was added for one layer up.
+        patcher, _ = upstream([self.refusal(401)])
+        with patcher, self.assertRaises(app.UpstreamError) as caught:
+            app.rerank(self.rerank_cfg(), "q", ["a"])
+
+        said = str(caught.exception)
+        self.assertIn("NACRE_RERANK_CLOUDFLARE_API_KEY", said)
+        self.assertNotIn("NACRE_EMBED_CLOUDFLARE_API_KEY", said)
+
+    def test_403_is_the_same_answer(self):
+        patcher, _ = upstream([self.refusal(403)])
+        with patcher, self.assertRaises(app.UpstreamError) as caught:
+            app.embed(self.embed_routes(), "bge-m3", ["hello"])
+        self.assertIn("NACRE_EMBED_CLOUDFLARE_API_KEY", str(caught.exception))
+
+    def test_a_quota_or_an_outage_gets_no_paragraph_about_credentials(self):
+        # 429 is a quota and 500 is the vendor's own outage. A paragraph about
+        # credentials on either is noise on the failures nobody here can fix,
+        # and it would be wrong.
+        for status in (429, 500, 503):
+            patcher, _ = upstream([self.refusal(status)])
+            with patcher, self.assertRaises(app.UpstreamError) as caught:
+                app.embed(self.embed_routes(), "bge-m3", ["hello"])
+            said = str(caught.exception)
+            self.assertEqual(said, f"cloudflare answered {status}")
+            self.assertNotIn("NACRE_EMBED", said)
+
+    def test_a_failure_with_no_status_is_left_alone(self):
+        # An unreachable host has no status, and "check your credential" would
+        # be actively misleading.
+        patcher, _ = upstream([urllib.error.URLError("nope")])
+        with patcher, self.assertRaises(app.UpstreamError) as caught:
+            app.embed(self.embed_routes(), "bge-m3", ["hello"])
+        self.assertNotIn("NACRE_EMBED", str(caught.exception))
+
+
 class Rerank(unittest.TestCase):
     """
     One score per input, in input order, from four vendors that do not agree

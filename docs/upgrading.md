@@ -244,6 +244,34 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.14.2 — a vendor's 401 names the variable that holds the credential
+
+**Nothing to do**, no migration and no new configuration. Only useful if you
+route embeddings or reranking through the embedding adapter to a hosted vendor.
+
+0.14.1 made a vendor's refusal travel, and the first thing it surfaced was
+`cloudflare answered 401` — accurate, and one step short. A 401 from a *vendor*
+means the credential the adapter holds was rejected, which is the **opposite**
+of the 401 an endpoint you pointed at directly gives: that one means it wants a
+credential and Nacre sends none. The two read alike and point opposite ways.
+
+The message now says which, and names the pair of variables that could hold it:
+
+```
+cloudflare answered 401 — it rejected the credential this adapter holds, rather
+than refusing the request. Check NACRE_EMBED_CLOUDFLARE_API_KEY or
+NACRE_EMBED_CLOUDFLARE_API_KEY_FILE …
+```
+
+The pair is carried from the table entry that resolved the credential rather
+than looked up by vendor name, because `cloudflare` is in **both** the embedding
+and the reranking tables under different variables — a rerank failure naming
+`NACRE_EMBED_CLOUDFLARE_API_KEY` sends you to a variable that is not in play.
+
+Only 401 and 403. A 429 is a quota and a 5xx is the vendor's own outage; those
+keep the bare status, because a paragraph about credentials on either is noise
+on a failure nobody at your end can fix. `docs/config.md` has the table.
+
 ### 0.14.1 — a refusal says why, in the log
 
 **Nothing to do**, no migration and no new configuration. 0.14.0 runs against
