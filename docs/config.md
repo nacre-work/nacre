@@ -673,14 +673,23 @@ POST /v1/embedding-providers
 Two organizations can then sit on two vendors with no new machinery, which is
 what `embedding_providers.org_id` has offered since migration 0001.
 
-| `vendor` | Upstream |
-|---|---|
-| `openai-compatible` | Anything answering OpenAI's `/embeddings`: OpenAI, Together, Voyage, DeepInfra, vLLM, a self-hosted TEI |
-| `cloudflare` | Workers AI |
-| `google` | Generative Language API |
+| `vendor` | Upstream | Credential |
+|---|---|---|
+| `openai-compatible` | Anything answering OpenAI's `/embeddings`: OpenAI, Together, DeepInfra, vLLM, a self-hosted TEI | `NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY` or `NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY_FILE`, with `NACRE_EMBED_OPENAI_COMPATIBLE_ENDPOINT` |
+| `cloudflare` | Workers AI | `NACRE_EMBED_CLOUDFLARE_API_KEY` or `NACRE_EMBED_CLOUDFLARE_API_KEY_FILE`, with `NACRE_EMBED_CLOUDFLARE_ACCOUNT` |
+| `google` | Generative Language API | `NACRE_EMBED_GOOGLE_API_KEY` or `NACRE_EMBED_GOOGLE_API_KEY_FILE` |
+| `voyage` | Voyage AI | `NACRE_EMBED_VOYAGE_API_KEY` or `NACRE_EMBED_VOYAGE_API_KEY_FILE` |
 
 The first is named for the protocol rather than for a company, which is why its
 endpoint is required rather than defaulted at one vendor.
+
+**`voyage` has its own entry although its wire format is OpenAI's**, and the
+reason is who asks for it. [Anthropic publishes no embeddings
+API](#there-is-no-anthropic-vendor-and-there-cannot-be) and points at Voyage
+instead, so "embeddings from Anthropic" resolves here — and a vendor reachable
+only by knowing to type `https://api.voyageai.com/v1` under a different name is
+one nobody finds. Naming the vendor is choosing the endpoint, exactly as it is
+for `cloudflare` and `google`.
 
 `_API_KEY` and `_API_KEY_FILE` together is refused rather than resolved by
 precedence — two answers to one question leaves the losing one configured,
@@ -715,11 +724,91 @@ no code from this repository at all; the adapter exists because this repository
 has twice chosen to own a small thing rather than take a dependency on the path
 that reads other people's documents, and there is exactly one operation here.
 
+### There is no `anthropic` vendor, and there cannot be
+
+**Anthropic publishes no embeddings API and no reranking API.** Their own
+documentation points at Voyage AI for embeddings, which is why `voyage` is in
+the table above and `anthropic` is not.
+
+This is stated rather than left as an absence because the absence is the
+confusing part: Anthropic is the vendor most people using this product already
+have a key for, and a missing route reads as an omission somebody will file a
+bug about. It is not one. There is nothing to route to.
+
+The same holds for reranking and takes two more vendors with it: **OpenAI,
+Anthropic and Google publish no reranking API either.** `NACRE_RERANK_VENDOR`
+refuses all three by name for that reason, rather than only listing the four
+that work — a refusal that says "pick from this list" invites the reader to
+assume their vendor was forgotten.
+
+### Reranking through a vendor
+
+The same sidecar answers **TEI's `/rerank`**, so a deployment with no GPU can
+rerank without running a cross-encoder. Nothing in the core changes: point
+`NACRE_RERANKER_ENDPOINT` at the adapter instead of at a TEI container.
+
+```
+NACRE_RERANK_VENDOR=cohere
+NACRE_RERANK_MODEL=rerank-v3.5
+NACRE_RERANK_COHERE_API_KEY_FILE=/run/secrets/cohere
+```
+
+and on the API and MCP processes:
+
+```
+NACRE_RERANKER_ENABLED=true
+NACRE_RERANKER_ENDPOINT=http://embedding-adapter:8091
+```
+
+| `NACRE_RERANK_VENDOR` | Upstream | Credential |
+|---|---|---|
+| `cloudflare` | Workers AI | `NACRE_RERANK_CLOUDFLARE_API_KEY` or `NACRE_RERANK_CLOUDFLARE_API_KEY_FILE`, with `NACRE_RERANK_CLOUDFLARE_ACCOUNT` |
+| `cohere` | Cohere Rerank | `NACRE_RERANK_COHERE_API_KEY` or `NACRE_RERANK_COHERE_API_KEY_FILE` |
+| `jina` | Jina Reranker | `NACRE_RERANK_JINA_API_KEY` or `NACRE_RERANK_JINA_API_KEY_FILE` |
+| `voyage` | Voyage Rerank | `NACRE_RERANK_VOYAGE_API_KEY` or `NACRE_RERANK_VOYAGE_API_KEY_FILE` |
+
+**One reranker per adapter rather than a routing table**, and that asymmetry
+with embeddings is forced rather than chosen. TEI's `/rerank` request carries a
+query and its texts and **no model name** — a TEI container is one model — so
+there is no routing key in the request to dispatch on. Inventing one would mean
+changing the core's reranker client, which is the thing this service exists to
+avoid. `NACRE_RERANK_MODEL` names the cross-encoder; setting one of the two
+variables without the other is refused, since a vendor with no model is a guess
+about which cross-encoder and a model with no vendor has nowhere to go.
+
+The credentials are **separate from the embedding ones** even where the vendor
+is the same. Reusing `NACRE_EMBED_VOYAGE_API_KEY` for `voyage` reranking would
+mean a deployment that only reranks has to set an embedding variable, and the
+two are independent jobs — an adapter with `NACRE_RERANK_VENDOR` set and no
+`NACRE_EMBED_ROUTES` at all starts, serves `/rerank`, and refuses `/embeddings`
+by name.
+
+Three properties are worth knowing because each fails silently otherwise:
+
+- **Scores are the vendors' normalized relevance, not TEI's raw logits.** Safe
+  because the caller uses them to *order* an already-permitted candidate set and
+  never as a threshold. `raw_scores` in the request is accepted and ignored,
+  because there is no raw score to give.
+- **Every candidate must come back scored.** The adapter refuses an answer that
+  scores fewer inputs than it sent, naming the vendor and the counts. A vendor
+  that truncated — honouring a `top_n` nobody sent — would otherwise leave the
+  unscored candidates at the bottom of the results with no error anywhere.
+- **A batch over 512 texts is refused rather than split.** Splitting embeddings
+  is safe because each vector comes from one text; a reranker is not promised to
+  be, and a vendor normalizing scores across the documents in one call would
+  produce two sets that cannot be compared. That is a wrong *ordering* with no
+  symptom. `NACRE_RERANK_CANDIDATES` is 50 by default, so the limit is far
+  above anything a search sends.
+
+Reranking stays **off unless configured** and still fails open: an unreachable
+reranker degrades a search to fusion order with a counter and a log line, which
+is the existing behaviour and is unchanged by the upstream being a vendor.
+
 ## Compose profiles
 
 | Profile | Contains | For |
 |---|---|---|
-| `minimal` | api, mcp, worker, the migrate job, parser, postgres, qdrant, redis; embeddings via an external endpoint | pilot, laptop, no GPU |
+| `minimal` | api, mcp, worker, web, the migrate job, parser, postgres, qdrant, redis; embeddings via an external endpoint | pilot, laptop, no GPU |
 | `full` | plus minio, embedder (TEI), reranker | typical deployment |
 | `airgapped` | everything local; email/password sign-in; models pre-seeded | closed network |
 | `hosted` | `minimal` plus the embedding adapter | a laptop with no GPU, embeddings from a vendor's API |

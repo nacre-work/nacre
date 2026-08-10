@@ -26,10 +26,16 @@ from services.embedding_adapter import app
 
 @contextmanager
 def env(**values: str | None):
-    """Set exactly these NACRE_EMBED_ variables, clearing every other one."""
+    """
+    Set exactly these NACRE_ variables, clearing every other one.
+
+    The prefix is `NACRE_` and not `NACRE_EMBED_`, which it was: reranking added
+    `NACRE_RERANK_*`, and a helper that clears one family and not the other lets
+    a developer's own environment decide what a test sees.
+    """
     saved = dict(os.environ)
     for key in list(os.environ):
-        if key.startswith("NACRE_EMBED_"):
+        if key.startswith("NACRE_"):
             del os.environ[key]
     for key, value in values.items():
         if value is not None:
@@ -319,6 +325,298 @@ class TwoVendorsAtOnce(unittest.TestCase):
             self.assertEqual(app.embed(routes, "b", ["x"]), [[2.0]])
         self.assertIn("generativelanguage.googleapis.com", calls[0]["url"])
         self.assertIn("api.cloudflare.com", calls[1]["url"])
+
+
+class Voyage(unittest.TestCase):
+    """
+    The vendor that exists because Anthropic's does not.
+
+    Anthropic publishes no embeddings API and points at Voyage, so this is where
+    "embeddings from Anthropic" has to land. Its wire format is OpenAI's, which
+    is why it shares a parser and why the test worth writing is that it reaches
+    Voyage's own endpoint rather than whatever `openai-compatible` was pointed
+    at.
+    """
+
+    def routes(self):
+        with env(NACRE_EMBED_ROUTES="voyage-3=voyage", NACRE_EMBED_VOYAGE_API_KEY="vk"):
+            return app.load_routes()
+
+    def test_reaches_voyage_and_reads_the_openai_shape(self):
+        patcher, calls = upstream(
+            [{"data": [{"index": 1, "embedding": [2.0]}, {"index": 0, "embedding": [1.0]}]}],
+        )
+        with patcher:
+            vectors = app.embed(self.routes(), "voyage-3", ["a", "b"])
+
+        self.assertEqual(vectors, [[1.0], [2.0]])
+        self.assertEqual(calls[0]["url"], "https://api.voyageai.com/v1/embeddings")
+        self.assertEqual(calls[0]["headers"]["authorization"], "Bearer vk")
+        self.assertEqual(calls[0]["body"]["model"], "voyage-3")
+
+    def test_no_endpoint_variable_is_required(self):
+        # Naming the vendor is choosing the endpoint. An operator who had to
+        # know `api.voyageai.com` to use the vendor called `voyage` would be
+        # doing the adapter's job.
+        with env(NACRE_EMBED_ROUTES="voyage-3=voyage", NACRE_EMBED_VOYAGE_API_KEY="vk"):
+            routes = app.load_routes()
+        self.assertNotIn("endpoint", routes["voyage-3"])
+
+
+class RerankConfiguration(unittest.TestCase):
+    def test_neither_variable_is_no_reranker_rather_than_an_error(self):
+        with env(NACRE_EMBED_ROUTES="m=google", NACRE_EMBED_GOOGLE_API_KEY="g"):
+            self.assertIsNone(app.load_reranker())
+
+    def test_half_configured_is_refused_naming_the_missing_half(self):
+        with env(NACRE_RERANK_VENDOR="cohere"), self.assertRaises(app.ConfigError) as caught:
+            app.load_reranker()
+        self.assertIn("NACRE_RERANK_MODEL", str(caught.exception))
+
+        with env(NACRE_RERANK_MODEL="rerank-v3.5"), self.assertRaises(app.ConfigError) as caught:
+            app.load_reranker()
+        self.assertIn("NACRE_RERANK_VENDOR", str(caught.exception))
+
+    def test_an_unknown_vendor_says_which_ones_cannot_exist(self):
+        # The three an operator is most likely to try are the three with no
+        # reranking API at all, so the refusal says so rather than only listing
+        # the four that work.
+        with env(
+            NACRE_RERANK_VENDOR="openai",
+            NACRE_RERANK_MODEL="whatever",
+        ), self.assertRaises(app.ConfigError) as caught:
+            app.load_reranker()
+        message = str(caught.exception)
+        self.assertIn("cohere", message)
+        self.assertIn("jina", message)
+        self.assertIn("Anthropic", message)
+
+    def test_a_rerank_only_adapter_starts(self):
+        # The two jobs are independent. A deployment that embeds locally and
+        # reranks through a vendor must not have to invent an embedding route.
+        with env(
+            NACRE_RERANK_VENDOR="jina",
+            NACRE_RERANK_MODEL="jina-reranker-v2-base-multilingual",
+            NACRE_RERANK_JINA_API_KEY="jk",
+        ):
+            self.assertEqual(app.load_routes(required=False), {})
+            self.assertIsNotNone(app.load_reranker())
+
+    def test_a_rerank_vendor_without_its_credential_is_refused(self):
+        with env(
+            NACRE_RERANK_VENDOR="voyage",
+            NACRE_RERANK_MODEL="rerank-2",
+        ), self.assertRaises(app.ConfigError) as caught:
+            app.load_reranker()
+        self.assertIn("NACRE_RERANK_VOYAGE_API_KEY", str(caught.exception))
+
+    def test_the_refusal_names_what_selected_the_vendor_and_not_a_route(self):
+        # Reranking has no routes. "a route names the cloudflare vendor" sent
+        # the reader looking through NACRE_EMBED_ROUTES for something that was
+        # never there — found by starting the container with the credentials
+        # still empty, which is the state every first run is in.
+        with env(
+            NACRE_RERANK_VENDOR="cloudflare",
+            NACRE_RERANK_MODEL="@cf/baai/bge-reranker-base",
+        ), self.assertRaises(app.ConfigError) as caught:
+            app.load_reranker()
+        message = str(caught.exception)
+        self.assertIn("NACRE_RERANK_VENDOR names the cloudflare vendor", message)
+        self.assertNotIn("a route", message)
+
+
+class Rerank(unittest.TestCase):
+    """
+    One score per input, in input order, from four vendors that do not agree
+    about the shape of any of that.
+    """
+
+    def reranker(self, vendor: str, **extra: str):
+        with env(
+            NACRE_RERANK_VENDOR=vendor,
+            NACRE_RERANK_MODEL="a-model",
+            **{f"NACRE_RERANK_{vendor.upper()}_API_KEY": "k"},
+            **extra,
+        ):
+            return app.load_reranker()
+
+    def test_cohere_jina_and_voyage_each_reach_their_own_endpoint(self):
+        for vendor, host, field in (
+            ("cohere", "api.cohere.com", "results"),
+            ("jina", "api.jina.ai", "results"),
+            ("voyage", "api.voyageai.com", "data"),
+        ):
+            with self.subTest(vendor=vendor):
+                patcher, calls = upstream(
+                    [{field: [{"index": 0, "relevance_score": 0.5}, {"index": 1, "relevance_score": 0.9}]}],
+                )
+                with patcher:
+                    scores = app.rerank(self.reranker(vendor), "q", ["a", "b"])
+                self.assertEqual(scores, [0.5, 0.9])
+                self.assertIn(host, calls[0]["url"])
+                self.assertEqual(calls[0]["body"]["documents"], ["a", "b"])
+                self.assertEqual(calls[0]["body"]["query"], "q")
+
+    def test_cloudflare_uses_id_and_contexts(self):
+        cfg = self.reranker("cloudflare", NACRE_RERANK_CLOUDFLARE_ACCOUNT="acc")
+        patcher, calls = upstream(
+            [{"success": True, "result": {"response": [{"id": 1, "score": 0.2}, {"id": 0, "score": 0.7}]}}],
+        )
+        with patcher:
+            scores = app.rerank(cfg, "q", ["a", "b"])
+
+        self.assertEqual(scores, [0.7, 0.2])
+        self.assertIn("api.cloudflare.com", calls[0]["url"])
+        self.assertIn("acc", calls[0]["url"])
+        self.assertEqual(calls[0]["body"]["contexts"], [{"text": "a"}, {"text": "b"}])
+
+    def test_results_out_of_order_are_placed_by_index(self):
+        # The failure this exists for: every vendor sorts by score, so the
+        # answer arrives in a different order from the request. Trusting arrival
+        # order attaches each score to the wrong chunk, and the result is a
+        # plausible ranking of the wrong documents — nothing downstream can tell.
+        patcher, _ = upstream(
+            [
+                {
+                    "results": [
+                        {"index": 2, "relevance_score": 0.9},
+                        {"index": 0, "relevance_score": 0.1},
+                        {"index": 1, "relevance_score": 0.5},
+                    ],
+                },
+            ],
+        )
+        with patcher:
+            scores = app.rerank(self.reranker("cohere"), "q", ["a", "b", "c"])
+        self.assertEqual(scores, [0.1, 0.5, 0.9])
+
+    def test_a_short_answer_is_refused_rather_than_left_unscored(self):
+        # `HttpReranker` fills a missing score with -Infinity and refuses; this
+        # refuses one hop earlier, where the vendor can be named. A truncating
+        # vendor — one honouring a `top_n` nobody sent — would otherwise sink
+        # every unscored candidate to the bottom with no error anywhere.
+        patcher, _ = upstream([{"results": [{"index": 0, "relevance_score": 0.9}]}])
+        with patcher, self.assertRaises(app.UpstreamError) as caught:
+            app.rerank(self.reranker("cohere"), "q", ["a", "b", "c"])
+        self.assertIn("1 of 3", str(caught.exception))
+
+    def test_an_index_scored_twice_is_refused(self):
+        patcher, _ = upstream(
+            [{"results": [{"index": 0, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.1}]}],
+        )
+        with patcher, self.assertRaises(app.UpstreamError) as caught:
+            app.rerank(self.reranker("cohere"), "q", ["a", "b"])
+        self.assertIn("twice", str(caught.exception))
+
+    def test_an_index_out_of_range_is_refused(self):
+        patcher, _ = upstream(
+            [{"results": [{"index": 0, "relevance_score": 0.9}, {"index": 7, "relevance_score": 0.1}]}],
+        )
+        with patcher, self.assertRaises(app.UpstreamError) as caught:
+            app.rerank(self.reranker("cohere"), "q", ["a", "b"])
+        self.assertIn("7", str(caught.exception))
+
+    def test_no_reranker_configured_is_a_route_error(self):
+        with self.assertRaises(app.RouteError) as caught:
+            app.rerank(None, "q", ["a"])
+        self.assertIn("NACRE_RERANK_VENDOR", str(caught.exception))
+
+    def test_the_batch_limit_is_above_the_default_candidate_count(self):
+        # NACRE_RERANK_CANDIDATES defaults to 50. A limit at or below it would
+        # make the shipped configuration refuse every search.
+        self.assertGreater(app.MAX_RERANK_TEXTS, 50)
+
+
+class Documentation(unittest.TestCase):
+    """
+    Every vendor this service routes to is in both places that list them.
+
+    `VENDORS` and `RERANKERS` are the tables, and two documents copy them: this
+    directory's README and `docs/config.md`, which is normative. Adding a vendor
+    means editing three files, and `lint:config` sees only part of it — it holds
+    the `NACRE_EMBED_*` and `NACRE_RERANK_*` literals against `docs/config.md`,
+    so a vendor whose credential variable is documented in a sentence rather
+    than in the table passes it, and the README is not a file it reads at all.
+
+    Held from here rather than from a `lint:` script because the tables are
+    Python: a check in another language would have to parse this file, and a
+    check that parses the thing it is checking gets the answer the parser
+    happens to give.
+    """
+
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    ROOT = os.path.dirname(os.path.dirname(HERE))
+
+    # The first cell of each table's header row, which is what says which table
+    # it is. Both documents write them the same way.
+    EMBEDDING_HEADER = "`vendor`"
+    RERANK_HEADER = "`NACRE_RERANK_VENDOR`"
+
+    @staticmethod
+    def _cells(line: str) -> list[str] | None:
+        if not line.startswith("|"):
+            return None
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    @classmethod
+    def _first_column(cls, markdown: str, header: str) -> list[str] | None:
+        """
+        The codes in the first column of the table whose header row's first cell
+        is `header`, in order, or `None` if there is no such table.
+
+        A header is a row **followed by the `|---|` rule**, and not merely a row
+        whose first cell matches. Both documents also carry a table of variables
+        where `NACRE_RERANK_VENDOR` is a *row*, and the looser rule read that
+        one — reporting the variables as the vendor list, which is a check
+        failing on the wrong thing rather than on nothing.
+        """
+        lines = markdown.splitlines()
+        rows: list[str] | None = None
+        for index, line in enumerate(lines):
+            cells = cls._cells(line)
+            if cells is None:
+                if rows is not None:
+                    break
+                continue
+            if rows is None:
+                below = cls._cells(lines[index + 1]) if index + 1 < len(lines) else None
+                if cells[0] == header and below is not None and set(below[0]) <= {"-", ":"}:
+                    rows = []
+                continue
+            if set(cells[0]) <= {"-", ":"}:
+                continue
+            rows.append(cells[0].strip("`"))
+        return rows
+
+    def _document(self, path: str) -> str:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def _assert_tables(self, path: str):
+        markdown = self._document(path)
+        for header, table in (
+            (self.EMBEDDING_HEADER, app.VENDORS),
+            (self.RERANK_HEADER, app.RERANKERS),
+        ):
+            listed = self._first_column(markdown, header)
+            self.assertIsNotNone(
+                listed,
+                f"{path} has no table headed {header}. Renaming or removing it does not make "
+                f"the vendors documented — it makes this check stop looking.",
+            )
+            self.assertEqual(
+                sorted(listed),
+                sorted(table),
+                f"{path}'s {header} table and the adapter's own do not agree. A vendor the "
+                f"service routes to and no document lists is one nobody can find; a vendor a "
+                f"document lists and the service does not route to is refused by name.",
+            )
+
+    def test_the_readme_lists_every_vendor(self):
+        self._assert_tables(os.path.join(self.HERE, "README.md"))
+
+    def test_the_configuration_reference_lists_every_vendor(self):
+        self._assert_tables(os.path.join(self.ROOT, "docs", "config.md"))
 
 
 if __name__ == "__main__":
