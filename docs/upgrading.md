@@ -244,6 +244,59 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.14.3 — the adapter says which credential it is holding
+
+**Nothing to do**, no migration and no new configuration. Only relevant if you
+route embeddings or reranking through the embedding adapter.
+
+0.14.2 named the variable. The question that leaves is the one an operator
+cannot answer from outside: **a rotated token and a redeployed container fail
+identically whether the new token is wrong or the old one is still in the
+environment.** Same 401, same message. A `docker compose` `environment:` entry
+overriding an `env_file:`, or a Deployment that did not roll, both produce the
+second.
+
+The adapter now reports a fingerprint of each credential it loaded — never the
+credential — at startup, in `GET /health`, and in the refusal:
+
+```
+cloudflare answered 401, rejecting this adapter's credential sha256:1d4bedd426ab
+from NACRE_EMBED_CLOUDFLARE_API_KEY[_FILE]
+```
+
+`printf %s "$TOKEN" | sha256sum | cut -c1-12` on the token you deployed answers
+it. This is the shape the core already logs for the JWT signing key, and the
+argument is the same: anyone who can read this log can read the environment it
+came from, so it grants nothing that was not already granted.
+
+`GET /health` gained a `credentials` object and its `rerank` object gained a
+`credential` field. Both are fingerprints. If you parse `/health`, nothing was
+removed.
+
+**A credential the container cannot use is now refused at startup**, which is
+the other half of the same incident. `NACRE_..._API_KEY="cf-token"` — quoted
+where the quoting is not removed, as a Kubernetes manifest value or a secret
+store round-tripping JSON both do — sent `Authorization: Bearer "cf-token"` and
+got a `401` from a token that was correct. So did one carrying a line break
+from a paste, which failed inside the HTTP client several layers from the
+variable holding it. Both are refused by name now, and neither is repaired:
+stripping the quotes would hide the deployment that added them.
+
+If your credential is quoted and has been working, it has not been — the
+container would be failing every request. If it is quoted and this refusal is
+new to you, remove the quotes before upgrading.
+
+**And 0.14.2's message was too long for its own reader.** The core bounds an
+endpoint's reason at 200 characters, because a vendor's error can quote the
+input it rejected — a bound that applies to the adapter's messages too, since
+nothing on that side can tell whose message it is. The credential refusal was
+337 characters for `cloudflare` and 250 for `openai-compatible`, so its tail was
+cut. It is 145 at worst now, and the guidance that used to be prose is a
+structured field on the adapter's own log line, which has no bound. A test holds
+every entry in both vendor tables against the bound read out of the core, so
+the next variable name long enough to overflow fails there rather than in
+somebody's log.
+
 ### 0.14.2 — a vendor's 401 names the variable that holds the credential
 
 **Nothing to do**, no migration and no new configuration. Only useful if you
