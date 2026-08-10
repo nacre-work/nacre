@@ -244,6 +244,24 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.12.1 — a 401 from a model endpoint explains itself
+
+**Nothing to do**, no migration and no new configuration. 0.12.0 runs against
+this database, so rolling back is safe. No behaviour changed: the same requests
+succeed and the same ones fail.
+
+What changed is what a failure *says*. An embedder or reranker endpoint
+answering `401` or `403` now explains that it wants a credential, that Nacre
+sends none and structurally cannot — `embedding_providers` has no column for
+one, deliberately, since a vendor key there would reach every database dump —
+and that the embedding adapter is the way to reach a hosted vendor. Other
+statuses are unchanged.
+
+Worth knowing if you have ever tried pointing an endpoint straight at OpenAI or
+another hosted API and could not work out why it refused: that is the case, it
+never could work, and `docs/config.md` previously implied otherwise. Both that
+paragraph and `docs/apple-silicon.md` are corrected.
+
 ### 0.12.0 — three documents moved in the contract, not in the server
 
 **Nothing to do**, no migration and no new configuration. 0.11.0 runs against
