@@ -319,8 +319,22 @@ jobs:
           # Point at the stub, and shrink the vector width — the vectors are
           # constant and meaningless, so eight floats index as well as a
           # thousand and faster.
-          sed -i 's#^NACRE_DEFAULT_EMBEDDING_ENDPOINT=.*#NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://stub-embedder:8000#' .env
-          sed -i 's#^NACRE_DEFAULT_EMBEDDING_DIM=.*#NACRE_DEFAULT_EMBEDDING_DIM=8#' .env
+          # Appended rather than sed-ed, and that is the fix rather than a
+          # tidy-up. `.env.example` now offers the embedder as three commented
+          # choices — host-native, the profile's own TEI, the adapter — because
+          # there is no default worth shipping. A substitution anchored at
+          # `^NACRE_DEFAULT_EMBEDDING_ENDPOINT=` matches none of them, and a sed
+          # that matches nothing succeeds silently: the file came out with no
+          # embedder configured at all, and `init` refused with exactly the
+          # message it should have. The model line was never sed-ed here and had
+          # been relying on .env.example shipping one uncommented.
+          #
+          # The S3 block below already does it this way, for the same reason.
+          cat >> .env <<'EOF'
+          NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://stub-embedder:8000
+          NACRE_DEFAULT_EMBEDDING_MODEL=stub
+          NACRE_DEFAULT_EMBEDDING_DIM=8
+          EOF
           # Object storage, which .env.example ships commented out because it
           # is off by default. Uncommented here rather than sed-ed line by
           # line, and appended so the values are visible in one block: binary
