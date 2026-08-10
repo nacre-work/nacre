@@ -1,6 +1,6 @@
 # Extension points
 
-Normative. Four points a module outside this repository plugs into, the loader
+Normative. Five points a module outside this repository plugs into, the loader
 that gets it in, and what the core refuses.
 
 This document exists because the points did not. `nacre-enterprise` has named
