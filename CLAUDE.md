@@ -735,7 +735,7 @@ placed; `PostgresGrants.issue` checks existence now. Neither was a leak — the
 pre-filter's unconditional `must: org_id` held in both cases — and both made
 `404` stop meaning what invariant 4 says it means.
 
-**All 15 cases from docs/authz.md run** against real services, plus the truth
+**All 25 cases from docs/authz.md run** against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
 round trip that puts the worker and the search path against each other.
 `acl-invariants` is a gate on what that document specifies — and only on that.

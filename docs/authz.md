@@ -276,8 +276,9 @@ paged by measured the freshness of something unused.
   Document-scoped grants were invisible to them. Applied as the `must` the
   specification asks for, a caller reaching a document through a document-scoped
   grant is filtered *out* — their principal is not in that layer's tag set.
-  Document-scoped grants are issuable now, so the specified design and a shipped
-  feature could not both hold.
+  A document scope is in the model — `grants.scope_type` admits it — and this
+  build refuses to issue one, so the tag design would have collided with the
+  feature the moment it was turned on rather than after it had shipped.
 - **It is stale in the wrong direction.** Making the tags per-document would fix
   the point above and leave this one: the intersection of a live plan and a
   cached tag set delays *grants* by up to the sweep interval while doing nothing
