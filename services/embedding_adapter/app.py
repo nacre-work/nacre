@@ -568,8 +568,27 @@ def load_routes(required: bool = True) -> dict[str, dict]:
             continue
         if "=" not in entry:
             raise ConfigError(f"NACRE_EMBED_ROUTES entry `{entry}` is not `model=vendor`")
-        model, _, vendor = entry.partition("=")
-        model, vendor = model.strip(), vendor.strip()
+        model, _, rest = entry.partition("=")
+        # `model=vendor` or `model=vendor:upstream-model`.
+        #
+        # The second form exists because the routing key and the vendor's own
+        # model id are not always the same string, and a deployment cannot
+        # always change the first. A layer's named vector is derived from the
+        # model — `v_{model}_{dimensions}` — so an installation indexed against
+        # `bge-m3` that wants Cloudflare's copy of the same weights has two bad
+        # options without this: rename the model and reindex every layer to move
+        # the vectors into a differently-named slot, or stay where it is. The
+        # weights are identical; only the vendor's spelling differs.
+        #
+        # Written as a suffix on the vendor rather than a third field, so an
+        # existing `model=vendor` stays exactly what it was.
+        vendor, sep, upstream = rest.strip().partition(":")
+        model, vendor, upstream = model.strip(), vendor.strip(), upstream.strip()
+        if sep and not upstream:
+            raise ConfigError(
+                f"NACRE_EMBED_ROUTES entry `{entry}` ends in a colon with no upstream model. "
+                "Write `model=vendor` or `model=vendor:upstream-model`.",
+            )
         if not model or not vendor:
             raise ConfigError(f"NACRE_EMBED_ROUTES entry `{entry}` is not `model=vendor`")
         if vendor not in VENDORS:
@@ -583,7 +602,13 @@ def load_routes(required: bool = True) -> dict[str, dict]:
                 "the second entry would be silently unreachable.",
             )
 
-        routes[model] = _vendor_credentials(vendor, VENDORS[vendor])
+        cfg = _vendor_credentials(vendor, VENDORS[vendor])
+        # The name to send upstream, which is the routing key unless one was
+        # given. Stored rather than resolved per request, so the substitution is
+        # visible in `/health` and decided once, at startup, with everything
+        # else this file validates.
+        cfg["upstream_model"] = upstream or model
+        routes[model] = cfg
 
     if not routes:
         raise ConfigError("NACRE_EMBED_ROUTES is set and contains no route")
@@ -622,10 +647,16 @@ def embed(routes: dict[str, dict], model: str, texts: list[str]) -> list[list[fl
     spec = VENDORS[cfg["vendor"]]
     size = spec["batch"] or len(texts) or 1
 
+    # What the vendor is asked for, which is the caller's model unless the route
+    # named a different one. The caller's string stays the routing key and stays
+    # what comes back in the response, so nothing downstream learns that a
+    # substitution happened.
+    upstream = cfg.get("upstream_model") or model
+
     vectors: list[list[float]] = []
     for start in range(0, len(texts), size):
         chunk = texts[start : start + size]
-        got = spec["call"](chunk, model, cfg)
+        got = spec["call"](chunk, upstream, cfg)
         if not isinstance(got, list) or len(got) != len(chunk):
             raise UpstreamError(
                 f"{cfg['vendor']} returned {len(got) if isinstance(got, list) else 'no'} vectors "
@@ -726,6 +757,14 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "status": "ok",
                     "models": sorted(self.routes),
+                    # Where a route sends something other than its own name.
+                    # An operator whose substitution did not parse the way they
+                    # meant finds out here rather than from a 400 at the vendor.
+                    "upstream_models": {
+                        m: c["upstream_model"]
+                        for m, c in sorted(self.routes.items())
+                        if c.get("upstream_model") not in (None, m)
+                    },
                     # The vendor and model, never the credential. An operator
                     # whose reranker is not the one they meant finds out here
                     # rather than from search results that quietly did not move.

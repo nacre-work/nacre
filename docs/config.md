@@ -683,6 +683,22 @@ what `embedding_providers.org_id` has offered since migration 0001.
 The first is named for the protocol rather than for a company, which is why its
 endpoint is required rather than defaulted at one vendor.
 
+**A route may name the vendor's own spelling of the model**, as
+`model=vendor:upstream-model`:
+
+```
+NACRE_EMBED_ROUTES=bge-m3=cloudflare:@cf/baai/bge-m3
+```
+
+The left-hand side stays the routing key and stays what a caller sends; only
+what goes upstream changes. That matters because a layer's named vector is
+derived from the model — `v_{model}_{dimensions}` — so an installation already
+indexed against `bge-m3` cannot be moved to Cloudflare's copy of the same
+weights by renaming the model: that is a different slot, and therefore a reindex
+of every layer to move vectors that did not need to move. The weights are
+identical and only the vendor's spelling differs, so the spelling is what this
+moves. `GET /health` on the adapter reports any substitution in effect.
+
 **`voyage` has its own entry although its wire format is OpenAI's**, and the
 reason is who asks for it. [Anthropic publishes no embeddings
 API](#there-is-no-anthropic-vendor-and-there-cannot-be) and points at Voyage

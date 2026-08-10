@@ -24,7 +24,7 @@ installation.** That is the trade; `docs/config.md` states it in those words.
 
 | Variable | |
 |---|---|
-| `NACRE_EMBED_ROUTES` | `model=vendor`, comma-separated. Required unless a reranker is configured. |
+| `NACRE_EMBED_ROUTES` | `model=vendor` or `model=vendor:upstream-model`, comma-separated. Required unless a reranker is configured. |
 | `NACRE_EMBED_OPENAI_COMPATIBLE_ENDPOINT` | Base URL. Required if a route names that vendor. |
 | `NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY[_FILE]` | |
 | `NACRE_EMBED_CLOUDFLARE_ACCOUNT` | Account id. |
