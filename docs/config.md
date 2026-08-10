@@ -730,20 +730,33 @@ packaging one — see [licensing.md](./licensing.md).
 **On arm64 the embedder and the reranker are the exception, and only those two.**
 Text Embeddings Inference publishes no arm64 image, so `full` and `airgapped`
 run those containers emulated on an Apple Silicon Mac or an arm64 node;
-everything else in every profile — this repository's two images since 0.5.2,
+everything else in every profile — this repository's four images since 0.5.2,
 Postgres, Qdrant, Redis, nginx, MinIO and Keycloak — is native.
 
-Emulated only once something names the platform. A plain
-`docker compose --profile full up -d` on an arm64 host fails at the pull with
-`no matching manifest for linux/arm64/v8`, because there is no arm64 to resolve
-and Compose asks for the host's. `docker-compose.apple-silicon.yml` sets
-`platform: linux/amd64` on those two services, which is what turns that failure
-into an emulated container. Select it with one line in `.env` —
-`COMPOSE_FILE=docker-compose.yml:docker-compose.apple-silicon.yml` — rather than
-with `-f` flags that every later command has to repeat.
+Emulated only because `docker-compose.yml` names the platform. Without that key
+a plain `docker compose --profile full up -d` on an arm64 host fails at the pull
+with `no matching manifest for linux/arm64/v8` — there is no arm64 to resolve
+and Compose asks for the host's — so `platform: linux/amd64` on those two
+services is what turns a failure into an emulated container. On an amd64 host it
+does nothing.
+
+**There is one command, and it is the same on every platform:**
+
+```bash
+docker compose --profile minimal up -d
+```
+
+macOS or Linux, amd64 or arm64, with no flags, no `COMPOSE_FILE` and no second
+file to select. That is a change: the two arm64-relevant keys — the `platform:`
+above and `host.docker.internal` on the application services — lived in a
+`docker-compose.apple-silicon.yml` overlay until recently, and both are harmless
+where they are not needed, so the overlay bought a second file, a different
+command on different machines, and a footgun (see [Local
+overrides](#local-overrides)) in exchange for nothing.
 
 The arrangement that avoids the emulation altogether is `minimal` with an
-embedder on the host, and [apple-silicon.md](./apple-silicon.md) has both.
+embedder on the host, and [apple-silicon.md](./apple-silicon.md) has it. That is
+now a choice about speed rather than a different way of starting the stack.
 
 **`airgapped` is airgapped only after two one-time steps, and the profile now
 says so rather than implying it happens by itself.**
@@ -771,6 +784,63 @@ from `.env` — and never by `loadConfig`: inside the network the ports stay 808
 8081 and 80 whatever these say, so probes, `PORT` and every in-network reference
 are unaffected. They exist because a host with something already on one of those
 ports should be a one-line `.env` entry, not an override file.
+
+## Local overrides
+
+`docker-compose.override.yml` is Compose's own mechanism for what one machine
+wants and no other. It is loaded automatically, merged over
+`docker-compose.yml`, and it is gitignored here, so it is a local fact rather
+than a commit.
+
+The case it is for is a service inside a profile you otherwise want. `full` is
+api, mcp, worker, minio **and** the two Text Embeddings Inference containers; a
+laptop with an embedder on the host wants the first four and neither of the last
+two, and there is no profile for that because the arrangement is one person's.
+Start them with no containers:
+
+```yaml
+# docker-compose.override.yml
+services:
+  embedder:
+    scale: 0
+  reranker:
+    scale: 0
+```
+
+**`scale: 0` rather than moving them into a profile nobody names**, and the
+difference is a check rather than a preference. `scripts/check-compose.mjs` pins
+the exact service list of every profile and renders it with Compose's *default*
+file resolution — which includes this file. A `profiles:` key changes that list,
+so `pnpm lint:compose` would fail on the machine holding the override and
+nowhere else, which is the worst kind of red. `scale: 0` leaves the service in
+its profile: the rendered list is unchanged and only the container count
+differs. It also removes those containers if they are already running, which a
+profile change does not — a service outside the enabled profiles is one Compose
+ignores, and an ignored emulated container is still an emulated container.
+
+**Naming `COMPOSE_FILE` turns the automatic loading off**, which is why nothing
+here does. The variable replaces Compose's default resolution entirely, so the
+override file Compose would have picked up on its own is no longer picked up at
+all — with no message, because nothing is missing as far as Compose is
+concerned.
+
+This is not hypothetical: `COMPOSE_FILE` was how an arm64 install used to select
+`docker-compose.apple-silicon.yml`, so following the documented Apple Silicon
+setup switched off an override the same person had written, silently. Folding
+that overlay into `docker-compose.yml` removed the reason anybody had to set the
+variable, and this paragraph is what is left of the trap.
+
+If you set it anyway — a second machine-specific file, a compose file kept
+outside the repository — the override has to be named too, and last:
+
+```ini
+COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml
+```
+
+A file named there and absent is a hard error naming the path, which is the
+other half of why `.env.example` ships no such line: the override is gitignored,
+a fresh clone has none, and a shipped default that refuses to start is worse
+than one that starts two containers you did not want.
 
 ## Two origins, or one
 

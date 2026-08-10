@@ -23,19 +23,19 @@
 - An embedding endpoint. Any OpenAI-compatible one will do; the `full` profile
   brings its own **on x86-64 only** — see the note directly below.
 
-> **On an Apple Silicon Mac, `--profile full` needs the overlay.** It pulls
-> `text-embeddings-inference`, which is published for linux/amd64 and nothing
-> else, so a plain `docker compose --profile full up -d` stops at
-> `no matching manifest for linux/arm64/v8` before any Nacre service runs.
-> Everything else in this stack is arm64 and native.
+> **On arm64, `--profile full` runs its embedder and reranker emulated.** Both
+> are `text-embeddings-inference`, published for linux/amd64 and nothing else,
+> so `docker-compose.yml` names `platform: linux/amd64` on them: the amd64 image
+> is pulled and run under emulation rather than the pull failing with
+> `no matching manifest for linux/arm64/v8`. Everything else in this stack is
+> arm64 and native.
 >
-> `docker-compose.apple-silicon.yml` names `platform: linux/amd64` on those two
-> services, so the amd64 image is pulled and run under emulation instead. That
-> does work on Docker Desktop with Rosetta, and it is slow — the reranker sits
-> near a full core at idle. [apple-silicon.md](./apple-silicon.md) has the setup
-> and the faster arrangement: `minimal` with an embedder on the host. One extra
-> line in `.env` and the commands on this page work here unchanged. Come back at
-> "After startup".
+> Nothing to select and no second file — the commands on this page are the same
+> on an M-series Mac, an arm64 node and an x86-64 server. Emulation does work on
+> Docker Desktop with Rosetta and it is slow, the reranker sitting near a full
+> core at idle, so [apple-silicon.md](./apple-silicon.md) has the faster
+> arrangement: `minimal` with an embedder on the host. That is a choice about
+> speed, not a different way of starting the stack.
 
 The caveat is stated on the bullet as well as in the note on purpose: "the
 `full` profile brings its own" was true of x86-64 and read as unconditional, and

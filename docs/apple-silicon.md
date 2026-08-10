@@ -99,18 +99,15 @@ NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY=sk-…
 docker compose --profile hosted up -d
 ```
 
-No `COMPOSE_FILE` overlay: the adapter is inside the Compose network, so
-`host.docker.internal` is not involved, and the overlay's other half concerns
-only the two TEI services in `full`.
-
 Three things to get right. `NACRE_DEFAULT_EMBEDDING_MODEL` must be a model
 `NACRE_EMBED_ROUTES` names — routing is by model name, there is no default
 vendor and no fallback, and an unrouted model is refused by name.
 `NACRE_DEFAULT_EMBEDDING_DIM` must match the vendor's model rather than
 bge-m3's 1024: `text-embedding-3-small` is 1536 and `-3-large` is 3072. And the
-vendor list is three — `openai-compatible` (named for the protocol, so Together,
-Voyage, DeepInfra and vLLM go here too, with a different `_ENDPOINT`),
-`cloudflare`, `google`. [config.md](./config.md) has the whole surface.
+vendor list is four — `openai-compatible` (named for the protocol, so Together,
+DeepInfra and vLLM go here too, with a different `_ENDPOINT`), `cloudflare`,
+`google`, `voyage`. [config.md](./config.md) has the whole surface, including
+why there is no `anthropic`.
 
 ## Arrangement A: `minimal`, with the embedder on the host
 
@@ -180,56 +177,39 @@ though, not at startup: nothing at boot knows what the model will return.
 
 ### 3. Start it
 
-Select the overlay **once**, in `.env`, rather than on every command:
-
-```ini
-COMPOSE_FILE=docker-compose.yml:docker-compose.apple-silicon.yml
-```
-
-`.env.example` ships that line commented out. Then:
-
 ```bash
 docker compose --profile minimal up -d
 ```
 
-`COMPOSE_FILE` is Compose's own variable and it is read from `.env` in the
-project directory, so every `docker compose` command from here — `up`, `logs`,
-`exec`, `down`, and every one on the [quickstart](./quickstart.md) — picks up
-the overlay with no flags. Passing the two `-f` flags by hand works and is
-equivalent:
+That is the whole command, and it is the same one a Linux server runs. **There
+is nothing on this page to select, no `COMPOSE_FILE`, and no second compose
+file.**
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.apple-silicon.yml \
-  --profile minimal up -d
-```
+There was until recently, and the reason it is gone is worth one paragraph
+because the arrangement looked reasonable. A `docker-compose.apple-silicon.yml`
+overlay carried two keys — `host.docker.internal` made to resolve, and
+`platform: linux/amd64` on the two TEI services — and an operator selected it
+with `COMPOSE_FILE` in `.env`. But **both keys are harmless where they are not
+needed**: Docker on Linux supports `host-gateway`, and naming the platform an
+amd64 host already has does nothing. So the overlay bought a second file, a
+command that differed by machine, and a trap — naming `COMPOSE_FILE` replaces
+Compose's default file resolution, which silently switches off any
+[`docker-compose.override.yml`](./config.md#local-overrides) the same person had
+written. Both keys are in `docker-compose.yml` now and every platform runs one
+command.
 
-**Prefer the `.env` line, because the flags have to be right every time and
-nothing reminds you.** A later plain `docker compose up -d` computes the project
-*without* the overlay and recreates `api` and `worker` with no
-`extra_hosts` — so the embedder becomes unreachable and the worker logs
-`EAI_AGAIN`, which is the exact failure the overlay exists to prevent, arriving
-long after the command that caused it. This page walked into that itself: two of
-its own examples below used to drop the flags.
-
-One side effect, stated rather than left to be found: `.env` is also loaded
-*into* the containers, so `COMPOSE_FILE` appears in their environment. Nothing
-reads it — `loadConfig` only looks at `NACRE_` names — and it is inert.
-
-The overlay is two things and no more: `host.docker.internal` made to resolve
-from the `api` and `worker` containers, and the platform stated explicitly on
-the two TEI services so `--profile full` fails at the pull rather than at the
-first instruction. Docker Desktop already provides that name and points
-`host-gateway` at the same address it uses, so the first half is redundant
-there; it is for Colima, Rancher Desktop, OrbStack and podman, which do not all
-agree, and where the failure without it is an `EAI_AGAIN` in the worker log that
-names no cause. If your runtime does provide the name and you would rather not
-override it, leave `COMPOSE_FILE` unset — nothing else in the overlay applies to
-`minimal`.
+The `host.docker.internal` half is what lets `api`, `mcp` and `worker` reach out
+of the Compose network to the embedder you started above. Docker Desktop
+provides that name on its own and the line changes nothing there; it is for
+Colima, Rancher Desktop, OrbStack and podman, which do not all agree, and where
+the failure without it is an `EAI_AGAIN` in a log that names no cause. It is on
+the shared anchor rather than on a list of services — the overlay named `api`
+and `worker`, and `mcp` runs searches too, so MCP search would have failed on
+exactly those runtimes while REST search worked.
 
 From here the [quickstart](./quickstart.md) applies unchanged: `init`, a layer,
-a grant, a document, a search. Nothing else on that page is architecture
-specific — and with `COMPOSE_FILE` set, "unchanged" is literally true rather
-than true apart from the flags every command needs.
+a grant, a document, a search. Nothing on that page is architecture specific,
+and "unchanged" is now literally true.
 
 ## Changing the endpoint after `init`
 
@@ -297,10 +277,10 @@ half-broken installation to find out.
 `full` adds MinIO, an embedder and a reranker. MinIO is arm64. The other two are
 the TEI image, and there is no arm64 of it.
 
-Without the overlay, a plain `docker compose --profile full up -d` fails at the
-pull with `no matching manifest for linux/arm64/v8`, because there is no arm64
-to resolve. The overlay states `platform: linux/amd64` on both, so the amd64
-image is pulled and run under emulation instead.
+`docker-compose.yml` states `platform: linux/amd64` on both, so the amd64 image
+is pulled and run under emulation. Without that key the pull would fail with
+`no matching manifest for linux/arm64/v8`, because there is no arm64 to resolve
+and Compose asks for the host's.
 
 **That has now been run, and it works** — reported from a Docker Desktop install
 with Rosetta, where both TEI services come up and stay up alongside the rest of
@@ -328,12 +308,17 @@ docker compose --profile minimal up -d
 docker compose --profile full up -d minio minio-init
 ```
 
-Both with `COMPOSE_FILE` set. The second line names the two services rather than
-the profile's whole set, so the TEI images are never pulled — `--profile full`
-selects `minio`, `minio-init`, `embedder` and `reranker`, and only the first two
-are arm64.
+The second line names the two services rather than the profile's whole set, so
+the TEI images are never pulled — `--profile full` selects `minio`,
+`minio-init`, `embedder` and `reranker`, and only the first two are arm64. Then
+set `NACRE_S3_*` as [config.md](./config.md) describes.
 
-and then set `NACRE_S3_*` as [config.md](./config.md) describes.
+That pair is the one-off form, and it has to be typed right every time: a later
+plain `docker compose --profile full up -d` starts the emulated pair after all.
+The durable form is a [local override](./config.md#local-overrides) holding
+`scale: 0` on `embedder` and `reranker`, which leaves `--profile full` meaning
+"everything in `full` except the two images this architecture has none of" for
+every command from then on.
 
 ### Reranking
 

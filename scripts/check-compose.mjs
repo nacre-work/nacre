@@ -8,7 +8,7 @@
  * turns that into a failure.
  */
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -148,6 +148,69 @@ if (rendered.status !== 0) {
   failed = true
 } else {
   console.log('mcp: no pinned canonical URL, so the discovery document follows the request')
+}
+
+/**
+ * ─── Every compose file named as one to load exists ──────────────────────────
+ *
+ * Deleting `docker-compose.apple-silicon.yml` is what this is here for. The
+ * overlay was named by `docker-compose.yml`, by three documents and by
+ * `.env.example`, which carried a commented `COMPOSE_FILE=…` for a person to
+ * uncomment on a Mac. Four of those five were updated. The fifth was a comment,
+ * so nothing rendered it and nothing here could see it — and the operator who
+ * followed it got `no such file` from Compose before anything started.
+ *
+ * Matched on the two places a filename is an *instruction* rather than prose:
+ * a `COMPOSE_FILE=` value and a `-f` argument. Every document in this
+ * repository is free to name the file in a sentence about what used to be
+ * true — `docs/upgrading.md` is a changelog and has to.
+ *
+ * `docker-compose.override.yml` is the one name allowed to be absent. It is
+ * Compose's own convention for a file the operator writes and this repository
+ * deliberately does not ship, and `docs/config.md` names it in exactly that
+ * sentence.
+ */
+const OPERATORS_OWN = 'docker-compose.override.yml'
+const NAMED = /(?:COMPOSE_FILE=|-f[ =])([A-Za-z0-9._/:-]*docker-compose[A-Za-z0-9._-]*\.ya?ml[A-Za-z0-9._/:-]*)/g
+
+const tracked = spawnSync('git', ['ls-files'], { encoding: 'utf8' })
+if (tracked.status !== 0) {
+  console.error(`::error::git ls-files failed, so this check cannot run:\n${tracked.stderr}`)
+  failed = true
+} else {
+  let named = 0
+  let missing = 0
+  for (const file of tracked.stdout.split('\n').filter(Boolean)) {
+    if (/\.(png|jpg|jpeg|gif|svg|ico|woff2?|pdf|zip)$/i.test(file)) continue
+    let source
+    try {
+      source = readFileSync(file, 'utf8')
+    } catch {
+      continue
+    }
+    for (const [, value] of source.matchAll(NAMED)) {
+      // `COMPOSE_FILE` is a path list, and its separator is what makes this
+      // worth splitting rather than testing whole.
+      for (const path of value.split(':')) {
+        if (!path.includes('docker-compose')) continue
+        named += 1
+        if (existsSync(path) || path === OPERATORS_OWN) continue
+        missing += 1
+        console.error(
+          `::error file=${file}::${file} names ${path} as a compose file to load, and this ` +
+            'repository does not have it. Compose exits on a file it cannot open, before it ' +
+            'starts anything — remove the reference or restore the file.',
+        )
+        failed = true
+      }
+    }
+  }
+  if (named === 0) {
+    console.error('::error::no compose file is named anywhere; this check ran against nothing')
+    failed = true
+  } else if (missing === 0) {
+    console.log(`compose files named as ones to load: ${String(named)}, all present`)
+  }
 }
 
 process.exit(failed ? 1 : 0)
