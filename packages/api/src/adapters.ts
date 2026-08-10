@@ -17,6 +17,7 @@ import {
   vectorName,
   withOrg,
   endpointUrl,
+  modelEndpointRefused,
   type CacheStore,
   type Hit,
   type Metadata,
@@ -881,7 +882,8 @@ export class HttpEmbedder implements Embedder {
     // waiting. Without any bound a wedged embedder held every search open for
     // undici's 300 s default, which exhausts the connection pool long before
     // anyone sees an error.
-    const response = await fetch(endpointUrl(this.endpoint, 'embeddings'), {
+    const at = endpointUrl(this.endpoint, 'embeddings')
+    const response = await fetch(at, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: this.model, input: texts }),
@@ -889,7 +891,7 @@ export class HttpEmbedder implements Embedder {
     })
 
     if (!response.ok) {
-      throw new Error(`the embedding endpoint answered ${response.status}`)
+      throw modelEndpointRefused('embedding', at, response.status)
     }
 
     const body = (await response.json()) as { data?: { embedding?: unknown }[] }

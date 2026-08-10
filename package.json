@@ -33,7 +33,8 @@
     "lint:admin-ids": "node scripts/check-id-fields.mjs",
     "lint:collection-config": "node scripts/check-collection-config.mjs",
     "lint:password": "node scripts/check-password-generator.mjs",
-    "lint:images": "node scripts/check-images.mjs"
+    "lint:images": "node scripts/check-images.mjs",
+    "lint:endpoint-errors": "node scripts/check-endpoint-errors.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

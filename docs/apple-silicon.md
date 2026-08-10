@@ -58,7 +58,61 @@ cluster or a CI runner. That is the defect 0.5.2 fixes, and the failure it
 produced was a slow container rather than an error, which is the kind nobody
 reports. It is not a defect the Compose path here ever had.
 
-## The arrangement: `minimal`, with the embedder on the host
+## Two arrangements, and which one you want
+
+Both avoid emulation. The difference is where your documents' text goes, and
+that is the only question worth asking first.
+
+| | Embedder | Text leaves the installation | Setup |
+|---|---|---|---|
+| **A — host-native** | Ollama or LM Studio on macOS, on Metal | no | `minimal` + three lines in `.env` |
+| **B — hosted vendor** | OpenAI, Voyage, Cloudflare, Google | **yes** | `hosted` + a route and a key |
+
+**A is the default recommendation** and the rest of this page is mostly about
+it. Take B if you would rather not run a model at all and the documents are
+ones you are willing to send to a third party.
+
+**What you cannot do is point the endpoint straight at a vendor.** That is the
+obvious thing to try and it fails: the request carries no `Authorization`
+header and `embedding_providers` has no column to hold a key — deliberately,
+because a vendor credential there would reach every database dump. The adapter
+in B is what holds the key. The refusal says so now, but it is cheaper to read
+it here.
+
+### B, in full
+
+Set this **before the first `init`** — it writes the endpoint into
+`embedding_providers` and a re-run will not change it.
+
+```ini
+# .env
+NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://embedding-adapter:8091
+NACRE_DEFAULT_EMBEDDING_MODEL=text-embedding-3-small
+NACRE_DEFAULT_EMBEDDING_DIM=1536
+
+NACRE_EMBED_ROUTES=text-embedding-3-small=openai-compatible
+NACRE_EMBED_OPENAI_COMPATIBLE_ENDPOINT=https://api.openai.com/v1
+NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY=sk-…
+```
+
+```bash
+docker compose --profile hosted up -d
+```
+
+No `COMPOSE_FILE` overlay: the adapter is inside the Compose network, so
+`host.docker.internal` is not involved, and the overlay's other half concerns
+only the two TEI services in `full`.
+
+Three things to get right. `NACRE_DEFAULT_EMBEDDING_MODEL` must be a model
+`NACRE_EMBED_ROUTES` names — routing is by model name, there is no default
+vendor and no fallback, and an unrouted model is refused by name.
+`NACRE_DEFAULT_EMBEDDING_DIM` must match the vendor's model rather than
+bge-m3's 1024: `text-embedding-3-small` is 1536 and `-3-large` is 3072. And the
+vendor list is three — `openai-compatible` (named for the protocol, so Together,
+Voyage, DeepInfra and vLLM go here too, with a different `_ENDPOINT`),
+`cloudflare`, `google`. [config.md](./config.md) has the whole surface.
+
+## Arrangement A: `minimal`, with the embedder on the host
 
 Everything in `minimal` is arm64. The embedder is not in `minimal` at all — that
 is what keeps the profile runnable on a laptop with no GPU — so on a Mac you
@@ -222,20 +276,10 @@ still. So "it works" is a report about one runtime and not a property of the
 architecture, and the embedder is on the request path for every ingest and every
 search.
 
-Use `minimal` with a host-native embedder — or, if you would rather not run a
-model at all, the `hosted` profile, which is the same stack plus an adapter that
-routes embeddings to a vendor's API:
-
-```bash
-docker compose --profile hosted up -d
-```
-
-It is off unless configured and has no default vendor, because routing a model
-there means **the text of your documents leaves your installation**. That is a
-real trade and it is the opposite of what this product otherwise is, so it is
-never made by accident; [config.md](./config.md) has the whole surface. If your
-documents are ones you would not send to a third party, the host-native embedder
-above is the arrangement.
+Use arrangement A or B from the top of this page — `minimal` with a host-native
+embedder, or `hosted` with the adapter. `full` is neither, and the section
+above is only here so that "why not just use the profile that brings its own
+embedder" has a written answer.
 
 If you want object storage without the rest of `full`, MinIO is arm64 and can be
 started on its own:
