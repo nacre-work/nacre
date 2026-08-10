@@ -68,6 +68,19 @@ export interface ReindexPorts {
    */
   finishIfDone(orgId: string, layerId: string, shadowVector: string): Promise<boolean>
   /**
+   * Every reindex that is running, whether or not it has work outstanding.
+   *
+   * `claim` answers "what is there to re-embed", which is a different question
+   * and returns nothing for a layer that is already finished. This one exists
+   * so completion can be evaluated when the answer to the first is empty —
+   * without it a reindex with nothing to do never completes at all.
+   *
+   * Bounded by the number of concurrent reindexes rather than by documents, so
+   * there is no batch size to pass: an organization migrating every layer at
+   * once is still a handful of rows.
+   */
+  pending(): Promise<readonly { orgId: string; layerId: string; shadowVector: string }[]>
+  /**
    * How a pass over one layer went, written where the operator polls.
    *
    * Separate from `onError` because `onError` writes to a log and this writes
@@ -97,7 +110,33 @@ export async function reindexOnce(ports: ReindexPorts, batch: number): Promise<R
   if (batch < 1) throw new Error('batch must be at least 1')
 
   const targets = await ports.claim(batch)
-  if (targets.length === 0) return { reindexed: 0, failed: 0, switched: 0 }
+
+  // Nothing to re-embed is not nothing to do.
+  //
+  // Completion used to be evaluated only as a side effect of finishing a
+  // document, so a reindex with **no documents to re-embed was never asked
+  // whether it was done** and sat in `embedding` forever: an operator polling
+  // it watched a progress number that would never move, and the layer kept
+  // answering with the provider it was migrating away from — which, when that
+  // provider is the one being replaced because it is unreachable, means the
+  // layer stays broken by the act of fixing it.
+  //
+  // Two ways in, and the empty layer is only the obvious one. The other is a
+  // reindex whose documents already carry the shadow vector, which is what a
+  // re-run after a partial pass looks like.
+  //
+  // It was hidden because the *first* layer in an organization completes for
+  // an unrelated reason: it triggers the collection copy, and `finishCopy`
+  // evaluates the same predicate. Every layer after that in the same
+  // organization needs no copy, so nothing evaluated it. Found by migrating a
+  // second layer.
+  if (targets.length === 0) {
+    let switched = 0
+    for (const t of await ports.pending()) {
+      if (await ports.finishIfDone(t.orgId, t.layerId, t.shadowVector)) switched++
+    }
+    return { reindexed: 0, failed: 0, switched }
+  }
 
   let reindexed = 0
   let failed = 0
