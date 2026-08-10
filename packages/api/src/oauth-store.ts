@@ -72,6 +72,26 @@ export interface Consent {
   readonly serviceAccountName: string | null
   readonly approvedBy: string
   /**
+   * The approver's address, and the reason a uuid beside it is not enough.
+   *
+   * `approved_by` answers "which row"; a person reading a list of connections
+   * is asking "who". On an administrator's list, where every delegation is
+   * somebody else's, an id answers neither — and on a person's own list it
+   * answers a question they did not ask.
+   *
+   * Null only where the row points at a user this organization no longer has,
+   * which the delegation path already treats as suspended.
+   */
+  readonly approvedByEmail: string | null
+  /**
+   * Whether that person is disabled right now.
+   *
+   * Not decoration on the list: a delegation of a disabled person is refused
+   * on every request and its refresh is refused too, so a connection that
+   * looks live and answers nothing has exactly one explanation and this is it.
+   */
+  readonly approverDisabled: boolean
+  /**
    * The layers a delegation was narrowed to at consent, if any.
    *
    * Empty means **no narrowing**, never "narrowed to nothing" — the two are
@@ -466,6 +486,8 @@ export class PostgresOAuthConsents implements OAuthConsents {
           service_account_id: string | null
           service_account_name: string | null
           approved_by: string
+          approved_by_email: string | null
+          approver_disabled: boolean
           layers: { id: string; permissions: Permission[] | null }[] | null
           permissions: Permission[] | null
           created_at: string
@@ -475,17 +497,25 @@ export class PostgresOAuthConsents implements OAuthConsents {
           // LEFT, because a delegation names no service account. It was an
           // inner join, which would have made every delegation invisible on the
           // one screen that can end it.
+          //
+          // `users` is joined LEFT for the same shape of reason and a different
+          // one: a service-account connection has an approver too — the
+          // administrator who set it up — and a delegation's approver may be a
+          // row that no longer exists. Neither is a reason to drop the line.
           `SELECT c.id, c.client_id, oc.client_name, c.acts_as, c.service_account_id,
                   sa.name AS service_account_name, c.approved_by, c.permissions,
+                  u.email AS approved_by_email,
+                  u.disabled_at IS NOT NULL AS approver_disabled,
                   JSON_AGG(JSON_BUILD_OBJECT('id', cl.layer_id, 'permissions', cl.permissions))
                     FILTER (WHERE cl.layer_id IS NOT NULL) AS layers,
                   c.created_at::text, c.last_refreshed_at::text, c.revoked_at::text
              FROM oauth_consents c
              JOIN oauth_clients oc ON oc.client_id = c.client_id
              LEFT JOIN service_accounts sa ON sa.id = c.service_account_id AND sa.org_id = c.org_id
+             LEFT JOIN users u ON u.id = c.approved_by AND u.org_id = c.org_id
              LEFT JOIN oauth_consent_layers cl ON cl.consent_id = c.id AND cl.org_id = c.org_id
             WHERE c.org_id = $1${mine}
-            GROUP BY c.id, oc.client_name, sa.name
+            GROUP BY c.id, oc.client_name, sa.name, u.email, u.disabled_at
             ORDER BY c.created_at DESC, c.id`,
           mine === '' ? [auth.orgId] : [auth.orgId, auth.principal.id],
         )
@@ -499,6 +529,8 @@ export class PostgresOAuthConsents implements OAuthConsents {
               : ({ actsAs: 'service_account', serviceAccountId: r.service_account_id as string } as const),
           serviceAccountName: r.service_account_name,
           approvedBy: r.approved_by,
+          approvedByEmail: r.approved_by_email,
+          approverDisabled: r.approver_disabled,
           layers: narrowingOf(r.layers),
           permissions: r.permissions ?? [],
           createdAt: r.created_at,

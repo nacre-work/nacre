@@ -388,6 +388,14 @@ export interface Connection {
   readonly serviceAccountId: string | null
   readonly serviceAccountName: string | null
   readonly approvedBy: string
+  /**
+   * The approver's address. `approvedBy` answers which row; a reader is asking
+   * who. Null only where the row points at a user the organization no longer
+   * has.
+   */
+  readonly approvedByEmail: string | null
+  /** Whether that person is disabled — a delegation of one is refused. */
+  readonly approverDisabled: boolean
   /** Layers a delegation was narrowed to. Empty means no narrowing. */
   readonly layers: readonly string[]
   /**

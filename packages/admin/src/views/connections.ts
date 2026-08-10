@@ -20,6 +20,40 @@ import { ago, clear, h } from '../dom.js'
  * before it expires — the screen says how long that is rather than claiming an
  * end that has not happened yet.
  */
+/**
+ * What the application acts as, as a sentence a reader can act on.
+ *
+ * `me` is the signed-in principal's id, or undefined where `/v1/me` could not
+ * be read — in which case every delegation is named by address rather than one
+ * of them saying "you". Degrading to *more* information rather than less is the
+ * right direction for a failure nobody can see.
+ */
+function actsAs(
+  c: {
+    actsAs: 'service_account' | 'user'
+    serviceAccountName: string | null
+    approvedBy: string
+    approvedByEmail: string | null
+    approverDisabled: boolean
+  },
+  me: string | undefined,
+): (Node | string)[] {
+  if (c.actsAs === 'service_account') {
+    return [c.serviceAccountName ?? h('span', { class: 'muted' }, 'an agent that no longer exists')]
+  }
+  const who: Node | string =
+    c.approvedByEmail === null
+      ? h('span', { class: 'muted' }, 'a person this organization no longer has')
+      : c.approvedBy === me
+        ? 'you'
+        : c.approvedByEmail
+  // Said on the row rather than left for somebody to work out from the People
+  // screen. A delegation of a disabled person is refused on every request and
+  // its renewal is refused too, so this is the difference between a connection
+  // that is idle and one that cannot answer.
+  return c.approverDisabled ? [who, h('span', { class: 'muted' }, ' — suspended')] : [who]
+}
+
 export async function connectionsView(root: HTMLElement): Promise<void> {
   clear(root)
   const body = h('tbody', {})
@@ -29,9 +63,14 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
     h('header', { class: 'view-head' },
       h('div', {},
         h('h1', {}, 'Connected applications'),
+        // The old lede said "each one acts as an agent you chose — not as you",
+        // which was true of the only shape that existed when it was written and
+        // became false the day a person could delegate their own reach. Both
+        // shapes are on this screen and the difference is the whole of the
+        // "Acts as" column, so the lede has to admit there are two.
         h('p', { class: 'lede' },
-          'Each one acts as an agent you chose — not as you. Forgetting an application ends that one connection; ',
-          'the agent, and anything else using it, keeps working.'),
+          'Each one acts either as an agent you chose or as a person — the "Acts as" column says which. ',
+          'Forgetting an application ends that one connection; the agent, or the person, keeps working.'),
       ),
     ),
     message,
@@ -50,6 +89,17 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
       ),
     ),
   )
+
+  // Read once for the screen rather than per row, and tolerated when it fails:
+  // an older API answers 404 here, and a list that names every approver by
+  // address is a worse screen than one that says "you" for one of them, not a
+  // broken one.
+  let me: string | undefined
+  try {
+    me = (await client().me()).principalId
+  } catch {
+    me = undefined
+  }
 
   const load = async (): Promise<void> => {
     clear(body)
@@ -101,14 +151,20 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
       body.append(
         h('tr', { class: ended ? 'muted' : '' },
           h('td', {}, c.clientName),
-          // A delegation names no agent, so the cell says what it *is* rather
-          // than rendering an empty one. "You" is right for the person reading
-          // their own connections and wrong on an administrator's list, which
-          // is why the approver is named there.
-          h('td', {},
-            c.actsAs === 'user'
-              ? h('span', { class: 'muted' }, 'the person who approved it')
-              : (c.serviceAccountName ?? 'an agent that no longer exists')),
+          // A delegation names no agent, so the cell names the *person*.
+          //
+          // It used to read "the person who approved it" on every row, which is
+          // a constant and therefore carries nothing: on an administrator's
+          // list, where every delegation is somebody else's, it withheld the
+          // one fact the column exists for, and on a person's own list it
+          // restated the question. The comment that stood here said the
+          // approver is named on an administrator's list — it was not, and a
+          // comment describing behaviour the code beside it does not have is
+          // the shape this repository keeps finding.
+          //
+          // "you" for your own, the address for anyone else's, and the id only
+          // where the row points at a user this organization no longer has.
+          h('td', {}, ...actsAs(c, me)),
           h('td', {}, ago(c.createdAt)),
           // Renewal is the only thing the server sees: an access token is
           // verified locally and its use touches nothing.
