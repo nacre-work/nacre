@@ -244,6 +244,44 @@ one real ingest is for.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.14.0 — disabling somebody is reversible on the wire, and the connections list says who
+
+**Nothing to do**, no migration and no new configuration. 0.13.0 runs against
+this database, so rolling back is safe.
+
+Both changes came out of one report: an MCP client that never recovered from
+*connect → the person is disabled → the person is re-enabled*.
+
+**A suspended person is now a retryable refusal.** Disabling somebody suspends
+the connections they approved and deliberately does not spend their refresh
+tokens, so re-enabling is a restoration rather than a reconnection —
+`docs/authz.md` has said so since delegations existed, and the promise stopped
+at the table. The refusal reached the client as `400 invalid_grant`, which RFC
+6749 defines as *this grant is dead*, so every conforming client discarded the
+token the server had gone out of its way to keep. `/oauth/token` answers **503
+with `Retry-After: 60` and `temporarily_unavailable`** for that one case now.
+Every other refusal — expired, revoked, unknown, replayed — is unchanged and
+still `invalid_grant`.
+
+Worth knowing if you have ever disabled somebody and found their applications
+never came back: they could not, and re-approving through the consent screen was
+the only route. It is not any more. A client that has never heard of
+`temporarily_unavailable` still reads 503 with `Retry-After` as "ask again",
+which is the whole reason the status carries the behaviour rather than the code.
+
+**The connections list names the person.** "Acts as" read `the person who
+approved it` on every delegation row — a constant, which on an administrator's
+list withheld the one fact the column exists for. `GET /v1/oauth/consents`
+returns **`approved_by_email`** and **`approver_disabled`**, both `required` in
+the contract, and the screen reads `you` for your own and the address for
+anyone else's. The second field is the one that matters after the paragraph
+above: a delegation of a disabled person is refused on every request and its
+renewal is refused too, so a connection that looks live and answers nothing now
+says why on its own row.
+
+If you generate a client from `docs/openapi.yaml`, regenerate it. Nothing was
+removed, so an existing client keeps working.
+
 ### 0.13.0 — one command on every platform, and reranking through a vendor
 
 **No migration.** 0.12.1 runs against this database, so rolling back is safe.
