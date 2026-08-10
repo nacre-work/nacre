@@ -665,6 +665,37 @@ dependency: this process sees every document's text and there is one operation
 here. LiteLLM in front of the existing endpoint stays the documented escape
 hatch, since anything OpenAI-shaped already needs no code from us.
 
+**The same sidecar reranks now, and the core still needs no code for it.**
+`HttpReranker` speaks Text Embeddings Inference's `/rerank`, so a deployment
+with no GPU had nowhere to point `NACRE_RERANKER_ENDPOINT`; the adapter answers
+that shape rather than one of its own, which is the whole point — a second
+protocol in the API would be a second thing to keep in step with the first.
+Cloudflare, Cohere, Jina and Voyage, and the refusal for an unknown vendor says
+that OpenAI, Anthropic and Google publish no reranking API rather than only
+listing the four, because a bare list reads as "yours was forgotten".
+
+One reranker per adapter rather than a routing table, and that asymmetry with
+embeddings is forced rather than chosen: TEI's request carries a query and its
+texts and **no model name**, so there is no routing key in it to dispatch on. A
+batch too large is refused rather than split, which is the opposite of the
+embeddings path and for a reason — a vendor that normalizes scores across the
+documents it was given in one call would return two sets that cannot be
+compared, and a silently wrong ordering is the failure this file exists against.
+
+A route may also name the vendor's own spelling —
+`bge-m3=cloudflare:@cf/baai/bge-m3` — and that is not sugar. A layer's named
+vector is derived from the model, so moving an installation onto a vendor's copy
+of identical weights would otherwise mean renaming the model, which is a
+different slot and therefore a collection replaced and every point copied to
+move vectors that did not need to move.
+
+Adding all of it found that the vendor tables were copied into two documents
+with nothing holding them: `lint:config` compares the `NACRE_EMBED_*` and
+`NACRE_RERANK_*` literals against `docs/config.md` and does not read the
+adapter's README at all. The sidecar's own suite holds both tables against
+`VENDORS` and `RERANKERS` now — from Python, because a check in another language
+would have to parse the file it is checking.
+
 Writing it found that `lint:config` could see half the code it applied to. The
 check knew about TypeScript readers and the sidecars are Python, so
 `NACRE_PARSER_ALLOW_PRIVATE_URLS` — which decides whether an authenticated
