@@ -527,5 +527,97 @@ class Rerank(unittest.TestCase):
         self.assertGreater(app.MAX_RERANK_TEXTS, 50)
 
 
+class Documentation(unittest.TestCase):
+    """
+    Every vendor this service routes to is in both places that list them.
+
+    `VENDORS` and `RERANKERS` are the tables, and two documents copy them: this
+    directory's README and `docs/config.md`, which is normative. Adding a vendor
+    means editing three files, and `lint:config` sees only part of it — it holds
+    the `NACRE_EMBED_*` and `NACRE_RERANK_*` literals against `docs/config.md`,
+    so a vendor whose credential variable is documented in a sentence rather
+    than in the table passes it, and the README is not a file it reads at all.
+
+    Held from here rather than from a `lint:` script because the tables are
+    Python: a check in another language would have to parse this file, and a
+    check that parses the thing it is checking gets the answer the parser
+    happens to give.
+    """
+
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    ROOT = os.path.dirname(os.path.dirname(HERE))
+
+    # The first cell of each table's header row, which is what says which table
+    # it is. Both documents write them the same way.
+    EMBEDDING_HEADER = "`vendor`"
+    RERANK_HEADER = "`NACRE_RERANK_VENDOR`"
+
+    @staticmethod
+    def _cells(line: str) -> list[str] | None:
+        if not line.startswith("|"):
+            return None
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    @classmethod
+    def _first_column(cls, markdown: str, header: str) -> list[str] | None:
+        """
+        The codes in the first column of the table whose header row's first cell
+        is `header`, in order, or `None` if there is no such table.
+
+        A header is a row **followed by the `|---|` rule**, and not merely a row
+        whose first cell matches. Both documents also carry a table of variables
+        where `NACRE_RERANK_VENDOR` is a *row*, and the looser rule read that
+        one — reporting the variables as the vendor list, which is a check
+        failing on the wrong thing rather than on nothing.
+        """
+        lines = markdown.splitlines()
+        rows: list[str] | None = None
+        for index, line in enumerate(lines):
+            cells = cls._cells(line)
+            if cells is None:
+                if rows is not None:
+                    break
+                continue
+            if rows is None:
+                below = cls._cells(lines[index + 1]) if index + 1 < len(lines) else None
+                if cells[0] == header and below is not None and set(below[0]) <= {"-", ":"}:
+                    rows = []
+                continue
+            if set(cells[0]) <= {"-", ":"}:
+                continue
+            rows.append(cells[0].strip("`"))
+        return rows
+
+    def _document(self, path: str) -> str:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def _assert_tables(self, path: str):
+        markdown = self._document(path)
+        for header, table in (
+            (self.EMBEDDING_HEADER, app.VENDORS),
+            (self.RERANK_HEADER, app.RERANKERS),
+        ):
+            listed = self._first_column(markdown, header)
+            self.assertIsNotNone(
+                listed,
+                f"{path} has no table headed {header}. Renaming or removing it does not make "
+                f"the vendors documented — it makes this check stop looking.",
+            )
+            self.assertEqual(
+                sorted(listed),
+                sorted(table),
+                f"{path}'s {header} table and the adapter's own do not agree. A vendor the "
+                f"service routes to and no document lists is one nobody can find; a vendor a "
+                f"document lists and the service does not route to is refused by name.",
+            )
+
+    def test_the_readme_lists_every_vendor(self):
+        self._assert_tables(os.path.join(self.HERE, "README.md"))
+
+    def test_the_configuration_reference_lists_every_vendor(self):
+        self._assert_tables(os.path.join(self.ROOT, "docs", "config.md"))
+
+
 if __name__ == "__main__":
     unittest.main()
