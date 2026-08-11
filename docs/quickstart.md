@@ -105,6 +105,20 @@ sidecar, and expects embeddings from an endpoint you name in
 `NACRE_DEFAULT_EMBEDDING_ENDPOINT`. Use `--profile full` to run the embedder and
 the reranker locally too; see [config.md](./config.md) for the difference.
 
+**`--profile` is additive and can be given more than once.** The profiles are
+not four deployments to pick between: each one adds services. Embeddings from a
+vendor's API on a stack that also wants MinIO is both names, not the newer one:
+
+```bash
+docker compose --profile full --profile hosted up -d
+```
+
+Worth knowing before it costs you an afternoon: **a service in a profile you did
+not name is left alone, even if it is running.** Compose does not mention it.
+So `--profile full up -d` on a stack whose `hosted` adapter came up earlier
+updates everything except that adapter, reports success, and gives no sign —
+which is indistinguishable, from the outside, from the adapter being broken.
+
 ## After startup — what listens where
 
 **One address: `http://localhost:8082`**, up the moment `docker compose up`
