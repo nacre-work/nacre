@@ -956,7 +956,45 @@ is the existing behaviour and is unchanged by the upstream being a vendor.
 | `minimal` | api, mcp, worker, web, the migrate job, parser, postgres, qdrant, redis; embeddings via an external endpoint | pilot, laptop, no GPU |
 | `full` | plus minio, embedder (TEI), reranker | typical deployment |
 | `airgapped` | everything local; email/password sign-in; models pre-seeded | closed network |
-| `hosted` | `minimal` plus the embedding adapter | a laptop with no GPU, embeddings from a vendor's API |
+| `hosted` | adds the embedding adapter | embeddings from a vendor's API rather than a local model |
+
+**Profiles are additive, and that is the sentence this table was missing.** They
+are not four deployments to choose between: `--profile` may be given more than
+once, and each one adds its services to the set. A deployment that wants MinIO
+*and* a hosted embedder names both —
+
+```bash
+docker compose --profile full --profile hosted up -d
+```
+
+— and the `hosted` row above says "adds" rather than "`minimal` plus" for that
+reason. It described a whole deployment, which read as an alternative to the
+others, and the combination is the ordinary case.
+
+**A service in a profile you did not name is not touched, including one that is
+running.** This is the part that costs an afternoon. `docker compose --profile
+full up -d` on a deployment whose adapter came up earlier under `--profile
+hosted` leaves that container exactly as it was — old image, old environment —
+reports success, and says nothing about it, because Compose does not mention
+services outside the profiles it was given. Everything else updates and one
+thing silently does not.
+
+**Changing a credential needs the container recreated, not restarted.** The
+services here take their environment through `env_file`, which Compose reads
+when it **creates** a container and bakes into it. `docker compose restart`
+re-runs the same container with the same baked values and re-reads nothing; a
+plain `up -d` recreates only if it decides the configuration changed, which
+depending on the Compose version does not include the contents of an env file.
+So after rotating a secret:
+
+```bash
+docker compose --profile full --profile hosted up -d --force-recreate embedding-adapter
+```
+
+The embedding adapter reports a fingerprint of each credential it loaded — never
+the credential — in its first log line and in `GET /health`, so "did the new
+token reach the container" is a question with an answer rather than a guess. See
+["When the adapter answers 502"](#when-the-adapter-answers-502).
 
 MinIO appears only in `full`, and that is a licensing decision as much as a
 packaging one — see [licensing.md](./licensing.md).

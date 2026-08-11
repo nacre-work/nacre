@@ -12,6 +12,9 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+const COMPOSE = 'docker-compose.yml'
+const REFERENCE = 'docs/config.md'
+
 const EXPECTED = {
   minimal: ['api', 'mcp', 'migrate', 'parser', 'postgres', 'qdrant', 'redis', 'web', 'worker'],
   full: ['api', 'embedder', 'mcp', 'migrate', 'minio', 'minio-init', 'parser', 'postgres', 'qdrant', 'redis', 'reranker', 'web', 'worker'],
@@ -40,6 +43,60 @@ const ADAPTER = 'embedding-adapter'
 const NO_ADAPTER = ['minimal', 'full', 'airgapped']
 
 let failed = false
+
+/**
+ * ─── Every profile compose declares is one this check and the docs know ──────
+ *
+ * `EXPECTED` above is written by hand, and the loop below walks it — so a fifth
+ * profile added to `docker-compose.yml` is pinned by nothing here and, since
+ * the table in `docs/config.md` is also written by hand, described nowhere. It
+ * would exist, work, and be invisible.
+ *
+ * That is not hypothetical in shape: an operator running `--profile full` was
+ * silently not managing the embedding adapter, because the adapter is in
+ * `hosted` and Compose says nothing about services outside the profiles it was
+ * given — including ones that are currently running. The profiles being
+ * discoverable is what makes them describable, and being described is the only
+ * defence against that.
+ */
+{
+  const declared = new Set()
+  for (const found of readFileSync(COMPOSE, 'utf8').matchAll(/^\s{4}profiles:\s*\[(.*)\]/gm)) {
+    for (const name of found[1].split(',')) declared.add(name.trim())
+  }
+
+  if (declared.size === 0) {
+    console.error(
+      `::error file=${COMPOSE}::no service declares a profile, so this check compared nothing.`,
+    )
+    failed = true
+  }
+
+  const documented = readFileSync(REFERENCE, 'utf8')
+  for (const profile of [...declared].sort()) {
+    if (!Object.hasOwn(EXPECTED, profile)) {
+      console.error(
+        `::error file=${COMPOSE}::\`${profile}\` is declared on a service and is not in this ` +
+          "check's EXPECTED map, so nothing pins what it contains. Add it with its exact service " +
+          'list.',
+      )
+      failed = true
+    }
+    if (!new RegExp(`^\\|\\s*\`${profile}\``, 'm').test(documented)) {
+      console.error(
+        `::error file=${REFERENCE}::\`${profile}\` is a Compose profile and has no row in the ` +
+          'profile table. A profile nobody documented is one an operator meets by not naming it: ' +
+          'the command succeeds and quietly manages a smaller stack than they think.',
+      )
+      failed = true
+    }
+  }
+
+  // `minimal` is the other direction and is deliberately fine: no service
+  // declares it, and naming it selects exactly the unprofiled set. It is a
+  // label for "the default stack" rather than a profile, which is worth
+  // knowing and is why this loop reads compose rather than EXPECTED.
+}
 
 for (const [profile, expected] of Object.entries(EXPECTED)) {
   const run = spawnSync('docker', ['compose', '--profile', profile, 'config', '--services'], {
