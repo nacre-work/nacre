@@ -213,4 +213,80 @@ if (tracked.status !== 0) {
   }
 }
 
+/**
+ * ─── The release-image overlay covers every service the base builds ──────────
+ *
+ * `docker-compose.images.yml` exists so somebody can run Nacre without building
+ * it: the base file builds every service from this checkout, a release
+ * publishes four images that pull anonymously, and until the overlay the only
+ * consumer of those images was the Helm chart.
+ *
+ * An overlay is a second list, and a second list of services drifts. Compose
+ * merges rather than replaces, so a service the base builds and the overlay
+ * omits keeps its `build:` and is **built** — on a command whose whole promise
+ * is that nothing is built. It does not fail; it takes four minutes and works,
+ * which is how nobody notices for a release or two.
+ *
+ * Seven services and four images, with nothing that knows either number. So the
+ * overlay is held against the base rather than reviewed: every service carrying
+ * `build:`, directly or through the shared anchor, has to be named here.
+ */
+
+{
+  const BASE = 'docker-compose.yml'
+  const OVERLAY = 'docker-compose.images.yml'
+
+  if (!existsSync(OVERLAY)) {
+    console.error(
+      `::error::${OVERLAY} is gone. It is what lets the published images be run without a ` +
+        'build, and the quickstart names it. Restore it, or remove this section in the same ' +
+        'commit and say where the no-build path went.',
+    )
+    failed = true
+  } else {
+    const base = readFileSync(BASE, 'utf8')
+    const overlay = readFileSync(OVERLAY, 'utf8')
+
+    // Services under `services:`, and whether each is built — either by its own
+    // `build:` or by taking the shared anchor that carries one.
+    const built = []
+    let inServices = false
+    let service
+    for (const line of base.split('\n')) {
+      if (/^services:\s*$/.test(line)) { inServices = true; continue }
+      if (inServices && /^\S/.test(line)) inServices = false
+      if (!inServices) continue
+      const named = /^ {2}([a-z0-9-]+):\s*$/.exec(line)
+      if (named !== null) service = named[1]
+      if (service === undefined) continue
+      if (/^ {4}build:/.test(line) || /<<:\s*\*app\b/.test(line)) {
+        if (!built.includes(service)) built.push(service)
+      }
+    }
+
+    if (built.length === 0) {
+      console.error(
+        `::error file=${BASE}::no service in ${BASE} is built from source, so this check ` +
+          'compared nothing. If that is now true, the overlay has no reason to exist.',
+      )
+      failed = true
+    }
+
+    for (const name of built) {
+      const declared = new RegExp(`^ {2}${name}:\\s*\\n(?: {4}.*\\n)*? {4}image:`, 'm').test(overlay)
+      if (declared) continue
+      console.error(
+        `::error file=${OVERLAY}::${BASE} builds \`${name}\` and ${OVERLAY} names no image for ` +
+          'it. Compose merges, so that service keeps its `build:` and gets built by the command ' +
+          'that exists not to build anything — slowly, successfully, and silently.',
+      )
+      failed = true
+    }
+
+    if (!failed) {
+      console.log(`${OVERLAY}: an image for all ${String(built.length)} service(s) ${BASE} builds`)
+    }
+  }
+}
+
 process.exit(failed ? 1 : 0)

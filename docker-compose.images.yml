@@ -1,0 +1,45 @@
+# Run the released images instead of building them.
+#
+# `docker-compose.yml` builds every Nacre service from this checkout, which is
+# right for working on it and wrong for the first thing anybody does. A release
+# publishes four images, they pull anonymously, and until this file the only
+# thing that consumed them was the Helm chart — so "try Nacre" meant a pnpm
+# install and a TypeScript build on a laptop, and a toolchain failure between a
+# person and the product they had not seen yet.
+#
+# An overlay rather than an `image:` in the base file, and that is the whole
+# design decision here. With both keys present `docker compose build` tags what
+# it built as the published name, so a developer's local build shadows the
+# release under the same tag and the two become indistinguishable a week later.
+# Keeping them in separate files keeps them separate things.
+#
+# `docker compose ... pull` first is not optional and not ceremony: Compose
+# still carries `build:` from the base file, so `up` on a host that has never
+# pulled would build rather than fail, and the whole point would be lost
+# silently. `docs/quickstart.md` gives both commands together for that reason.
+#
+# NACRE_VERSION pins all four. Unset it and you get `latest`, which is what
+# somebody trying the product wants and what nobody running one should have:
+# `latest` moves under a `docker compose pull` and there is no way to say
+# afterwards what was running. Pin it in `.env` for anything that matters.
+#
+# `check-compose.mjs` holds this file against the base: every service the base
+# builds has to be named here. Six services and four images, with nothing that
+# knows either number, is the shape where the fifth service gets added and this
+# file quietly keeps starting the old one.
+
+services:
+  api:
+    image: ghcr.io/nacre-work/nacre:${NACRE_VERSION:-latest}
+  mcp:
+    image: ghcr.io/nacre-work/nacre:${NACRE_VERSION:-latest}
+  worker:
+    image: ghcr.io/nacre-work/nacre:${NACRE_VERSION:-latest}
+  migrate:
+    image: ghcr.io/nacre-work/nacre:${NACRE_VERSION:-latest}
+  web:
+    image: ghcr.io/nacre-work/nacre-web:${NACRE_VERSION:-latest}
+  parser:
+    image: ghcr.io/nacre-work/nacre-parser:${NACRE_VERSION:-latest}
+  embedding-adapter:
+    image: ghcr.io/nacre-work/nacre-embedding-adapter:${NACRE_VERSION:-latest}

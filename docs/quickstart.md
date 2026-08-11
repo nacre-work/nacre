@@ -70,6 +70,36 @@ Then:
 docker compose --profile minimal up -d
 ```
 
+### Or without building anything
+
+The command above builds every Nacre service from this checkout, which is right
+for working on it and slow for meeting it: a pnpm install and a TypeScript
+build stand between you and a product you have not seen. A release publishes
+four images and they pull anonymously, so there is a shorter way:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.images.yml pull
+docker compose -f docker-compose.yml -f docker-compose.images.yml --profile minimal up -d
+```
+
+Or, once, so the rest of this page's commands stay as written:
+
+```bash
+export COMPOSE_FILE=docker-compose.yml:docker-compose.images.yml
+```
+
+**`pull` is not ceremony.** The overlay names images and Compose still carries
+`build:` from the base file, so `up` on a host that has never pulled would build
+instead of failing — the whole point lost, silently, and four minutes later.
+
+`NACRE_VERSION` in `.env` pins all four images. Unset, they are `latest`, which
+is what somebody trying the product wants and what nobody running one should
+have: `latest` moves under the next `pull` and afterwards there is no way to say
+what was running.
+
+Everything below is the same either way. The images are the ones the Helm chart
+deploys, so what you try here is what you would run.
+
 `minimal` starts the API, a worker, PostgreSQL, Qdrant, Redis, and the parser
 sidecar, and expects embeddings from an endpoint you name in
 `NACRE_DEFAULT_EMBEDDING_ENDPOINT`. Use `--profile full` to run the embedder and
