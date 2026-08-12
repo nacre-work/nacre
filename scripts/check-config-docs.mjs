@@ -40,16 +40,34 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
-// The files that read the process environment. Config is centralized in
-// config.ts; these two entry points reach for one variable each before it is
-// built (the migrator needs the DSN to connect, the STDIO transport its service
-// key), and both are listed so the check sees every read. A new direct reader
-// belongs here — but it also belongs in config.ts, which is the actual rule.
-const READERS = [
-  'packages/core/config.ts',
-  'packages/core/migrate-main.ts',
-  'packages/mcp/src/stdio-main.ts',
-]
+// The TypeScript that reads the process environment, **discovered rather than
+// listed** — for the reason the sidecar half of this check already gives, and
+// which this half then demonstrated by failing to.
+//
+// It was three named files: `packages/core/config.ts`, where configuration is
+// centralized, plus the two entry points that reach for one variable each
+// before it is built. That list was correct and stayed correct right up until
+// there was a fourth package. `packages/cli` reads `NACRE_API_URL` and
+// `NACRE_TOKEN`, and because no path under it was named here, both were read by
+// shipped code and documented nowhere — which is precisely the defect this file
+// exists to prevent, arriving through the check itself.
+//
+// The same shape as `NACRE_PARSER_ALLOW_PRIVATE_URLS`, which a shipped
+// container read and no document mentioned because this check knew only about
+// TypeScript. A list is the thing that does not get the entry.
+const PACKAGES = 'packages'
+const typescriptUnder = (dir) => {
+  const found = []
+  for (const entry of readdirSync(dir)) {
+    // Tests set variables to assert about them, which is not a deployment
+    // reading one, and `dist` is the same source compiled.
+    if (entry === '__tests__' || entry === 'dist' || entry === 'node_modules') continue
+    const path = join(dir, entry)
+    if (statSync(path).isDirectory()) found.push(...typescriptUnder(path))
+    else if (path.endsWith('.ts') && !path.endsWith('.d.ts')) found.push(path)
+  }
+  return found
+}
 
 // The sidecars, discovered rather than listed: a third one added and not named
 // here is exactly the gap this half of the check exists to close, and a list is
@@ -109,7 +127,7 @@ const documented = namesIn(readFileSync(DOCS, 'utf8'))
 let failed = false
 
 const read = new Set()
-for (const file of READERS) {
+for (const file of typescriptUnder(PACKAGES)) {
   for (const name of readsIn(readFileSync(file, 'utf8'))) read.add(name)
 }
 

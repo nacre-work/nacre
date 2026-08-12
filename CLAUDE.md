@@ -69,6 +69,7 @@ packages/mcp         MCP server (Streamable HTTP + STDIO)
 packages/api         REST API and authorization service
 packages/worker      indexing pipeline: parse, chunk, embed
 packages/sdk         TypeScript SDK
+packages/cli         the `nacre` command, over the SDK
 packages/admin       community admin UI, single organization
 services/parser      Python sidecar: bytes -> {text, blocks, metadata}
 docs/                specifications. These are normative, not descriptive
@@ -96,6 +97,49 @@ rather than leaving the document stuck in `parsing` forever.
 `packages/sdk` is the TypeScript client and `packages/admin` is the community
 admin UI; both are written, and the admin UI has been driven in a browser
 against the running API.
+
+**There is a `nacre` command now**, and the reason it exists is that
+`docs/quickstart.md`'s path from a clean clone to a first search was four `curl`
+invocations with hand-assembled JSON, a workspace id copied out of `init`'s
+output and a token good for an hour. The documented metric — under thirty
+minutes to a first search — was never measurable because nobody could plausibly
+be asked to do it twice. It is a thin wrapper over the SDK, so it holds no
+second idea of what the API is: `login`, `whoami`, `layers`, `layers create`,
+`grant`, `ingest` (with `--watch`), `search` and `eval`.
+
+Three defects came out of running it, none of which any suite could see. The
+password prompt **printed the password** — readline with `terminal: true` echoes
+what it reads, and the private `_writeToOutput` interception did not hold on a
+pipe, which is the path a script and a demo both take. An ingest where **every
+document failed exited 0**, so a nightly pass checking the exit code would have
+reported a healthy corpus with an empty index. And `search` returned an **empty
+document id** through the SDK and therefore through the admin UI: the client
+read `hit.document_id` where the contract and the server say `doc_id`, and
+`?? ''` turned the miss into an empty string, so a result could not be turned
+into `documents.get(id)`. That test's fixture also said `document_id` — it
+proved the mapper against a response no server sends, which is the shape a
+fixture written to match the code always has.
+
+`nacre eval` scores a layer's reference queries from outside the worker —
+recall@k, averaged per query, `--floor` to make it a gate. Writing it found that
+**`external_id` was write-only**: ingest is idempotent on `(layer, external_id)`
+and no response carried one, so a client could name a document and never ask
+about it by that name again, and nothing outside the worker could score recall
+at all. It is on `Document` now, in the contract, the handler and the SDK.
+
+`--watch` never deletes, and that is not caution. A file disappearing is
+indistinguishable from the first half of how every editor saves — write a
+temporary file, rename it over the original — so removing a document on an
+unlink event would delete documents on save, intermittently, depending on the
+editor.
+
+Adding the package is also what found `lint:config` naming three files. It read
+`packages/core/config.ts` and two entry points, which was right until there was
+a fourth package: `NACRE_API_URL` and `NACRE_TOKEN` were read by shipped code
+and documented nowhere. The same defect as `NACRE_PARSER_ALLOW_PRIVATE_URLS`,
+which that check missed because it knew only about TypeScript and the sidecar is
+Python — and the same repair. It discovers its readers now, and went from three
+files to fifty-nine variables.
 
 The SDK reaches **every** operation in `docs/openapi.yaml` now, and
 `packages/sdk/src/__tests__/coverage.test.ts` is what keeps that true — it had
