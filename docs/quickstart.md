@@ -233,6 +233,31 @@ family, because by then the legitimate holder has already exchanged it and there
 is no way to tell which of the two holders is genuine. See
 [api.md](./api.md#signing-in).
 
+## The same page, with one command instead of four
+
+Everything from here to the first search is four `curl` invocations, and they
+are written out below because they are the contract and because an integrator
+wants to see the requests. If what you want is the *result*, there is a client
+for it:
+
+```bash
+npx @nacre.work/cli login --url http://localhost:8082
+npx @nacre.work/cli layers create handbook --name Handbook
+npx @nacre.work/cli ingest ./docs --layer handbook
+npx @nacre.work/cli search "when do new hires get access"
+```
+
+It signs in with the password `init` printed rather than the hour-long token,
+keeps the session in `~/.config/nacre/config.json` at mode `0600`, resolves a
+layer slug to the id the API wants, walks a directory, and waits for every
+document to reach `indexed` — reporting the ones that did not **and exiting
+non-zero**, which the rest of this page cannot do for you.
+
+`NACRE_API_URL` and `NACRE_TOKEN` override the stored session, which is what a
+service account in a pipeline uses; there is no terminal there to log in from.
+
+The requests below are what it sends.
+
 ## A layer, and someone allowed to read it
 
 A document lives in a layer, and a layer lives in a workspace. Nothing is

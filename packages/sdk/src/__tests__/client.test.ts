@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
 import { describe, expect, it, vi } from 'vitest'
 
 import { NacreClient, NacreError, NacreTransportError } from '../index.js'
@@ -86,12 +89,21 @@ describe('NacreClient', () => {
     expect(calls[0]?.body).toEqual({ query: 'anything', top_k: 5 })
   })
 
-  it('maps a hit into the SDK naming', async () => {
+  it('maps a hit into the SDK naming, from the field names the contract uses', async () => {
+    // This fixture said `document_id` and the mapper read `document_id`, so the
+    // pair agreed with each other and with no server: `docs/openapi.yaml` calls
+    // it `doc_id` and that is what the API sends. `?? ''` then turned every
+    // hit's document id into an empty string, which is why nothing failed —
+    // a search result could not be turned into `documents.get(id)`, through
+    // this client and therefore through the admin UI too.
+    //
+    // Found by running the CLI against a real API and reading the JSON. Not by
+    // a test, because the test was one of the two things that agreed.
     const { fetchImpl } = stub(
       json(200, {
         items: [
           {
-            document_id: 'doc-1',
+            doc_id: 'doc-1',
             chunk_id: 'chunk-1',
             score: 0.8,
             text: 'layers',
@@ -105,6 +117,39 @@ describe('NacreClient', () => {
     expect(await client(fetchImpl).search('x')).toEqual([
       { documentId: 'doc-1', chunkId: 'chunk-1', score: 0.8, text: 'layers', layer: 'handbook', title: null },
     ])
+  })
+
+  it('reads a hit under the names docs/openapi.yaml gives them', async () => {
+    // The repair rather than the second edit. A fixture is a claim about what
+    // the server sends, and a fixture somebody wrote to match the mapper proves
+    // the mapper against itself — so the names come out of the contract here,
+    // and renaming a field there without renaming it in the client fails.
+    //
+    // Deliberately only the fields the client reads: the contract may carry
+    // more, and a hit that grows a field the SDK ignores is not a defect.
+    const contract = readFileSync(
+      fileURLToPath(new URL('../../../../docs/openapi.yaml', import.meta.url)),
+      'utf8',
+    )
+    const lines = contract.split('\n')
+    const start = lines.findIndex((line) => line === '    SearchHit:')
+    expect(start, 'docs/openapi.yaml declares a SearchHit schema').toBeGreaterThan(-1)
+
+    // To the next schema, which is the next line indented by exactly four
+    // spaces. Slicing on a raw `\n    ` would stop at the first six-space line
+    // instead, since that starts with four spaces too — which it did, and the
+    // test failed for a reason that had nothing to do with what it asserts.
+    const end = lines.findIndex((line, index) => index > start && /^ {4}\S/.test(line))
+    const declared = new Set(
+      lines
+        .slice(start, end === -1 ? undefined : end)
+        .map((line) => /^ {8}([a-z_]+):/.exec(line)?.[1])
+        .filter((name): name is string => name !== undefined),
+    )
+
+    for (const field of ['doc_id', 'chunk_id', 'layer', 'score', 'text', 'title']) {
+      expect(declared, `${field} is read by the client`).toContain(field)
+    }
   })
 
   it('a 404 on a read is undefined, not an exception', async () => {

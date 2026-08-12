@@ -20,6 +20,7 @@ const alias = {
   '@nacre.work/api': src('./packages/api/src/index.ts'),
   '@nacre.work/mcp': src('./packages/mcp/src/index.ts'),
   '@nacre.work/worker': src('./packages/worker/src/index.ts'),
+  '@nacre.work/sdk': src('./packages/sdk/src/index.ts'),
 }
 
 export default defineConfig({

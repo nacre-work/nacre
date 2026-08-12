@@ -350,7 +350,14 @@ export class NacreClient {
     return items.map((h) => {
       const hit = h as Record<string, unknown>
       return {
-        documentId: String(hit.document_id ?? ''),
+        // `doc_id`, which is what the contract calls it and what the server
+        // sends. This read `document_id` — a field that exists in the contract,
+        // on `Job`, and not on a search hit — so `?? ''` turned every hit's
+        // document id into an empty string and nothing failed. A search result
+        // could not be turned into `documents.get(id)`, which is the whole
+        // find-it-then-fetch-it flow, through the SDK and therefore through the
+        // admin UI as well.
+        documentId: String(hit.doc_id ?? ''),
         chunkId: String(hit.chunk_id ?? ''),
         score: Number(hit.score ?? 0),
         text: String(hit.text ?? ''),

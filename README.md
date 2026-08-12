@@ -44,6 +44,11 @@ cleared for — and being able to prove it to an auditor.
   endpoint, bound per layer. Changing the model on an existing layer is a
   reindex that keeps search answering throughout, and it is gated on recall
   against a query set you supply before it switches over.
+- **A command line client.** `npx @nacre.work/cli` signs in, creates a layer,
+  walks a directory into it and searches — the four `curl` invocations the
+  quickstart spells out, for when you want the result rather than the contract.
+  A document that fails to index is a non-zero exit, so a nightly ingest cannot
+  report success having indexed nothing.
 - **Stays inside your network.** Docker Compose, no phone-home.
 
 ## Quickstart

@@ -1,0 +1,52 @@
+{
+  "name": "@nacre.work/cli",
+  "version": "0.14.3",
+  "description": "Command line client for Nacre: layers, grants, ingest and search",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nacre-work/nacre.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://nacre.work",
+  "license": "Apache-2.0",
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "bin": {
+    "nacre": "./dist/main.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "keywords": [
+    "nacre",
+    "cli",
+    "rag",
+    "permissions",
+    "search"
+  ],
+  "bugs": {
+    "url": "https://github.com/nacre-work/nacre/issues"
+  },
+  "author": "Nacre",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@nacre.work/sdk": "workspace:*"
+  }
+}

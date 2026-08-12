@@ -68,6 +68,12 @@ importers:
         specifier: ^8.20.3
         version: 8.20.3
 
+  packages/cli:
+    dependencies:
+      '@nacre.work/sdk':
+        specifier: workspace:0.14.3
+        version: link:../sdk
+
   packages/core:
     dependencies:
       '@qdrant/js-client-rest':
