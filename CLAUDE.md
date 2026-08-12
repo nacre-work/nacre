@@ -1093,6 +1093,18 @@ looked like monitoring.
   a pull request cannot sign itself. List every address you commit from.
 - Changes under `packages/core/authz` need **two maintainer approvals** and
   tests.
+- **Say when a change needs a human to do something outside this repository**,
+  in the pull request body and when reporting the work — not once it has
+  failed. The list is short and every entry on it fails *after* a merge, on the
+  commit that is already the release: configuring trusted publishing for a new
+  npm package, a DNS record, a registry entry, an npm or GitHub setting, a
+  credential that has to exist before a workflow can use it. A change that is
+  green in CI and inert in production because nobody was told to press
+  something is the worst version of "done".
+  `@nacre.work/cli` is the instance that produced this rule.
+- **Adding a publishable package is not only code.** Four things, and the
+  fourth is the one above: see [docs/releasing.md](./docs/releasing.md), which
+  `lint:publish` holds against the manifests so it cannot be skipped.
 - Don't optimize `authz/reference.ts` when it exists. Its whole value is being
   obviously correct so the property test can catch drift in the fast path.
 

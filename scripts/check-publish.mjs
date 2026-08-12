@@ -30,6 +30,21 @@ import { join } from 'node:path'
 
 import { PACKAGES, agreedVersion, manifests, publishable } from './publishable.mjs'
 
+/**
+ * The document that says what gets published, and what a new name costs.
+ *
+ * Held against the manifests rather than left to be remembered, because the
+ * thing it documents is invisible until it goes wrong: trusted publishing is
+ * configured per package on npmjs.com, the very first publish of a new name is
+ * therefore the one the pipeline cannot do, and it fails **after** the merge
+ * with a `404` that reads as "no such package".
+ *
+ * `@nacre.work/cli` was added and nobody knew that until the release was
+ * already the commit on main. A note would have been read by whoever wrote it;
+ * this is read by whoever adds the next one.
+ */
+const RELEASING = 'docs/releasing.md'
+
 const args = process.argv.slice(2)
 const listOnly = args.includes('--list')
 const versionOnly = args.includes('--version')
@@ -39,6 +54,30 @@ let failed = false
 const all = manifests()
 const packages = publishable(all)
 const names = new Set(packages.map((p) => p.name))
+
+const releasing = readFileSync(RELEASING, 'utf8')
+for (const { name, path } of packages) {
+  if (releasing.includes(`\`${name}\``)) continue
+  console.error(
+    `::error file=${path}::${name} is published and ${RELEASING} does not list it. ` +
+      'That document carries the four things a new publishable package needs, and the ' +
+      'fourth — configuring trusted publishing for the name, by hand, before merging — ' +
+      'is the one the pipeline cannot do for you.',
+  )
+  failed = true
+}
+
+// And the other direction, which is the half that goes stale silently: a
+// package that became `private` stays in the table describing what npm holds.
+for (const [, { json }] of all) {
+  if (json.private !== true) continue
+  if (!releasing.includes(`\`${json.name}\``)) continue
+  if (/not published/.test(releasing.split(`\`${json.name}\``)[1]?.slice(0, 200) ?? '')) continue
+  console.error(
+    `::error::${json.name} is private and ${RELEASING} lists it as published`,
+  )
+  failed = true
+}
 
 for (const { dir, path, name, json } of packages) {
   for (const [dependency, range] of Object.entries(json.dependencies ?? {})) {
