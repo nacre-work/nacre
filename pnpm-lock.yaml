@@ -71,7 +71,7 @@ importers:
   packages/cli:
     dependencies:
       '@nacre.work/sdk':
-        specifier: workspace:0.14.3
+        specifier: workspace:*
         version: link:../sdk
 
   packages/core:
