@@ -76,15 +76,58 @@ And it fails **after** the merge, on `main`, on the commit that is already the
 release. That is the shape this repository takes most seriously, which is why
 this section exists rather than a comment somewhere.
 
-The way through it, once:
+The way through it, once — and **`pnpm pack` first is not optional**:
 
 ```bash
-# from the package directory, with a granular publish token
-npm publish --access public
+pnpm --filter @nacre.work/<name> pack --pack-destination /tmp
+npm publish --access public /tmp/<name>-<version>.tgz
 ```
 
 Then open the package on npmjs.com and add the trusted publisher for this
 repository and the `release` workflow. Every later version publishes itself.
+
+### Why not a bare `npm publish` from the package directory
+
+Because it produces a package nobody can install, and it does it silently.
+
+A workspace dependency is written `"@nacre.work/sdk": "workspace:*"`, and
+**`pnpm pack` is what rewrites that into a concrete version**. npm does not
+understand the protocol and does not try: it publishes the manifest as written,
+`workspace:*` and all, and then every `npm install` and every `npx` fails on
+resolution. Nothing about the publish itself fails — the tarball uploads, the
+page renders, the version appears.
+
+This is not hypothetical and it is not a hypothetical this document invented.
+`@nacre.work/cli@0.14.3` was published exactly this way, from a version of this
+page that said `npm publish --access public` and nothing else. The registry
+holds it with `{"@nacre.work/sdk":"workspace:*"}` while every package the
+pipeline published carries `{"@nacre.work/core":"0.14.3"}`.
+
+The knowledge already existed, in a comment in `.github/workflows/release.yml`
+above the two commands the pipeline runs:
+
+> `pnpm pack` still packs, because it is what rewrites `workspace:*` into a
+> concrete version. npm publishes the manifest as written, protocol and all,
+> and every install then fails on resolution.
+
+A rule that lives only in a comment does not travel to the next file, which is
+this repository's own stated lesson about `workflow_dispatch`. It travels now:
+`lint:publish` holds this page's procedure against the workflow's, so a
+divergence fails rather than being discovered on the registry.
+
+### Fixing a manifest that reached the registry
+
+Do not unpublish. Removing the only version of a package takes the name out of
+circulation for 24 hours and the trusted publisher configured against it with
+it, which turns a bad manifest into a bad manifest *and* no way to replace it.
+
+Bump the version across every publishable manifest and merge — the pipeline
+republishes all of them correctly, because it packs with pnpm. Then mark the
+broken one so nobody installs it by pin:
+
+```bash
+npm deprecate @nacre.work/<name>@<version> "broken manifest, use <next>"
+```
 
 **Check it worked from outside**, not from the machine that published it:
 
