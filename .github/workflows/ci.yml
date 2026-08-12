@@ -40,8 +40,23 @@ jobs:
           --health-cmd "redis-cli ping" --health-interval 5s
           --health-timeout 5s --health-retries 10
         ports: ["6379:6379"]
+      # For the hybrid query. The sparse slot, the `idf` modifier, a point
+      # carrying a dense and a sparse vector at once and a prefetch that mixes
+      # the two are all facts about Qdrant, and the defect that test replaces
+      # was a set of individually-correct pieces nobody had put in front of a
+      # database together. The same pin as docker-compose.yml, not `latest`.
+      #
+      # The test refuses to skip when CI is set, which is why the service is
+      # here rather than the test being allowed to notice it is missing: this
+      # job and acl-invariants both run `pnpm test:unit`, and a case that runs
+      # in one of them is a case that stops running the day the other is the
+      # one somebody reads.
+      qdrant:
+        image: qdrant/qdrant:v1.18.3
+        ports: ["6333:6333"]
     env:
       NACRE_PG_URL: postgres://postgres:test@localhost:5432/nacre_test
+      NACRE_QDRANT_URL: http://localhost:6333
       NACRE_REDIS_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
