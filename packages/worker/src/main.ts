@@ -46,6 +46,7 @@ import {
 } from './adapters.js'
 import { ingest } from './ingest.js'
 import { collectOnce } from './collect.js'
+import { deliver, type Completion } from './webhook.js'
 import { pruneOnce } from './prune.js'
 import { reapOnce } from './reap.js'
 import { reindexOnce } from './reindex.js'
@@ -270,6 +271,43 @@ async function main(): Promise<void> {
   // look like" is how the two ends of a migration end up disagreeing.
   const store = new VectorStore(vectorStoreOptions(config))
   const documents = new PostgresDocumentStore(pool, APP_ROLE)
+
+  /**
+   * Announce a terminal state, if this deployment asked to be told.
+   *
+   * Never throws and never returns a failure upwards. The document is indexed
+   * — or it failed and has been recorded as failed — and the callback is a
+   * courtesy on top of that. Letting a receiver's outage propagate here would
+   * make an unrelated problem upstream look like an ingest failure, and the
+   * recovery for that is re-indexing a corpus that was already fine.
+   */
+  const announce = async (claim: Claim, completion: Completion): Promise<void> => {
+    if (config.ingestWebhook === undefined || config.ingestWebhookSecret === undefined) return
+    try {
+      await deliver(completion, {
+        url: config.ingestWebhook,
+        secret: config.ingestWebhookSecret,
+        attempts: config.ingestWebhookAttempts,
+        onFailure: ({ attempts, reason }) => {
+          // Loud, because this is the one failure nobody downstream can see:
+          // the receiver is waiting for a message that is not coming, and the
+          // only record it ever had is this line.
+          logger.error('ingest callback gave up', {
+            document_id: completion.documentId,
+            org_id: claim.orgId,
+            status: completion.status,
+            attempts,
+            reason,
+          })
+        },
+      })
+    } catch (error) {
+      logger.error('ingest callback raised', {
+        document_id: completion.documentId,
+        error: String(error),
+      })
+    }
+  }
 
   // Absent when a deployment has none, which is the supported default: document
   // bytes then live in `documents.source_ref` and no target ever names an
@@ -840,9 +878,29 @@ async function main(): Promise<void> {
       logger.info('indexed', { document_id: result.documentId,
           chunks: result.chunkCount,
           unchanged: result.unchanged })
+
+      await announce(claim, {
+        documentId: result.documentId,
+        externalId: claim.externalId,
+        layerId: claim.layerId,
+        orgId: claim.orgId,
+        status: 'indexed',
+        chunkCount: result.chunkCount,
+        error: null,
+      })
     } catch (error) {
       logger.error('indexing failed', { document_id: claim.documentId, error: String(error) })
       await markFailed(pool, claim, error).catch(() => {})
+
+      await announce(claim, {
+        documentId: claim.documentId,
+        externalId: claim.externalId,
+        layerId: claim.layerId,
+        orgId: claim.orgId,
+        status: 'failed',
+        chunkCount: 0,
+        error: String(error),
+      })
     }
   }
 

@@ -211,6 +211,30 @@ export interface Config {
   readonly presignTtl: number
 
   /**
+   * Where a document reaching a terminal state is announced, or `undefined`.
+   *
+   * **The operator's URL and never a tenant's.** A callback destination chosen
+   * through the API would be an authenticated caller pointing this installation
+   * at an address of their choosing, which is the outbound-request surface
+   * `NACRE_PARSER_ALLOW_PRIVATE_URLS` exists to bound on the one service that
+   * already had it. One value in the environment has no such surface: the
+   * person who sets it is the person who runs the cluster.
+   */
+  readonly ingestWebhook: string | undefined
+
+  /**
+   * The key the callback body is signed with. Required when the URL is set.
+   *
+   * Without it a receiver has no way to tell this installation's callback from
+   * anybody's POST to the same address, and a callback that says "document X
+   * is indexed" is worth forging to whoever wants a pipeline to act on it.
+   */
+  readonly ingestWebhookSecret: string | undefined
+
+  /** Delivery attempts before a callback is given up on and logged. */
+  readonly ingestWebhookAttempts: number
+
+  /**
    * Object storage, or `undefined` when a deployment has none.
    *
    * Absent is a supported configuration and not a degraded one: document bytes
@@ -846,6 +870,45 @@ function safeProtocol(url: string): string {
  * or a missing key was silent while MinIO sat there talking to nobody. That is
  * the specific failure this shape exists to make impossible.
  */
+/**
+ * The completion callback, as a pair rather than two optionals.
+ *
+ * A URL with no secret is a deployment sending unsigned callbacks, which the
+ * receiver cannot tell from anybody else's POST to the same address — and a
+ * message saying "document X is indexed" is worth forging to whoever wants a
+ * pipeline to act on it. The same argument object storage makes about an
+ * endpoint with no credential: both halves parse on their own and the failure
+ * arrives later, somewhere else, as something that looks like a different bug.
+ *
+ * A secret with no URL is the milder mistake and still a mistake — it is a
+ * deployment that believes it is announcing and is not.
+ */
+function ingestWebhookFrom(
+  r: Reader,
+  env: Env,
+): Pick<Config, 'ingestWebhook' | 'ingestWebhookSecret'> {
+  const url = (env.NACRE_INGEST_WEBHOOK ?? '').trim()
+  const secret = (env.NACRE_INGEST_WEBHOOK_SECRET ?? '').trim()
+
+  if (url === '' && secret === '') return { ingestWebhook: undefined, ingestWebhookSecret: undefined }
+
+  if (url === '' || secret === '') {
+    r.problems.push(
+      `the ingest callback is half configured: ${url === '' ? 'NACRE_INGEST_WEBHOOK_SECRET' : 'NACRE_INGEST_WEBHOOK'} ` +
+        `set, ${url === '' ? 'NACRE_INGEST_WEBHOOK' : 'NACRE_INGEST_WEBHOOK_SECRET'} missing. ` +
+        'Set both to announce a document reaching a terminal state, or neither. ' +
+        'There is no unsigned mode: a receiver cannot tell an unsigned callback ' +
+        'from anybody else\'s POST to the same address.',
+    )
+    return { ingestWebhook: undefined, ingestWebhookSecret: undefined }
+  }
+
+  return {
+    ingestWebhook: r.url('NACRE_INGEST_WEBHOOK'),
+    ingestWebhookSecret: r.secret('NACRE_INGEST_WEBHOOK_SECRET', 32),
+  }
+}
+
 function s3From(r: Reader, env: Env): Config['s3'] {
   const keys = [
     'NACRE_S3_ENDPOINT',
@@ -1051,6 +1114,9 @@ export function loadConfig(env: Env = process.env): Config {
     // minute, because a link that expires while the client is still following
     // the redirect is a link that never worked.
     presignTtl: r.number('NACRE_PRESIGN_TTL', 900, { min: 60, max: 604_800 }),
+
+    ...ingestWebhookFrom(r, env),
+    ingestWebhookAttempts: r.number('NACRE_INGEST_WEBHOOK_ATTEMPTS', 3, { min: 1, max: 10 }),
 
     // All of it or none of it — see the cross-field check below. Read here so
     // that a malformed endpoint is a startup problem like any other; whether

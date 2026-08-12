@@ -1057,6 +1057,47 @@ from `.env` — and never by `loadConfig`: inside the network the ports stay 808
 are unaffected. They exist because a host with something already on one of those
 ports should be a one-line `.env` entry, not an override file.
 
+## Announcing a finished document
+
+Off unless both are set, and the process refuses to start with one without the
+other.
+
+| Variable | Default | |
+|---|---|---|
+| `NACRE_INGEST_WEBHOOK` | — | where a document reaching a terminal state is announced |
+| `NACRE_INGEST_WEBHOOK_SECRET` | — | HMAC key, at least 32 characters |
+| `NACRE_INGEST_WEBHOOK_ATTEMPTS` | 3 | delivery attempts before it is logged and dropped (1–10) |
+
+The worker POSTs once per document on `indexed` and on `failed`. The body is
+`webhooks: documentTerminal` in `docs/openapi.yaml` and carries identifiers, a
+status, a chunk count and an error — **no document text, title or metadata**.
+The request goes somewhere with no principal attached, so there is nothing on
+the other end to evaluate a grant against.
+
+`X-Nacre-Signature` is `sha256=<hex>` over `{timestamp}.{body}`, keyed with the
+secret, with the timestamp also in `X-Nacre-Timestamp`. It is inside the signed
+material rather than only beside it, so a captured body cannot be replayed later
+with a fresh one. Compare in constant time and reject a timestamp outside the
+window you accept.
+
+**The pair is refused half-set on purpose.** A URL without a secret is a
+deployment sending callbacks a receiver cannot distinguish from anybody else's
+POST to the same address, and "document X is indexed" is worth forging to
+whoever wants a pipeline to act on it. A secret without a URL is a deployment
+that believes it is announcing and is not.
+
+**There is no per-organization callback**, and that is not an omission. An
+address configured through the API is an authenticated caller choosing where
+this installation sends a request, which wants a destination allowlist before it
+is a feature — the same surface `NACRE_PARSER_ALLOW_PRIVATE_URLS` bounds on the
+parser. This variable is set by whoever runs the cluster.
+
+Delivery is at-most-once. A receiver that is down misses the announcement and
+the document is indexed regardless; `GET /v1/jobs/{id}` is the record that
+always answers. A failure to deliver never fails a document, because an outage
+at the receiver looking like an ingest failure leads somebody to re-index a
+corpus that was fine.
+
 ## The command line client
 
 Two variables, and they are the only ones in this reference that no server

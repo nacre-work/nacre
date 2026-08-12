@@ -196,6 +196,21 @@ components:
         detail:  { type: object, additionalProperties: true }
         request_id: { type: [string, 'null'] }
 
+    DocumentTerminal:
+      type: object
+      required: [event, document_id, external_id, layer_id, org_id, status, chunk_count, error]
+      properties:
+        event:        { type: string, enum: [document.indexed, document.failed] }
+        document_id:  { type: string, format: uuid }
+        external_id:  { type: string, description: The identifier the caller ingested it under }
+        layer_id:     { type: string, format: uuid }
+        org_id:       { type: string, format: uuid }
+        status:       { type: string, enum: [indexed, failed] }
+        chunk_count:  { type: integer, description: '0 on `failed`' }
+        error:
+          type: [string, 'null']
+          description: Why indexing failed, and `null` on `indexed`.
+
     SearchHit:
       type: object
       required: [chunk_id, doc_id, layer, score]
@@ -786,6 +801,67 @@ components:
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
+
+# OpenAPI 3.1's `webhooks`: requests this installation *sends*, described in the
+# same document as the ones it serves. `docs/api.md` said a callback was not
+# built and that the contract carried no path for one, and that adding it was a
+# change here first. This is that change.
+#
+# One event, both terminal states, and no per-organization configuration: the
+# destination is `NACRE_INGEST_WEBHOOK`, set by whoever runs the installation.
+# A callback address chosen through the API would be an authenticated caller
+# pointing this deployment at an address of their choosing, which needs a
+# destination allowlist before it is a feature rather than a request forgery.
+webhooks:
+  documentTerminal:
+    post:
+      operationId: onDocumentTerminal
+      summary: A document reached a terminal state
+      description: >
+        Sent once per document when indexing finishes, on `indexed` and on
+        `failed` alike. Delivery is at-most-once with bounded retries: a
+        receiver that is down misses the announcement, and the document is
+        indexed regardless — the record a client can always fall back on is
+        `GET /v1/jobs/{id}`.
+
+
+        Identifiers and a status, and deliberately no document text, title or
+        metadata. The request goes to an address with no principal attached, so
+        there is nothing on the other end to evaluate a grant against; what it
+        carries is what a pipeline needs in order to come back and ask for the
+        rest through the API, as itself.
+      parameters:
+        - name: X-Nacre-Event
+          in: header
+          required: true
+          schema: { type: string, enum: [document.indexed, document.failed] }
+        - name: X-Nacre-Timestamp
+          in: header
+          required: true
+          description: Unix seconds, and part of the signed material rather than beside it.
+          schema: { type: integer }
+        - name: X-Nacre-Signature
+          in: header
+          required: true
+          description: >
+            `sha256=<hex>`, an HMAC over `{timestamp}.{body}` keyed with
+            `NACRE_INGEST_WEBHOOK_SECRET`. Compare it in constant time, and
+            reject a timestamp outside the window you are willing to accept —
+            the timestamp is inside the signature so that a captured body
+            cannot be replayed later with a fresh one.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DocumentTerminal' }
+      responses:
+        '2XX':
+          description: >
+            Any 2xx acknowledges. A 4xx other than 408, 425 or 429 is treated
+            as an answer and not retried — the body is wrong or the signature
+            was not accepted, and repeating it changes nothing. A 5xx, a 408,
+            a 425, a 429 and a transport failure are retried with backoff.
 
 paths:
   /auth/login:

@@ -383,10 +383,37 @@ by it — every route this API serves is in [openapi.yaml](./openapi.yaml).
 
 Ingest returns `202` with a `job_id`. Status at `GET /v1/jobs/{id}`:
 `queued | parsing | embedding | indexed | failed`, with progress and an error
-message. There is no completion callback: a client polls `GET /v1/jobs/{id}`
-until it reads a terminal state (`indexed` or `failed`). A webhook is not built,
-and the contract carries no path for one — adding it is a change to
-`docs/openapi.yaml` first.
+message. Polling that until it reads a terminal state is always available and is
+the fallback for everything below.
+
+**A deployment can also be told.** Set `NACRE_INGEST_WEBHOOK` and the worker
+POSTs once per document when indexing finishes, on `indexed` and on `failed`
+alike. The shape is `webhooks: documentTerminal` in
+[openapi.yaml](./openapi.yaml) — the contract describes what this installation
+sends as well as what it serves.
+
+Three things about it are decisions rather than details:
+
+- **The destination is the operator's, not a tenant's.** There is no API for
+  setting a callback address. One chosen through the API is an authenticated
+  caller pointing this installation at an address of their choosing, which needs
+  a destination allowlist before it is a feature rather than a request forgery —
+  the surface `NACRE_PARSER_ALLOW_PRIVATE_URLS` exists to bound on the one
+  service that already had it.
+- **It is signed or it does not exist.** `NACRE_INGEST_WEBHOOK_SECRET` is
+  required alongside the URL and the process refuses to start with one without
+  the other. The signature covers `{timestamp}.{body}`, so a captured payload
+  cannot be replayed later with a fresh timestamp.
+- **It carries no document content.** Identifiers, a status, a chunk count and
+  an error. The request arrives somewhere with no principal attached to it, so
+  there is nothing to evaluate a grant against; what it carries is enough to
+  come back and ask through the API, as yourself.
+
+Delivery is at-most-once with bounded retries, and a failure to deliver never
+fails the document — an outage at the receiver must not look like an ingest
+failure, because the recovery for that is re-indexing a corpus that was fine.
+A receiver that was down missed the announcement and `GET /v1/jobs/{id}` still
+answers.
 
 ## Limits
 
