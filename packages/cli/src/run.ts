@@ -12,6 +12,7 @@ export const HELP = `nacre — the command line client for a Nacre installation
   nacre layers create <slug> [--name ...]   create one  [--workspace <slug>]
   nacre grant <permission> <scope> --to <principal>
   nacre ingest <file|dir>... --layer <slug> index text files, and wait for them
+                              --watch     keep indexing a directory as it changes
   nacre search <query> [--layer <slug>] [--top-k <n>]
   nacre eval --layer <slug> [--top-k <n>] [--floor <0..1>]
                                             score the layer's reference queries

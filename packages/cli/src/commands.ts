@@ -233,6 +233,19 @@ async function resolveScope(client: NacreClient, type: string, ref: string): Pro
   return found.id
 }
 
+/**
+ * Whether a path is one this command would have ingested.
+ *
+ * Split out because the watcher needs the same answer for a single path that
+ * `collect` reaches by walking, and two spellings of "is this a file we index"
+ * is how a watcher comes to index a `.git` object nobody asked for.
+ */
+export function eligible(path: string): boolean {
+  const parts = path.split(sep)
+  if (parts.includes('.git') || parts.includes('node_modules')) return false
+  return TEXT.has(extensionOf(basename(path)))
+}
+
 /** Extensions read as text. Everything else is refused rather than mangled. */
 const TEXT = new Set(['.md', '.markdown', '.txt', '.rst', '.adoc', '.csv', '.json', '.yaml', '.yml', '.html'])
 
@@ -328,6 +341,14 @@ export async function ingest(context: Context): Promise<Outcome> {
     },
   )
 
+  if (flag(context.parsed, 'watch')) {
+    const directories = targets.filter((target) => statSync(target).isDirectory())
+    if (directories.length === 0) {
+      throw new UsageError('--watch needs a directory to watch, not only files')
+    }
+    return watch(context, client, layer, directories, output)
+  }
+
   // **A failed document is a non-zero exit**, and finding that out is what
   // running this against a real stack was for: a misconfigured embedding
   // provider failed every document in the directory, the summary said `2
@@ -339,6 +360,89 @@ export async function ingest(context: Context): Promise<Outcome> {
   // The summary still goes to stdout: it is the answer, and a script needs to
   // read which documents failed rather than only that some did.
   return failed.length === 0 ? output : { output, code: 1 }
+}
+
+/**
+ * Keep ingesting a directory as it changes.
+ *
+ * The gap between "no connectors" — which is the right decision and stays — and
+ * "write your own ingest", which is what everybody trying this actually has to
+ * do first. It is not a connector: no Confluence, no Drive, no credentials for
+ * somebody else's system. It is the directory already on the machine.
+ *
+ * **It never deletes.** A file disappearing looks identical to the first half
+ * of how every editor saves — write a temporary file, rename it over the
+ * original — so a watcher that removed a document on an unlink event would
+ * delete documents on save, intermittently, depending on the editor. Removing a
+ * document is `DELETE /v1/documents/{id}`, deliberately by hand.
+ *
+ * Re-ingest of unchanged bytes is free: ingest is idempotent on
+ * `(layer, external_id)` plus the content hash, so a save that changes nothing
+ * costs one request and no embedding.
+ */
+async function watch(
+  context: Context,
+  client: NacreClient,
+  layer: string,
+  directories: readonly string[],
+  first: string,
+): Promise<Outcome> {
+  const { watch: watchDirectory } = await import('node:fs')
+  const lines = [first, `Watching ${directories.join(', ')} for changes. Ctrl-C to stop.`]
+
+  // Editors emit several events for one save — the temporary file, the rename,
+  // a metadata touch — so a pass is scheduled rather than run per event, and a
+  // second event inside the window joins the pass already coming.
+  const pending = new Set<string>()
+  let timer: NodeJS.Timeout | undefined
+
+  const flush = async () => {
+    timer = undefined
+    const batch = [...pending]
+    pending.clear()
+
+    for (const path of batch) {
+      const target = directories.find((dir) => path.startsWith(dir + sep) || path.startsWith(dir))
+      if (target === undefined) continue
+      try {
+        const outcome = await client.documents.add({
+          layer,
+          externalId: relative(target, path).split(sep).join('/'),
+          title: basename(path),
+          content: readFileSync(path, 'utf8'),
+        })
+        if (outcome.unchanged) continue
+        const job = await client.jobs.wait(outcome.jobId)
+        process.stderr.write(
+          `${job?.status === 'indexed' ? 'indexed' : `failed: ${reasonOf(job)}`}  ${relative(target, path)}\n`,
+        )
+      } catch (error) {
+        // A file removed between the event and the read is the ordinary case,
+        // and so is a partially written one. Neither is worth stopping a
+        // watcher that is meant to run all day.
+        process.stderr.write(`skipped ${path}: ${error instanceof Error ? error.message : String(error)}\n`)
+      }
+    }
+  }
+
+  for (const directory of directories) {
+    watchDirectory(directory, { recursive: true }, (_event, name) => {
+      if (name === null) return
+      const path = join(directory, name.toString())
+      if (!eligible(path)) return
+      pending.add(path)
+      if (timer === undefined) timer = setTimeout(() => void flush(), 300)
+    })
+  }
+
+  // Progress goes to stderr above, so this resolves only on Ctrl-C and the
+  // summary of the first pass stays the thing on stdout.
+  await new Promise<void>((resolve) => {
+    process.on('SIGINT', () => resolve())
+    process.on('SIGTERM', () => resolve())
+  })
+
+  return lines.join('\n')
 }
 
 const describe = (item: { externalId: string; job: Job | undefined }) => ({

@@ -6,7 +6,7 @@ import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 
 import { flag, integer, option, parse, UsageError } from '../args.js'
-import { ask, collect } from '../commands.js'
+import { ask, collect, eligible } from '../commands.js'
 import { configPath, loadSession, saveSession } from '../config.js'
 import { run } from '../run.js'
 
@@ -280,6 +280,33 @@ describe('collecting files to ingest', () => {
     expect(collect(join(root, 'handbook.md'))).toEqual([
       { path: join(root, 'handbook.md'), externalId: 'handbook.md' },
     ])
+  })
+
+  it('answers the same question for one path as the walk does for a tree', () => {
+    // The watcher sees single paths and `collect` sees a tree, and two
+    // spellings of "is this a file we index" is how a watcher comes to index a
+    // `.git` object nobody asked for.
+    expect(eligible(join('docs', 'readme.md'))).toBe(true)
+    expect(eligible(join('docs', 'logo.png'))).toBe(false)
+    expect(eligible(join('.git', 'COMMIT_EDITMSG.md'))).toBe(false)
+    expect(eligible(join('node_modules', 'left-pad', 'readme.md'))).toBe(false)
+  })
+
+  it('--watch needs a directory, since a single file has nothing to watch for', async () => {
+    const root = scratch()
+    writeFileSync(join(root, 'one.md'), 'x')
+
+    const result = await run(['ingest', join(root, 'one.md'), '--layer', 'x', '--watch'], {
+      env: { HOME: scratch(), NACRE_API_URL: 'https://x', NACRE_TOKEN: 't' },
+      clientFor: () =>
+        ({
+          documents: { add: async () => ({ documentId: 'd', jobId: 'j', unchanged: true }) },
+          jobs: { wait: async () => ({ jobId: 'j', documentId: 'd', status: 'indexed', error: null }) },
+        }) as never,
+    })
+
+    expect(result.code).toBe(2)
+    expect(result.output).toContain('directory')
   })
 
   it('refuses to guess at a binary rather than mangling it', async () => {
