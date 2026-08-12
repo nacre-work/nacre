@@ -34,7 +34,8 @@
     "lint:collection-config": "node scripts/check-collection-config.mjs",
     "lint:password": "node scripts/check-password-generator.mjs",
     "lint:images": "node scripts/check-images.mjs",
-    "lint:endpoint-errors": "node scripts/check-endpoint-errors.mjs"
+    "lint:endpoint-errors": "node scripts/check-endpoint-errors.mjs",
+    "lint:sparse": "node scripts/check-sparse-branch.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

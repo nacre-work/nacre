@@ -140,6 +140,47 @@ connected to it. Both fail **open**, deliberately and against the grain of
 invariant 3: neither is an authorization control, and failing closed would turn
 a cache restart into an outage.
 
+**Search is hybrid, which it had only ever said it was.** `docs/architecture.md`
+described "dense vector plus sparse BM25, fused with Reciprocal Rank Fusion"
+from before there was a server, `collectionConfig` created every collection with
+a `bm25` sparse slot, `buildHybridQuery` accepted a `SparseBranch` and the ACL
+prefilter suite passed one through — and **nothing ever produced a sparse
+vector**. Not the worker on ingest, not the search path. The slot was empty on
+every point of every collection and every query was dense-only, for the entire
+life of the project.
+
+Nothing could have failed. A slot with no writer is not an error at ingest; a
+branch never built is not an error at query time; and a test that hands the
+builder a sparse branch proves the builder, not that anybody calls it. Every
+piece was individually correct, which is why this is the same shape as
+`NACRE_ACL_CACHE_TTL` and the propagation gauge rather than a new one —
+declared, accepted, read by nothing.
+
+`packages/core/text/bm25.ts` is the missing producer and it is one module
+because the two sides have to agree on every token: a term hashing one way at
+ingest and another at query time is a branch that never matches, silently. The
+document side writes term frequency only and IDF is Qdrant's, from
+`modifier: 'idf'` on the slot — an IDF stored at ingest freezes each chunk's
+idea of how rare a word is at the moment it was written. No stopword list,
+because IDF already scores a ubiquitous term near zero without one to maintain
+per language; no stemmer, because it needs language detection and works against
+what this branch is for, which is the class of term dense retrieval handles
+worst: error codes, contract numbers, `NACRE_*` variables, surnames. An
+identifier is indexed whole and in parts, so `s3` finds a chunk that only writes
+`NACRE_S3_ENDPOINT`.
+
+One lexical branch however many models the organization runs, and no
+`onlyLayers` on it: BM25 has no model, so confining it would drop points the
+caller may see for no reason. `lint:sparse` is the repair rather than the two
+edits — every slot the collection declares has to have a producer on each side,
+which is the question none of the individually-correct pieces was asking.
+
+Not verified against a real Qdrant, which is the one thing this repository
+normally insists on and the reason it is called out here rather than left to be
+discovered: the remaining risk is Qdrant's acceptance of the sparse payload and
+the IDF modifier on a live collection, and it is the first thing to drive by
+hand.
+
 Reranking is on the search path, off unless a deployment configures a reranker.
 It fetches `NACRE_RERANK_CANDIDATES` from the index and returns the best
 `top_k`, which is **not** the over-fetch invariant 2 forbids: every candidate

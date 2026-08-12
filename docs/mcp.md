@@ -311,8 +311,15 @@ invariant I4 leaves no `403` to count.
 the caller. A generic "searches the knowledge base" pushes the model to fall
 back on web search instead of querying the index.
 
-Template: `Semantic search over corporate documents. Available: {layer.name} —
-{layer.description} ({n} docs); …`
+Template: `Search corporate documents by meaning and by exact term —
+identifiers, error codes, part numbers and names match literally. Available:
+{layer.name} — {layer.description} ({n} docs); …`
+
+The first sentence names both halves of the hybrid query for the same reason
+the catalog is there at all. It said "semantic search" while search was
+dense-only, which was accurate; saying it now would cost calls, because a model
+asked for `SQLSTATE 23505` reads *semantic* as conceptually similar, decides a
+literal string is not what this tool answers, and reaches for a web search.
 
 ```jsonc
 {

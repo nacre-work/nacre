@@ -237,6 +237,34 @@ which is most of what used to make it weak. It still cannot tell you that a
 release behaves the way you expect — that is what driving one real search and
 one real ingest is for.
 
+### When a release changes what a point carries
+
+A migration moves the schema and the migrator is the thing that runs it. There
+is no equivalent for the *index*: a release that changes what gets written into
+a point changes it for documents written **after** the upgrade, and every
+document already in the collection keeps whatever it was written with.
+
+Nothing here breaks when that happens, and that is the difficulty — a filter, a
+payload field or a vector slot that half the corpus lacks answers normally for
+the half that has it. So the release note says so, and the remedy is always the
+same command:
+
+```bash
+docker compose run --rm api rebuild-collection --org {slug}
+```
+
+It reads the collection name and the per-layer slots from Postgres, recreates
+the collection and requeues every live document, so everything is written by the
+build you are now running. It re-embeds, so it costs what the original ingest
+cost — plan it like a reindex rather than like a restart, and note that search
+keeps answering from the old collection until it completes.
+
+The one release so far that asks for it is the one that made search hybrid: the
+`bm25` slot is filled at ingest, so until a rebuild the lexical half of every
+query sees only documents ingested since the upgrade. Dense retrieval is
+unaffected and no result is wrong; what a rebuild buys is that exact-term
+matching covers the whole corpus rather than the recent end of it.
+
 ---
 
 ## Per-version notes

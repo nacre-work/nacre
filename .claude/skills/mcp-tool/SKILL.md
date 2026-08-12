@@ -39,7 +39,7 @@ Contract: `docs/mcp.md`, target revision **2026-07-28**.
 `search` builds its description from the caller's visible layer catalog:
 
 ```
-Semantic search over corporate documents. Available: {layer.name} — {layer.description} ({n} docs); …
+Search corporate documents by meaning and by exact term — identifiers, error codes, part numbers and names match literally. Available: {layer.name} — {layer.description} ({n} docs); …
 ```
 
 A generic "searches the knowledge base" makes the model reach for web search

@@ -132,6 +132,15 @@ jobs:
       # and 403, where the cause is that this client sends no credential and has
       # nowhere to hold one — which an operator cannot work out from `401`.
       - run: pnpm lint:endpoint-errors
+      # Every vector slot the collection declares has a producer on both sides.
+      # The `bm25` slot was declared from the first collection ever created,
+      # described in docs/architecture.md as half of how search works, and
+      # accepted by buildHybridQuery — and written by nothing and queried by
+      # nothing, for the entire life of the project. Every piece was correct on
+      # its own, so every suite was green: a slot with no writer is not an
+      # ingest error, a branch never built is not a query error, and fusion
+      # absorbs a prefetch that returns nothing without a trace.
+      - run: pnpm lint:sparse
       - run: pnpm migrate
       - run: pnpm test:unit
 

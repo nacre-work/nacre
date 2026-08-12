@@ -38,18 +38,37 @@ export interface ToolDefinition {
  * fact as `cacheScope: "user"` on tools/list; changing one without the other
  * serves one caller's catalog to another.
  */
+/**
+ * What the tool does, in the sentence a model reads before deciding to call it.
+ *
+ * It said "Semantic search over corporate documents" while search was in fact
+ * dense-only, so the description was accurate and the product was the poorer
+ * half of what it should have been. Now that the lexical branch exists, leaving
+ * the sentence alone would be the opposite error — and it is not a cosmetic
+ * one. A model asked for `SQLSTATE 23505`, an invoice number or a variable name
+ * reads "semantic" as *conceptually similar*, concludes that a literal string
+ * is not what this tool is for, and goes to a web search or to guessing. The
+ * catalog below is in the description for exactly the same reason.
+ *
+ * Short on purpose: this text is sent on every `tools/list`, and the per-layer
+ * catalog after it is the part that varies and earns its length.
+ */
+const WHAT_SEARCH_DOES =
+  'Search corporate documents by meaning and by exact term — identifiers, error codes, ' +
+  'part numbers and names match literally.'
+
 export function searchDescription(layers: readonly Layer[]): string {
   if (layers.length === 0) {
     // Honest rather than inviting. A caller with no layers should not be
     // encouraged to call this, and must not be told what exists elsewhere.
-    return 'Semantic search over corporate documents. No layers are available to you.'
+    return `${WHAT_SEARCH_DOES} No layers are available to you.`
   }
 
   const catalog = layers
     .map((l) => `${l.name} — ${l.description} (${l.documentCount} docs)`)
     .join('; ')
 
-  return `Semantic search over corporate documents. Available: ${catalog}.`
+  return `${WHAT_SEARCH_DOES} Available: ${catalog}.`
 }
 
 export function catalog(layers: readonly Layer[]): readonly ToolDefinition[] {
