@@ -1057,6 +1057,35 @@ from `.env` — and never by `loadConfig`: inside the network the ports stay 808
 are unaffected. They exist because a host with something already on one of those
 ports should be a one-line `.env` entry, not an override file.
 
+## The command line client
+
+Two variables, and they are the only ones in this reference that no server
+reads. `@nacre.work/cli` is something a person or a pipeline runs *against* an
+installation rather than a process the installation starts, so nothing here
+reaches `loadConfig` and setting either changes nothing about a deployment.
+
+| Variable | Default | |
+|---|---|---|
+| `NACRE_API_URL` | — | the installation to talk to, e.g. `https://api.example` |
+| `NACRE_TOKEN` | — | a service account key or an access token |
+
+Both override the stored session in `~/.config/nacre/config.json`, which is what
+`nacre login` writes at mode `0600`. That is the split they exist for: on a
+laptop a person signs in and the file renews itself, and in CI there is no
+terminal to sign in from and nothing that could write a renewed token down, so
+the environment is the whole session.
+
+`NACRE_TOKEN` set on its own is a complete session — the file's refresh token is
+deliberately **not** paired with it. Renewing would produce a token with nowhere
+to go, so carrying a second credential for it would buy nothing.
+
+They are documented here rather than only in `nacre --help` because this is the
+file that answers "what does `NACRE_*` mean", and a reader who finds twenty-six
+of them here and two only in a binary's help text has been given a reference
+with a hole in it. Finding that hole is what made `lint:config` discover its
+readers instead of naming three files — see the note in
+`scripts/check-config-docs.mjs`.
+
 ## Local overrides
 
 `docker-compose.override.yml` is Compose's own mechanism for what one machine

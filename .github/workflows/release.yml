@@ -122,6 +122,8 @@ jobs:
       - run: pnpm lint:password
       - run: pnpm lint:collection-config
       - run: pnpm lint:endpoint-errors
+      - run: pnpm lint:sparse
+      - run: pnpm lint:image-packages
       - run: pnpm lint:admin-gate
       - run: pnpm lint:admin-classes
       - run: pnpm lint:admin-ids

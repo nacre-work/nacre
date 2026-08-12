@@ -40,8 +40,23 @@ jobs:
           --health-cmd "redis-cli ping" --health-interval 5s
           --health-timeout 5s --health-retries 10
         ports: ["6379:6379"]
+      # For the hybrid query. The sparse slot, the `idf` modifier, a point
+      # carrying a dense and a sparse vector at once and a prefetch that mixes
+      # the two are all facts about Qdrant, and the defect that test replaces
+      # was a set of individually-correct pieces nobody had put in front of a
+      # database together. The same pin as docker-compose.yml, not `latest`.
+      #
+      # The test refuses to skip when CI is set, which is why the service is
+      # here rather than the test being allowed to notice it is missing: this
+      # job and acl-invariants both run `pnpm test:unit`, and a case that runs
+      # in one of them is a case that stops running the day the other is the
+      # one somebody reads.
+      qdrant:
+        image: qdrant/qdrant:v1.18.3
+        ports: ["6333:6333"]
     env:
       NACRE_PG_URL: postgres://postgres:test@localhost:5432/nacre_test
+      NACRE_QDRANT_URL: http://localhost:6333
       NACRE_REDIS_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
@@ -132,6 +147,22 @@ jobs:
       # and 403, where the cause is that this client sends no credential and has
       # nowhere to hold one — which an operator cannot work out from `401`.
       - run: pnpm lint:endpoint-errors
+      # Every vector slot the collection declares has a producer on both sides.
+      # The `bm25` slot was declared from the first collection ever created,
+      # described in docs/architecture.md as half of how search works, and
+      # accepted by buildHybridQuery — and written by nothing and queried by
+      # nothing, for the entire life of the project. Every piece was correct on
+      # its own, so every suite was green: a slot with no writer is not an
+      # ingest error, a branch never built is not a query error, and fusion
+      # absorbs a prefetch that returns nothing without a trace.
+      - run: pnpm lint:sparse
+      # Every workspace manifest reaches the image. The Dockerfile copies them
+      # one line at a time so a source-only change reuses the dependency layer,
+      # and that list did not get `packages/cli` — so pnpm inside the image saw
+      # seven projects instead of eight, the eighth got no node_modules, and the
+      # build failed on an import of a package sitting in the tree. No other job
+      # can reproduce it: everywhere else the workspace is whole.
+      - run: pnpm lint:image-packages
       - run: pnpm migrate
       - run: pnpm test:unit
 

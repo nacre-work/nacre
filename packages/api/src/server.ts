@@ -127,6 +127,15 @@ export interface Documents {
  */
 export interface DocumentView {
   readonly document_id: string
+  /**
+   * The identifier the caller ingested it under.
+   *
+   * Write-only until now, which was a hole rather than a decision: ingest is
+   * idempotent on `(layer, external_id)`, so a client names its documents and
+   * then cannot ask about one by the name it chose. A reference query set names
+   * external ids as well, so nothing outside the worker could score recall.
+   */
+  readonly external_id: string | null
   readonly layer: string
   readonly title: string | null
   readonly status: string

@@ -83,6 +83,8 @@ export interface IngestOutcome {
 
 export interface Document {
   readonly documentId: string
+  /** The id you ingested it under, or `null` if you ingested it without one. */
+  readonly externalId: string | null
   readonly layer: string
   readonly title: string | null
   readonly status: JobStatus

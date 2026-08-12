@@ -1,3 +1,4 @@
+import { SPARSE_VECTOR_NAME } from '../text/bm25.js'
 import type { VectorFilter } from '../authz/filter.js'
 
 /**
@@ -224,7 +225,18 @@ export function collectionConfig(
 
   return {
     vectors: named,
-    sparse_vectors: { bm25: {} },
+    // `modifier: "idf"` is what makes the sparse slot BM25 rather than a sum of
+    // term frequencies. The weights written at ingest are the TF half only, on
+    // purpose — IDF depends on every other point in the collection, including
+    // the ones not written yet, so Qdrant is the only party that can compute it
+    // without freezing each chunk's idea of how rare a word is at the moment it
+    // was indexed. See `text/bm25.ts`.
+    //
+    // A collection created before this build has the slot without the modifier
+    // *and* without a single sparse vector in it, so it scores nothing either
+    // way; `docs/upgrading.md` names `rebuild-collection` as the step that
+    // completes the change.
+    sparse_vectors: { [SPARSE_VECTOR_NAME]: { modifier: 'idf' } },
     optimizers_config: { default_segment_number: 4 },
     on_disk_payload: true,
     // Omitted rather than sent as 1, so a collection created by this build is

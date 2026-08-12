@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 
+import { encodeDocument, type SparseVector } from '@nacre.work/core'
+
 import { chunk, DEFAULT_CHUNK_CONFIG, type ChunkConfig } from './chunk.js'
 
 /**
@@ -98,6 +100,18 @@ export interface VectorWriter {
       pointId: string
       ordinal: number
       vector: readonly number[]
+      /**
+       * The lexical half, from the same chunk text the dense vector was
+       * embedded from.
+       *
+       * Required rather than optional, which is the point of it being here at
+       * all: an omitted sparse vector is a point the `bm25` branch can never
+       * return, and nothing about that fails — the dense branch still answers,
+       * the document is still found, and it is simply absent from half of
+       * every search for the rest of its life. Making it a required field
+       * turns "a caller forgot" into a compile error.
+       */
+      sparse: SparseVector
       docId: string
     }[]
   }): Promise<void>
@@ -266,6 +280,13 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
       pointId: c.pointId,
       ordinal: c.ordinal,
       vector: vectors[i] as readonly number[],
+      // From `c.text`, the same string that was embedded — not from the
+      // document, and not from the parser's extracted text before chunking.
+      // A sparse vector built over the whole document and attached to each of
+      // its chunks would make every chunk match every term the document
+      // contains, so a search for a phrase appearing once would rank all
+      // thirty of its chunks and the reader would get the wrong one.
+      sparse: encodeDocument(c.text),
       docId: stored.id,
     })),
   })

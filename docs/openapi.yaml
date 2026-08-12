@@ -323,6 +323,21 @@ components:
 
             Not per caller, on the same argument `document_count` makes.
         document_id: { type: string, format: uuid }
+        external_id:
+          type: [string, 'null']
+          description: >
+            The identifier the caller ingested it under, read back.
+
+
+            Write-only until now: ingest is idempotent on `(layer, external_id)`
+            and nothing returned one, so a client that tagged a document
+            `handbook/onboarding.md` and did not keep the uuid had no way to ask
+            what became of it. A reference query set names external ids too, so
+            scoring recall from outside the worker was impossible for the same
+            reason.
+
+
+            `null` for a document ingested without one.
         layer:       { type: string, description: The layer slug }
         title:       { type: [string, 'null'] }
         status:      { type: string, enum: [pending, parsing, indexing, indexed, failed] }

@@ -2,11 +2,14 @@ import { QdrantClient } from '@qdrant/js-client-rest'
 import {
   acrossOrganizations,
   explainQdrant as explain,
+  isEmpty,
   METADATA_PREFIX,
   MetadataIndexer,
+  SPARSE_VECTOR_NAME,
   toCheckJson,
   withOrg,
 } from '@nacre.work/core'
+import type { SparseVector } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
 import type { DocumentStore, Parser, ParsedDocument, StoredDocument, VectorWriter } from './ingest.js'
@@ -215,7 +218,13 @@ export class QdrantVectorWriter implements VectorWriter {
     documentId: string
     vectorName: string
     metadata: Record<string, unknown>
-    points: readonly { pointId: string; ordinal: number; vector: readonly number[]; docId: string }[]
+    points: readonly {
+      pointId: string
+      ordinal: number
+      vector: readonly number[]
+      sparse: SparseVector
+      docId: string
+    }[]
   }): Promise<void> {
     try {
       if (input.points.length > 0) await this.upsertPoints(input)
@@ -306,13 +315,34 @@ export class QdrantVectorWriter implements VectorWriter {
     layerId: string
     vectorName: string
     metadata: Record<string, unknown>
-    points: readonly { pointId: string; ordinal: number; vector: readonly number[]; docId: string }[]
+    points: readonly {
+      pointId: string
+      ordinal: number
+      vector: readonly number[]
+      sparse: SparseVector
+      docId: string
+    }[]
   }): Promise<void> {
     await this.client.upsert(input.collection, {
       wait: true,
       points: input.points.map((p) => ({
         id: p.pointId,
-        vector: { [input.vectorName]: [...p.vector] },
+        vector: {
+          [input.vectorName]: [...p.vector],
+          // Omitted when the chunk has no terms at all — punctuation, a rule of
+          // dashes, a page of digits already consumed as one token. Qdrant
+          // takes an empty sparse vector and stores a dimensionless entry that
+          // matches nothing, which is the same outcome for more bytes and one
+          // more thing to reason about when reading a point back.
+          ...(isEmpty(p.sparse)
+            ? {}
+            : {
+                [SPARSE_VECTOR_NAME]: {
+                  indices: [...p.sparse.indices],
+                  values: [...p.sparse.values],
+                },
+              }),
+        },
         payload: {
           org_id: input.orgId,
           layer_id: input.layerId,

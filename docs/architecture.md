@@ -133,6 +133,50 @@ POST /collections/{c}/points/query
 **The filter is repeated in every prefetch branch. Omitting it from one is a
 leak.**
 
+### The lexical branch
+
+The sparse branch is BM25, and both halves of it are worth stating because the
+split is unusual: **the weights written into a point are term frequency only,
+and IDF is Qdrant's**, from `modifier: "idf"` on the slot. Nothing else can
+compute it correctly — how rare a word is depends on every other point in the
+collection, including the ones not written yet, so an IDF stored at ingest would
+freeze each chunk's idea of the corpus at the moment it was indexed and a
+growing collection would hold thousands of disagreeing snapshots of one number.
+
+There is exactly one lexical branch however many embedding models the
+organization runs, and that asymmetry with the dense branches is forced. A dense
+branch is per model because a vector only compares to vectors from the model
+that produced it, which is also why a layer part-way through a reindex needs its
+branch confined to the layers on that model. BM25 has no model: the same terms,
+the same slot, every layer in the collection. Confining it would remove points
+the caller is permitted to see for no reason at all.
+
+Tokenizing is in `packages/core/text/bm25.ts`, one module for both sides,
+because a term that hashes one way at ingest and another at query time produces
+a branch that never matches — no error, no log, and search silently reverts to
+being dense-only.
+
+**No stopword list and no stemmer**, both on the merits. Stopwords are
+unnecessary because IDF already scores a term appearing in every chunk near
+zero, by arithmetic rather than by a list somebody maintains per language. A
+stemmer is declined because it needs language detection to be safe, and because
+it works against what this branch is *for*: dense retrieval already handles
+paraphrase, and what it handles badly is the class of term a stemmer must not
+touch — error codes, contract numbers, part numbers, `NACRE_*` variables,
+service names, surnames. The cost is stated rather than hidden: in an inflected
+language `договора` and `договор` are two terms here, and the dense branch is
+what bridges them.
+
+An identifier is indexed whole *and* in parts — `NACRE_S3_ENDPOINT` yields
+itself plus `nacre`, `s3` and `endpoint` — so a search for a fragment finds a
+chunk that only ever writes the full name, and an exact match still wins on
+having matched twice.
+
+Everything above describes what a point written by **this** build carries. A
+collection predating the change has the slot and no data in it, so the lexical
+branch sees only documents ingested since; `docs/upgrading.md` names
+`rebuild-collection` as the step that completes it.
+
 Forbidden, all three for the same reason:
 
 - filtering results after Qdrant has returned them;

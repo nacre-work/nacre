@@ -1,21 +1,23 @@
 {
-  "name": "@nacre.work/core",
+  "name": "@nacre.work/cli",
   "version": "0.15.0",
-  "description": "Nacre core: data model, permission resolver, and shared types",
+  "description": "Command line client for Nacre: layers, grants, ingest and search",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nacre-work/nacre.git",
-    "directory": "packages/core"
+    "directory": "packages/cli"
   },
   "homepage": "https://nacre.work",
   "license": "Apache-2.0",
   "type": "module",
-  "scripts": {
-    "build": "tsc -b && node ./scripts/copy-migrations.mjs",
-    "dev": "tsx watch index.ts"
-  },
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "bin": {
+    "nacre": "./dist/main.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -27,25 +29,16 @@
   },
   "files": [
     "dist",
+    "README.md",
     "LICENSE",
     "NOTICE"
   ],
-  "dependencies": {
-    "@qdrant/js-client-rest": "^1.18.0",
-    "pg": "^8.22.0"
-  },
-  "devDependencies": {
-    "@types/node": "^26.1.2",
-    "jose": "^6.2.7"
-  },
   "keywords": [
     "nacre",
+    "cli",
     "rag",
     "permissions",
-    "access-control",
-    "authorization",
-    "vector-search",
-    "self-hosted"
+    "search"
   ],
   "bugs": {
     "url": "https://github.com/nacre-work/nacre/issues"
@@ -53,5 +46,8 @@
   "author": "Nacre",
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "@nacre.work/sdk": "workspace:*"
   }
 }

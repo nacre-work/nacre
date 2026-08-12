@@ -21,7 +21,7 @@ What comes out of one release:
 
 | Artifact | Where |
 |---|---|
-| `@nacre.work/core`, `@nacre.work/api`, `@nacre.work/mcp`, `@nacre.work/sdk` | npm, at the same version |
+| `@nacre.work/core`, `@nacre.work/api`, `@nacre.work/mcp`, `@nacre.work/sdk`, `@nacre.work/cli` | npm, at the same version |
 | `ghcr.io/nacre-work/nacre:{version}` and `:latest` | api, mcp, worker and the migrator — one image, four entry points |
 | `ghcr.io/nacre-work/nacre-parser:{version}` and `:latest` | the Python sidecar |
 | `ghcr.io/nacre-work/nacre-embedding-adapter:{version}` and `:latest` | the hosted-embeddings sidecar, `hosted` profile only |
@@ -237,12 +237,84 @@ which is most of what used to make it weak. It still cannot tell you that a
 release behaves the way you expect — that is what driving one real search and
 one real ingest is for.
 
+### When a release changes what a point carries
+
+A migration moves the schema and the migrator is the thing that runs it. There
+is no equivalent for the *index*: a release that changes what gets written into
+a point changes it for documents written **after** the upgrade, and every
+document already in the collection keeps whatever it was written with.
+
+Nothing here breaks when that happens, and that is the difficulty — a filter, a
+payload field or a vector slot that half the corpus lacks answers normally for
+the half that has it. So the release note says so, and the remedy is always the
+same command:
+
+```bash
+docker compose run --rm api rebuild-collection --org {slug}
+```
+
+It reads the collection name and the per-layer slots from Postgres, recreates
+the collection and requeues every live document, so everything is written by the
+build you are now running. It re-embeds, so it costs what the original ingest
+cost — plan it like a reindex rather than like a restart, and note that search
+keeps answering from the old collection until it completes.
+
+The one release so far that asks for it is the one that made search hybrid: the
+`bm25` slot is filled at ingest, so until a rebuild the lexical half of every
+query sees only documents ingested since the upgrade. Dense retrieval is
+unaffected and no result is wrong; what a rebuild buys is that exact-term
+matching covers the whole corpus rather than the recent end of it.
+
 ---
 
 ## Per-version notes
 
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
+
+### 0.15.0 — search is hybrid, and there is a `nacre` command
+
+**One thing to do, and only if you want the change to reach documents you
+already have.** No new variable, no migration, no service.
+
+Search now carries the lexical branch it has always been described as carrying.
+The `bm25` slot was created on every collection from the first release and
+nothing ever wrote to it, so every query was dense-only; the worker fills it at
+ingest now and the search path asks it.
+
+That means **the lexical half sees documents ingested from 0.15.0 onwards**. A
+collection built before this has the slot and no data in it, so nothing is
+wrong and nothing is worse — dense retrieval is untouched, no result changes,
+no query errors. What you do not get, until you say so, is exact-term matching
+over the documents already there.
+
+```bash
+docker compose run --rm api rebuild-collection --org {slug}
+```
+
+It recreates the collection and requeues every live document, so everything is
+written by the build you are now running. **It re-embeds**, so it costs what the
+original ingest cost — plan it like a reindex, not like a restart. Search keeps
+answering from the old collection until it completes.
+
+A deployment that skips it keeps working indefinitely. This is a quality
+improvement with a backfill, not a correctness fix.
+
+**New artifact: `@nacre.work/cli`**, the `nacre` command — `login`, `layers`,
+`grant`, `ingest` (with `--watch`), `search` and `eval`. Nothing installs it on
+your behalf and no deployment changes because of it; it is what a person or a
+pipeline runs against an installation. `npx @nacre.work/cli`.
+
+> **`@nacre.work/cli@0.14.3` on npm is broken and this release replaces it.** It
+> was published by hand with a bare `npm publish`, which does not rewrite
+> `workspace:*` into a concrete version, so its manifest names a dependency npm
+> cannot resolve and `npm i` fails. It is deprecated on the registry. Nothing
+> else was affected — every other package at 0.14.3 was published by the
+> pipeline, which packs with pnpm. See [releasing.md](./releasing.md).
+
+`GET /v1/documents/{id}` gains `external_id`, the identifier you ingested the
+document under. Additive, and it follows the document's own permission like
+every other field there.
 
 ### 0.14.3 — the adapter says which credential it is holding
 

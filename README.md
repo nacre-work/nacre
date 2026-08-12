@@ -34,10 +34,21 @@ cleared for — and being able to prove it to an auditor.
   and local STDIO for developer agents. Agents authenticate with a service
   account key; OAuth discovery is served (RFC 9728), and client registration is
   the authorization server's business rather than ours.
+- **Hybrid retrieval, because agents ask for identifiers.** Dense vectors and
+  BM25 fused with reciprocal rank fusion, plus a cross-encoder rerank where a
+  deployment configures one. Not offered as a differentiator — the line above
+  is the honest one — but an agent searching for `SQLSTATE 23505`, an invoice
+  number or a variable name needs the literal match, and a dense-only index
+  does not reliably return it.
 - **Bring your own models.** Embeddings through any OpenAI-compatible
   endpoint, bound per layer. Changing the model on an existing layer is a
   reindex that keeps search answering throughout, and it is gated on recall
   against a query set you supply before it switches over.
+- **A command line client.** `npx @nacre.work/cli` signs in, creates a layer,
+  walks a directory into it and searches — the four `curl` invocations the
+  quickstart spells out, for when you want the result rather than the contract.
+  A document that fails to index is a non-zero exit, so a nightly ingest cannot
+  report success having indexed nothing.
 - **Stays inside your network.** Docker Compose, no phone-home.
 
 ## Quickstart

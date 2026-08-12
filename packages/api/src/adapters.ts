@@ -3,7 +3,9 @@ import {
   cachedEffectivePrincipals,
   documentKey,
   effectivePrincipals,
+  encodeQuery,
   fromStateJson,
+  isEmpty,
   loadGrants,
   loadGroupsVersion,
   loadScopeTree,
@@ -12,6 +14,7 @@ import {
   reindexProgress,
   activeResolver,
   admitIngest,
+  SPARSE_VECTOR_NAME,
   toStateJson,
   VectorStore,
   vectorName,
@@ -19,6 +22,7 @@ import {
   endpointReason,
   endpointUrl,
   modelEndpointRefused,
+  type Branch,
   type CacheStore,
   type Hit,
   type Metadata,
@@ -153,6 +157,7 @@ export class PostgresDocuments implements Documents {
 
         const { rows } = await client.query<{
           id: string
+          external_id: string | null
           title: string | null
           layer_id: string
           layer: string
@@ -164,7 +169,7 @@ export class PostgresDocuments implements Documents {
           source_ref: string | null
           error: string | null
         }>(
-          `SELECT d.id, d.title, d.layer_id, l.slug AS layer, d.status, d.chunk_count,
+          `SELECT d.id, d.external_id, d.title, d.layer_id, l.slug AS layer, d.status, d.chunk_count,
                   d.updated_at, d.metadata, d.source_type, d.source_ref, d.error
              FROM documents d
              JOIN layers l ON l.id = d.layer_id AND l.org_id = d.org_id
@@ -194,6 +199,7 @@ export class PostgresDocuments implements Documents {
 
         return {
           document_id: row.id,
+          external_id: row.external_id,
           layer: row.layer,
           title: row.title,
           status: row.status,
@@ -537,6 +543,31 @@ export class NacreSearchService implements SearchService {
       }),
     )
 
+    // The lexical branch, and there is exactly one of it however many embedding
+    // models the organization runs.
+    //
+    // That asymmetry with the dense branches is the point rather than an
+    // oversight. A dense branch is per model because a vector is only
+    // comparable to vectors from the model that produced it, and a layer part
+    // way through a reindex carries two — hence `onlyLayers`. BM25 has no
+    // model: the same terms, the same hashes and the same slot for every layer
+    // in the collection, so confining it would remove points the caller is
+    // permitted to see for no reason at all.
+    //
+    // It carries no `onlyLayers` for the same reason and needs none: the shared
+    // filter already holds the permission plan and the caller's `layers`
+    // narrowing, and that filter is applied to every branch here by
+    // `buildHybridQuery` rather than by any of them.
+    //
+    // A query of pure punctuation encodes to nothing, and a branch with no
+    // dimensions matches no point — so it is left out rather than sent, which
+    // keeps the empty case a question about the query rather than a prefetch
+    // that quietly returns nothing.
+    const lexical = encodeQuery(query)
+    const withLexical: Branch[] = isEmpty(lexical)
+      ? branches
+      : [...branches, { kind: 'sparse' as const, using: SPARSE_VECTOR_NAME, vector: lexical }]
+
     // Off unless the deployment configured a reranker and the caller left it on.
     const reranking = this.deps.reranker !== undefined && options.rerank !== false
 
@@ -544,7 +575,7 @@ export class NacreSearchService implements SearchService {
       orgId: auth.orgId,
       collection,
       plan,
-      branches,
+      branches: withLexical,
       // Without a reranker this is passed through uncorrected: asking for more
       // and trimming would be a post-filter that also costs more.
       //

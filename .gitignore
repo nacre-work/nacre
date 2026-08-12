@@ -20,5 +20,19 @@ __pycache__/
 /data/
 /tmp/
 
+# Redis writes its snapshot into whatever directory it was started from, so
+# running one for the limits tests or the idempotency cache drops this in the
+# repository root. It was committed twice that way, in 0.12.0 and 0.12.1, and
+# it is a test run's cache — `nacre:idem:` and `nacre:rl:` keys for alice and
+# bob — rather than anything a build needs.
+#
+# Anything Redis can leave behind, not just the one file that got in: the
+# append-only log and the cluster file arrive the same way.
+dump.rdb
+*.rdb
+appendonly.aof
+appendonlydir/
+nodes.conf
+
 # Claude Code: per-developer overrides, never committed
 .claude/settings.local.json
