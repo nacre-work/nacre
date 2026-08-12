@@ -370,6 +370,103 @@ export async function search(context: Context): Promise<string> {
   })
 }
 
+/**
+ * Score a layer's reference query set, from outside the worker.
+ *
+ * The same measurement the reindex gate makes and for a different purpose. That
+ * one asks "can the new model still answer?" at a moment nobody chose; this
+ * asks "how is retrieval doing?" at a moment somebody did — before and after a
+ * chunking change, a reranker being switched on, a corpus growing by a
+ * quarter. Until now the answer to "what is your recall?" was a number that
+ * existed only inside a migration nobody was running.
+ *
+ * **Recall@k against documents the deployment picked**, averaged per query,
+ * which is the core's definition and deliberately not agreement with a previous
+ * model — a better model disagrees with the worse one it replaces.
+ *
+ * It is a read-only measurement: nothing here writes a verdict, moves a layer
+ * or touches the index. A number leaves, and that is all.
+ */
+export async function evaluate(context: Context): Promise<Outcome> {
+  const client = requireClient(context)
+  const slug = option(context.parsed, 'layer')
+  if (slug === undefined) throw new UsageError('nacre eval --layer <slug> [--top-k <n>] [--floor <0..1>]')
+
+  const layer = (await client.layers.list()).find((one) => one.slug === slug || one.id === slug)
+  if (layer === undefined) throw new Error(`No layer ${JSON.stringify(slug)} you can see.`)
+
+  const queries = await client.layers.referenceQueries(layer.id)
+  if (queries === undefined || queries.length === 0) {
+    // Not an error and not a zero. A layer without a reference set has no gate
+    // by design — the core says so — and reporting 0.00 would read as terrible
+    // retrieval rather than as no measurement.
+    throw new UsageError(
+      `Layer ${slug} has no reference queries, so there is nothing to score. ` +
+        'Write a set with PUT /v1/layers/{id}/reference-queries, or on the layer screen in the admin UI.',
+    )
+  }
+
+  const topK = integer(context.parsed, 'top-k') ?? 10
+  const floor = Number(option(context.parsed, 'floor') ?? '0')
+  if (!Number.isFinite(floor) || floor < 0 || floor > 1) {
+    throw new UsageError('--floor is a fraction between 0 and 1')
+  }
+
+  const scored = await Promise.all(
+    queries.map(async (query) => {
+      const hits = await client.search(query.query, { topK, layers: [layer.slug] })
+
+      // Hits carry document ids and a reference set names external ids, so the
+      // two are joined by reading the documents back. That read is why
+      // `external_id` had to stop being write-only: a client could name a
+      // document on the way in and never ask about it by that name again.
+      const found = new Set(
+        (
+          await Promise.all(
+            [...new Set(hits.map((hit) => hit.documentId))].map(async (id) =>
+              (await client.documents.get(id))?.externalId ?? undefined,
+            ),
+          )
+        ).filter((id): id is string => id !== undefined),
+      )
+
+      const hit = query.expected.filter((id) => found.has(id))
+      return {
+        query: query.query,
+        expected: query.expected.length,
+        found: hit.length,
+        // A query expecting nothing scores zero rather than one. The core's
+        // gate makes the same choice: an empty expectation is a reference set
+        // that was not finished, and calling it perfect hides that.
+        recall: query.expected.length === 0 ? 0 : hit.length / query.expected.length,
+        missing: query.expected.filter((id) => !found.has(id)),
+      }
+    }),
+  )
+
+  // The mean is over queries, not over documents. Otherwise one query naming
+  // ten documents outvotes five naming one each, which is the core's argument
+  // and it is the same arithmetic here.
+  const recall = scored.reduce((total, item) => total + item.recall, 0) / scored.length
+
+  const output = render(context, { layer: layer.slug, topK, recall, queries: scored }, () => {
+    const lines = [`recall@${topK} ${recall.toFixed(3)} over ${scored.length} quer${scored.length === 1 ? 'y' : 'ies'}`]
+    for (const item of scored) {
+      lines.push(`  ${item.recall.toFixed(2)}  ${item.found}/${item.expected}  ${item.query}`)
+      // The missing documents by name, because "0.60" tells nobody what to
+      // look at and the whole point of running this is to look at something.
+      if (item.missing.length > 0) lines.push(`        missing: ${item.missing.join(', ')}`)
+    }
+    return lines.join('\n')
+  })
+
+  // `--floor` makes it a gate: exit 1 below the number, so this can be the step
+  // in a pipeline that refuses to promote an index. Without one it only
+  // reports, because a bare `nacre eval` failing on a corpus somebody is still
+  // building would teach them to stop running it.
+  return floor > 0 && recall < floor ? { output, code: 1 } : output
+}
+
 function one(hit: SearchHit): string {
   const head = `${hit.score.toFixed(3)}  ${hit.layer}  ${hit.title ?? hit.documentId}`
   const body = hit.text.replace(/\s+/g, ' ').trim()

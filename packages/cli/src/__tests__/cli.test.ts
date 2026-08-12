@@ -128,6 +128,89 @@ describe('the session', () => {
   })
 })
 
+describe('eval', () => {
+  const env = { HOME: '/nonexistent', NACRE_API_URL: 'https://x', NACRE_TOKEN: 't' }
+
+  /**
+   * A client with two documents and a reference set, where search returns
+   * `returns` for every query. Enough to pin the arithmetic, which is what this
+   * command is: the requests themselves are the SDK's.
+   */
+  const clientWith = (queries: unknown[], returns: string[]) =>
+    ({
+      layers: {
+        list: async () => [{ id: 'l1', slug: 'handbook', name: '', description: '', documentCount: 2, failedCount: 0 }],
+        referenceQueries: async () => queries,
+      },
+      search: async () => returns.map((id) => ({ documentId: id, chunkId: 'c', score: 1, text: '', layer: 'handbook', title: null })),
+      documents: { get: async (id: string) => ({ documentId: id, externalId: `ext-${id}`, layer: 'handbook', title: null, status: 'indexed', chunkCount: 1, updatedAt: '' }) },
+    }) as never
+
+  it('averages over queries, not over documents', async () => {
+    // One query naming ten documents must not outvote five naming one each.
+    // Same arithmetic as the core's gate, and the same reason.
+    const result = await run(['eval', '--layer', 'handbook', '--json'], {
+      env,
+      clientFor: () =>
+        clientWith(
+          [
+            { id: 'q1', query: 'a', expected: ['ext-d1'] },
+            { id: 'q2', query: 'b', expected: ['ext-d1', 'ext-nope'] },
+          ],
+          ['d1'],
+        ),
+    })
+
+    // 1.0 and 0.5 → 0.75. Over documents it would be 2/3.
+    expect(JSON.parse(result.output).recall).toBeCloseTo(0.75)
+    expect(result.code).toBe(0)
+  })
+
+  it('scores a query expecting nothing as zero, not as perfect', async () => {
+    // An empty expectation is a reference set somebody did not finish. Calling
+    // it 1.0 hides that behind a number that looks healthy.
+    const result = await run(['eval', '--layer', 'handbook', '--json'], {
+      env,
+      clientFor: () => clientWith([{ id: 'q1', query: 'a', expected: [] }], ['d1']),
+    })
+
+    expect(JSON.parse(result.output).recall).toBe(0)
+  })
+
+  it('is a gate only when given a floor, and reports on stdout when it fails', async () => {
+    const queries = [{ id: 'q1', query: 'a', expected: ['ext-d1', 'ext-missing'] }]
+
+    const reporting = await run(['eval', '--layer', 'handbook'], {
+      env,
+      clientFor: () => clientWith(queries, ['d1']),
+    })
+    // Without a floor it only reports: a bare eval failing on a corpus somebody
+    // is still building teaches them to stop running it.
+    expect(reporting.code).toBe(0)
+
+    const gating = await run(['eval', '--layer', 'handbook', '--floor', '0.9'], {
+      env,
+      clientFor: () => clientWith(queries, ['d1']),
+    })
+    expect(gating.code).toBe(1)
+    expect(gating.stdout).toBe(true)
+    // And names what was missing, because "0.50" tells nobody what to look at.
+    expect(gating.output).toContain('ext-missing')
+  })
+
+  it('refuses a layer with no reference set rather than scoring it zero', async () => {
+    // A layer without a set has no gate by design. Reporting 0.00 would read as
+    // terrible retrieval rather than as no measurement.
+    const result = await run(['eval', '--layer', 'handbook'], {
+      env,
+      clientFor: () => clientWith([], []),
+    })
+
+    expect(result.code).toBe(2)
+    expect(result.output).toContain('no reference queries')
+  })
+})
+
 describe('the password prompt', () => {
   const fake = () => {
     const input = new PassThrough()

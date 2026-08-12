@@ -157,6 +157,7 @@ export class PostgresDocuments implements Documents {
 
         const { rows } = await client.query<{
           id: string
+          external_id: string | null
           title: string | null
           layer_id: string
           layer: string
@@ -168,7 +169,7 @@ export class PostgresDocuments implements Documents {
           source_ref: string | null
           error: string | null
         }>(
-          `SELECT d.id, d.title, d.layer_id, l.slug AS layer, d.status, d.chunk_count,
+          `SELECT d.id, d.external_id, d.title, d.layer_id, l.slug AS layer, d.status, d.chunk_count,
                   d.updated_at, d.metadata, d.source_type, d.source_ref, d.error
              FROM documents d
              JOIN layers l ON l.id = d.layer_id AND l.org_id = d.org_id
@@ -198,6 +199,7 @@ export class PostgresDocuments implements Documents {
 
         return {
           document_id: row.id,
+          external_id: row.external_id,
           layer: row.layer,
           title: row.title,
           status: row.status,

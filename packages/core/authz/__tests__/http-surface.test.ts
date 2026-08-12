@@ -54,6 +54,7 @@ async function answerOnly(r: Response): Promise<Omit<ProblemBody, 'instance' | '
 /** Documents keyed by organization. Undefined for absent and for foreign alike. */
 const document = (id: string, title: string): DocumentView => ({
   document_id: id,
+  external_id: null,
   layer: 'contracts',
   title,
   status: 'indexed',

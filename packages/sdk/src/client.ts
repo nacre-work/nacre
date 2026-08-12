@@ -408,6 +408,7 @@ export class NacreClient {
 
       return {
         documentId: String(body.document_id),
+        externalId: (body.external_id as string | null) ?? null,
         layer: String(body.layer ?? ''),
         title: (body.title as string | null) ?? null,
         status: body.status as Document['status'],

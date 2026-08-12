@@ -1,7 +1,7 @@
 import { NacreClient } from '@nacre.work/sdk'
 
 import { parse, UsageError } from './args.js'
-import { ask, grant, ingest, layers, login, search, whoami, type Context } from './commands.js'
+import { ask, evaluate, grant, ingest, layers, login, search, whoami, type Context } from './commands.js'
 import { saveSession, type Session } from './config.js'
 
 export const HELP = `nacre — the command line client for a Nacre installation
@@ -13,6 +13,8 @@ export const HELP = `nacre — the command line client for a Nacre installation
   nacre grant <permission> <scope> --to <principal>
   nacre ingest <file|dir>... --layer <slug> index text files, and wait for them
   nacre search <query> [--layer <slug>] [--top-k <n>]
+  nacre eval --layer <slug> [--top-k <n>] [--floor <0..1>]
+                                            score the layer's reference queries
 
   --json      print the response as JSON, for a script rather than a person
   --help      this
@@ -34,6 +36,7 @@ const COMMANDS: Record<string, (context: Context) => Promise<Outcome>> = {
   grant,
   ingest,
   search,
+  eval: evaluate,
 }
 
 /**
