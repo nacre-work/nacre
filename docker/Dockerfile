@@ -38,6 +38,7 @@ COPY packages/api/package.json     packages/api/
 COPY packages/mcp/package.json     packages/mcp/
 COPY packages/worker/package.json  packages/worker/
 COPY packages/sdk/package.json     packages/sdk/
+COPY packages/cli/package.json     packages/cli/
 COPY packages/admin/package.json   packages/admin/
 RUN pnpm install --frozen-lockfile
 

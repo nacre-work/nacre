@@ -156,6 +156,13 @@ jobs:
       # ingest error, a branch never built is not a query error, and fusion
       # absorbs a prefetch that returns nothing without a trace.
       - run: pnpm lint:sparse
+      # Every workspace manifest reaches the image. The Dockerfile copies them
+      # one line at a time so a source-only change reuses the dependency layer,
+      # and that list did not get `packages/cli` — so pnpm inside the image saw
+      # seven projects instead of eight, the eighth got no node_modules, and the
+      # build failed on an import of a package sitting in the tree. No other job
+      # can reproduce it: everywhere else the workspace is whole.
+      - run: pnpm lint:image-packages
       - run: pnpm migrate
       - run: pnpm test:unit
 
