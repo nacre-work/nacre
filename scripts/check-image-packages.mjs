@@ -19,10 +19,10 @@
  * N. So the answer is not the seventh COPY line — it is the thing that counts
  * them.
  *
- * Deliberately a check rather than `COPY packages/*​/package.json`, which does
- * not do what it looks like: Docker flattens the matches into the destination
- * directory, so all eight manifests would land on top of each other as one
- * file. The list has to stay a list; it just has to be a checked one.
+ * Deliberately a check rather than a glob copy of every manifest at once, which
+ * does not do what it looks like: Docker flattens the matches into the
+ * destination directory, so all eight manifests would land on top of each other
+ * as one file. The list has to stay a list; it just has to be a checked one.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
