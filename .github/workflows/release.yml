@@ -16,9 +16,32 @@ name: release
 on:
   push:
     branches: [main]
-  # Not the normal path — a merge to main is. This exists so a registry blip
-  # can be retried without an empty commit, the same reason build has it.
+  # Not the normal path — a merge to main is. This exists for the cases a merge
+  # cannot serve: a registry blip that wants a retry without an empty commit,
+  # and the first publish of a package name, which used to be done by hand from
+  # a laptop and produced `@nacre.work/cli@0.14.3` with an unresolvable
+  # `workspace:*` in its manifest.
+  #
+  # **That is why these inputs exist rather than a documented `npm publish`.**
+  # A hand publish skips `pnpm pack`, which is the step that rewrites the
+  # workspace protocol, and nothing about the result looks wrong until somebody
+  # tries to install it. Running the same job with `packages:` set produces a
+  # tarball the same way a release does, because it *is* the release path.
   workflow_dispatch:
+    inputs:
+      packages:
+        description: >-
+          Publish only these, space separated (e.g. "@nacre.work/cli").
+          Empty means whatever the registry is missing, which is the normal path.
+        required: false
+        default: ''
+      dry_run:
+        description: >-
+          Run every gate and pack the tarballs, print the manifests that would
+          be published, and stop before publishing or tagging.
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -124,6 +147,7 @@ jobs:
       - run: pnpm lint:endpoint-errors
       - run: pnpm lint:sparse
       - run: pnpm lint:image-packages
+      - run: pnpm lint:published
       - run: pnpm lint:admin-gate
       - run: pnpm lint:admin-classes
       - run: pnpm lint:admin-ids
@@ -176,6 +200,9 @@ jobs:
       # publishConfig carries `access` but deliberately not `provenance`: npm
       # turns provenance on itself once the exchange succeeds.
       - name: publish
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
 
@@ -198,13 +225,41 @@ jobs:
           # Only what the registry is still missing, so a run that published
           # some packages and then failed can be re-run without tripping over
           # the ones that made it.
-          pending="$(node scripts/release-plan.mjs --pending)"
-          [ -n "$pending" ] || { echo "::error::nothing pending, but decide said there was"; exit 1; }
+          # A manual run may name what to publish. That is the path for the
+          # first version of a package name, which the registry cannot report
+          # as "missing at this version" in a useful way and which used to be
+          # done by hand — off the pipeline, without `pnpm pack`, which is how
+          # an unresolvable `workspace:*` reached the registry.
+          if [ -n "${PACKAGES:-}" ]; then
+            pending="$PACKAGES"
+            echo "publishing the named set: $pending"
+          else
+            pending="$(node scripts/release-plan.mjs --pending)"
+            [ -n "$pending" ] || { echo "::error::nothing pending, but decide said there was"; exit 1; }
+          fi
 
           for package in $pending; do
             rm -f "$tarballs"/*.tgz
             pnpm --filter "$package" pack --pack-destination "$tarballs"
             tarball="$(ls "$tarballs"/*.tgz)"
+
+            # What is actually inside, before it leaves. The manifest npm
+            # uploads is the one in the tarball, and the defect this guards
+            # against is invisible everywhere else: it publishes, it renders,
+            # and it cannot be installed.
+            echo "--- $package"
+            tar -xzOf "$tarball" package/package.json |
+              node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const m=JSON.parse(d);console.log(JSON.stringify({version:m.version,dependencies:m.dependencies??{},peerDependencies:m.peerDependencies??{}},null,2))})'
+
+            if tar -xzOf "$tarball" package/package.json | grep -q '"workspace:'; then
+              echo "::error::$package packs with the workspace protocol still in it; npm would publish a version nobody can install"
+              exit 1
+            fi
+
+            if [ "${DRY_RUN:-false}" = "true" ]; then
+              echo "dry run: not publishing $package"
+              continue
+            fi
 
             # Verbose because the exchange failing is logged at that level and
             # nowhere else: npm falls through to publishing unauthenticated,
@@ -213,10 +268,15 @@ jobs:
             npm publish --loglevel verbose "$tarball"
           done
 
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "dry run: nothing was published and no tag will be written"
+          fi
+
       # After the publish, never before. Both are idempotent so a re-run over a
       # release that half succeeded finishes it rather than failing on what is
       # already there.
       - name: tag and release
+        if: ${{ inputs.dry_run != true }}
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.decide.outputs.version }}

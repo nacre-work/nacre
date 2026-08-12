@@ -76,12 +76,27 @@ And it fails **after** the merge, on `main`, on the commit that is already the
 release. That is the shape this repository takes most seriously, which is why
 this section exists rather than a comment somewhere.
 
-The way through it, once — and **`pnpm pack` first is not optional**:
+The way through it, once — **through the pipeline, not from a laptop**. The
+`release` workflow takes inputs for exactly this:
+
+| Input | |
+|---|---|
+| `packages` | the names to publish, space separated. Empty means whatever the registry is missing, which is the normal path |
+| `dry_run` | run every gate, pack, print the manifests that would be published, and stop |
+
+Run it with `dry_run` first and read the printed manifest — a dependency showing
+`workspace:*` is the defect below, and the job refuses to publish one either
+way. Then run it again with `dry_run` off.
+
+If the name is so new that trusted publishing cannot be configured for it yet,
+the fallback is still not a bare `npm publish`:
 
 ```bash
 pnpm --filter @nacre.work/<name> pack --pack-destination /tmp
 npm publish --access public /tmp/<name>-<version>.tgz
 ```
+
+Publish the **tarball**, never the directory.
 
 Then open the package on npmjs.com and add the trusted publisher for this
 repository and the `release` workflow. Every later version publishes itself.

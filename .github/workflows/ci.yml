@@ -163,6 +163,14 @@ jobs:
       # build failed on an import of a package sitting in the tree. No other job
       # can reproduce it: everywhere else the workspace is whole.
       - run: pnpm lint:image-packages
+      # Nothing on the registry carries the workspace protocol. `pnpm pack`
+      # rewrites it and `npm publish` from a directory does not, so a hand
+      # publish uploads a version nobody can install — which is what happened
+      # to @nacre.work/cli@0.14.3, and which nothing noticed because it
+      # publishes, renders and appears exactly like a good one. Deprecating a
+      # broken version is what turns this green, so the path out is the action
+      # that should be taken anyway.
+      - run: pnpm lint:published
       - run: pnpm migrate
       - run: pnpm test:unit
 
