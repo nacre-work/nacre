@@ -175,11 +175,20 @@ caller may see for no reason. `lint:sparse` is the repair rather than the two
 edits — every slot the collection declares has to have a producer on each side,
 which is the question none of the individually-correct pieces was asking.
 
-Not verified against a real Qdrant, which is the one thing this repository
-normally insists on and the reason it is called out here rather than left to be
-discovered: the remaining risk is Qdrant's acceptance of the sparse payload and
-the IDF modifier on a live collection, and it is the first thing to drive by
-hand.
+Driven against a real Qdrant, because the parts that were left were the
+database's: `hybrid-live.test.ts` asserts the slot and the modifier, the point
+carrying both vectors, the identifier ranking first, the lexical branch not
+reaching an excluded layer, Cyrillic, and a pre-upgrade point with no sparse
+data failing to match rather than erroring the query for everybody else.
+
+The IDF case is the one worth keeping, because it failed first and the failure
+was the test's. It asserted that a rare term outscores a common one over a
+corpus where both had a document frequency of two, so what it measured was
+length normalisation — 1.4008 against 1.4084 — and it would have been just as
+green if the modifier did nothing. A claim about IDF needs a control: the same
+points in a second collection whose slot has no modifier, and a corpus where
+term frequency alone favours the *common* term. Raw, `access` wins; with the
+modifier, `sqlstate` does.
 
 Reranking is on the search path, off unless a deployment configures a reranker.
 It fetches `NACRE_RERANK_CANDIDATES` from the index and returns the best
