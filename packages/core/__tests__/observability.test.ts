@@ -8,19 +8,25 @@ import { collectDatabaseGauges } from '../observability.js'
 /**
  * The gauges, against a real database.
  *
- * `nacre_acl_propagation_lag_seconds` is the only external evidence that
- * invariant I4 holds — a revoked grant stops being visible within
- * ACL_PROPAGATION_SLA — and an alert is meant to fire on it. A metric with an
- * alert on it needs a test more than most code does: wrong, it reports healthy
- * while a revocation is late, and the failure is silent by construction. There
- * is nothing else watching.
+ * These are read from SQL and reported to whatever scrapes `/metrics`, so a
+ * wrong one is not an error anywhere — it is a dashboard that says the backlog
+ * is empty while it grows. `nacre_tombstones_pending_total` is the one an
+ * operator has a runbook for, and the only thing that says a background pass
+ * has stopped.
+ *
+ * This docblock used to say the file was about
+ * `nacre_acl_propagation_lag_seconds`, "the only external evidence that
+ * invariant I4 holds". That gauge went with the ACL tag cache in migration
+ * 0016, and the note further down already said so — a file contradicting
+ * itself a hundred lines apart, which is what a header nobody re-reads on the
+ * way out looks like.
  */
 
 const url = process.env.NACRE_PG_URL
 if (!url && process.env.CI) {
   throw new Error(
-    'NACRE_PG_URL is not set and CI is. The propagation gauge would go untested, ' +
-      'and it is the only external evidence invariant I4 still holds.',
+    'NACRE_PG_URL is not set and CI is. These gauges are SQL and would silently ' +
+      'go untested, including the tombstone backlog an operator is paged on.',
   )
 }
 const when = url ? describe : describe.skip

@@ -37,7 +37,8 @@
     "lint:endpoint-errors": "node scripts/check-endpoint-errors.mjs",
     "lint:sparse": "node scripts/check-sparse-branch.mjs",
     "lint:image-packages": "node scripts/check-image-packages.mjs",
-    "lint:published": "node scripts/check-published-manifests.mjs"
+    "lint:published": "node scripts/check-published-manifests.mjs",
+    "lint:audit-target": "node scripts/check-audit-target.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

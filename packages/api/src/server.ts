@@ -569,10 +569,17 @@ export interface Grants {
    * Withdraw a grant. `false` when it is absent, in another organization, or on
    * a scope this caller may not administer — one answer for all three.
    *
-   * This is the operation `nacre_acl_propagation_lag_seconds` measures and the
-   * one docs/authz.md builds its SLA around, and there was no way to perform it
-   * through the API at all. Three documents described revocation; the only
-   * implementation was a DELETE against the table by hand.
+   * Three documents described revocation and there was no way to perform it
+   * through the API at all; the only implementation was a DELETE against the
+   * table by hand.
+   *
+   * This used to say it is the operation `nacre_acl_propagation_lag_seconds`
+   * measures, and the one docs/authz.md builds an SLA around. Both went with
+   * the ACL tag cache in migration 0016 — `packages/core/metrics.ts` records
+   * that the gauge's absence is deliberate — and the guarantee is structural
+   * now rather than timed: the permitted set is computed per request, so the
+   * next one after this call already reflects it. Nothing to fall behind, and
+   * nothing to measure the lag of.
    */
   revoke(auth: AuthContext, grantId: string): Promise<boolean>
 }
@@ -1607,6 +1614,7 @@ async function handleAuth(
       actor: `user:${tokens.userId}`,
       action: 'login',
       result: 'allow',
+      target: { user_id: tokens.userId },
       detail: {},
       requestId,
     })
@@ -2244,7 +2252,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       actor: `${auth.principal.type}:${auth.principal.id}`,
       action: 'tenant_override_attempt',
       result: 'deny',
-      detail: { path: instance },
+      target: { path: instance },
+      detail: {},
       requestId,
     })
     send(res, override.status, override.toJSON(), requestId)
@@ -2272,7 +2281,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'rate_limited',
         result: 'deny',
-        detail: { resource, limit: decision.limit },
+        target: { resource },
+        detail: { limit: decision.limit },
         requestId,
       })
       const problem = new Problem({
@@ -2990,7 +3000,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             actor: `${auth.principal.type}:${auth.principal.id}`,
             action: 'embedding_provider.create',
             result: 'deny',
-            detail: { name: name.trim() },
+            target: { name: name.trim() },
+            detail: {},
             requestId,
           })
           const problem = notFound(instance, requestId)
@@ -3015,7 +3026,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'embedding_provider.create',
           result: 'allow',
-          detail: { name: outcome.provider.name, model: outcome.provider.model },
+          target: { provider_id: outcome.provider.id, name: outcome.provider.name },
+          detail: { model: outcome.provider.model },
           requestId,
         })
         send(
@@ -3084,7 +3096,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'create_workspace',
           result: outcome.kind === 'created' ? 'allow' : 'deny',
-          detail: { slug, outcome: outcome.kind },
+          target: { slug },
+          detail: { outcome: outcome.kind },
           requestId,
         })
 
@@ -3193,7 +3206,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'create_layer',
         result: outcome.kind === 'created' ? 'allow' : 'deny',
-        detail: { workspace_id: workspaceId, slug, outcome: outcome.kind },
+        target: { workspace_id: workspaceId, slug },
+        detail: { outcome: outcome.kind },
         requestId,
       })
 
@@ -3271,11 +3285,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'issue_grant',
         result: issued === undefined ? 'deny' : 'allow',
-        detail: {
+        target: {
           principal: `${parsed.principalType}:${parsed.principalId}`,
           scope: `${parsed.scopeType}:${parsed.scopeId}`,
           permission: parsed.permission,
         },
+        detail: {},
         requestId,
       })
 
@@ -3302,7 +3317,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'revoke_grant',
         result: revoked ? 'allow' : 'deny',
-        detail: { grant_id: id },
+        target: { grant_id: id },
+        detail: {},
         requestId,
       })
 
@@ -4155,7 +4171,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             actor: `${auth.principal.type}:${auth.principal.id}`,
             action: 'create_service_account',
             result: 'deny',
-            detail: { name: name.trim(), reason: 'name taken' },
+            target: { name: name.trim() },
+            detail: { reason: 'name taken' },
             requestId,
           })
           const problem = new Problem({
@@ -4177,10 +4194,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'create_service_account',
           result: 'allow',
+          target: { service_account_id: account.id, name: account.name },
           // The prefix, never the key. This row is readable by anyone with the
           // audit log, and the key is not recoverable from anywhere else by
           // design — putting it here would undo that.
-          detail: { service_account_id: account.id, key_prefix: account.keyPrefix },
+          detail: { key_prefix: account.keyPrefix },
           requestId,
         })
 
@@ -4206,7 +4224,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'revoke_service_account',
         result: revoked ? 'allow' : 'deny',
-        detail: { service_account_id: id },
+        target: { service_account_id: id },
+        detail: {},
         requestId,
       })
 
@@ -4239,7 +4258,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'administer_principals',
           result: 'deny',
-          detail: { path: instance, method: req.method ?? 'GET', reason: 'not an org_admin' },
+          target: { path: instance, method: req.method ?? 'GET' },
+          detail: { reason: 'not an org_admin' },
           requestId,
         })
         const problem = notFound(instance, requestId)
@@ -4296,7 +4316,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             actor: `${auth.principal.type}:${auth.principal.id}`,
             action: 'create_user',
             result: 'deny',
-            detail: { email, reason: 'address taken' },
+            target: { email },
+            detail: { reason: 'address taken' },
             requestId,
           })
           const problem = new Problem({
@@ -4316,10 +4337,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'create_user',
           result: 'allow',
-          // The address and the role. Never the password — this row is readable
-          // by anyone with the audit log, and the password is not recoverable
-          // from anywhere else by design.
-          detail: { user_id: created.user.id, email, role },
+          target: { user_id: created.user.id, email },
+          // The role, never the password — this row is readable by anyone with
+          // the audit log, and the password is not recoverable from anywhere
+          // else by design.
+          detail: { role },
           requestId,
         })
 
@@ -4351,7 +4373,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'disable_user',
           result: disabled === 'updated' ? 'allow' : 'deny',
-          detail: { user_id: id, ...(disabled === 'updated' ? {} : { reason: disabled }) },
+          target: { user_id: id },
+          detail: disabled === 'updated' ? {} : { reason: disabled },
           requestId,
         })
 
@@ -4420,8 +4443,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'update_user',
           result: changed === 'updated' ? 'allow' : 'deny',
+          target: { user_id: id },
           detail: {
-            user_id: id,
             ...(wantsRole ? { role: fields.role } : {}),
             ...(wantsDisabled ? { disabled: fields.disabled } : {}),
             ...(changed === 'updated' ? {} : { reason: changed }),
@@ -4470,7 +4493,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         action: 'reset_password',
         result: password === undefined ? 'deny' : 'allow',
         // That it happened and to whom. Never the value.
-        detail: { user_id: id },
+        target: { user_id: id },
+        detail: {},
         requestId,
       })
 
@@ -4516,7 +4540,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             actor: `${auth.principal.type}:${auth.principal.id}`,
             action: 'create_group',
             result: 'deny',
-            detail: { name: name.trim(), reason: 'name taken' },
+            target: { name: name.trim() },
+            detail: { reason: 'name taken' },
             requestId,
           })
           const problem = new Problem({
@@ -4536,7 +4561,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'create_group',
           result: 'allow',
-          detail: { group_id: created.id, name: created.name },
+          target: { group_id: created.id, name: created.name },
+          detail: {},
           requestId,
         })
 
@@ -4555,7 +4581,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'delete_group',
         result: removed ? 'allow' : 'deny',
-        detail: { group_id: id },
+        target: { group_id: id },
+        detail: {},
         requestId,
       })
 
@@ -4617,10 +4644,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'add_group_member',
           result: outcome === 'no-group' || outcome === 'no-member' ? 'deny' : 'allow',
+          target: { group_id: groupId, member_type: type, member_id: memberId },
           detail: {
-            group_id: groupId,
-            member_type: type,
-            member_id: memberId,
             ...(outcome === 'already' ? { note: 'already a member' } : {}),
             ...(outcome === 'no-group' || outcome === 'no-member' ? { reason: outcome } : {}),
           },
@@ -4658,7 +4683,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'remove_group_member',
         result: removed ? 'allow' : 'deny',
-        detail: { group_id: groupId, member_type: type, member_id: memberId },
+        target: { group_id: groupId, member_type: type, member_id: memberId },
+        detail: {},
         requestId,
       })
 

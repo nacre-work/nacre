@@ -562,7 +562,10 @@ describe('the administrative surface', () => {
     // looks like, and it is the row an auditor asks for.
     const attempt = audited.filter((e) => e.action === 'revoke_grant' && e.result === 'deny')
     expect(attempt.length).toBeGreaterThan(0)
-    expect(attempt.at(-1)?.detail).toMatchObject({ grant_id: 'grant-nope' })
+    // `target`, which is where docs/audit.md says the object goes and what the
+    // schema indexes. It was in `detail` until every administrative event
+    // stopped naming its target there.
+    expect(attempt.at(-1)?.target).toMatchObject({ grant_id: 'grant-nope' })
   })
 
   it('an unknown permission or principal type is 400', async () => {
