@@ -36,11 +36,20 @@ if (dockerfiles.length === 0) {
   process.exit(1)
 }
 
-/** `file: docker/Dockerfile.x` on a step that also says `push: true`. */
+/**
+ * `file: docker/Dockerfile.x` on a step that pushes.
+ *
+ * Anything but a literal `false` counts, because the push is conditional now —
+ * `push: ${{ inputs.dry_run != true }}`, so a rehearsal does not ship four
+ * images over the ones that are there. This matched `push:\s*true` and went red
+ * on that change, which is the check doing its job on a literal it was written
+ * against rather than on the property it is for: **an image nobody pushes at
+ * all**. A step that never pushes says `false`, and that is what this refuses.
+ */
 const pushed = new Set(
-  [...workflow.matchAll(/file:\s*(docker\/Dockerfile[^\s]*)[\s\S]{0,200}?push:\s*true/g)].map(
-    (m) => m[1],
-  ),
+  [...workflow.matchAll(/file:\s*(docker\/Dockerfile[^\s]*)[\s\S]{0,200}?push:\s*([^\n]+)/g)]
+    .filter((m) => m[2]?.trim() !== 'false')
+    .map((m) => m[1]),
 )
 
 /** The image names those steps tag. */
