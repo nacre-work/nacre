@@ -1,0 +1,13 @@
+# The Sponsor button on this repository.
+#
+# Nacre is Apache 2.0 and self-hosted: there is no hosted tier, no seat count
+# and nothing metered, so the open half earns nothing by being used. The
+# commercial modules are what fund it, and they are for the organizations that
+# need them — a developer running this on their own machine is never the person
+# being asked. This is the other way to say thank you, and it is optional in the
+# way that matters: nothing here is behind it.
+buy_me_a_coffee: dudko.dev
+custom:
+  - https://dudko.dev/donate
+  - https://paypal.me/dudkodev
+  - https://wise.com/pay/business/siarheidudko

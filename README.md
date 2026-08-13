@@ -149,10 +149,26 @@ Details in [docs/authz.md](./docs/authz.md).
 
 Apache 2.0 — all of it. Everything above is in this repository and stays there.
 
-Multi-tenancy, SSO/SCIM, document-level deny rules, EMA and SIEM export are
-planned as commercial modules and **none of them is written yet**; there is
-nothing to buy today. Where this build meets one of them it refuses in the
-open — a `deny` rule or a document-scoped grant is answered `400` with the
-reason, rather than accepted and silently not enforced.
+Multi-tenancy, SSO/SCIM, document-level deny rules, EMA, SIEM export, global
+admin and backup are commercial modules. They live in a separate private
+repository under a separate license and are not distributed with this one — see
+[docs/licensing.md](./docs/licensing.md) for the line between the two and the
+one question that decides it.
+
+Where this build meets one of them it refuses in the open: a `deny` rule or a
+document-scoped grant is answered `400` with the reason, rather than accepted
+and silently not enforced.
 
 The Nacre name and mark are trademarks; see [TRADEMARK.md](./TRADEMARK.md).
+
+## Supporting this
+
+There is no hosted tier, no seat count and nothing metered here, so the open
+half earns nothing by being used — which is the point, and also why it is worth
+saying who pays for it. The commercial modules do, and they are for the
+organizations that need them; a developer running this on a laptop is never the
+person being asked.
+
+If it saved you a week, the Sponsor button at the top of this repository is the
+other way to say so. Nothing in this repository is behind it, and nothing will
+be.
