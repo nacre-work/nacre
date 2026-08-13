@@ -62,7 +62,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.plan.outputs.version }}
+      # Three answers rather than one, because a release is four artefacts and
+      # gating all of them on the npm question is what left 0.16.0 published,
+      # untagged and imageless: GitHub answered 500 to the tag push, and every
+      # re-run afterwards found nothing pending and skipped the rest.
       publish: ${{ steps.plan.outputs.publish }}
+      tag: ${{ steps.plan.outputs.tag }}
+      images: ${{ steps.plan.outputs.images }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -76,7 +82,10 @@ jobs:
     if: needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write # the tag and the release, written after publishing
+      # `read` since the tag moved to its own job: this one publishes and writes
+      # nothing back to the repository, and a write grant nothing uses is a
+      # write grant a future step can use by accident.
+      contents: read
       id-token: write # the OIDC token npm exchanges for publish rights
     # The unit and ACL suites below are SQL and HTTP against real services, and
     # they refuse to skip when CI is set. A release that ran a smaller suite
@@ -272,6 +281,27 @@ jobs:
             echo "dry run: nothing was published and no tag will be written"
           fi
 
+  # Its own job since 0.16.0, and the reason is the release that produced it.
+  #
+  # These two lived inside the publish job, so they could only run when npm
+  # had something to publish. 0.16.0 published all five packages and then got
+  # a `500` from GitHub on the tag push — after which the version was on the
+  # registry, `decide` correctly said there was nothing pending, and the tag,
+  # the release and every image became unreachable by any re-run. The tag is
+  # asked about on its own now.
+  #
+  # `needs: npm` still holds the ordering — never before the publish — and
+  # `!cancelled()` is what lets it run when that job was skipped for having
+  # nothing to do. A *failed* publish still stops it.
+  tag:
+    name: tag v${{ needs.decide.outputs.version }}
+    needs: [decide, npm]
+    if: ${{ !cancelled() && needs.npm.result != 'failure' && needs.decide.outputs.tag == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the tag and the release
+    steps:
+      - uses: actions/checkout@v4
       # After the publish, never before. Both are idempotent so a re-run over a
       # release that half succeeded finishes it rather than failing on what is
       # already there.
@@ -324,6 +354,7 @@ jobs:
               ;;
           esac
 
+
   # The container images the Helm chart names in its defaults —
   # ghcr.io/nacre-work/nacre and -parser. Nothing built them: this workflow
   # published the npm packages and stopped, so `helm install` on the chart's
@@ -344,7 +375,11 @@ jobs:
   containers:
     name: containers ${{ needs.decide.outputs.version }}
     needs: [decide, npm]
-    if: needs.decide.outputs.publish == 'true'
+    # Asked of ghcr rather than inherited from the npm answer, on the same
+    # argument as the tag job above: these are what `appVersion` names, and a
+    # version that reached the registry with no image behind it is a
+    # `helm install` pulling a tag that does not exist.
+    if: ${{ !cancelled() && needs.npm.result != 'failure' && needs.decide.outputs.images == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -368,7 +403,11 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
-          push: true
+          # A dry run is a dry run for the registry too. This said `true`
+          # unconditionally while the input promised to "stop before publishing
+          # or tagging" — so the one path that exists to rehearse a release was
+          # pushing four images every time it ran.
+          push: ${{ inputs.dry_run != true }}
           platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/nacre-work/nacre:${{ needs.decide.outputs.version }}
@@ -396,7 +435,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           target: web
-          push: true
+          push: ${{ inputs.dry_run != true }}
           platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/nacre-work/nacre-web:${{ needs.decide.outputs.version }}
@@ -407,7 +446,7 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.parser
-          push: true
+          push: ${{ inputs.dry_run != true }}
           platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/nacre-work/nacre-parser:${{ needs.decide.outputs.version }}
@@ -423,7 +462,7 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.embedding-adapter
-          push: true
+          push: ${{ inputs.dry_run != true }}
           platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/nacre-work/nacre-embedding-adapter:${{ needs.decide.outputs.version }}
@@ -437,6 +476,10 @@ jobs:
       # tag that was just pushed carries both, and fails the release if it does
       # not.
       - name: both architectures are actually in the manifest
+        # Nothing was pushed on a dry run, so there is no tag to inspect. It
+        # would fail on the registry rather than on the assertion, which reads
+        # as a broken release.
+        if: ${{ inputs.dry_run != true }}
         run: |
           set -euo pipefail
           for image in nacre nacre-web nacre-parser nacre-embedding-adapter; do
