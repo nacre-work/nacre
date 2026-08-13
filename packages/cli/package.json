@@ -1,6 +1,6 @@
 {
   "name": "@nacre.work/cli",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Command line client for Nacre: layers, grants, ingest and search",
   "repository": {
     "type": "git",

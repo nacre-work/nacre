@@ -272,6 +272,37 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.16.0 — the CLI administers an organization
+
+**Nothing to do.** No migration, no new variable, no new service, and no server
+change at all — this release is the `nacre` command reaching a surface the API
+has served since 0.12.0 and the admin UI since 0.13.0.
+
+```bash
+npx @nacre.work/cli@0.16.0 users
+npx @nacre.work/cli@0.16.0 audit --result deny --limit 100
+```
+
+`users`, `groups`, `service-accounts` and `audit`, all of them `org_admin`. If
+you have been onboarding colleagues with `curl` against `/v1/users`, this is the
+same endpoints with the argument parsing and the slug resolution in front of
+them. A password is still generated and never accepted, and a service account
+key is still shown once.
+
+Two notes for anyone scripting against it:
+
+- **`audit --limit` counts records, not pages.** It follows the cursor to the
+  end of what you asked for, so a nightly export gets what it asked for rather
+  than the first page repeated or truncated.
+- A record carries both a `target` and a `detail` object and which one is filled
+  depends on the event — `audit.read` fills the first, administrative events
+  fill the second. `--json` gives you both verbatim; the human rendering merges
+  them. If you already parse this endpoint, read both.
+
+The npm pages for `@nacre.work/core`, `api`, `mcp` and `sdk` are also real pages
+from this release rather than a title and one sentence. That changes nothing you
+run.
+
 ### 0.15.0 — search is hybrid, and there is a `nacre` command
 
 **One thing to do, and only if you want the change to reach documents you
