@@ -37,18 +37,18 @@ const NO_SESSION =
   'Not signed in. Run `nacre login --url https://your-installation` — or set ' +
   'NACRE_API_URL and NACRE_TOKEN, which is what a service account in CI uses.'
 
-function requireSession(context: Context): Session {
+export function requireSession(context: Context): Session {
   const session = loadSession(context.env)
   if (session === undefined) throw new Error(NO_SESSION)
   return session
 }
 
-function requireClient(context: Context): NacreClient {
+export function requireClient(context: Context): NacreClient {
   return context.clientFor(requireSession(context))
 }
 
 /** `--json` prints the object; otherwise the caller's own rendering. */
-function render(context: Context, value: unknown, human: () => string): string {
+export function render(context: Context, value: unknown, human: () => string): string {
   return flag(context.parsed, 'json') ? JSON.stringify(value, null, 2) : human()
 }
 

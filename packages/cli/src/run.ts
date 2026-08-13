@@ -1,5 +1,6 @@
 import { NacreClient } from '@nacre.work/sdk'
 
+import { audit, groups, serviceAccounts, users } from './admin.js'
 import { parse, UsageError } from './args.js'
 import { ask, evaluate, grant, ingest, layers, login, search, whoami, type Context } from './commands.js'
 import { saveSession, type Session } from './config.js'
@@ -17,6 +18,25 @@ export const HELP = `nacre — the command line client for a Nacre installation
   nacre eval --layer <slug> [--top-k <n>] [--floor <0..1>]
                                             score the layer's reference queries
 
+Administering an organization, all of it org_admin:
+
+  nacre users                               everyone, with role and state
+  nacre users create <email> [--admin]      the password is generated, shown once
+  nacre users password <id>                 issue a new one, shown once
+  nacre users role <id> <member|org_admin>
+  nacre users disable <id>                  the row is kept; the log names it
+  nacre groups                              teams a grant can name
+  nacre groups create <name>
+  nacre groups members <id>
+  nacre groups add|remove <id> <user:id|group:id>
+  nacre groups delete <id>                  takes its grants with it
+  nacre service-accounts                    keys, with prefix and last use
+  nacre service-accounts create <name>      the key is shown once
+  nacre service-accounts revoke <id>
+  nacre audit [--action <a>] [--actor <id>] [--result allow|deny|error]
+              [--from <ts>] [--to <ts>] [--limit <n>]
+                                            the access log, newest first
+
   --json      print the response as JSON, for a script rather than a person
   --help      this
 
@@ -30,7 +50,7 @@ Permissions are not a ladder: write does not imply read, and admin implies both.
 An ingest-only service account holds write and cannot search back what it wrote.
 `
 
-const COMMANDS: Record<string, (context: Context) => Promise<Outcome>> = {
+export const COMMANDS: Record<string, (context: Context) => Promise<Outcome>> = {
   login,
   whoami,
   layers,
@@ -38,6 +58,10 @@ const COMMANDS: Record<string, (context: Context) => Promise<Outcome>> = {
   ingest,
   search,
   eval: evaluate,
+  users,
+  groups,
+  'service-accounts': serviceAccounts,
+  audit,
 }
 
 /**
