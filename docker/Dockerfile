@@ -107,6 +107,23 @@ COPY --from=build --chown=nacre:nacre /app/node_modules node_modules
 COPY --from=build --chown=nacre:nacre /app/packages packages
 COPY --from=build --chown=nacre:nacre /app/package.json ./
 
+# The `demo` profile's seed and its corpus, from the context rather than the
+# build stage — nothing compiles them.
+#
+# **In the image and not a bind mount, and that distinction is the whole
+# reason.** A bind mount names a path on the *daemon*. Point DOCKER_HOST at
+# anything but this machine — a remote daemon over TCP, a VPS, a CI runner —
+# and Compose has nothing to mount, so it creates an empty directory and the
+# seed dies on a missing file with no hint that the host is the reason. The
+# build context travels over the wire; a host path does not. Found by running
+# it against exactly that arrangement.
+#
+# Ten kilobytes on every image, including the ones that never seed anything.
+# That is the price of `--profile demo` working the same way everywhere, and it
+# is worth it: this profile exists for somebody who has not decided to trust us
+# yet, and their first experience must not depend on where their daemon lives.
+COPY --chown=nacre:nacre docker/demo /demo
+
 # Liveness only — it touches no dependency. A healthcheck that calls Postgres
 # turns one slow database into a cascading restart loop.
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \

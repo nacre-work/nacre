@@ -419,16 +419,24 @@ services:
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
     expose: ["80"]
 
-  # One shot, after the API is ready. The corpus is mounted rather than baked
-  # into the image: it is example content, it is the part somebody replacing
-  # this with their own documents will edit first, and an image rebuild to
-  # change a markdown file is a barrier for no gain.
+  # One shot, after the API is ready.
+  #
+  # **No bind mount, and that was learned by running it.** The seed and its
+  # corpus live at `/demo` inside the image. Mounting `./docker/demo` was the
+  # first shape and it works on exactly one arrangement: a daemon on the same
+  # machine as the checkout. A bind mount names a path on the *daemon*, so with
+  # DOCKER_HOST over TCP — a remote daemon, a VPS, a CI runner — Compose finds
+  # nothing there, mounts an empty directory, and the container fails with
+  # `can't open '/demo/seed.sh'` while the file sits in the checkout.
+  #
+  # To use your own documents instead, mount over it: `-v ./mine:/demo/corpus`.
+  # That is a deliberate choice by somebody who knows where their daemon is,
+  # rather than the default that quietly requires it.
   demo-seed:
     <<: *app
     profiles: [demo]
     restart: "no"
     entrypoint: ["/bin/sh", "/demo/seed.sh"]
-    volumes: ["./docker/demo:/demo:ro"]
     environment:
       NACRE_API_URL: http://api:8080
       # The provider row `init` writes, and therefore what every layer here

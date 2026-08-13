@@ -27,6 +27,19 @@ CORPUS="${DEMO_CORPUS:-/demo/corpus}"
 
 say() { printf '%s\n' "$*"; }
 
+# The corpus ships in the image. If it is not here, the image predates the demo
+# profile — `latest` on a stack pulled before this shipped — and every message
+# after this point would be about a symptom rather than the cause.
+if [ ! -d "$CORPUS" ]; then
+  say "no corpus at ${CORPUS}."
+  say ""
+  say "This image does not carry the demo profile's corpus, which means it is"
+  say "older than the profile. Either pin NACRE_VERSION to a release that has"
+  say "it — the first one is named in docs/upgrading.md — or drop the images"
+  say "overlay and let Compose build from this checkout."
+  exit 1
+fi
+
 # `/v1/ready` and not `/v1/health`: health is liveness and answers before the
 # schema is there. Ready refuses while the migrator is behind, which is exactly
 # the window this script must not start in.
@@ -98,7 +111,12 @@ for person in engineer contractor; do
   CREDENTIALS="${CREDENTIALS}  ${person}@${ORG}.local  ${password}\n"
 
   $CLI grant read layer:handbook --to "user:${id}" >/dev/null
-  [ "$person" = "engineer" ] && $CLI grant read layer:engineering --to "user:${id}" >/dev/null
+  # An explicit `if` rather than `[ … ] && …`: under `set -e` the AND-OR list is
+  # exempt in dash and in busybox ash, and I could only test one of the two here.
+  # The container runs the other.
+  if [ "$person" = "engineer" ]; then
+    $CLI grant read layer:engineering --to "user:${id}" >/dev/null
+  fi
   say "created ${person}"
 done
 
