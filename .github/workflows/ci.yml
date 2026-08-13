@@ -156,6 +156,7 @@ jobs:
       # ingest error, a branch never built is not a query error, and fusion
       # absorbs a prefetch that returns nothing without a trace.
       - run: pnpm lint:sparse
+      - run: pnpm lint:audit-target
       # Every workspace manifest reaches the image. The Dockerfile copies them
       # one line at a time so a source-only change reuses the dependency layer,
       # and that list did not get `packages/cli` — so pnpm inside the image saw

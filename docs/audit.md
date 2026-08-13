@@ -70,6 +70,23 @@ Both were literals in the insert statement until recently: `'api'` and an empty
 object, which meant every MCP call was logged as REST and the `gin (target)`
 index built for this indexed nothing.
 
+**And `target` was true of the document paths only.** Ingest, delete, the layer
+operations and `audit.read` filled it; every administrative event —
+`create_user`, `disable_user`, `reset_password`, `create_group`,
+`add_group_member`, `create_service_account`, `revoke_service_account`,
+`issue_grant` and the rest — put the object in `detail` and left `target` empty.
+Twenty-three call sites out of thirty-five. So the log recorded *that* an
+administrator reset a password and never *whose*, in the field this document
+names and the index covers.
+
+Nothing could have failed: each handler is individually correct, the column has
+a default, and an empty object is not an error at any layer. It was found by
+reading the log through `nacre audit` against a running installation.
+
+The rule is the one sentence above — **`target` is what the call was about,
+`detail` is everything else** — and `lint:audit-target` holds every call site to
+it, refusing an absent target and an empty one alike.
+
 **Retention is enforced**, and the decision that was open is made. The worker
 prunes hourly in bounded batches, and `NACRE_AUDIT_RETENTION_DAYS` is what it
 prunes against.

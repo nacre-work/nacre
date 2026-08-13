@@ -155,6 +155,7 @@ jobs:
       - run: pnpm lint:collection-config
       - run: pnpm lint:endpoint-errors
       - run: pnpm lint:sparse
+      - run: pnpm lint:audit-target
       - run: pnpm lint:image-packages
       - run: pnpm lint:published
       - run: pnpm lint:admin-gate

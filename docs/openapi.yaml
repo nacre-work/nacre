@@ -193,7 +193,14 @@ components:
           additionalProperties: true
           description: 'What the call was about; search records the layers and doc ids it returned.'
         result:  { type: string, enum: [allow, deny, error] }
-        detail:  { type: object, additionalProperties: true }
+        detail:
+          type: object
+          additionalProperties: true
+          description: >
+            Everything about the call that is not what it was about: measurements,
+            hashes, and why a refusal was refused. The object acted on belongs in
+            `target`, which is the field the schema indexes — a client looking for
+            "who touched this" reads that one.
         request_id: { type: [string, 'null'] }
 
     SearchHit:
