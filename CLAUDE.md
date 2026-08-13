@@ -1102,9 +1102,10 @@ looked like monitoring.
   green in CI and inert in production because nobody was told to press
   something is the worst version of "done".
   `@nacre.work/cli` is the instance that produced this rule.
-- **Adding a publishable package is not only code.** Four things, and the
-  fourth is the one above: see [docs/releasing.md](./docs/releasing.md), which
-  `lint:publish` holds against the manifests so it cannot be skipped.
+- **Adding a publishable package is not only code.** Five things, and the
+  fifth is the one above: see [docs/releasing.md](./docs/releasing.md), which
+  `lint:publish` holds against the manifests so it cannot be skipped. The count
+  is held too — it was written in both files and moved in one.
 - Don't optimize `authz/reference.ts` when it exists. Its whole value is being
   obviously correct so the property test can catch drift in the fast path.
 
