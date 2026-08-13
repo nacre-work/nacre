@@ -40,7 +40,7 @@ Images are separate and are listed in [upgrading.md](./upgrading.md).
 
 ## Adding a publishable package
 
-Four things, and **the last one is not automatic**.
+Five things, and **the last one is not automatic**.
 
 1. **`publishConfig: { "access": "public" }`.** A scoped package defaults to
    `restricted` on npm. Without this the first publish either creates a private
@@ -54,10 +54,17 @@ Four things, and **the last one is not automatic**.
 3. **The same version as everything else.** They ship together and reference
    each other by exact version; one left behind publishes a tree that resolves
    to two different cores. `lint:publish` fails on a disagreement.
-4. **Configure trusted publishing for the new name, by hand, on npmjs.com —
+4. **A `README.md` that is the package's page**, because that is what it is.
+   npm renders it as the whole body and shows only `description` when there is
+   nothing else, so a stub publishes a storefront that says one sentence. It has
+   to link [nacre.work](https://nacre.work) and the documentation **by absolute
+   URL** — a relative link is correct in the repository, resolves against
+   npmjs.com when read there, and 404s — and name the licence, which is the
+   question somebody is on that page to answer. `lint:publish` holds all of it.
+5. **Configure trusted publishing for the new name, by hand, on npmjs.com —
    before merging.**
 
-### Why the fourth one cannot be automatic
+### Why the fifth one cannot be automatic
 
 The pipeline authenticates to npm with a short-lived token exchanged from a
 GitHub OIDC token. Trusted publishing is configured **per package**, on the

@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 /**
- * What the release is about to push to npm has to be installable.
+ * What the release is about to push to npm has to be installable — and, once it
+ * arrives, has to say what it is.
  *
- * Four ways it was not, none of which a build or a test would notice, because
- * every consumer in this repository resolves workspace packages from source:
+ * Four ways it was not installable, none of which a build or a test would
+ * notice, because every consumer in this repository resolves workspace packages
+ * from source:
  *
  * 1. A published package depending on a private one. `@nacre.work/mcp` is
  *    public and `docs/quickstart.md` tells people to run `npx @nacre.work/mcp`
@@ -20,6 +22,14 @@
  * 4. Packages disagreeing about the version. They ship together and reference
  *    each other by exact version, so one left behind publishes a tree that
  *    resolves to two different cores.
+ *
+ * And one way it was unreadable, which is not an install failure and is the
+ * only defect on this list a *buyer* sees. **A package page is its README.**
+ * npm renders it as the whole body of the page and falls back to the one-line
+ * `description` when there is nothing else — so four of the five packages
+ * published a title and one sentence, and the storefront for a security product
+ * was a stub. Metadata was complete throughout; nothing was missing in the
+ * manifest, which is why nothing complained.
  *
  * `--list` prints the publishable names and nothing else, `--version` prints
  * the version they agree on. Diagnostics go to stderr either way, so stdout
@@ -153,6 +163,136 @@ for (const { dir, path, name, json } of packages) {
       failed = true
     }
   }
+}
+
+/**
+ * The page a package arrives as.
+ *
+ * npm always packs `README.md` whatever `files` says, so this is never about
+ * whether it ships — it is about whether it says anything. The registry page
+ * for a library nobody can evaluate is a page nobody installs from, and the
+ * four stubs this check was written against had been on the registry for every
+ * release the project has cut.
+ *
+ * Four properties, and each is a way a page goes quietly useless:
+ *
+ * - **Substance.** A heading and one sentence is what npm already shows from
+ *   `description`; a README that adds nothing to the manifest is a README that
+ *   is not there. The floor is deliberately low — this catches a stub, not a
+ *   short page.
+ * - **The site and the documentation, by absolute URL.** Somebody landing on
+ *   npmjs.com has no other route to either.
+ * - **No relative links.** This is the npm-specific one and the reason the rule
+ *   cannot be "write a good README": a relative link is correct in the
+ *   repository, renders on npmjs.com against *npmjs.com*, and 404s there. It is
+ *   right where it is written and broken where it is read.
+ * - **The licence**, because the thing being decided on that page is whether to
+ *   depend on it.
+ */
+const README_MIN_LINES = 20
+const SITE = 'https://nacre.work'
+const DOCS = 'https://github.com/nacre-work/nacre'
+// `[text](target)` where the target is neither absolute nor an anchor. Image
+// syntax is the same shape with a leading `!` and has the same defect.
+const RELATIVE_LINK = /!?\[[^\]]*\]\((?!https?:\/\/|#|mailto:)([^)]+)\)/g
+
+for (const { dir, path, name } of packages) {
+  const readmePath = join(PACKAGES, dir, 'README.md')
+  if (!existsSync(readmePath)) {
+    console.error(
+      `::error file=${path}::${name} is published and has no README.md. npm renders it as ` +
+        'the whole package page.',
+    )
+    failed = true
+    continue
+  }
+
+  const readme = readFileSync(readmePath, 'utf8')
+  const substance = readme.split('\n').filter((line) => line.trim() !== '').length
+
+  if (substance < README_MIN_LINES) {
+    console.error(
+      `::error file=${readmePath}::${name}'s README is ${substance} lines and says no more ` +
+        `than \`description\` already does. npm shows this as the package page; ${README_MIN_LINES} ` +
+        'is the floor for "somebody could decide from it".',
+    )
+    failed = true
+  }
+
+  for (const [what, url] of [
+    ['the site', SITE],
+    ['the documentation', DOCS],
+  ]) {
+    if (readme.includes(url)) continue
+    console.error(
+      `::error file=${readmePath}::${name}'s README does not link ${what} (${url}). ` +
+        'A reader on npmjs.com has no other route to it.',
+    )
+    failed = true
+  }
+
+  if (!/Apache[ -]2\.0/.test(readme)) {
+    console.error(
+      `::error file=${readmePath}::${name}'s README does not name the licence, which is ` +
+        'the question being answered on that page.',
+    )
+    failed = true
+  }
+
+  for (const [, target] of readme.matchAll(RELATIVE_LINK)) {
+    console.error(
+      `::error file=${readmePath}::${name}'s README links \`${target}\` relatively. npm ` +
+        'resolves that against npmjs.com, where it 404s — correct in the repository and ' +
+        'broken where it is read. Use an absolute URL.',
+    )
+    failed = true
+  }
+}
+
+/**
+ * How many things adding a publishable package costs, held against the list.
+ *
+ * The number is prose in two files — `docs/releasing.md` states it above the
+ * list and `CLAUDE.md` repeats it to point at that list — and this check going
+ * in is what moved it from four to five. Both copies had to change; only `grep`
+ * knew there were two, which is the one defect shape here with no mechanism
+ * behind it. This is the mechanism for this instance of it.
+ *
+ * Cheap to state and it fails on the real mistake: adding a sixth item and
+ * leaving either sentence saying five.
+ *
+ * Anchored on "publishable package" rather than matching the numeral anywhere,
+ * which is how the first version of this failed: `CLAUDE.md` says "Two things
+ * there were found by looking at a screenshot" hundreds of lines earlier, and a
+ * bare search for a spelled number before "things" read that one. It reported a
+ * mismatch that was not there — a check wrong in the direction that at least
+ * announces itself.
+ */
+const COUNTS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight']
+const items = [...releasing.matchAll(/^\d+\. \*\*/gm)].length
+const spelled = COUNTS[items]
+
+for (const file of [RELEASING, 'CLAUDE.md']) {
+  const text = readFileSync(file, 'utf8')
+  const claimed = new RegExp(
+    `publishable package[\\s\\S]{0,120}?\\b(${COUNTS.join('|')})\\b things`,
+    'i',
+  ).exec(text)
+  if (claimed === null) {
+    console.error(
+      `::error file=${file}::the count of what adding a publishable package costs is gone ` +
+        'from this file; it is the sentence that sends somebody to the list.',
+    )
+    failed = true
+    continue
+  }
+  if (claimed[1].toLowerCase() === spelled) continue
+  console.error(
+    `::error file=${file}::says "${claimed[1]} things" and ${RELEASING} lists ${items}. ` +
+      'The last of them is configuring trusted publishing by hand, which fails after the ' +
+      'merge — an undercount is how it gets skipped.',
+  )
+  failed = true
 }
 
 const agreed = agreedVersion(packages)
