@@ -389,6 +389,62 @@ services:
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
     expose: ["80"]
 
+  # ─── the `demo` profile ─────────────────────────────────────────────────────
+  #
+  # `minimal` needs an embedder you name, which is the honest arrangement for an
+  # installation and the wrong one for somebody deciding whether to spend an
+  # afternoon on this. So `demo` brings its own, seeds a corpus, and hands over
+  # three logins that see different things.
+  #
+  # **A different model from `full`, and that is the whole reason this is a
+  # separate service.** `full` runs bge-m3: 560M parameters, 1024 dimensions,
+  # and on a laptop CPU it blows the worker's 120-second budget — which
+  # docs/apple-silicon.md already says. bge-small-en-v1.5 is 33M and 384, small
+  # enough to answer in milliseconds on four cores and good enough that the
+  # ranking in a demo looks like ranking. Compose cannot vary a command by
+  # profile, so it is its own service rather than a flag.
+  #
+  # English-only, and that is a demo's trade rather than a recommendation: the
+  # corpus is English, and `bge-small-en-v1.5` is a tenth the size of the
+  # multilingual model that would handle anything else. An installation with
+  # documents in more than one language wants bge-m3.
+  demo-embedder:
+    profiles: [demo]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    platform: linux/amd64
+    restart: unless-stopped
+    command: ["--model-id", "BAAI/bge-small-en-v1.5"]
+    volumes: ["models:/data"]
+    environment:
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+    expose: ["80"]
+
+  # One shot, after the API is ready. The corpus is mounted rather than baked
+  # into the image: it is example content, it is the part somebody replacing
+  # this with their own documents will edit first, and an image rebuild to
+  # change a markdown file is a barrier for no gain.
+  demo-seed:
+    <<: *app
+    profiles: [demo]
+    restart: "no"
+    entrypoint: ["/bin/sh", "/demo/seed.sh"]
+    volumes: ["./docker/demo:/demo:ro"]
+    environment:
+      NACRE_API_URL: http://api:8080
+      # The provider row `init` writes, and therefore what every layer here
+      # embeds with. It names the demo embedder rather than whatever the .env
+      # points at, so `--profile demo` does not depend on the operator having
+      # configured one — which is the entire point of the profile.
+      NACRE_DEFAULT_EMBEDDING_ENDPOINT: http://demo-embedder:80
+      NACRE_DEFAULT_EMBEDDING_MODEL: bge-small-en-v1.5
+      NACRE_DEFAULT_EMBEDDING_DIM: 384
+    depends_on:
+      api: { condition: service_healthy }
+      worker: { condition: service_started }
+      demo-embedder: { condition: service_started }
+    healthcheck:
+      disable: true
+
   reranker:
     profiles: [full, airgapped]
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6

@@ -1,0 +1,131 @@
+#!/bin/sh
+# Seed the `demo` profile: one organization, three layers, three people who see
+# different things, and a corpus already indexed.
+#
+# The point of the demo is the one claim this product makes, and it cannot be
+# shown with a single login: the same query, asked by three people, has to come
+# back with three different answers. So this creates the grants that make that
+# true and prints the credentials to try it with.
+#
+# **The passwords are generated, and that is why they are printed here rather
+# than written into this file.** `POST /v1/users` refuses a password — an
+# argument ends up in a shell history, and a password an administrator chose is
+# one they know — so the only way to have them is to catch what the API
+# returned. A demo that hardcoded three logins would be demonstrating a product
+# that does not exist.
+#
+# Idempotent by refusal rather than by cleverness: it stops if the organization
+# is already there, because a second run would issue a second set of passwords
+# and print them beside users whose real ones are the first set. Resetting the
+# demo is `down -v`, which is what the daily reset does.
+set -eu
+
+API="${NACRE_API_URL:-http://api:8080}"
+ORG="${DEMO_ORG:-demo}"
+CLI="node /app/packages/cli/dist/main.js"
+CORPUS="${DEMO_CORPUS:-/demo/corpus}"
+
+say() { printf '%s\n' "$*"; }
+
+# `/v1/ready` and not `/v1/health`: health is liveness and answers before the
+# schema is there. Ready refuses while the migrator is behind, which is exactly
+# the window this script must not start in.
+say "waiting for the API to be ready"
+i=0
+until node -e "
+  fetch('${API}/v1/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))
+" 2>/dev/null; do
+  i=$((i + 1))
+  if [ "$i" -gt 120 ]; then
+    say "the API never became ready. \`docker compose logs api\` says why."
+    exit 1
+  fi
+  sleep 2
+done
+
+# The seed is one-shot on purpose; see the note above.
+if node -e "
+  fetch('${API}/v1/health').then(async () => {
+    const r = await fetch('${API}/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@${ORG}.local', password: 'x', organization: '${ORG}' }),
+    })
+    // 401 means the organization and the address exist and the password is
+    // wrong, which is what a seeded stack looks like. 404 means it does not.
+    process.exit(r.status === 401 ? 0 : 1)
+  }).catch(() => process.exit(1))
+" 2>/dev/null; then
+  say "organization ${ORG} is already seeded; nothing to do."
+  say "reset with: docker compose --profile demo down -v"
+  exit 0
+fi
+
+say "creating the organization"
+INIT="$(node /app/packages/api/dist/init.js --org "$ORG" --email "admin@${ORG}.local" --name "Nacre Demo")"
+say "$INIT"
+
+# init prints a token good for an hour, which is more than a seed needs. Taking
+# it from the output rather than signing in keeps the admin's generated password
+# out of this script entirely.
+NACRE_TOKEN="$(printf '%s' "$INIT" | sed -n 's/.*export NACRE_TOKEN=\([A-Za-z0-9._-]*\).*/\1/p' | head -1)"
+if [ -z "$NACRE_TOKEN" ]; then
+  say "could not read a token out of init's output; it may have changed shape."
+  exit 1
+fi
+export NACRE_TOKEN
+export NACRE_API_URL="$API"
+
+say "creating layers"
+for layer in handbook engineering contracts; do
+  $CLI layers create "$layer" --name "$(printf '%s' "$layer" | cut -c1 | tr 'a-z' 'A-Z')$(printf '%s' "$layer" | cut -c2-)" >/dev/null
+done
+
+# Three identities, and the grants are the demonstration.
+#
+#   engineer    handbook + engineering        — the ordinary employee
+#   contractor  handbook only                 — the outside party
+#   admin       everything, by role           — including contracts
+#
+# Nobody is granted `contracts`: the administrator reaches it through their
+# role, which is what makes "sign in as the contractor and search for the
+# contract number" return nothing rather than an error.
+CREDENTIALS=""
+for person in engineer contractor; do
+  created="$($CLI users create "${person}@${ORG}.local" --json)"
+  id="$(printf '%s' "$created" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).id))")"
+  password="$(printf '%s' "$created" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).password))")"
+  CREDENTIALS="${CREDENTIALS}  ${person}@${ORG}.local  ${password}\n"
+
+  $CLI grant read layer:handbook --to "user:${id}" >/dev/null
+  [ "$person" = "engineer" ] && $CLI grant read layer:engineering --to "user:${id}" >/dev/null
+  say "created ${person}"
+done
+
+say "indexing the corpus"
+for layer in handbook engineering contracts; do
+  $CLI ingest "${CORPUS}/${layer}" --layer "$layer"
+done
+
+ADMIN_PASSWORD="$(printf '%s' "$INIT" | sed -n 's/^  \([a-z][a-z-]*-[0-9][0-9]*\)$/\1/p' | head -1)"
+
+say ""
+say "────────────────────────────────────────────────────────────────"
+say " The demo is seeded. Three people, three different answers."
+say ""
+say "  admin@${ORG}.local       ${ADMIN_PASSWORD}"
+printf ' %b' "$CREDENTIALS"
+say ""
+say " Organization: ${ORG}"
+say ""
+say " Try the same query as each of them:"
+say ""
+say "   \"what is the contract number for Northwind\""
+say ""
+say "  admin       finds it — contracts, by role"
+say "  engineer    finds nothing — no grant on contracts"
+say "  contractor  finds nothing — handbook only"
+say ""
+say " Not filtered out of a longer list. The permission filter runs inside"
+say " the index traversal, so those searches never reached the document."
+say "────────────────────────────────────────────────────────────────"
