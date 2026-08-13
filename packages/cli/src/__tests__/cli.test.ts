@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { flag, integer, option, parse, UsageError } from '../args.js'
 import { ask, collect, eligible } from '../commands.js'
 import { configPath, loadSession, saveSession } from '../config.js'
-import { run } from '../run.js'
+import { COMMANDS, HELP, run } from '../run.js'
 
 /**
  * The CLI exists to remove four `curl` invocations from the quickstart, so what
@@ -321,5 +321,233 @@ describe('collecting files to ingest', () => {
     // Naming the route that does take one, because "nothing to ingest" on a
     // directory of PDFs reads as a bug in the walk.
     expect(result.output).toContain('multipart')
+  })
+})
+
+/**
+ * The command list is written down three times — the dispatch table, the help
+ * text, and the README that is this package's npm page — and nothing knew there
+ * were three. A command missing from the help is invisible; one in the help and
+ * not in the table is a lie that exits 2; one missing from the README is a
+ * feature nobody browsing the registry can see.
+ *
+ * The same shape as the SDK's coverage test, and the reason the four commands
+ * this file was extended with came with it rather than after it.
+ */
+describe('the command list', () => {
+  const readme = readFileSync(join(import.meta.dirname, '..', '..', 'README.md'), 'utf8')
+
+  for (const name of Object.keys(COMMANDS)) {
+    it(`${name} is in the help and in the README`, () => {
+      expect(HELP, `nacre ${name} dispatches and the help does not mention it`).toContain(`nacre ${name}`)
+      expect(readme, `nacre ${name} dispatches and the README does not list it`).toContain(name)
+    })
+  }
+
+  it('lists nothing in the help that does not dispatch', () => {
+    // `nacre <word>` in the help, against the table. A line documenting a
+    // command that was renamed exits 2 for whoever copied it.
+    const promised = new Set(
+      [...HELP.matchAll(/^\s+nacre ([a-z-]+)/gm)].map((match) => match[1] as string),
+    )
+    for (const name of promised) {
+      expect(Object.keys(COMMANDS), `the help offers "nacre ${name}"`).toContain(name)
+    }
+    // And the extraction itself has to find something, or this case passes over
+    // a help text it failed to read at all.
+    expect(promised.size).toBeGreaterThanOrEqual(Object.keys(COMMANDS).length)
+  })
+})
+
+describe('administering an organization', () => {
+  const env = { HOME: scratch(), NACRE_API_URL: 'https://x', NACRE_TOKEN: 't' }
+
+  const admin = (overrides: Record<string, unknown> = {}) =>
+    ({
+      users: {
+        list: async () => [
+          { id: 'u1', email: 'ada@example', role: 'org_admin', createdAt: '', disabledAt: null, hasPassword: true },
+          { id: 'u2', email: 'bo@example', role: 'member', createdAt: '', disabledAt: null, hasPassword: false },
+        ],
+        create: async (email: string, role: string) => ({
+          id: 'u3', email, role, createdAt: '', disabledAt: null, hasPassword: true, password: 'six-word-secret-1',
+        }),
+        update: async () => true,
+        disable: async (id: string) => id === 'u2',
+        resetPassword: async (id: string) => (id === 'u2' ? 'a-new-one-2' : undefined),
+      },
+      groups: {
+        list: async () => [{ id: 'g1', name: 'platform', createdAt: '', memberCount: 2 }],
+        create: async (name: string) => ({ id: 'g2', name, createdAt: '', memberCount: 0 }),
+        remove: async () => true,
+        members: async (id: string) =>
+          id === 'g1' ? [{ type: 'user', id: 'u1', label: 'ada@example' }] : undefined,
+        addMember: async () => true,
+        removeMember: async () => true,
+      },
+      serviceAccounts: {
+        list: async () => [
+          { id: 's1', name: 'indexer', keyPrefix: 'nk_abc', createdAt: '', lastUsedAt: null, revokedAt: null },
+        ],
+        create: async (name: string) => ({
+          id: 's2', name, keyPrefix: 'nk_def', createdAt: '', lastUsedAt: null, revokedAt: null, key: 'nk_def_the_rest',
+        }),
+        revoke: async () => true,
+      },
+      audit: { read: async () => ({ items: [] }) },
+      ...overrides,
+    }) as never
+
+  it('prints a generated password once, and says it is not recoverable', async () => {
+    const result = await run(['users', 'create', 'cy@example'], { env, clientFor: () => admin() })
+
+    expect(result.code).toBe(0)
+    expect(result.output).toContain('six-word-secret-1')
+    expect(result.output).toContain('Not shown again')
+  })
+
+  it('refuses a password rather than sending one the endpoint would reject', async () => {
+    // Generated and never accepted: an argument ends up in a shell history, and
+    // a password an administrator chose is one they know.
+    const result = await run(['users', 'create', 'cy@example', '--password', 'hunter2'], {
+      env,
+      clientFor: () => admin(),
+    })
+
+    expect(result.code).toBe(2)
+    expect(result.output).toContain('generated')
+  })
+
+  it('refuses platform_admin by name, since it spans tenants', async () => {
+    const result = await run(['users', 'role', 'u1', 'platform_admin'], { env, clientFor: () => admin() })
+
+    expect(result.code).toBe(2)
+    expect(result.output).toContain('platform_admin')
+  })
+
+  it('reports a refusal as a refusal, without guessing which of the two it was', async () => {
+    const result = await run(['users', 'password', 'nobody'], { env, clientFor: () => admin() })
+
+    expect(result.code).toBe(1)
+    // Invariant 4 reaching the CLI: absent and invisible are one answer, and
+    // this client must not invent a more helpful one than the server gave.
+    expect(result.output).toContain('same answer')
+  })
+
+  it('tells an empty group from a group that is not there', async () => {
+    const empty = await run(['groups', 'members', 'g1'], {
+      env,
+      clientFor: () => admin({ groups: { members: async () => [] } }),
+    })
+    expect(empty.code).toBe(0)
+
+    const missing = await run(['groups', 'members', 'gone'], {
+      env,
+      clientFor: () => admin({ groups: { members: async () => undefined } }),
+    })
+    expect(missing.code).toBe(1)
+  })
+
+  it('takes a member as user:id or group:id and refuses anything else', async () => {
+    const ok = await run(['groups', 'add', 'g1', 'user:u2'], { env, clientFor: () => admin() })
+    expect(ok.code).toBe(0)
+
+    const bare = await run(['groups', 'add', 'g1', 'u2'], { env, clientFor: () => admin() })
+    expect(bare.code).toBe(2)
+    expect(bare.output).toContain('user:<id>')
+  })
+
+  it('shows a service account key once and says what it can do so far, which is nothing', async () => {
+    const result = await run(['service-accounts', 'create', 'indexer'], { env, clientFor: () => admin() })
+
+    expect(result.output).toContain('nk_def_the_rest')
+    expect(result.output).toContain('Not shown again')
+    // A key that has been granted nothing reads as broken otherwise.
+    expect(result.output).toContain('nacre grant')
+  })
+})
+
+describe('the access log', () => {
+  const env = { HOME: scratch(), NACRE_API_URL: 'https://x', NACRE_TOKEN: 't' }
+
+  /**
+   * Shaped like a real administrative event, which is not what a fixture
+   * written beside the renderer looks like.
+   *
+   * A record carries two objects for one idea and which one is filled depends
+   * on the handler: `audit.read` writes `target`, and `create_user`,
+   * `disable_user`, `reset_password` and the rest write `detail` with `target`
+   * left empty. The first version of this command rendered `target` only, so
+   * every line an administrator opens the log to read named the actor and
+   * nothing about the object — and the fixture here said `target`, so it
+   * agreed with the bug. Found by running it against a real server.
+   */
+  const record = (id: number) => ({
+    id: String(id),
+    occurredAt: `2026-08-13T00:00:0${id}Z`,
+    actor: { type: 'user', id: 'u1', label: 'ada@example' },
+    surface: 'rest',
+    client: null,
+    action: 'create_user',
+    target: {},
+    result: 'allow' as const,
+    detail: { user_id: `u${id}`, email: `person${id}@example` },
+    requestId: null,
+  })
+
+  /** Pages of two, with a cursor, until `pages` of them have been handed out. */
+  const paged = (pages: number) => {
+    let served = 0
+    return {
+      audit: {
+        read: async ({ limit }: { limit: number }) => {
+          served += 1
+          const items = Array.from({ length: Math.min(2, limit) }, (_, i) => record(served * 2 + i))
+          return served >= pages ? { items } : { items, nextCursor: `c${served}` }
+        },
+      },
+    } as never
+  }
+
+  it('follows the cursor to the limit rather than printing one page', async () => {
+    // The whole reason this walks: a page is a page whatever the cursor does,
+    // so asking for one cannot tell a working cursor from a stuck one — which
+    // is how this API's pagination shipped broken twice.
+    const result = await run(['audit', '--limit', '6', '--json'], { env, clientFor: () => paged(5) })
+
+    expect(JSON.parse(result.output)).toHaveLength(6)
+  })
+
+  it('stops at the end of the log rather than at the limit', async () => {
+    const result = await run(['audit', '--limit', '100', '--json'], { env, clientFor: () => paged(2) })
+
+    expect(JSON.parse(result.output)).toHaveLength(4)
+  })
+
+  it('names what was acted on, whichever of the two fields carries it', async () => {
+    const one = (fields: { target?: object; detail?: object }) =>
+      ({ audit: { read: async () => ({ items: [{ ...record(1), ...fields }] }) } }) as never
+
+    // The administrative shape: the object is in `detail`.
+    expect((await run(['audit'], { env, clientFor: () => one({ detail: { user_id: 'u9' } }) })).output).toContain('u9')
+    // And the other one, which is what `audit.read` writes.
+    expect(
+      (await run(['audit'], { env, clientFor: () => one({ target: { returned: 12 }, detail: {} }) })).output,
+    ).toContain('returned=12')
+  })
+
+  it('marks a denial and leaves an allow unmarked', async () => {
+    const one = (result: 'allow' | 'deny') =>
+      ({ audit: { read: async () => ({ items: [{ ...record(1), result }] }) } }) as never
+
+    expect((await run(['audit'], { env, clientFor: () => one('deny') })).output).toContain('DENY')
+    // Marking `allow` too would bury the one line somebody came to find.
+    expect((await run(['audit'], { env, clientFor: () => one('allow') })).output).not.toContain('ALLOW')
+  })
+
+  it('refuses a --result that is not one of the three', async () => {
+    const result = await run(['audit', '--result', 'maybe'], { env, clientFor: () => paged(1) })
+
+    expect(result.code).toBe(2)
   })
 })
