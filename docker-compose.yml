@@ -437,6 +437,13 @@ services:
     profiles: [demo]
     restart: "no"
     entrypoint: ["/bin/sh", "/demo/seed.sh"]
+    # Where the credentials are written, and the reason there is a volume at
+    # all. They are generated, printed once, and stored nowhere as plaintext —
+    # so a `docker compose down` followed by `up` used to leave a seeded stack
+    # whose logins nobody could recover: the data survived, the seed said
+    # "already seeded", and the container holding the only copy of the output
+    # was gone. Now the second run reads them back.
+    volumes: ["demo:/state"]
     environment:
       NACRE_API_URL: http://api:8080
       # The provider row `init` writes, and therefore what every layer here
@@ -487,3 +494,8 @@ volumes:
   redis:
   minio:
   models:
+  # What the demo seed wrote down. It survives `down` and dies with `down -v`,
+  # which is the same lifetime as the organization those credentials belong to —
+  # keeping them any longer would leave a file naming logins that no longer
+  # exist.
+  demo:

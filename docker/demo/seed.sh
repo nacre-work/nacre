@@ -14,16 +14,27 @@
 # returned. A demo that hardcoded three logins would be demonstrating a product
 # that does not exist.
 #
-# Idempotent by refusal rather than by cleverness: it stops if the organization
-# is already there, because a second run would issue a second set of passwords
-# and print them beside users whose real ones are the first set. Resetting the
-# demo is `down -v`, which is what the daily reset does.
+# It never seeds twice: a second run would issue a second set of passwords and
+# print them beside users whose real ones are the first set. It re-prints
+# instead, from a file in a volume — which exists because `down` and `up`
+# otherwise left a working stack whose logins nobody could recover. The
+# container holding the only copy of that output is gone by then, and the
+# database holds a scrypt hash.
+#
+# Resetting is `down -v`: the organization and the credentials go together,
+# which is the property that makes the file safe to keep at all.
 set -eu
 
 API="${NACRE_API_URL:-http://api:8080}"
 ORG="${DEMO_ORG:-demo}"
 CLI="node /app/packages/cli/dist/main.js"
 CORPUS="${DEMO_CORPUS:-/demo/corpus}"
+# Written by the seed and read back by the next run. See the volume's note in
+# docker-compose.yml: these are generated once and stored nowhere else in
+# plaintext, so without this a `down` and an `up` left a working stack whose
+# logins nobody could recover.
+STATE="${DEMO_STATE:-/state}"
+SAVED="${STATE}/credentials.txt"
 
 say() { printf '%s\n' "$*"; }
 
@@ -69,9 +80,17 @@ if node -e "
     process.exit(r.status === 401 ? 0 : 1)
   }).catch(() => process.exit(1))
 " 2>/dev/null; then
-  say "organization ${ORG} is already seeded; nothing to do."
-  say "reset with: docker compose --profile demo down -v"
-  exit 0
+  say "organization ${ORG} is already seeded."
+  if [ -r "$SAVED" ]; then
+    say ""
+    cat "$SAVED"
+    exit 0
+  fi
+  say ""
+  say "The credentials from that run are not here, and they cannot be"
+  say "recovered: the API stores a scrypt hash and nothing else. Start over"
+  say "with: docker compose --profile demo down -v"
+  exit 1
 fi
 
 say "creating the organization"
@@ -108,7 +127,7 @@ for person in engineer contractor; do
   created="$($CLI users create "${person}@${ORG}.local" --json)"
   id="$(printf '%s' "$created" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).id))")"
   password="$(printf '%s' "$created" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).password))")"
-  CREDENTIALS="${CREDENTIALS}  ${person}@${ORG}.local  ${password}\n"
+  CREDENTIALS="${CREDENTIALS}$(printf '  %-24s %s\n' "${person}@${ORG}.local" "$password")\n"
 
   $CLI grant read layer:handbook --to "user:${id}" >/dev/null
   # An explicit `if` rather than `[ … ] && …`: under `set -e` the AND-OR list is
@@ -127,23 +146,34 @@ done
 
 ADMIN_PASSWORD="$(printf '%s' "$INIT" | sed -n 's/^  \([a-z][a-z-]*-[0-9][0-9]*\)$/\1/p' | head -1)"
 
+# Written before it is printed. A crash between the two would otherwise lose
+# the only copy of three passwords that exist nowhere else.
+mkdir -p "$STATE"
+umask 077
+{
+  printf '%s\n' "────────────────────────────────────────────────────────────────"
+  printf '%s\n' " The demo is seeded. Three people, three different answers."
+  printf '%s\n' ""
+  printf '  %-24s %s\n' "admin@${ORG}.local" "$ADMIN_PASSWORD"
+  printf '%b' "$CREDENTIALS"
+  printf '%s\n' ""
+  printf '%s\n' " Organization: ${ORG}"
+  printf '%s\n' ""
+  printf '%s\n' " Try the same query as each of them:"
+  printf '%s\n' ""
+  printf '%s\n' "   \"what is the contract number for Northwind\""
+  printf '%s\n' ""
+  printf '%s\n' "  admin       finds it — contracts, by role"
+  printf '%s\n' "  engineer    finds nothing — no grant on contracts"
+  printf '%s\n' "  contractor  finds nothing — handbook only"
+  printf '%s\n' ""
+  printf '%s\n' " Not filtered out of a longer list. The permission filter runs inside"
+  printf '%s\n' " the index traversal, so those searches never reached the document."
+  printf '%s\n' ""
+  printf '%s\n' " Printed again by any later run of this container, and gone for good"
+  printf '%s\n' " on \`down -v\` — which is also when the organization goes."
+  printf '%s\n' "────────────────────────────────────────────────────────────────"
+} > "$SAVED"
+
 say ""
-say "────────────────────────────────────────────────────────────────"
-say " The demo is seeded. Three people, three different answers."
-say ""
-say "  admin@${ORG}.local       ${ADMIN_PASSWORD}"
-printf ' %b' "$CREDENTIALS"
-say ""
-say " Organization: ${ORG}"
-say ""
-say " Try the same query as each of them:"
-say ""
-say "   \"what is the contract number for Northwind\""
-say ""
-say "  admin       finds it — contracts, by role"
-say "  engineer    finds nothing — no grant on contracts"
-say "  contractor  finds nothing — handbook only"
-say ""
-say " Not filtered out of a longer list. The permission filter runs inside"
-say " the index traversal, so those searches never reached the document."
-say "────────────────────────────────────────────────────────────────"
+cat "$SAVED"
