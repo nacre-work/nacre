@@ -272,6 +272,47 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.17.2 — a document over 22 KB indexes, and the ones that failed need re-ingesting
+
+**Take the `nacre` image** — it carries the API and the worker, and the defect
+was in both — and then **re-ingest anything that failed**, which is the part no
+upgrade does for you.
+
+Both embedding clients sent a document's whole chunk list as one request. An
+endpoint does not split a batch that is too large; it refuses it. Text
+Embeddings Inference, which every Compose profile here starts and which most
+self-hosted deployments run, answers `413` above `--max-client-batch-size`, and
+that defaults to **32**. A chunk is 800 characters, so anything past roughly
+**22 KB of text** produced more than 32 chunks and failed.
+
+Those documents stayed failed. Nothing retries `failed`, and the layer went on
+answering searches out of the documents that had indexed — so the symptom is
+not an error anywhere a person looks, it is retrieval quietly missing your
+longest documents. It was found on a running stand with **twenty-six failures
+out of fifty**.
+
+To find yours:
+
+```sql
+SELECT l.slug, d.external_id, d.error
+  FROM documents d JOIN layers l ON l.id = d.layer_id
+ WHERE d.status = 'failed' AND d.deleted_at IS NULL
+ ORDER BY l.slug, d.external_id;
+```
+
+An `error` mentioning `413` or `maximum allowed batch size` is this defect.
+Re-ingesting is enough — ingest is idempotent on `(layer, external_id)`, and a
+document whose content has not changed is re-embedded rather than duplicated.
+`nacre ingest <path> --layer <slug>` re-sends a directory; the API and MCP
+ingest paths do the same thing.
+
+`NACRE_EMBED_BATCH` is new and defaults to 32, which is not a guess at
+throughput: it is the limit the most common self-hosted embedder enforces. Raise
+it if your endpoint takes more — a hosted vendor usually takes far more — and
+nothing needs setting to get the fix.
+
+No migration, no new service, and no change to the permission model.
+
 ### 0.17.1 — the front door stops overwriting the client's scheme
 
 **Take the `nacre-web` image**, and nothing else. No migration, no new variable,
