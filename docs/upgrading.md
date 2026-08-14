@@ -272,6 +272,52 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.17.0 — a platform administrator cannot be touched from inside an organization
+
+**Nothing to do**, unless a `platform_admin` account of yours lives in an
+organization that has other administrators. Then read the last paragraph.
+
+No migration, no new variable, no new service. One behaviour change, and it is a
+refusal that was missing.
+
+`POST /v1/users` has always refused to *issue* `platform_admin`: that surface is
+scoped to one organization and the role spans all of them, so minting one there
+would be an escalation out of the scope doing the minting. Nothing enforced the
+same argument in the other direction. An `org_admin` could take a platform
+administrator whose account happened to be in *their* organization and:
+
+| Request | What it did |
+|---|---|
+| `PATCH /v1/users/{id}` `{"role":"member"}` | demote them |
+| `PATCH /v1/users/{id}` `{"disabled":true}` | disable them |
+| `DELETE /v1/users/{id}` | the same call, the same effect |
+| `POST /v1/users/{id}/password` | **reset the password and read the plaintext back** |
+
+The last one is not a demotion. That endpoint returns the new password in the
+response, so it was a takeover of the account that administers the installation,
+performed by somebody who administers one tenant.
+
+All four now answer **`403`** when the target holds `platform_admin`, in one
+wording. Not `404`: `GET /v1/users` lists that person with their role, so the
+caller is looking straight at the row and there is nothing invisible to protect.
+Not `409` either — the last-administrator refusal beside it goes away once there
+is a second administrator, and this one never does.
+
+**What might break for you.** A script that disables leavers by walking
+`GET /v1/users` and calling `DELETE` on each will now get a `403` for a platform
+administrator it used to disable silently. That is the fix working; skip that
+row. Nothing else on this surface changed, and every path still administers
+everybody else exactly as before.
+
+**Who can still change the role.** Nobody, through the API — by design. It is
+issued and revoked by a command holding the database credentials. If you run the
+commercial modules, `admin-global` ships one; if you do not, you have one
+`platform_admin` at most and `init` never made it.
+
+**Worth doing once, whatever else you do.** Give your platform administrator an
+organization of their own. It was the arrangement that avoided all four of the
+above before this release, and it stays the one that makes the question moot.
+
 ### 0.16.0 — the CLI administers an organization
 
 **Nothing to do.** No migration, no new variable, no new service, and no server
