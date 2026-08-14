@@ -272,6 +272,52 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.17.1 — the front door stops overwriting the client's scheme
+
+**Take the `nacre-web` image**, and nothing else. No migration, no new variable,
+no new service, and no change to the API, the transports or the worker.
+
+If your console sits behind anything that terminates TLS — an ingress
+controller, `nginx-proxy`, Traefik, Caddy — this release is worth taking, and
+the symptom it fixes is one you may have already met without recognising it.
+
+Every proxying `location` in that image sent `X-Forwarded-Proto $scheme`, and
+`$scheme` is the scheme of the connection *into* the container, which behind a
+TLS terminator is plaintext. So the front door replaced the outer proxy's
+correct `https` with `http`. The MCP transport builds its RFC 9728 identifier
+from the request unless `NACRE_MCP_CANONICAL_URL` is pinned, so an
+unauthenticated `POST /mcp` answered:
+
+```
+www-authenticate: Bearer resource_metadata="http://your-host/.well-known/oauth-protected-resource"
+```
+
+while the document at that URL correctly said `"resource":"https://your-host"`.
+One installation disagreeing with itself about its own scheme, and a client sent
+to a plaintext URL for an OAuth discovery document — refused outright by some
+clients and reached only through a redirect by the rest.
+
+A `map` now preserves what an outer proxy sent and falls back to `$scheme` only
+where nothing is in front, which is the one case it was ever right for. Two
+consequences worth knowing:
+
+- **A client talking to the container directly can now claim `https`** on a
+  plaintext connection, and will be handed links it cannot follow. That is
+  self-inflicted and affects only that client; the old behaviour broke every
+  correctly-deployed one.
+- **Pinning `NACRE_MCP_CANONICAL_URL` remains the stronger answer** where the
+  address is known, because it consults no header at all. A deployment behind
+  two proxies should prefer it.
+
+`pnpm lint:nginx` holds every proxying location to this and to `Host
+$http_host`, and the end-to-end smoke asserts both branches — no header keeps
+the connection's own scheme and port, `X-Forwarded-Proto: https` comes back
+`https://`.
+
+The other change in this release is `--profile demo` only:
+`NACRE_DEMO_EMAIL_DOMAIN` sets the domain of the seeded identities, defaulting
+to the `${ORG}.local` it always was. Nothing to do unless you want to change it.
+
 ### 0.17.0 — a platform administrator cannot be touched from inside an organization
 
 **Nothing to do**, unless a `platform_admin` account of yours lives in an
