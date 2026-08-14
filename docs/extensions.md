@@ -86,7 +86,7 @@ settle by precedence: the loser stays loaded, appears to be in force, and is
 not. Same argument `loadJwtKeys` makes about a secret and a key reference.
 
 The default is the built-in resolver, which is what makes this repository
-complete with nothing plugged in — and is why the T1–T15 suite still tests the
+complete with nothing plugged in — and is why the T1–T25 suite still tests the
 model rather than a stub.
 
 ## `registerAuthProvider(provider)`
@@ -233,7 +233,7 @@ before this point existed.
 
 ## Testing a module against these rules
 
-The T1–T15 suite in `docs/authz.md` is written against the model, not against
+The T1–T25 suite in `docs/authz.md` is written against the model, not against
 the built-in implementation. A module registering a resolver runs it — from
 this repository's version of the file, not a copy — because a resolver reaching
 the same guarantees down different code paths is exactly the thing a copied test

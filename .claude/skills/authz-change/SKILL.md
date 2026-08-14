@@ -1,6 +1,6 @@
 ---
 name: authz-change
-description: Use when changing anything under packages/core/authz, the grants table, the effective-principals cache, or the vector pre-filter — the permission resolver, deny handling, scope inheritance, ACL tags, or the T1-T15 suite. Also use when a change elsewhere could affect who can see what, such as touching search filters, the org_id path, error codes on missing objects, or tombstones. Triggers on "resolver", "grants", "deny rule", "ACL", "pre-filter", "acl_tags", "effective principals", "permission check".
+description: Use when changing anything under packages/core/authz, the grants table, the effective-principals cache, or the vector pre-filter — the permission resolver, deny handling, scope inheritance, ACL tags, or the T1-T25 suite. Also use when a change elsewhere could affect who can see what, such as touching search filters, the org_id path, error codes on missing objects, or tombstones. Triggers on "resolver", "grants", "deny rule", "ACL", "pre-filter", "acl_tags", "effective principals", "permission check".
 ---
 
 # Changing the permission model
@@ -50,7 +50,7 @@ Answer all three explicitly in the PR description — the template asks:
 
 ## Tests
 
-The T1-T15 suite in `docs/authz.md` section "Test plan" is the gate. Tests come
+The T1-T25 suite in `docs/authz.md` section "Test plan" is the gate. Tests come
 **before** the code they cover — written afterwards they get written to match
 what was built rather than what was specified.
 

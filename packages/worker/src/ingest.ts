@@ -202,11 +202,19 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
   // document, declare it unchanged, and index nothing at all, while the status
   // stayed at 'parsing' and the API kept answering `queued` forever.
   if (existing !== undefined && existing.contentHash === hash && existing.indexed) {
-    // Deliberately not marked as tagged. Nothing was rewritten, so the points
-    // still carry whichever acl_version they were written at; claiming the
-    // current one would report a document as caught up while a revoked grant is
-    // still on its vectors. Re-tagging unchanged content is the recomputation
-    // job's work, and until that exists the lag gauge is supposed to say so.
+    // Nothing to rewrite, and — since migration 0016 — nothing to refresh
+    // either. This used to explain why the document was deliberately left
+    // behind the current `acl_version`, deferring to "the recomputation job"
+    // and to a lag gauge that was "supposed to say so". Neither exists: the
+    // ACL tag cache, `acl_version`, the retag sweep and
+    // `nacre_acl_propagation_lag_seconds` all went with that migration, so the
+    // comment justified this branch by pointing at two things that are gone.
+    //
+    // What makes it correct now is stronger and needs no sweep. A point
+    // carries no permission state at all; the permitted set is computed from
+    // `grants` on every request. So identical content that is already indexed
+    // has nothing that can go stale, and invariant I4 holds structurally
+    // rather than by something catching up.
     return { documentId: existing.id, chunkCount: existing.chunkCount, unchanged: true }
   }
 

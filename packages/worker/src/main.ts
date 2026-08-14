@@ -653,10 +653,13 @@ async function main(): Promise<void> {
         }
       }
 
-      // Rate-limited by its own clock rather than by the idle loop. Retagging
-      // affects what a query returns and should chase the backlog; collection
-      // only reclaims space, so running it every two seconds would be a query
-      // against every tenant's documents for no benefit.
+      // Rate-limited by its own clock rather than by the idle loop, because
+      // collection only reclaims space: running it every two seconds would be
+      // a query against every tenant's documents for no benefit. It used to
+      // draw that contrast against retagging, which chased a backlog that
+      // affected what a query returned — that sweep went with migration 0016,
+      // so the clock is now justified on its own terms rather than against a
+      // pass that is no longer here.
       //
       // Reached whether or not retagging just failed, which it was not before:
       // the retag branch returned early on failure, so a document whose

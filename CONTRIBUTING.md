@@ -16,7 +16,7 @@ to justify the change.
 
 **Changes under `packages/core/authz` require two maintainer approvals** and
 must come with tests. The `acl-invariants` CI job is required: it runs the
-T1–T15 suite plus a property-based test against the reference resolver.
+T1–T25 suite plus a property-based test against the reference resolver.
 If your PR turns it red, that isn't a flake — go read the failure.
 
 Never, in any PR:
