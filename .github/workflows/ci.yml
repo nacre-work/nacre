@@ -432,3 +432,51 @@ jobs:
       - name: tear down
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile minimal down -v
+
+  # ── the profile the quickstart points a reader at ──────────────────────────
+  #
+  # `demo` is what `docs/quickstart.md` tells a first-time reader to run, and
+  # nothing started it on a pull request until this job. `lint:compose` pins
+  # what each profile *contains*, which is a different question from whether it
+  # comes up: the last time somebody ran this one by hand it produced four
+  # defects, every one of them green in every suite.
+  #
+  # Separate from `e2e` rather than more of it, because it tests something that
+  # job structurally cannot. `minimal` runs a stub embedder returning a
+  # constant vector, so relevance decides nothing there — which is what makes
+  # it a clean test of the ACL pre-filter and a useless one for retrieval.
+  # This runs a real model over a real corpus, and asserts the demo's own
+  # claim: the same query, asked by three people, comes back three different
+  # ways. The administrator finding the contract number is what says the corpus
+  # indexed at all; the engineer and the contractor not finding it is the half
+  # no unit test can prove, because a unit test builds the permission plan it
+  # then asserts against.
+  #
+  # No CI overlay. The profile brings its own embedder, and adding the stub
+  # would replace the one thing this job exists to exercise.
+  demo:
+    name: demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: configure the environment
+        # The defaults, and nothing else. `demo-seed` carries the embedding
+        # endpoint, model and dimensions itself — they are `init`'s arguments
+        # rather than `loadConfig`'s since core 0.13.0 — so a deployment of
+        # this profile needs no embedder configuration of its own, and writing
+        # one here would be testing an arrangement the quickstart does not
+        # describe.
+        run: cp .env.example .env
+      - name: build and start the demo profile
+        run: docker compose --profile demo up -d --build
+      - name: three people, one query, three answers
+        run: bash scripts/ci/demo-smoke.sh
+        env:
+          COMPOSE: docker compose
+      - name: logs on failure
+        if: failure()
+        run: docker compose --profile demo logs --no-color --tail 60 demo-seed demo-embedder api worker
+      - name: tear down
+        if: always()
+        run: docker compose --profile demo down -v
