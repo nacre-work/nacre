@@ -35,6 +35,9 @@ CORPUS="${DEMO_CORPUS:-/demo/corpus}"
 # logins nobody could recover.
 STATE="${DEMO_STATE:-/state}"
 SAVED="${STATE}/credentials.txt"
+# The admin password on its own, so a later run can prove the saved block still
+# describes a live organization rather than print it and hope.
+PROOF="${STATE}/admin-password"
 
 say() { printf '%s\n' "$*"; }
 
@@ -67,29 +70,54 @@ until node -e "
   sleep 2
 done
 
-# The seed is one-shot on purpose; see the note above.
-if node -e "
-  fetch('${API}/v1/health').then(async () => {
-    const r = await fetch('${API}/v1/auth/login', {
+# Has this stack been seeded?
+#
+# **Not by asking the API**, and the first version of this did. It posted a
+# wrong password to `/v1/auth/login` and read `401` as "the organization is
+# there". But that endpoint answers `401` to an unknown organization, an unknown
+# address, a wrong password and a disabled account with one status and one
+# message — deliberately, so nobody can discover what exists by probing it. So
+# the probe reported "already seeded" against a database created thirty seconds
+# earlier, and the seed refused to run on an empty stack.
+#
+# The product's own refusal to leak existence is what defeated it, which is the
+# right outcome for the product and a lesson about the probe.
+#
+# The state volume is the signal instead. It is created and destroyed with the
+# database — both go on `down -v` — so its presence is the same fact. And it is
+# *verified* rather than trusted: signing in with the password it saved proves
+# the organization behind it is still there.
+if [ -r "$PROOF" ]; then
+  if node -e "
+    fetch('${API}/v1/auth/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: 'admin@${ORG}.local', password: 'x', organization: '${ORG}' }),
-    })
-    // 401 means the organization and the address exist and the password is
-    // wrong, which is what a seeded stack looks like. 404 means it does not.
-    process.exit(r.status === 401 ? 0 : 1)
-  }).catch(() => process.exit(1))
-" 2>/dev/null; then
-  say "organization ${ORG} is already seeded."
-  if [ -r "$SAVED" ]; then
+      body: JSON.stringify({
+        email: 'admin@${ORG}.local',
+        password: require('node:fs').readFileSync('${PROOF}', 'utf8').trim(),
+        organization: '${ORG}',
+      }),
+    }).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))
+  " 2>/dev/null; then
+    if [ -r "$SAVED" ]; then
+      say "organization ${ORG} is already seeded, and these still work:"
+      say ""
+      cat "$SAVED"
+      exit 0
+    fi
+    # The organization exists and the summary does not, so a previous run died
+    # between creating it and finishing. Seeding again would fail on a duplicate
+    # layer slug; saying so beats that.
+    say "organization ${ORG} exists but the seed did not finish."
     say ""
-    cat "$SAVED"
-    exit 0
+    say "Start over: docker compose --profile demo down -v"
+    exit 1
   fi
+
+  say "there is saved state for ${ORG} and its administrator cannot sign in."
   say ""
-  say "The credentials from that run are not here, and they cannot be"
-  say "recovered: the API stores a scrypt hash and nothing else. Start over"
-  say "with: docker compose --profile demo down -v"
+  say "The database and this volume have come apart — one was removed without"
+  say "the other. Start over: docker compose --profile demo down -v"
   exit 1
 fi
 
@@ -107,6 +135,19 @@ if [ -z "$NACRE_TOKEN" ]; then
 fi
 export NACRE_TOKEN
 export NACRE_API_URL="$API"
+
+ADMIN_PASSWORD="$(printf '%s' "$INIT" | sed -n 's/^  \([a-z][a-z-]*-[0-9][0-9]*\)$/\1/p' | head -1)"
+if [ -z "$ADMIN_PASSWORD" ]; then
+  say "could not read the administrator's password out of init's output."
+  exit 1
+fi
+
+# Written here rather than with the rest, because from this line on the
+# organization exists: a failure between now and the summary would otherwise
+# leave a stack nobody can sign in to and no record that it happened.
+mkdir -p "$STATE"
+umask 077
+printf '%s\n' "$ADMIN_PASSWORD" > "$PROOF"
 
 say "creating layers"
 for layer in handbook engineering contracts; do
@@ -144,12 +185,8 @@ for layer in handbook engineering contracts; do
   $CLI ingest "${CORPUS}/${layer}" --layer "$layer"
 done
 
-ADMIN_PASSWORD="$(printf '%s' "$INIT" | sed -n 's/^  \([a-z][a-z-]*-[0-9][0-9]*\)$/\1/p' | head -1)"
-
 # Written before it is printed. A crash between the two would otherwise lose
 # the only copy of three passwords that exist nowhere else.
-mkdir -p "$STATE"
-umask 077
 {
   printf '%s\n' "────────────────────────────────────────────────────────────────"
   printf '%s\n' " The demo is seeded. Three people, three different answers."
