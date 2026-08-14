@@ -56,6 +56,38 @@
 # and reading one header, not by any test.
 #
 # `$http_host` is the header the client actually sent, port and all.
+#
+# ## And the same argument for the scheme
+#
+# Every `proxy_pass` below used to send `X-Forwarded-Proto $scheme`, and
+# `$scheme` is the scheme of the connection *into this nginx* — not the one the
+# client used. Where TLS terminates in front of this container, which is every
+# deployment behind an ingress controller or a `nginx-proxy`/Traefik/Caddy on
+# the host, that connection is plaintext. So this front door **overwrote** the
+# outer proxy's correct `https` with `http` and told the API and the MCP
+# transport that an HTTPS request had arrived over plaintext.
+#
+# What that produced, found by reading one header on a real deployment rather
+# than by any test: the MCP transport builds its RFC 9728 pointer from the
+# request when `NACRE_MCP_CANONICAL_URL` is unpinned, so an unauthenticated
+# `POST /mcp` answered
+#
+#   www-authenticate: Bearer resource_metadata="http://host/.well-known/oauth-protected-resource"
+#
+# while the document that URL leads to says `"resource":"https://host"`. One
+# installation disagreeing with itself about its own scheme, and pointing a
+# client at a plaintext URL for an OAuth discovery document.
+#
+# The map preserves what an outer proxy sent and falls back to this connection's
+# scheme when there is no outer proxy — which is the only case where `$scheme`
+# was ever the right answer. The trade, stated: a client talking to this
+# container directly can claim `https` on a plaintext connection, and will then
+# be handed links it cannot follow. That is self-inflicted and affects only that
+# client, where the old behaviour broke every correctly-deployed one.
+map $http_x_forwarded_proto $nacre_forwarded_proto {
+    ''      $scheme;
+    default $http_x_forwarded_proto;
+}
 
 server {
     listen ${NGINX_PORT};
@@ -98,7 +130,7 @@ server {
         proxy_pass http://$nacre_api;
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $nacre_forwarded_proto;
     }
 
     # Discovery, and it is not optional here. A client that reaches this origin
@@ -109,7 +141,7 @@ server {
         proxy_pass http://$nacre_api;
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $nacre_forwarded_proto;
     }
 
     # The authorization server's three endpoints: registration, the authorize
@@ -126,7 +158,7 @@ server {
         proxy_pass http://$nacre_api;
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $nacre_forwarded_proto;
     }
 
     # MCP. An exact-prefix match rather than a trailing slash, because the
@@ -150,7 +182,7 @@ server {
         proxy_set_header Host $http_host;
         proxy_set_header Connection "";
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $nacre_forwarded_proto;
     }
 
     # The admin is a static bundle with client-side (hash) routing, so any path

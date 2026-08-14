@@ -34,6 +34,7 @@
     "lint:collection-config": "node scripts/check-collection-config.mjs",
     "lint:password": "node scripts/check-password-generator.mjs",
     "lint:images": "node scripts/check-images.mjs",
+    "lint:nginx": "node scripts/check-nginx-proxy.mjs",
     "lint:endpoint-errors": "node scripts/check-endpoint-errors.mjs",
     "lint:sparse": "node scripts/check-sparse-branch.mjs",
     "lint:image-packages": "node scripts/check-image-packages.mjs",

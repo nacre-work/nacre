@@ -151,6 +151,7 @@ jobs:
       # not listed by hand anywhere: `lint:workflows` compares the two sets.
       - run: pnpm lint:config
       - run: pnpm lint:images
+      - run: pnpm lint:nginx
       - run: pnpm lint:password
       - run: pnpm lint:collection-config
       - run: pnpm lint:endpoint-errors

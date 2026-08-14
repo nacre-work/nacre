@@ -142,6 +142,15 @@ jobs:
       # built by this job on both, and named by no release step — so the service
       # compiled and had no artifact anybody could pull.
       - run: pnpm lint:images
+      # The front door's proxy headers, in every location that proxies. Two
+      # rules, each found by starting the stack and reading one header, and each
+      # of which has to hold in four places: `Host $http_host` because `$host`
+      # strips the port, and `X-Forwarded-Proto $nacre_forwarded_proto` because
+      # `$scheme` is this container's connection and not the client's — which
+      # made every deployment behind a TLS terminator advertise plaintext URLs
+      # for its own discovery documents. The e2e smoke proves both branches
+      # against a running stack; this catches the fifth location.
+      - run: pnpm lint:nginx
       # Every caller of a model endpoint an operator configured reports a
       # refusal through one function. A bare status is the wrong answer on 401
       # and 403, where the cause is that this client sends no credential and has
