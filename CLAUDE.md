@@ -863,7 +863,7 @@ released, so after one pass a document was locked out of the loop for the full
 `NACRE_INDEX_LEASE`. Fifteen minutes, with the worker log silent after one
 success. Every test passed throughout.
 
-**Every profile has now been started, and only `minimal` is in CI.** `demo` was
+**Every profile has now been started, and two of them are in CI.** `demo` was
 driven on a real bge-small to the three-answers demonstration — an administrator
 reaching the contract number, an engineer the same question without
 `contracts`, a contractor the handbook alone; `full` took a real PDF through
@@ -871,10 +871,21 @@ MinIO to `indexed` and back out of a search, and refused the same bytes declared
 `text/plain`; `hosted` gave all three of the adapter's refusals — no routes, no
 credential for a routed vendor, an unknown vendor; and `airgapped`'s property
 was shown by running its embedder with `--network none` off a seeded volume.
+
 `lint:compose` pins what each profile *contains*, which is a different question
-from whether it starts: `demo` is the one `docs/quickstart.md` tells a reader to
-run and the one that produced four defects the last time somebody ran it, and
-nothing starts it on a pull request.
+from whether it starts — so `demo` has a job of its own now, beside `e2e`. It is
+the profile `docs/quickstart.md` tells a reader to run and the one that produced
+four defects the last time somebody ran it by hand, and it tests what `minimal`
+structurally cannot: that stub embedder returns a constant vector, so relevance
+decides nothing there. The job asserts the demonstration itself, and the two
+refusals are the half no unit test can prove, because a unit test builds the
+permission plan it then asserts against. Checked by granting the contractor
+`read` on `contracts` and watching it go red, then revoking it.
+
+`full`, `hosted` and `airgapped` are still started by nobody on a pull request.
+Each wants something CI would have to be given — a bucket and a reranker, a
+vendor credential, a seeded model volume — so the honest statement is that they
+are covered by `lint:compose` and by hand, and not that they are covered.
 
 **The ACL tag cache is gone** (migration 0016). `docs/authz.md` specified
 `acl_tags` in the vector payload as a second filter beside the layer bound, and
