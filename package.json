@@ -38,7 +38,8 @@
     "lint:sparse": "node scripts/check-sparse-branch.mjs",
     "lint:image-packages": "node scripts/check-image-packages.mjs",
     "lint:published": "node scripts/check-published-manifests.mjs",
-    "lint:audit-target": "node scripts/check-audit-target.mjs"
+    "lint:audit-target": "node scripts/check-audit-target.mjs",
+    "lint:platform-admin-target": "node scripts/check-platform-admin-target.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -410,6 +410,43 @@ The refusal that surfaces as `404` for a caller who is not an `org_admin`
 writes a `deny` event. It is the easiest one to miss, because the code path
 producing it is an early return that reads like routing.
 
+**That surface guarded the role it set and not the role it replaced.** `POST
+/v1/users` refuses to issue `platform_admin`, correctly and for a stated reason:
+`/v1/users` is scoped to one organization, the role spans all of them, so
+minting one there is an escalation out of the scope doing the minting. The
+argument holds in the other direction with the same force and nothing enforced
+it — an `org_admin` could take a platform administrator whose account happened
+to live in their organization and demote them, disable them, delete them, or
+**reset their password**. The last is not a demotion: the endpoint returns the
+plaintext, so it is a takeover of the account that administers the installation,
+performed by somebody who administers one tenant.
+
+Four spellings of "act on this person", each of which had to remember, with
+nothing that knew there were four — the shape this file already names. So the
+repair is one helper every write to somebody else's row goes through, reading
+the role `FOR UPDATE` in the same transaction, and
+`check-platform-admin-target.mjs` refusing a write that does not. It reads the
+guard's *own body* rather than the file, because the first version passed with
+the comparison removed: `principals.ts` says `'platform_admin'` in a type and in
+half a dozen sentences of prose, so a whole-file search was satisfied by the
+documentation of the rule instead of the rule. The one exemption — the
+scrypt-parameter rehash on the sign-in path, where the principal is its own
+target — is written down with its reason and fails the check if the statement it
+names changes.
+
+`403`, in one wording, on all four. Not `404`: `GET /v1/users` lists that person
+with their role, so the caller is looking straight at the row and invariant 4 is
+about invisibility. Not `409` either — the last-administrator refusal beside it
+is about the organization's state and goes away once there is a second
+administrator, and this one never does. Nobody reaching those handlers is a
+platform administrator themselves, since `administers(auth)` is `org_admin` and
+nothing else, so the refusal is about what the endpoint is scoped to and has no
+branch on the caller. What issues and revokes the role instead is a command
+holding the database credentials, outside this surface entirely.
+
+Found by writing that command, which is the fourth time an operator-facing piece
+of work has turned up a defect no suite could see.
+
 **A layer can be deleted, and it takes its documents with it.** Everything else
 on the layers screen edits one — there was no way to remove a layer at all, so a
 slug typed wrong was permanent and the only correction was a second layer beside

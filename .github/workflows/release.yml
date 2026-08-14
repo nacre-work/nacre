@@ -156,6 +156,14 @@ jobs:
       - run: pnpm lint:endpoint-errors
       - run: pnpm lint:sparse
       - run: pnpm lint:audit-target
+      # Four spellings of "act on this person" — demote, disable, delete,
+      # reset the password — each of which had to remember that a
+      # `platform_admin` is not administered from inside an organization, with
+      # nothing that knew there were four. Three of them forgot. The reset was
+      # the worst: it returns the plaintext, so an `org_admin` could take over
+      # the account that administers the installation from an endpoint scoped to
+      # one tenant.
+      - run: pnpm lint:platform-admin-target
       - run: pnpm lint:image-packages
       - run: pnpm lint:published
       - run: pnpm lint:admin-gate

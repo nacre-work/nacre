@@ -157,6 +157,14 @@ jobs:
       # absorbs a prefetch that returns nothing without a trace.
       - run: pnpm lint:sparse
       - run: pnpm lint:audit-target
+      # Four spellings of "act on this person" — demote, disable, delete,
+      # reset the password — each of which had to remember that a
+      # `platform_admin` is not administered from inside an organization, with
+      # nothing that knew there were four. Three of them forgot. The reset was
+      # the worst: it returns the plaintext, so an `org_admin` could take over
+      # the account that administers the installation from an endpoint scoped to
+      # one tenant.
+      - run: pnpm lint:platform-admin-target
       # Every workspace manifest reaches the image. The Dockerfile copies them
       # one line at a time so a source-only change reuses the dependency layer,
       # and that list did not get `packages/cli` — so pnpm inside the image saw

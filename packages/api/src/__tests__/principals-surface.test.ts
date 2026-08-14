@@ -24,6 +24,8 @@ const AUDIENCE = 'nacre'
 const ORG = '11111111-1111-1111-1111-111111111111'
 const USER = 'cccccccc-0000-4000-8000-000000000001'
 const LAST_ADMIN = 'cccccccc-0000-4000-8000-000000000002'
+/** Somebody this surface may not touch at all — see `notAdministeredHere`. */
+const PLATFORM_ADMIN = 'cccccccc-0000-4000-8000-000000000003'
 const GROUP = 'bbbbbbbb-0000-4000-8000-000000000001'
 const ABSENT = 'bbbbbbbb-0000-4000-8000-0000000000ff'
 
@@ -57,8 +59,20 @@ const users: Users = {
             hasPassword: true,
           },
         },
-  update: async (_a, id) => (id === LAST_ADMIN ? 'last-admin' : id === USER ? 'updated' : 'no-user'),
-  resetPassword: async (_a, id) => (id === USER ? 'brine-coral-fathom-sound-mantle-drift-19' : undefined),
+  update: async (_a, id) =>
+    id === PLATFORM_ADMIN
+      ? 'platform-admin'
+      : id === LAST_ADMIN
+        ? 'last-admin'
+        : id === USER
+          ? 'updated'
+          : 'no-user',
+  resetPassword: async (_a, id) =>
+    id === PLATFORM_ADMIN
+      ? 'platform-admin'
+      : id === USER
+        ? { password: 'brine-coral-fathom-sound-mantle-drift-19' }
+        : 'no-user',
 }
 
 const groups: Groups = {
@@ -229,6 +243,62 @@ describe('users and groups', () => {
       expect(((await res.json()) as { detail: string }).detail).toContain('org_admin')
       expect(last()?.result).toBe('deny')
     }
+  })
+
+  /**
+   * The mirror of the refusal above, and the half that was missing.
+   *
+   * `POST /v1/users` and `PATCH` guarded the role they *set* and never the role
+   * they *replaced*, so an `org_admin` could reach a platform administrator who
+   * happened to live in their organization by all four spellings. The password
+   * reset is the one that is not a demotion at all: it returns the plaintext,
+   * so it is a takeover of the account that administers the installation, from
+   * an endpoint scoped to one tenant.
+   *
+   * Driven from the outside on every verb, because a guard in one adapter
+   * method proves nothing about the route that calls a different one.
+   */
+  it('refuses every way of acting on a platform_admin, in one wording', async () => {
+    const details: string[] = []
+    for (const [method, path, body] of [
+      ['DELETE', `/v1/users/${PLATFORM_ADMIN}`, undefined],
+      ['PATCH', `/v1/users/${PLATFORM_ADMIN}`, JSON.stringify({ role: 'member' })],
+      ['PATCH', `/v1/users/${PLATFORM_ADMIN}`, JSON.stringify({ disabled: true })],
+      ['POST', `/v1/users/${PLATFORM_ADMIN}/password`, undefined],
+    ] as const) {
+      const res = await fetch(`${base}${path}`, {
+        method,
+        headers: await admin(),
+        ...(body === undefined ? {} : { body }),
+      })
+
+      // 403 and not 404: `GET /v1/users` lists this person with their role, so
+      // the caller is looking straight at the row and invariant 4 is not
+      // engaged. Not 409 either — that is the last-administrator refusal beside
+      // it, which goes away once there is a second administrator. This one
+      // never does.
+      expect(res.status).toBe(403)
+      const problem = (await res.json()) as { detail: string }
+      expect(problem.detail).toContain('platform_admin')
+      details.push(problem.detail)
+      expect(last()?.result).toBe('deny')
+    }
+
+    // One refusal, so one wording. Four messages that drifted apart would be
+    // four places to keep in step with nothing that knows there are four.
+    expect(new Set(details).size).toBe(1)
+  })
+
+  it('the password reset refusal returns no password at all', async () => {
+    const res = await fetch(`${base}/v1/users/${PLATFORM_ADMIN}/password`, {
+      method: 'POST',
+      headers: await admin(),
+    })
+    // The whole point: a refused reset must not have minted one anyway.
+    expect(JSON.stringify(await res.json())).not.toContain('brine')
+    const event = last()
+    expect(event).toMatchObject({ action: 'reset_password', result: 'deny' })
+    expect(event?.detail).toMatchObject({ reason: 'platform-admin' })
   })
 
   it('disables a user, and a password reset says nothing about the value', async () => {
