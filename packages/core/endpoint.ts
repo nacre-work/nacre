@@ -174,8 +174,13 @@ export async function embedInBatches<T>(
     throw new Error(`the embedding batch limit must be a positive integer, got ${String(limit)}`)
   }
   if (texts.length === 0) return []
-  if (texts.length <= limit) return send(texts)
 
+  // Deliberately no `texts.length <= limit` shortcut. One existed, returning
+  // `send(texts)` directly, and it was a second path that had to agree with
+  // this one and did not: it skipped the count check below, so an endpoint
+  // answering two inputs with one vector misaligned the whole document instead
+  // of raising — on the single-batch case, which is almost every call. Caught
+  // by a test that predates the batching, which is the argument for one path.
   const out: T[] = []
   for (let at = 0; at < texts.length; at += limit) {
     const batch = texts.slice(at, at + limit)

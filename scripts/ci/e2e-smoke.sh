@@ -171,29 +171,39 @@ done
 # order — a fix that dropped or reordered a batch would still reach `indexed`.
 BIG_TAIL="Zanzibar telemetry rotates on the fourteenth"
 say "ingest a document larger than one embedding batch"
-python3 - "$BIG_TAIL" > /tmp/big.txt <<'PYEOF'
-import sys
-tail = sys.argv[1]
+# Built and posted by one program, which is not a style choice. The first
+# version wrote the text to a file and piped it in — `python3 - … < big.txt`
+# with the program itself arriving on a heredoc — so stdin was the heredoc and
+# `sys.stdin.read()` returned the empty string. The document was ingested with
+# **no content**, reached `indexed` with zero chunks, and the search below
+# failed while reporting that a batch had been dropped. A test harness that
+# reports a product defect it caused is worse than no test.
+BIG_OUT=$(python3 - "$TOKEN" "$API" "$BIG_TAIL" <<'PYEOF'
+import json, sys, urllib.request
+token, api, tail = sys.argv[1], sys.argv[2], sys.argv[3]
 para = ("Retrieval quality depends on the chunk boundaries as much as on the model. "
         "A permission filter inside the index traversal returns k permitted results. ")
-# ~60 KB, which is far more than 32 chunks at 800 characters with 120 of overlap.
-sys.stdout.write("# A long document\n\n" + para * 380 + "\n\n" + tail + "\n")
-PYEOF
-BIG_BYTES=$(wc -c < /tmp/big.txt)
-say "  ${BIG_BYTES} bytes"
-BIG_JOB=$(python3 - "$TOKEN" "$API" < /tmp/big.txt <<'PYEOF'
-import json, sys, urllib.request
-token, api = sys.argv[1], sys.argv[2]
+# ~57 KB, which is far more than 32 chunks at 800 characters with 120 of overlap.
+content = "# A long document\n\n" + para * 380 + "\n\n" + tail + "\n"
 body = json.dumps({
     "layer": "handbook", "external_id": "long-document",
-    "title": "A long document", "content": sys.stdin.read(),
+    "title": "A long document", "content": content,
 }).encode()
 req = urllib.request.Request(f"{api}/v1/documents", data=body, method="POST",
     headers={"authorization": f"Bearer {token}", "content-type": "application/json"})
-print(json.load(urllib.request.urlopen(req, timeout=60))["job_id"])
+print(json.load(urllib.request.urlopen(req, timeout=60))["job_id"], len(content))
 PYEOF
 )
+BIG_JOB=$(printf '%s' "$BIG_OUT" | cut -d' ' -f1)
+BIG_CHARS=$(printf '%s' "$BIG_OUT" | cut -d' ' -f2)
 [ -n "$BIG_JOB" ] || die "the large document was not accepted"
+# The size is asserted rather than printed. An empty or truncated body is the
+# one way this whole section can pass while proving nothing, and it is exactly
+# what happened: 22 KB is the threshold the defect sits at, so anything at or
+# under it would make `indexed` mean nothing here.
+[ "$BIG_CHARS" -gt 40000 ] \
+  || die "the generated document is ${BIG_CHARS} characters, which is not larger than one batch"
+say "  ${BIG_CHARS} characters"
 say "  job ${BIG_JOB}"
 for i in $(seq 1 90); do
   STATUS=$(req GET "/v1/jobs/${BIG_JOB}" "$TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
@@ -208,8 +218,30 @@ for i in $(seq 1 90); do
 done
 say "  indexed, so the client split the batch rather than being refused"
 
+# `indexed` on its own does not say a batch was split — a document that parses
+# to nothing reaches it too, with `chunk_count: 0`, deliberately and for the
+# emptied-file case. So this asserts the count is past a single batch, which is
+# the only reading of `indexed` that means what this section claims.
+# From the document rather than the job: `Job` carries a status and a progress
+# and the chunk count is on `Document`, which is the contract's own division.
+BIG_DOC=$(req GET "/v1/jobs/${BIG_JOB}" "$TOKEN" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['document_id'])")
+BIG_CHUNKS=$(req GET "/v1/documents/${BIG_DOC}" "$TOKEN" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['chunk_count'])")
+[ "$BIG_CHUNKS" -gt 32 ] \
+  || die "the large document indexed as ${BIG_CHUNKS} chunks, which is not more than one batch of 32 — so this proved nothing about splitting"
+say "  ${BIG_CHUNKS} chunks, so more than one batch was sent"
+
 BODY=$(req POST /v1/search "$TOKEN" '{"query":"Zanzibar telemetry rotates","top_k":5}')
-printf '%s' "$BODY" | grep -qF "Zanzibar" \
+# Against this document's id, not merely against the phrase. Any later document
+# carrying the same words would otherwise satisfy it, which is how an assertion
+# stops testing what it was written for without ever going red.
+printf '%s' "$BODY" | python3 -c "
+import json, sys
+want = sys.argv[1]
+hits = json.load(sys.stdin)['items']
+sys.exit(0 if any(h['doc_id'] == want and 'Zanzibar' in h['text'] for h in hits) else 1)
+" "$BIG_DOC" \
   || die "the tail of the large document is not searchable, so a batch was dropped or reordered: ${BODY}"
 say "  its last batch came back too"
 

@@ -243,6 +243,18 @@ describe('embedInBatches', () => {
     ).rejects.toThrow(/returned 31 vectors for 32 inputs/)
   })
 
+  /**
+   * The case a shortcut broke. `texts.length <= limit` used to return the
+   * endpoint's answer directly, which skipped the count check — and this is
+   * almost every call, since a document under the limit is one batch and a
+   * search query is one text. A short answer there misaligns silently.
+   */
+  it('refuses a short batch when the whole input is one batch', async () => {
+    await expect(
+      embedInBatches(['a', 'b'], 32, () => Promise.resolve([[1, 2, 3, 4]])),
+    ).rejects.toThrow(/returned 1 vectors for 2 inputs/)
+  })
+
   it('refuses a limit that is not a positive integer', async () => {
     await expect(embedInBatches(['a'], 0, () => Promise.resolve([[0]]))).rejects.toThrow(
       /positive integer/,
