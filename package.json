@@ -37,6 +37,7 @@
     "lint:nginx": "node scripts/check-nginx-proxy.mjs",
     "lint:endpoint-errors": "node scripts/check-endpoint-errors.mjs",
     "lint:sparse": "node scripts/check-sparse-branch.mjs",
+    "lint:embed-batch": "node scripts/check-embed-batch.mjs",
     "lint:image-packages": "node scripts/check-image-packages.mjs",
     "lint:published": "node scripts/check-published-manifests.mjs",
     "lint:audit-target": "node scripts/check-audit-target.mjs",

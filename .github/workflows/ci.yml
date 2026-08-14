@@ -151,6 +151,11 @@ jobs:
       # for its own discovery documents. The e2e smoke proves both branches
       # against a running stack; this catches the fifth location.
       - run: pnpm lint:nginx
+      # Every embedding client bounds the batch it sends. An endpoint refuses
+      # above its own limit rather than splitting — TEI answers 413 above 32 —
+      # and the worker marks such a document `failed`, which nothing retries.
+      # Two clients had the defect with nothing making them agree.
+      - run: pnpm lint:embed-batch
       # Every caller of a model endpoint an operator configured reports a
       # refusal through one function. A bare status is the wrong answer on 401
       # and 403, where the cause is that this client sends no credential and has

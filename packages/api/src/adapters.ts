@@ -19,6 +19,8 @@ import {
   VectorStore,
   vectorName,
   withOrg,
+  DEFAULT_EMBED_BATCH,
+  embedInBatches,
   endpointReason,
   endpointUrl,
   modelEndpointRefused,
@@ -896,6 +898,8 @@ export class HttpEmbedder implements Embedder {
     private readonly dimensions: number,
     /** One query, one vector, and a caller waiting on it. */
     private readonly timeoutMs = 15_000,
+    /** See `embedInBatches`. An endpoint refuses above its own limit. */
+    private readonly batch: number = DEFAULT_EMBED_BATCH,
   ) {}
 
   /**
@@ -906,7 +910,10 @@ export class HttpEmbedder implements Embedder {
    * alternative is a cache that has to be invalidated from a table nothing
    * watches.
    */
-  static pool(timeoutMs?: number): (provider: EmbeddingProvider) => Embedder {
+  static pool(
+    timeoutMs?: number,
+    batch: number = DEFAULT_EMBED_BATCH,
+  ): (provider: EmbeddingProvider) => Embedder {
     const embedders = new Map<string, HttpEmbedder>()
     return (provider) => {
       const cached = embedders.get(provider.id)
@@ -915,7 +922,8 @@ export class HttpEmbedder implements Embedder {
         provider.endpoint,
         provider.model,
         provider.dimensions,
-        ...(timeoutMs === undefined ? [] : ([timeoutMs] as const)),
+        timeoutMs ?? 15_000,
+        batch,
       )
       embedders.set(provider.id, embedder)
       return embedder
@@ -925,6 +933,26 @@ export class HttpEmbedder implements Embedder {
   async embed(texts: readonly string[]): Promise<readonly (readonly number[])[]> {
     if (texts.length === 0) return []
 
+    // Bounded, because an endpoint refuses above its own limit rather than
+    // splitting for you — TEI answers 413 above 32 by default. On this path
+    // that is a search, and one query is one text, so the split almost never
+    // fires here; it fires on the reindex path, which comes through the same
+    // client with a layer's worth of chunks.
+    const vectors = await embedInBatches(texts, this.batch, (input) => this.send(input))
+
+    return vectors.map((v, i) => {
+      if (!Array.isArray(v) || v.length !== this.dimensions || !v.every((n) => typeof n === 'number')) {
+        throw new Error(
+          `vector ${i} is not ${this.dimensions} numbers; the endpoint and ` +
+            'NACRE_DEFAULT_EMBEDDING_DIM disagree, and the index would be built wrong',
+        )
+      }
+      return v as number[]
+    })
+  }
+
+  /** One request. The bound and the count checks are `embedInBatches`'. */
+  private async send(texts: readonly string[]): Promise<readonly unknown[]> {
     // On the search path, so much tighter than the worker's: a caller is
     // waiting. Without any bound a wedged embedder held every search open for
     // undici's 300 s default, which exhausts the connection pool long before
@@ -942,24 +970,7 @@ export class HttpEmbedder implements Embedder {
     }
 
     const body = (await response.json()) as { data?: { embedding?: unknown }[] }
-    const vectors = (body.data ?? []).map((d) => d.embedding)
-
-    if (vectors.length !== texts.length) {
-      // Same reason as in the ingest pipeline: a short or reordered batch
-      // attaches the wrong vector to the wrong text, and nothing downstream can
-      // tell.
-      throw new Error(`the embedding endpoint returned ${vectors.length} vectors for ${texts.length} inputs`)
-    }
-
-    return vectors.map((v, i) => {
-      if (!Array.isArray(v) || v.length !== this.dimensions || !v.every((n) => typeof n === 'number')) {
-        throw new Error(
-          `vector ${i} is not ${this.dimensions} numbers; the endpoint and ` +
-            'NACRE_DEFAULT_EMBEDDING_DIM disagree, and the index would be built wrong',
-        )
-      }
-      return v as number[]
-    })
+    return (body.data ?? []).map((d) => d.embedding)
   }
 }
 

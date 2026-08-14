@@ -19,6 +19,8 @@ import { createHash, createPrivateKey, createPublicKey, type KeyObject } from 'n
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
+import { DEFAULT_EMBED_BATCH } from './endpoint.js'
+
 export interface Config {
   readonly env: 'development' | 'production'
   readonly canonicalUrl: string
@@ -151,6 +153,15 @@ export interface Config {
   readonly embeddingEndpoint: string | undefined
   readonly embeddingModel: string | undefined
   readonly embeddingDim: number
+  /**
+   * How many chunks go to an embedding endpoint in one request.
+   *
+   * Defaults to Text Embeddings Inference's own `--max-client-batch-size`,
+   * because TEI is what every Compose profile here starts and 413 is what it
+   * answers above that. A hosted vendor accepts far more and can be told so;
+   * nothing is gained by guessing on its behalf.
+   */
+  readonly embedBatch: number
   readonly parserEndpoint: string
   readonly rerankerEndpoint: string | undefined
   readonly rerankerEnabled: boolean
@@ -923,6 +934,7 @@ export function loadConfig(env: Env = process.env): Config {
     embeddingEndpoint: r.url('NACRE_DEFAULT_EMBEDDING_ENDPOINT', { required: false }) || undefined,
     embeddingModel: r.optional('NACRE_DEFAULT_EMBEDDING_MODEL'),
     embeddingDim: r.number('NACRE_DEFAULT_EMBEDDING_DIM', 1024, { min: 8, max: 16384 }),
+    embedBatch: r.number('NACRE_EMBED_BATCH', DEFAULT_EMBED_BATCH, { min: 1, max: 2048 }),
     parserEndpoint: r.url('NACRE_PARSER_ENDPOINT'),
     rerankerEndpoint: r.optional('NACRE_RERANKER_ENDPOINT'),
     // False, and it was true. `minimal` has no reranker by definition — the

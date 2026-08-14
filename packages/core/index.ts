@@ -88,7 +88,13 @@ export type { MultipartPart } from './multipart.js'
 export type { QueryAudit } from './audit.js'
 export { configureLogging, createLogger, logger } from './logging.js'
 export type { Logger, LoggerOptions, LogFormat, LogLevel } from './logging.js'
-export { endpointReason, endpointUrl, modelEndpointRefused } from './endpoint.js'
+export {
+  DEFAULT_EMBED_BATCH,
+  embedInBatches,
+  endpointReason,
+  endpointUrl,
+  modelEndpointRefused,
+} from './endpoint.js'
 export { documentKey, S3, S3Error } from './s3.js'
 export type { S3Options } from './s3.js'
 export type { Hit, SearchRequest, VectorStoreOptions } from './vector/search.js'

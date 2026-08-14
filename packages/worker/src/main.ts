@@ -7,6 +7,7 @@ import {
   ConfigError,
   createPool,
   endpointReason,
+  embedInBatches,
   endpointUrl,
   modelEndpointRefused,
   installGuards,
@@ -387,7 +388,17 @@ async function main(): Promise<void> {
     const provider = rows[0]
     if (provider === undefined) throw new Error(`no embedding provider ${providerId}`)
 
-    const embed = async (texts: readonly string[]) => {
+    // Bounded, and the bound is the endpoint's rather than a guess: TEI answers
+    // **413** above `--max-client-batch-size`, which defaults to 32, and this
+    // used to send a document's whole chunk list in one request. At 800
+    // characters a chunk that is roughly 22 KB of text, past which every
+    // document failed permanently — nothing retries `failed` — while the layer
+    // went on answering searches with whatever had indexed. See
+    // `embedInBatches`.
+    const embed = async (texts: readonly string[]) =>
+      embedInBatches(texts, config.embedBatch, (batch) => sendBatch(batch))
+
+    const sendBatch = async (texts: readonly string[]) => {
       const endpoint = endpointUrl(provider.endpoint, 'embeddings')
 
       let response: Response

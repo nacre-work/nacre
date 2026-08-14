@@ -127,3 +127,77 @@ export async function endpointReason(response: Response): Promise<string | undef
   if (line === '') return undefined
   return line.length > REASON_LIMIT ? `${line.slice(0, REASON_LIMIT)}…` : line
 }
+
+/**
+ * How many texts go to an embedding endpoint in one request.
+ *
+ * **32, because that is what Text Embeddings Inference accepts by default** —
+ * `--max-client-batch-size` — and TEI is the embedder this project's own
+ * Compose profiles start. Not a guess at a good throughput number: a bound the
+ * ecosystem's most common self-hosted server actually enforces.
+ */
+export const DEFAULT_EMBED_BATCH = 32
+
+/**
+ * Send texts to an embedding endpoint in bounded batches.
+ *
+ * Both clients used to send a document's whole chunk list as one `input` array
+ * with no bound of their own, and a document is chunked at 800 characters with
+ * 120 of overlap — so anything past roughly 22 KB of text crossed TEI's default
+ * of 32 and came back **413**. The worker marks that document `failed`, nothing
+ * retries that status, and the only visible sign is a count in the admin UI
+ * beside a larger count. A layer where half the documents never indexed answers
+ * searches perfectly well with the other half; the retrieval is just quietly
+ * worse.
+ *
+ * Found on a running stand with twenty-six failures out of fifty, all of them
+ * the same line:
+ *
+ *     the embedding endpoint at http://embedder/embeddings answered 413
+ *
+ * **Sequential, not parallel.** The endpoint is the bottleneck and is usually a
+ * CPU container sized for one caller; issuing every batch at once would turn a
+ * large document into a load spike against the thing already struggling, and
+ * the worker is deliberately serial for the same reason. Slower and finishing
+ * beats faster and refused.
+ *
+ * The count is asserted at the end as well as per batch, because the failure
+ * this guards against is silent: a short or reordered result attaches the wrong
+ * vector to the wrong text and nothing downstream can tell.
+ */
+export async function embedInBatches<T>(
+  texts: readonly string[],
+  limit: number,
+  send: (batch: readonly string[]) => Promise<readonly T[]>,
+): Promise<readonly T[]> {
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new Error(`the embedding batch limit must be a positive integer, got ${String(limit)}`)
+  }
+  if (texts.length === 0) return []
+
+  // Deliberately no `texts.length <= limit` shortcut. One existed, returning
+  // `send(texts)` directly, and it was a second path that had to agree with
+  // this one and did not: it skipped the count check below, so an endpoint
+  // answering two inputs with one vector misaligned the whole document instead
+  // of raising — on the single-batch case, which is almost every call. Caught
+  // by a test that predates the batching, which is the argument for one path.
+  const out: T[] = []
+  for (let at = 0; at < texts.length; at += limit) {
+    const batch = texts.slice(at, at + limit)
+    const vectors = await send(batch)
+    if (vectors.length !== batch.length) {
+      throw new Error(
+        `the embedding endpoint returned ${String(vectors.length)} vectors for ` +
+          `${String(batch.length)} inputs in a batch of ${String(texts.length)}`,
+      )
+    }
+    out.push(...vectors)
+  }
+
+  if (out.length !== texts.length) {
+    throw new Error(
+      `batching produced ${String(out.length)} vectors for ${String(texts.length)} inputs`,
+    )
+  }
+  return out
+}
