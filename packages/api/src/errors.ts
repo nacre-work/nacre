@@ -93,6 +93,34 @@ export function forbidden(instance: string, requestId: string, detail: string): 
   })
 }
 
+/**
+ * The refusal every path under `/v1/users/{id}` gives for a `platform_admin`.
+ *
+ * `403` and not `404`, which is the narrow case `forbidden` above exists for:
+ * the caller is an `org_admin`, `GET /v1/users` lists this person with their
+ * role, and the request names an id they just read off it. Invariant 4 is about
+ * invisibility and nothing here is invisible — answering `404` would be lying
+ * to somebody looking straight at the row.
+ *
+ * Not `409` either, which is what the last-administrator guard beside it
+ * returns. That refusal is about the organization's state and goes away once
+ * there is a second administrator; this one never does. No state makes an
+ * endpoint scoped to one organization the right place to change a role that
+ * spans all of them.
+ *
+ * One wording for all four spellings — demote, disable, delete, reset the
+ * password — because they are one refusal.
+ */
+export function notAdministeredHere(instance: string, requestId: string): Problem {
+  return forbidden(
+    instance,
+    requestId,
+    "This user is a 'platform_admin'. That role administers the installation rather than " +
+      'this organization, so it is not issued, revoked, disabled or reset through an endpoint ' +
+      'scoped to one — in either direction.',
+  )
+}
+
 export function badRequest(instance: string, requestId: string, detail: string): Problem {
   return new Problem({
     type: uri('bad-request'),

@@ -143,8 +143,12 @@ when('users and groups, against the database', () => {
   it('resetting a password replaces it, and the old one stops verifying', async () => {
     const created = (await users.create(admin, 'reset@example.test', 'member'))!
     const next = await users.resetPassword(admin, created.user.id)
-    expect(next).toBeDefined()
-    expect(next).not.toBe(created.password)
+    // A result rather than `string | undefined`, because absence now has two
+    // meanings — no such user here, and a user this surface may not act on.
+    expect(next).not.toBe('no-user')
+    expect(next).not.toBe('platform-admin')
+    const password = (next as { password: string }).password
+    expect(password).not.toBe(created.password)
 
     const stored = await withOrg(
       pool,
@@ -159,7 +163,7 @@ when('users and groups, against the database', () => {
       { role: 'nacre_app' },
     )
 
-    expect(await verifyPassword(next as string, stored)).toBeTruthy()
+    expect(await verifyPassword(password, stored)).toBeTruthy()
     expect(await verifyPassword(created.password, stored)).toBeFalsy()
   })
 
@@ -206,7 +210,9 @@ when('users and groups, against the database', () => {
     const asOther = { ...admin, orgId: OTHER }
 
     expect(await users.update(asOther, created.user.id, { disabled: true })).toBe('no-user')
-    expect(await users.resetPassword(asOther, created.user.id)).toBeUndefined()
+    // `no-user` and not `platform-admin`: the guard reads a row the other
+    // organization cannot see at all, so it never gets as far as a role.
+    expect(await users.resetPassword(asOther, created.user.id)).toBe('no-user')
     expect((await users.list(asOther)).items).toHaveLength(0)
   })
 

@@ -315,6 +315,41 @@ one. The model already expresses that, and expresses it better — `admin` on a
 which a single column cannot say. A role would have been a second spelling of
 one thing, with the resolver deciding which wins.
 
+### A `platform_admin` is not administered from inside an organization
+
+Rule 2 says that role administers organizations and reads no documents. The
+converse is part of it and had been left implicit: **an organization does not
+administer that role.**
+
+`POST /v1/users` refuses to *issue* it, because `/v1/users` is scoped to one
+organization and the role spans all of them — so minting one there would be an
+escalation out of the scope doing the minting. The same argument holds in the
+other direction with the same force, and for a long time nothing enforced it: an
+`org_admin` could take a platform administrator who happened to have their
+account in that organization and demote them, disable them, delete them, or
+**reset their password**. The last is not a demotion. It returns the plaintext,
+so it is a takeover of the account that administers the installation, performed
+by somebody who administers one tenant.
+
+So every path under `/v1/users/{id}` reads the target's role before it writes,
+and refuses one holding `platform_admin` — `403`, in one wording, on all four.
+`403` and not `404` because `GET /v1/users` lists that person with their role:
+the caller is looking straight at the row, and rule 4 of the invariants is about
+invisibility. `403` and not `409` because the last-administrator refusal beside
+it is about the organization's state and goes away once there is a second
+administrator, while this one never does.
+
+Nobody who reaches those handlers is a platform administrator themselves —
+`administers(auth)` is `org_admin` and nothing else — so there is no
+peer-administration case, and the refusal has no branch on the caller. It is
+about what the endpoint is scoped to.
+
+Four spellings with nothing that knew there were four is the shape this
+repository keeps being bitten by, so the enforcement is one helper every write
+goes through and `scripts/check-platform-admin-target.mjs` refuses a write that
+does not. What issues and revokes the role instead is a command holding the
+database credentials, outside this surface entirely.
+
 ## Delegated authority
 
 OAuth exists so that a *person* can let an application act for them. Until this

@@ -1943,6 +1943,12 @@ paths:
         issuable here: it administers the installation and spans tenants in the
         multi-tenancy module, so minting one from an endpoint scoped to a single
         organization would be an escalation out of it.
+
+
+        The same rule holds in the other direction, on the operations below: a
+        user who already holds `platform_admin` cannot be demoted, disabled,
+        deleted or have their password reset from here either. See the `403` on
+        each of them.
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
       requestBody:
@@ -2008,6 +2014,20 @@ paths:
             Not a 404: the caller is looking straight at this user, so the
             answer is about the organization's state rather than about what they
             can see.
+        '403':
+          description: >
+            The target holds `platform_admin`. That role administers the
+            installation rather than this organization, so it is not issued,
+            revoked, disabled or reset through an endpoint scoped to one — in
+            either direction. `POST /v1/users` has always refused to *set* it
+            here for the same reason.
+
+
+            Deliberately not a 404: `GET /v1/users` lists this person with their
+            role, so the caller is looking straight at the row and there is
+            nothing invisible for invariant 4 to protect. Not a 409 either — the
+            last-administrator refusal beside it goes away once there is a
+            second administrator, and this one never does.
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
     delete:
       summary: Disable a user. The row is kept.
@@ -2029,6 +2049,20 @@ paths:
       responses:
         '204': { description: Disabled }
         '409': { description: 'This is the only active org_admin — promote another first' }
+        '403':
+          description: >
+            The target holds `platform_admin`. That role administers the
+            installation rather than this organization, so it is not issued,
+            revoked, disabled or reset through an endpoint scoped to one — in
+            either direction. `POST /v1/users` has always refused to *set* it
+            here for the same reason.
+
+
+            Deliberately not a 404: `GET /v1/users` lists this person with their
+            role, so the caller is looking straight at the row and there is
+            nothing invisible for invariant 4 to protect. Not a 409 either — the
+            last-administrator refusal beside it goes away once there is a
+            second administrator, and this one never does.
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /users/{id}/password:
     post:
@@ -2054,6 +2088,20 @@ paths:
                 required: [password]
                 properties:
                   password: { type: string }
+        '403':
+          description: >
+            The target holds `platform_admin`. That role administers the
+            installation rather than this organization, so it is not issued,
+            revoked, disabled or reset through an endpoint scoped to one — in
+            either direction. `POST /v1/users` has always refused to *set* it
+            here for the same reason.
+
+
+            Deliberately not a 404: `GET /v1/users` lists this person with their
+            role, so the caller is looking straight at the row and there is
+            nothing invisible for invariant 4 to protect. Not a 409 either — the
+            last-administrator refusal beside it goes away once there is a
+            second administrator, and this one never does.
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /groups:
     get:

@@ -1,5 +1,5 @@
 import { generatePassword, hashPassword, withOrg } from '@nacre.work/core'
-import type { Pool } from 'pg'
+import type { Pool, PoolClient } from 'pg'
 
 import type { AuthContext } from './auth.js'
 import { pageOf, type Page, type PageResult } from './pagination.js'
@@ -78,14 +78,26 @@ export interface Users {
    * `last-admin` refuses a change that would leave the organization with no
    * active `org_admin`. Not paternalism — every endpoint that could appoint one
    * is behind the role that was just given up, so the remedy would be SQL.
+   *
+   * `platform-admin` refuses a change to somebody holding that role. See
+   * `onTargetUser`.
    */
   update(
     auth: AuthContext,
     id: string,
     change: { role?: 'org_admin' | 'member'; disabled?: boolean },
-  ): Promise<'updated' | 'last-admin' | 'no-user'>
-  /** The new password, shown once. `undefined` when there is no such user here. */
-  resetPassword(auth: AuthContext, id: string): Promise<string | undefined>
+  ): Promise<'updated' | 'last-admin' | 'platform-admin' | 'no-user'>
+  /**
+   * The new password, shown once.
+   *
+   * A result rather than `string | undefined`, because there are now two ways
+   * for it to be absent and they are different answers: no such user here, and
+   * a user this endpoint may not act on.
+   */
+  resetPassword(
+    auth: AuthContext,
+    id: string,
+  ): Promise<{ password: string } | 'platform-admin' | 'no-user'>
 }
 
 export interface GroupView {
@@ -249,11 +261,45 @@ export class PostgresUsers implements Users {
     )
   }
 
-  async update(
+  /**
+   * Every write to somebody else's row goes through here, and it is the only
+   * place that decides whether the row may be written at all.
+   *
+   * **A `platform_admin` is not administered from inside an organization.**
+   * `POST /v1/users` and `PATCH /v1/users/{id}` have always refused to *set*
+   * that role, on the argument that this surface is scoped to one organization
+   * and the role spans all of them — so issuing one here would be an escalation
+   * out of the scope doing the issuing. Neither looked at the role it was
+   * *replacing*, and the same argument applies with the same force in that
+   * direction: an `org_admin` could demote a platform administrator who happens
+   * to live in their organization, disable them, or — worst — reset their
+   * password and read the plaintext out of the response, which is not a
+   * demotion but a takeover of the account that administers the installation.
+   * All three from an endpoint scoped to one tenant.
+   *
+   * Nobody reaching this code is a platform administrator themselves:
+   * `administers(auth)` is `org_admin` and nothing else, so there is no
+   * peer-administration case to carve out. The refusal is about what the
+   * endpoint is scoped to rather than about who is calling, which is why it has
+   * no branch on the caller.
+   *
+   * A guard and not three guards. Demote, disable, delete and reset-password
+   * are four spellings of "act on this person", and four checks with nothing
+   * knowing there are four is the shape this repository keeps being bitten by.
+   * `check-platform-admin-target.mjs` is what knows.
+   *
+   * `FOR UPDATE` for the same reason the last-administrator count needs it: the
+   * decision and the write have to see one state, or a promotion landing
+   * between them is a guard that read a role nobody has any more.
+   */
+  private async onTargetUser<T>(
     auth: AuthContext,
     id: string,
-    change: { role?: 'org_admin' | 'member'; disabled?: boolean },
-  ): Promise<'updated' | 'last-admin' | 'no-user'> {
+    fn: (
+      client: PoolClient,
+      current: { role: string; disabledAt: Date | null },
+    ) => Promise<T>,
+  ): Promise<T | 'platform-admin' | 'no-user'> {
     if (!UUID.test(id)) return 'no-user'
 
     return withOrg(
@@ -266,10 +312,26 @@ export class PostgresUsers implements Users {
         )
         const current = rows[0]
         if (current === undefined) return 'no-user'
+        if (current.role === 'platform_admin') return 'platform-admin'
 
+        return fn(client, { role: current.role, disabledAt: current.disabled_at })
+      },
+      this.scope,
+    )
+  }
+
+  async update(
+    auth: AuthContext,
+    id: string,
+    change: { role?: 'org_admin' | 'member'; disabled?: boolean },
+  ): Promise<'updated' | 'last-admin' | 'platform-admin' | 'no-user'> {
+    return this.onTargetUser(
+      auth,
+      id,
+      async (client, current): Promise<'updated' | 'last-admin' | 'no-user'> => {
         const role = change.role ?? current.role
-        const disabled = change.disabled ?? current.disabled_at !== null
-        const wasActiveAdmin = current.role === 'org_admin' && current.disabled_at === null
+        const disabled = change.disabled ?? current.disabledAt !== null
+        const wasActiveAdmin = current.role === 'org_admin' && current.disabledAt === null
         const staysActiveAdmin = role === 'org_admin' && !disabled
 
         // Counted in the same transaction, and only when this change would
@@ -301,31 +363,31 @@ export class PostgresUsers implements Users {
         )
         return (rowCount ?? 0) > 0 ? 'updated' : 'no-user'
       },
-      this.scope,
     )
   }
 
-  async resetPassword(auth: AuthContext, id: string): Promise<string | undefined> {
-    if (!UUID.test(id)) return undefined
-
+  async resetPassword(
+    auth: AuthContext,
+    id: string,
+  ): Promise<{ password: string } | 'platform-admin' | 'no-user'> {
     const password = generatePassword()
+    // Before the transaction on purpose: scrypt at OWASP's minimum takes long
+    // enough that holding a connection across it is a connection spent on
+    // arithmetic. It costs a hash on a request that turns out to be refused,
+    // which is the right way round — the alternative is the guard reading a
+    // role while the row is not locked.
     const passwordHash = await hashPassword(password)
 
-    return withOrg(
-      this.pool,
-      auth.orgId,
-      async (client) => {
-        // A disabled account is deliberately still resettable: re-enabling and
-        // resetting are two decisions, and refusing here would make the second
-        // depend on the first in a way nothing asked for.
-        const { rowCount } = await client.query(
-          'UPDATE users SET password_hash = $3 WHERE org_id = $1 AND id = $2',
-          [auth.orgId, id, passwordHash],
-        )
-        return (rowCount ?? 0) > 0 ? password : undefined
-      },
-      this.scope,
-    )
+    return this.onTargetUser(auth, id, async (client): Promise<{ password: string } | 'no-user'> => {
+      // A disabled account is deliberately still resettable: re-enabling and
+      // resetting are two decisions, and refusing here would make the second
+      // depend on the first in a way nothing asked for.
+      const { rowCount } = await client.query(
+        'UPDATE users SET password_hash = $3 WHERE org_id = $1 AND id = $2',
+        [auth.orgId, id, passwordHash],
+      )
+      return (rowCount ?? 0) > 0 ? { password } : 'no-user'
+    })
   }
 }
 

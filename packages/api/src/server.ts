@@ -46,7 +46,7 @@ import {
   type AuthContext,
   type VerifyOptions,
 } from './auth.js'
-import { badRequest, internal, notFound, Problem } from './errors.js'
+import { badRequest, internal, notAdministeredHere, notFound, Problem } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
 import type { Login, Tokens } from './login.js'
@@ -4378,6 +4378,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           requestId,
         })
 
+        if (disabled === 'platform-admin') {
+          const problem = notAdministeredHere(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
         if (disabled === 'last-admin') {
           const problem = new Problem({
             type: 'https://nacre.work/errors/conflict',
@@ -4452,6 +4458,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           requestId,
         })
 
+        if (changed === 'platform-admin') {
+          const problem = notAdministeredHere(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
         if (changed === 'last-admin') {
           // 409 rather than 404: the caller is looking straight at this user —
           // it is their own account or one they just listed — so the answer is
@@ -4485,20 +4497,32 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     const passwordMatch = /^\/v1\/users\/([^/]+)\/password$/.exec(instance)
     if (req.method === 'POST' && passwordMatch && options.users !== undefined) {
       const id = decodeURIComponent(passwordMatch[1] as string)
-      const password = await options.users.resetPassword(auth, id)
+      const reset = await options.users.resetPassword(auth, id)
+      const refused = typeof reset === 'string' ? reset : undefined
 
       await options.audit.write({
         orgId: auth.orgId,
         actor: `${auth.principal.type}:${auth.principal.id}`,
         action: 'reset_password',
-        result: password === undefined ? 'deny' : 'allow',
+        result: refused === undefined ? 'allow' : 'deny',
         // That it happened and to whom. Never the value.
         target: { user_id: id },
-        detail: {},
+        detail: refused === undefined ? {} : { reason: refused },
         requestId,
       })
 
-      if (password === undefined) {
+      // The refusal that matters most on this route, and the one the whole
+      // guard was written for. Demoting a platform administrator takes the role
+      // away; resetting their password hands the caller the plaintext in the
+      // response and lets them sign in as the account that administers the
+      // installation.
+      if (reset === 'platform-admin') {
+        const problem = notAdministeredHere(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      if (reset === 'no-user') {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -4507,7 +4531,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // Generated rather than chosen, for the reason `init` gives: an argument
       // ends up in a shell history, and a password an administrator picked is
       // one they know. This is the only time it exists outside the process.
-      send(res, 200, { password }, requestId)
+      send(res, 200, { password: reset.password }, requestId)
       return
     }
 
