@@ -36,6 +36,7 @@ NACRE_PRESIGN_TTL=900
 NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://embedder:80
 NACRE_DEFAULT_EMBEDDING_MODEL=bge-m3
 NACRE_DEFAULT_EMBEDDING_DIM=1024
+NACRE_EMBED_BATCH=32                  # chunks per request; TEI refuses above its own limit
 NACRE_RERANKER_ENDPOINT=http://reranker:80
 NACRE_RERANKER_ENABLED=false          # true needs an endpoint; minimal has none
 NACRE_RERANK_CANDIDATES=50            # fetched from the index, cut to top_k after scoring
@@ -624,6 +625,39 @@ which is the one place in this repository where the answer is known rather than
 chosen: that stack runs a single Qdrant container, and both bullets above say
 what a number above `1` does to it. The chart is where they belong, and
 `nacre-infra` carries them as `qdrant.shards` and `qdrant.replicationFactor`.
+
+### `NACRE_EMBED_BATCH`
+
+**How many chunks go to an embedding endpoint in one request. Default 32.**
+
+An embedding endpoint does not split a batch that is too large; it refuses it.
+Text Embeddings Inference — the embedder every Compose profile here starts —
+takes `--max-client-batch-size`, which defaults to **32**, and answers `413`
+above it. So the default is that number rather than a guess at good throughput.
+
+Getting this wrong is quiet, which is why it has a section. A document is
+chunked at 800 characters with 120 of overlap, so anything past roughly 22 KB of
+text produces more than 32 chunks. Both embedding clients used to send the whole
+list in one request, and the result was:
+
+```
+the embedding endpoint at http://embedder/embeddings answered 413
+```
+
+with the document left in `failed` — a status nothing retries. **The layer goes
+on answering searches** out of whatever did index, so retrieval is silently
+worse and the only sign is a count beside a larger count in the admin UI. Found
+that way, at twenty-six failures out of fifty.
+
+Raise it where the endpoint accepts more: OpenAI takes 2048, and the embedding
+adapter passes a batch through to whichever vendor is routed. Lowering it below
+the endpoint's limit is never wrong, only slower — batches are sent one at a
+time, because the endpoint is the bottleneck and is usually a CPU container
+sized for one caller.
+
+If you raise the server's limit instead, raise it *above* what the client sends
+rather than to the same number. A server that accepts more than any client sends
+costs nothing.
 
 ### `NACRE_PARSER_ALLOW_PRIVATE_URLS`
 

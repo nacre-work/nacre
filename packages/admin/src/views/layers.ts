@@ -131,7 +131,26 @@ function table(layers: readonly Layer[], root: HTMLElement): HTMLElement {
           // the count is of rows and stays right, but every search over it
           // answers nothing and nothing on the screen said so. `failed` is the
           // one status that waits for a person, so it is the one worth a mark.
-          l.failedCount > 0 ? h('span', { class: 'tag tag-off' }, `${String(l.failedCount)} failed`) : null,
+          //
+          // **"26 failed" beside "50" does not say whether it is 26 of the 50
+          // or 26 more**, and it is 26 of them — `failed_count` is the same
+          // count with one more predicate. Somebody read this panel and had to
+          // open the query to find out, which is the whole job of a number on a
+          // screen not being done. It says "of them" now, and the title carries
+          // the sentence a tooltip is for.
+          l.failedCount > 0
+            ? h(
+                'span',
+                {
+                  class: 'tag tag-off',
+                  title:
+                    `${String(l.failedCount)} of the ${String(l.documentCount)} documents in ` +
+                    'this layer failed to index and are not searchable. Nothing retries that ' +
+                    'status — re-ingest them.',
+                },
+                `${String(l.failedCount)} of them failed`,
+              )
+            : null,
         ),
         h('td', {}, shortId(l.id)),
         h('td', { class: 'row-end' },

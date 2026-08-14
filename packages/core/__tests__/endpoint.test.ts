@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { endpointReason, endpointUrl, modelEndpointRefused } from '../endpoint.js'
+import {
+  embedInBatches,
+  endpointReason,
+  endpointUrl,
+  modelEndpointRefused,
+} from '../endpoint.js'
 
 /**
  * What an operator is told when a model endpoint refuses.
@@ -168,4 +173,89 @@ describe('endpointReason', () => {
       expect(await endpointReason(answering(body))).toBeUndefined()
     })
   }
+})
+
+/**
+ * The batch an embedding endpoint is actually sent.
+ *
+ * Both clients used to send a document's whole chunk list as one `input` array.
+ * A chunk is 800 characters with 120 of overlap, so past roughly 22 KB of text
+ * that crossed Text Embeddings Inference's default `--max-client-batch-size` of
+ * 32 and came back 413 — and the worker marks such a document `failed`, which
+ * nothing retries. Twenty-six documents out of fifty on a running stand, with
+ * the layer still answering searches out of the other twenty-four.
+ */
+describe('embedInBatches', () => {
+  const vectorsFor = (batch: readonly string[]) => batch.map((t) => [t.length])
+
+  it('sends one request when the input fits', async () => {
+    const sent: number[] = []
+    const out = await embedInBatches(['a', 'b'], 32, (batch) => {
+      sent.push(batch.length)
+      return Promise.resolve(vectorsFor(batch))
+    })
+    expect(sent).toEqual([2])
+    expect(out).toEqual([[1], [1]])
+  })
+
+  it('splits at the limit, and no request exceeds it', async () => {
+    const texts = Array.from({ length: 70 }, (_, i) => 'x'.repeat(i + 1))
+    const sent: number[] = []
+    const out = await embedInBatches(texts, 32, (batch) => {
+      sent.push(batch.length)
+      return Promise.resolve(vectorsFor(batch))
+    })
+    expect(sent).toEqual([32, 32, 6])
+    expect(Math.max(...sent)).toBeLessThanOrEqual(32)
+    expect(out).toHaveLength(70)
+  })
+
+  /**
+   * The order is the whole point. A vector attached to the wrong text is a
+   * document that indexes cleanly and answers the wrong questions, and nothing
+   * downstream can tell — which is why the batches are concatenated in order
+   * and never raced.
+   */
+  it('keeps every vector with its own text across batches', async () => {
+    const texts = Array.from({ length: 100 }, (_, i) => 'x'.repeat(i + 1))
+    const out = await embedInBatches(texts, 7, (batch) => Promise.resolve(vectorsFor(batch)))
+    expect(out).toEqual(texts.map((t) => [t.length]))
+  })
+
+  it('runs the batches one at a time, because the endpoint is the bottleneck', async () => {
+    let inFlight = 0
+    let most = 0
+    const texts = Array.from({ length: 50 }, () => 'x')
+    await embedInBatches(texts, 10, async (batch) => {
+      inFlight += 1
+      most = Math.max(most, inFlight)
+      await Promise.resolve()
+      inFlight -= 1
+      return vectorsFor(batch)
+    })
+    expect(most).toBe(1)
+  })
+
+  it('refuses a short batch rather than returning a misaligned result', async () => {
+    const texts = Array.from({ length: 40 }, () => 'x')
+    await expect(
+      embedInBatches(texts, 32, (batch) => Promise.resolve(vectorsFor(batch).slice(1))),
+    ).rejects.toThrow(/returned 31 vectors for 32 inputs/)
+  })
+
+  it('refuses a limit that is not a positive integer', async () => {
+    await expect(embedInBatches(['a'], 0, () => Promise.resolve([[0]]))).rejects.toThrow(
+      /positive integer/,
+    )
+  })
+
+  it('sends nothing at all for no texts', async () => {
+    let called = false
+    const out = await embedInBatches([], 32, () => {
+      called = true
+      return Promise.resolve([])
+    })
+    expect(called).toBe(false)
+    expect(out).toEqual([])
+  })
 })
