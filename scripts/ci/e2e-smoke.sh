@@ -156,6 +156,63 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
+# ── a document larger than one embedding batch ─────────────────────────────
+#
+# The defect this covers failed twenty-six documents out of fifty on a running
+# stand and was green in every suite, including this one — because the stub
+# embedder accepted any batch and the real endpoint does not. Both clients sent
+# a document's whole chunk list in one request; TEI answers 413 above
+# `--max-client-batch-size`, which defaults to 32; the worker marks that
+# document `failed`, which nothing retries; and the layer goes on answering
+# searches out of whatever did index, so nothing looks wrong.
+#
+# The stub enforces 32 now, so this asserts the client splits. A phrase near the
+# end of the text is what proves the *last* batch came back and came back in
+# order — a fix that dropped or reordered a batch would still reach `indexed`.
+BIG_TAIL="Zanzibar telemetry rotates on the fourteenth"
+say "ingest a document larger than one embedding batch"
+python3 - "$BIG_TAIL" > /tmp/big.txt <<'PYEOF'
+import sys
+tail = sys.argv[1]
+para = ("Retrieval quality depends on the chunk boundaries as much as on the model. "
+        "A permission filter inside the index traversal returns k permitted results. ")
+# ~60 KB, which is far more than 32 chunks at 800 characters with 120 of overlap.
+sys.stdout.write("# A long document\n\n" + para * 380 + "\n\n" + tail + "\n")
+PYEOF
+BIG_BYTES=$(wc -c < /tmp/big.txt)
+say "  ${BIG_BYTES} bytes"
+BIG_JOB=$(python3 - "$TOKEN" "$API" < /tmp/big.txt <<'PYEOF'
+import json, sys, urllib.request
+token, api = sys.argv[1], sys.argv[2]
+body = json.dumps({
+    "layer": "handbook", "external_id": "long-document",
+    "title": "A long document", "content": sys.stdin.read(),
+}).encode()
+req = urllib.request.Request(f"{api}/v1/documents", data=body, method="POST",
+    headers={"authorization": f"Bearer {token}", "content-type": "application/json"})
+print(json.load(urllib.request.urlopen(req, timeout=60))["job_id"])
+PYEOF
+)
+[ -n "$BIG_JOB" ] || die "the large document was not accepted"
+say "  job ${BIG_JOB}"
+for i in $(seq 1 90); do
+  STATUS=$(req GET "/v1/jobs/${BIG_JOB}" "$TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  case "$STATUS" in
+    indexed) break ;;
+    failed)
+      REASON=$(req GET "/v1/jobs/${BIG_JOB}" "$TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',''))")
+      die "a document larger than one embedding batch failed to index: ${REASON}" ;;
+  esac
+  if [ "$i" = 90 ]; then die "the large document never reached indexed (last status ${STATUS})"; fi
+  sleep 2
+done
+say "  indexed, so the client split the batch rather than being refused"
+
+BODY=$(req POST /v1/search "$TOKEN" '{"query":"Zanzibar telemetry rotates","top_k":5}')
+printf '%s' "$BODY" | grep -qF "Zanzibar" \
+  || die "the tail of the large document is not searchable, so a batch was dropped or reordered: ${BODY}"
+say "  its last batch came back too"
+
 # ── a PDF, all the way through ─────────────────────────────────────────────
 # The one path no unit test can prove: the edge accepts the bytes, the bucket
 # holds them, the worker fetches them back and hands them to the sidecar as a
