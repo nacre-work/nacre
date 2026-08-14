@@ -169,6 +169,39 @@ if (undocumentedSidecar.length > 0) {
   )
 }
 
+/**
+ * **The shipped shell is a reader too**, and this is the third time that
+ * sentence has had to be written.
+ *
+ * The check knew about TypeScript, then learned about the Python sidecars the
+ * day a second one existed — and both times the gap was a variable a shipped
+ * container read while `docs/config.md` said nothing. `docker/demo/seed.sh` is
+ * baked into the image at `/demo` and is what `--profile demo` runs; every
+ * `NACRE_` name in it is one an operator can set and could not look up.
+ *
+ * Matched on the name alone, for the reason the sidecar half already gives: a
+ * shell script has no `r.required('X')` shape to key on, and a `NACRE_` name
+ * written anywhere in one is a name somebody may set.
+ */
+const shellFiles = ['docker/demo/seed.sh']
+const shellRead = new Set()
+for (const file of shellFiles) {
+  for (const name of readFileSync(file, 'utf8').matchAll(/NACRE_[A-Z0-9_]+/g)) {
+    shellRead.add(name[0])
+  }
+}
+const undocumentedShell = [...shellRead].filter((v) => !documented.has(v)).sort()
+if (undocumentedShell.length > 0) {
+  console.error(
+    `::error::${undocumentedShell.length} variable(s) read by shipped shell but not in ${DOCS}: ` +
+      `${undocumentedShell.join(', ')}. ${shellFiles.join(', ')} ships in the image and is what ` +
+      '`--profile demo` runs. Document it, or stop reading it.',
+  )
+  failed = true
+} else {
+  console.log(`${DOCS}: documents all ${shellRead.size} variable(s) the shipped shell reads`)
+}
+
 const seeded = namesIn(readFileSync(ENV_EXAMPLE, 'utf8'))
 const undocumentedSeeds = [...seeded].filter((v) => !documented.has(v)).sort()
 if (undocumentedSeeds.length > 0) {

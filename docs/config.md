@@ -970,6 +970,16 @@ It is a demonstration and not a deployment: the model is English-only, the
 corpus is fiction, and resetting is `--profile demo down -v`. An installation
 picks its own embedder, which is what every other profile is about.
 
+The seed reads two variables of its own, and they are here because
+`docker/demo/seed.sh` ships inside the image — `lint:config` reads it now for
+the same reason it learned to read the Python sidecars, and found one of these
+undocumented on the day it was taught to.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `NACRE_DEMO_EMAIL_DOMAIN` | `demo.local` | the domain the seeded identities live at, so they read as `engineer@demo.local`. A public stand that owns a domain sets it to that; a local demo has no use for one, and `.local` is obviously not deliverable, which is right for invented people. A domain and never a full address — the local parts are the seed's, and letting a deployment set those would make the credentials it prints unpredictable |
+| `NACRE_VERSION` | unset | what the seed reports it ran against. Set by the image build; nothing depends on it |
+
 **Profiles are additive, and that is the sentence this table was missing.** They
 are not four deployments to choose between: `--profile` may be given more than
 once, and each one adds its services to the set. A deployment that wants MinIO
