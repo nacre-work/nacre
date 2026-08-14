@@ -100,7 +100,18 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # Never root. The container reads documents for a living.
-RUN addgroup -S nacre && adduser -S nacre -G nacre
+#
+# `/state` is created here, owned, **before** the user switch, and that is not
+# tidiness. Docker gives a fresh named volume the ownership and mode of the
+# image directory it is mounted over; with no such directory it makes one owned
+# by root, and a non-root process then cannot write to its own volume. The demo
+# seed hit exactly that: `can't create /state/admin-password: Permission
+# denied`, on a container that had just been told to keep a file there.
+#
+# Only on first initialization of the volume. A volume created before this
+# stays root-owned, which is why the seed degrades rather than dying.
+RUN addgroup -S nacre && adduser -S nacre -G nacre \
+ && mkdir -p /state && chown nacre:nacre /state
 USER nacre
 
 COPY --from=build --chown=nacre:nacre /app/node_modules node_modules

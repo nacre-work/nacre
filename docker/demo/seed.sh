@@ -145,9 +145,26 @@ fi
 # Written here rather than with the rest, because from this line on the
 # organization exists: a failure between now and the summary would otherwise
 # leave a stack nobody can sign in to and no record that it happened.
-mkdir -p "$STATE"
+#
+# **Not fatal when it fails, and that is deliberate.** A named volume created
+# before the image owned `/state` belongs to root, and this process is not root
+# — so the write is refused on exactly the stacks that have been running
+# longest. Dying there would take a working demo down over a place to put a
+# note, so it degrades to the behaviour it had before the volume existed and
+# says which one you are getting.
 umask 077
-printf '%s\n' "$ADMIN_PASSWORD" > "$PROOF"
+STATEFUL=yes
+mkdir -p "$STATE" 2>/dev/null || true
+if ! printf '%s\n' "$ADMIN_PASSWORD" > "$PROOF" 2>/dev/null; then
+  STATEFUL=no
+  say ""
+  say "cannot write to ${STATE} — the credentials below will be in this log and"
+  say "nowhere else, and a restart will not be able to print them again."
+  say ""
+  say "The volume predates the image that owns ${STATE}. To fix it for good:"
+  say "  docker compose --profile demo down -v"
+  say ""
+fi
 
 say "creating layers"
 for layer in handbook engineering contracts; do
@@ -186,7 +203,11 @@ for layer in handbook engineering contracts; do
 done
 
 # Written before it is printed. A crash between the two would otherwise lose
-# the only copy of three passwords that exist nowhere else.
+# the only copy of three passwords that exist nowhere else — except where the
+# volume is not writable, in which case this goes to a temporary file and the
+# warning above already said so.
+SUMMARY="$SAVED"
+if [ "$STATEFUL" = no ]; then SUMMARY="$(mktemp)"; fi
 {
   printf '%s\n' "────────────────────────────────────────────────────────────────"
   printf '%s\n' " The demo is seeded. Three people, three different answers."
@@ -210,7 +231,7 @@ done
   printf '%s\n' " Printed again by any later run of this container, and gone for good"
   printf '%s\n' " on \`down -v\` — which is also when the organization goes."
   printf '%s\n' "────────────────────────────────────────────────────────────────"
-} > "$SAVED"
+} > "$SUMMARY"
 
 say ""
-cat "$SAVED"
+cat "$SUMMARY"
