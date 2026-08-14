@@ -34,6 +34,16 @@ CORPUS="${DEMO_CORPUS:-/demo/corpus}"
 # plaintext, so without this a `down` and an `up` left a working stack whose
 # logins nobody could recover.
 STATE="${DEMO_STATE:-/state}"
+
+# The domain the demo identities live at, and `.local` is the default it has
+# always been: a self-hoster running `--profile demo` gets addresses that are
+# obviously not deliverable, which is right for a corpus of invented people.
+#
+# A public stand wants something that reads as an address rather than as a
+# placeholder, and it owns a domain to say so — hence the variable. It is a
+# domain and never a full address: the local parts are this seed's, and letting
+# a deployment set those would make the credentials it prints unpredictable.
+DEMO_EMAIL_DOMAIN="${NACRE_DEMO_EMAIL_DOMAIN:-${ORG}.local}"
 SAVED="${STATE}/credentials.txt"
 # The admin password on its own, so a later run can prove the saved block still
 # describes a live organization rather than print it and hope.
@@ -93,7 +103,7 @@ if [ -r "$PROOF" ]; then
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        email: 'admin@${ORG}.local',
+        email: 'admin@${DEMO_EMAIL_DOMAIN}',
         password: require('node:fs').readFileSync('${PROOF}', 'utf8').trim(),
         organization: '${ORG}',
       }),
@@ -122,7 +132,7 @@ if [ -r "$PROOF" ]; then
 fi
 
 say "creating the organization"
-INIT="$(node /app/packages/api/dist/init.js --org "$ORG" --email "admin@${ORG}.local" --name "Nacre Demo")"
+INIT="$(node /app/packages/api/dist/init.js --org "$ORG" --email "admin@${DEMO_EMAIL_DOMAIN}" --name "Nacre Demo")"
 say "$INIT"
 
 # init prints a token good for an hour, which is more than a seed needs. Taking
@@ -182,10 +192,10 @@ done
 # contract number" return nothing rather than an error.
 CREDENTIALS=""
 for person in engineer contractor; do
-  created="$($CLI users create "${person}@${ORG}.local" --json)"
+  created="$($CLI users create "${person}@${DEMO_EMAIL_DOMAIN}" --json)"
   id="$(printf '%s' "$created" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).id))")"
   password="$(printf '%s' "$created" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).password))")"
-  CREDENTIALS="${CREDENTIALS}$(printf '  %-24s %s\n' "${person}@${ORG}.local" "$password")\n"
+  CREDENTIALS="${CREDENTIALS}$(printf '  %-24s %s\n' "${person}@${DEMO_EMAIL_DOMAIN}" "$password")\n"
 
   $CLI grant read layer:handbook --to "user:${id}" >/dev/null
   # An explicit `if` rather than `[ … ] && …`: under `set -e` the AND-OR list is
@@ -212,7 +222,7 @@ if [ "$STATEFUL" = no ]; then SUMMARY="$(mktemp)"; fi
   printf '%s\n' "────────────────────────────────────────────────────────────────"
   printf '%s\n' " The demo is seeded. Three people, three different answers."
   printf '%s\n' ""
-  printf '  %-24s %s\n' "admin@${ORG}.local" "$ADMIN_PASSWORD"
+  printf '  %-24s %s\n' "admin@${DEMO_EMAIL_DOMAIN}" "$ADMIN_PASSWORD"
   printf '%b' "$CREDENTIALS"
   printf '%s\n' ""
   printf '%s\n' " Organization: ${ORG}"
