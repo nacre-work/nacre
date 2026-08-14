@@ -37,6 +37,11 @@ services:
     image: ghcr.io/nacre-work/nacre:${NACRE_VERSION:-latest}
   migrate:
     image: ghcr.io/nacre-work/nacre:${NACRE_VERSION:-latest}
+  # The seed runs `init` and the `nacre` command, both of which are in this
+  # image. It is the whole reason `--profile demo` needs no toolchain: the
+  # corpus is mounted, the code is pulled.
+  demo-seed:
+    image: ghcr.io/nacre-work/nacre:${NACRE_VERSION:-latest}
   web:
     image: ghcr.io/nacre-work/nacre-web:${NACRE_VERSION:-latest}
   parser:

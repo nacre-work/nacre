@@ -42,6 +42,42 @@ The caveat is stated on the bullet as well as in the note on purpose: "the
 an architecture-blind sentence three lines above an architecture-specific one is
 how a reader ends up running the profile that cannot start.
 
+## Two minutes, nothing configured
+
+If what you want is to see it work, start here. `--profile demo` brings its own
+embedder and seeds itself, so there is no `.env` to fill in and no endpoint to
+supply:
+
+```bash
+git clone https://github.com/nacre-work/nacre && cd nacre
+docker compose -f docker-compose.yml -f docker-compose.images.yml pull
+docker compose -f docker-compose.yml -f docker-compose.images.yml --profile demo up -d
+docker compose --profile demo logs -f demo-seed
+```
+
+The seed creates an organization, three layers, an example corpus and **three
+people whose grants differ** — then prints their credentials, because this API
+generates passwords and refuses to accept one, so nothing here can hardcode
+them.
+
+Sign in at `http://localhost:8082` as each of the three and ask the same
+question:
+
+```
+what is the contract number for Northwind
+```
+
+The administrator finds `NW-2026-0431`. The engineer and the contractor find
+nothing — not a shorter list, nothing. The permission filter runs inside the
+index traversal, so for them the query never reached the document.
+
+That is the whole product in one query. When you want to point it at your own
+documents, carry on below.
+
+Reset it with `docker compose --profile demo down -v`. The model is
+English-only and the corpus is fiction; a real installation picks its own
+embedder, which is what the rest of this page is about.
+
 ## First run
 
 ```bash

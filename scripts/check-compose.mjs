@@ -20,6 +20,7 @@ const EXPECTED = {
   full: ['api', 'embedder', 'mcp', 'migrate', 'minio', 'minio-init', 'parser', 'postgres', 'qdrant', 'redis', 'reranker', 'web', 'worker'],
   airgapped: ['api', 'embedder', 'keycloak', 'mcp', 'migrate', 'parser', 'postgres', 'qdrant', 'redis', 'reranker', 'web', 'worker'],
   hosted: ['api', 'embedding-adapter', 'mcp', 'migrate', 'parser', 'postgres', 'qdrant', 'redis', 'web', 'worker'],
+  demo: ['api', 'demo-embedder', 'demo-seed', 'mcp', 'migrate', 'parser', 'postgres', 'qdrant', 'redis', 'web', 'worker'],
 }
 
 /**

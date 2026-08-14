@@ -389,6 +389,77 @@ services:
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
     expose: ["80"]
 
+  # ─── the `demo` profile ─────────────────────────────────────────────────────
+  #
+  # `minimal` needs an embedder you name, which is the honest arrangement for an
+  # installation and the wrong one for somebody deciding whether to spend an
+  # afternoon on this. So `demo` brings its own, seeds a corpus, and hands over
+  # three logins that see different things.
+  #
+  # **A different model from `full`, and that is the whole reason this is a
+  # separate service.** `full` runs bge-m3: 560M parameters, 1024 dimensions,
+  # and on a laptop CPU it blows the worker's 120-second budget — which
+  # docs/apple-silicon.md already says. bge-small-en-v1.5 is 33M and 384, small
+  # enough to answer in milliseconds on four cores and good enough that the
+  # ranking in a demo looks like ranking. Compose cannot vary a command by
+  # profile, so it is its own service rather than a flag.
+  #
+  # English-only, and that is a demo's trade rather than a recommendation: the
+  # corpus is English, and `bge-small-en-v1.5` is a tenth the size of the
+  # multilingual model that would handle anything else. An installation with
+  # documents in more than one language wants bge-m3.
+  demo-embedder:
+    profiles: [demo]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    platform: linux/amd64
+    restart: unless-stopped
+    command: ["--model-id", "BAAI/bge-small-en-v1.5"]
+    volumes: ["models:/data"]
+    environment:
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+    expose: ["80"]
+
+  # One shot, after the API is ready.
+  #
+  # **No bind mount, and that was learned by running it.** The seed and its
+  # corpus live at `/demo` inside the image. Mounting `./docker/demo` was the
+  # first shape and it works on exactly one arrangement: a daemon on the same
+  # machine as the checkout. A bind mount names a path on the *daemon*, so with
+  # DOCKER_HOST over TCP — a remote daemon, a VPS, a CI runner — Compose finds
+  # nothing there, mounts an empty directory, and the container fails with
+  # `can't open '/demo/seed.sh'` while the file sits in the checkout.
+  #
+  # To use your own documents instead, mount over it: `-v ./mine:/demo/corpus`.
+  # That is a deliberate choice by somebody who knows where their daemon is,
+  # rather than the default that quietly requires it.
+  demo-seed:
+    <<: *app
+    profiles: [demo]
+    restart: "no"
+    entrypoint: ["/bin/sh", "/demo/seed.sh"]
+    # Where the credentials are written, and the reason there is a volume at
+    # all. They are generated, printed once, and stored nowhere as plaintext —
+    # so a `docker compose down` followed by `up` used to leave a seeded stack
+    # whose logins nobody could recover: the data survived, the seed said
+    # "already seeded", and the container holding the only copy of the output
+    # was gone. Now the second run reads them back.
+    volumes: ["demo:/state"]
+    environment:
+      NACRE_API_URL: http://api:8080
+      # The provider row `init` writes, and therefore what every layer here
+      # embeds with. It names the demo embedder rather than whatever the .env
+      # points at, so `--profile demo` does not depend on the operator having
+      # configured one — which is the entire point of the profile.
+      NACRE_DEFAULT_EMBEDDING_ENDPOINT: http://demo-embedder:80
+      NACRE_DEFAULT_EMBEDDING_MODEL: bge-small-en-v1.5
+      NACRE_DEFAULT_EMBEDDING_DIM: 384
+    depends_on:
+      api: { condition: service_healthy }
+      worker: { condition: service_started }
+      demo-embedder: { condition: service_started }
+    healthcheck:
+      disable: true
+
   reranker:
     profiles: [full, airgapped]
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
@@ -423,3 +494,8 @@ volumes:
   redis:
   minio:
   models:
+  # What the demo seed wrote down. It survives `down` and dies with `down -v`,
+  # which is the same lifetime as the organization those credentials belong to —
+  # keeping them any longer would leave a file naming logins that no longer
+  # exist.
+  demo:

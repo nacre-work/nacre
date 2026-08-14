@@ -957,6 +957,18 @@ is the existing behaviour and is unchanged by the upstream being a vendor.
 | `full` | plus minio, embedder (TEI), reranker | typical deployment |
 | `airgapped` | everything local; email/password sign-in; models pre-seeded | closed network |
 | `hosted` | adds the embedding adapter | embeddings from a vendor's API rather than a local model |
+| `demo` | minimal, plus a small English embedder (bge-small-en-v1.5) and a one-shot seed | seeing it work in two minutes, with a corpus and three logins already in it |
+
+`demo` is the only profile that needs nothing configured — no embedding
+endpoint, no `.env`. It brings a 33M-parameter model that answers on a laptop
+CPU, indexes an example corpus across three layers, and creates three people
+whose grants differ, so the same query returns three different answers. The
+credentials are printed by the seed, because the API generates passwords and
+refuses to accept one; `docker compose --profile demo logs demo-seed` has them.
+
+It is a demonstration and not a deployment: the model is English-only, the
+corpus is fiction, and resetting is `--profile demo down -v`. An installation
+picks its own embedder, which is what every other profile is about.
 
 **Profiles are additive, and that is the sentence this table was missing.** They
 are not four deployments to choose between: `--profile` may be given more than

@@ -100,12 +100,40 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # Never root. The container reads documents for a living.
-RUN addgroup -S nacre && adduser -S nacre -G nacre
+#
+# `/state` is created here, owned, **before** the user switch, and that is not
+# tidiness. Docker gives a fresh named volume the ownership and mode of the
+# image directory it is mounted over; with no such directory it makes one owned
+# by root, and a non-root process then cannot write to its own volume. The demo
+# seed hit exactly that: `can't create /state/admin-password: Permission
+# denied`, on a container that had just been told to keep a file there.
+#
+# Only on first initialization of the volume. A volume created before this
+# stays root-owned, which is why the seed degrades rather than dying.
+RUN addgroup -S nacre && adduser -S nacre -G nacre \
+ && mkdir -p /state && chown nacre:nacre /state
 USER nacre
 
 COPY --from=build --chown=nacre:nacre /app/node_modules node_modules
 COPY --from=build --chown=nacre:nacre /app/packages packages
 COPY --from=build --chown=nacre:nacre /app/package.json ./
+
+# The `demo` profile's seed and its corpus, from the context rather than the
+# build stage — nothing compiles them.
+#
+# **In the image and not a bind mount, and that distinction is the whole
+# reason.** A bind mount names a path on the *daemon*. Point DOCKER_HOST at
+# anything but this machine — a remote daemon over TCP, a VPS, a CI runner —
+# and Compose has nothing to mount, so it creates an empty directory and the
+# seed dies on a missing file with no hint that the host is the reason. The
+# build context travels over the wire; a host path does not. Found by running
+# it against exactly that arrangement.
+#
+# Ten kilobytes on every image, including the ones that never seed anything.
+# That is the price of `--profile demo` working the same way everywhere, and it
+# is worth it: this profile exists for somebody who has not decided to trust us
+# yet, and their first experience must not depend on where their daemon lives.
+COPY --chown=nacre:nacre docker/demo /demo
 
 # Liveness only — it touches no dependency. A healthcheck that calls Postgres
 # turns one slow database into a cascading restart loop.

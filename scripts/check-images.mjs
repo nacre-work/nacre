@@ -23,7 +23,7 @@
  * and an image outside its loop is an image that check does not cover.
  */
 
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 
 const RELEASE = '.github/workflows/release.yml'
 const DOCKER = 'docker'
@@ -92,10 +92,73 @@ for (const image of tagged) {
   }
 }
 
+/**
+ * ─── Anything a Dockerfile copies from the context actually reaches it ───────
+ *
+ * A `COPY` from the context takes whatever survived `.dockerignore`, and it
+ * takes it **successfully**: an excluded file leaves no error, no warning and a
+ * smaller image. The failure arrives later, somewhere else, as a path that is
+ * not there at runtime.
+ *
+ * Two files that have to agree with nothing between them, which is this
+ * repository's most repeated shape.
+ *
+ * Written because the demo profile's corpus is nine markdown files and
+ * `.dockerignore` excludes `*.md`, so it looked certain they were being
+ * dropped. **They were not**, and that is worth recording: Docker matches these
+ * patterns against the whole relative path with `*` not crossing `/`, so `*.md`
+ * takes `README.md` at the context root and nothing under `docker/demo/corpus/`.
+ * The negation added to "fix" it was removed again.
+ *
+ * The check stays, because the property is real even though that instance was
+ * not — and it was proved by adding `docker/demo` to `.dockerignore` and
+ * watching it fire, rather than by the case that prompted it.
+ *
+ * Only `COPY <context path>` is asked about: a `--from=` copy reads an earlier
+ * stage, where `.dockerignore` has no say.
+ */
+const IGNORE = '.dockerignore'
+const rules = readFileSync(IGNORE, 'utf8')
+  .split('\n')
+  .map((line) => line.trim())
+  .filter((line) => line !== '' && !line.startsWith('#'))
+
+/** Docker's own precedence: the last pattern that matches a path decides it. */
+function excluded(path) {
+  let verdict = false
+  for (const rule of rules) {
+    const negated = rule.startsWith('!')
+    const pattern = negated ? rule.slice(1) : rule
+    const expression = new RegExp(
+      `^${pattern
+        .replaceAll('.', '\\.')
+        .replaceAll('**/', '(.*/)?')
+        .replaceAll('**', '.*')
+        .replaceAll(/(?<!\.)\*/g, '[^/]*')}(/.*)?$`,
+    )
+    if (expression.test(path)) verdict = !negated
+  }
+  return verdict
+}
+
+for (const file of dockerfiles) {
+  const source = readFileSync(`${DOCKER}/${file}`, 'utf8')
+  for (const [, target] of source.matchAll(/^COPY (?!--from)(?:--[a-z-]+=\S+ )*(\S+) /gm)) {
+    if (target.startsWith('/') || !existsSync(target)) continue
+    if (!excluded(target)) continue
+    console.error(
+      `::error file=${IGNORE}::${DOCKER}/${file} copies \`${target}\` from the build context and ` +
+        `${IGNORE} excludes it. The build still succeeds — COPY takes whatever survived the ` +
+        'filter — so this arrives later as a file missing at runtime.',
+    )
+    failed = true
+  }
+}
+
 if (!failed) {
   console.log(
     `${dockerfiles.length} Dockerfile(s), ${tagged.size} image(s), all published and all checked ` +
-      'for both architectures',
+      'for both architectures, and every context copy reaches the context',
   )
 }
 process.exit(failed ? 1 : 0)
