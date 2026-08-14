@@ -863,6 +863,19 @@ released, so after one pass a document was locked out of the loop for the full
 `NACRE_INDEX_LEASE`. Fifteen minutes, with the worker log silent after one
 success. Every test passed throughout.
 
+**Every profile has now been started, and only `minimal` is in CI.** `demo` was
+driven on a real bge-small to the three-answers demonstration — an administrator
+reaching the contract number, an engineer the same question without
+`contracts`, a contractor the handbook alone; `full` took a real PDF through
+MinIO to `indexed` and back out of a search, and refused the same bytes declared
+`text/plain`; `hosted` gave all three of the adapter's refusals — no routes, no
+credential for a routed vendor, an unknown vendor; and `airgapped`'s property
+was shown by running its embedder with `--network none` off a seeded volume.
+`lint:compose` pins what each profile *contains*, which is a different question
+from whether it starts: `demo` is the one `docs/quickstart.md` tells a reader to
+run and the one that produced four defects the last time somebody ran it, and
+nothing starts it on a pull request.
+
 **The ACL tag cache is gone** (migration 0016). `docs/authz.md` specified
 `acl_tags` in the vector payload as a second filter beside the layer bound, and
 the whole subsystem was built — the retag sweep, its lease, `acl_version`, the
@@ -1060,6 +1073,35 @@ subsystems that only ever worked because development connects to Postgres as a
 superuser — service account keys answered 500 and the worker indexed nothing
 the moment an operator followed the rule in `docs/config.md` about not doing
 that.
+
+**A document over 22 KB never indexed, and the layer went on answering.** Both
+embedding clients sent a document's whole chunk list as one `input` array with
+no bound of their own. An endpoint does not split a batch that is too large — it
+**refuses** it, and Text Embeddings Inference, which every profile here starts,
+answers `413` above `--max-client-batch-size`, default 32. A chunk is 800
+characters, so anything past roughly 22 KB produced more than 32 of them and
+failed permanently: nothing retries `failed`.
+
+Nothing looked wrong. The layer kept answering searches out of the documents
+that *had* indexed, so retrieval was quietly worse with no error anywhere a
+person looks — found on a running stand at twenty-six failures out of fifty,
+where the successes in the same log are all `chunks: 2` and `chunks: 3`, which
+reads as bad luck rather than as a threshold. It is the two-clients-with-nothing-
+making-them-agree shape again, and the repair is `embedInBatches` plus
+`lint:embed-batch` asking every file that posts to that route.
+
+Three more came out of the branch, and the order they arrived in is the lesson.
+The helper **skipped its own count check on the single-batch path** — almost
+every call, since a document under the limit is one batch and a query is one
+text — so a short answer misaligned a document instead of raising; a test that
+predates the batching caught it, which is the argument for one path rather than
+a fast one beside it. Then the smoke test turned out **never to have sent its
+document**: `python3 - … < big.txt` with the program on a heredoc makes the
+heredoc stdin, so the content was the empty string, the document reached
+`indexed` with zero chunks, and the assertion failed *accusing the product*. And
+the same section then broke the PDF one by leaving eighty-six chunks of filler
+in the layer, which is a test failing somewhere other than where the fault is.
+A harness is code, and it fails in the same shapes.
 
 **Cursor pagination did not advance.** `timestamptz` holds microseconds and a
 JavaScript `Date` holds milliseconds, so a cursor built from

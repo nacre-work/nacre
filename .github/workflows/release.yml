@@ -153,6 +153,7 @@ jobs:
       - run: pnpm lint:images
       - run: pnpm lint:nginx
       - run: pnpm lint:embed-batch
+      - run: pnpm lint:test-plan-range
       - run: pnpm lint:password
       - run: pnpm lint:collection-config
       - run: pnpm lint:endpoint-errors

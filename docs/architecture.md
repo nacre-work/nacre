@@ -508,10 +508,12 @@ comes out concatenated per page with `metadata.pages`, and `blocks` stays
 empty rather than fabricated. `metadata` also carries `pdf_type` and
 `pages_needing_ocr`, which is what makes the *partial* case visible: a document
 whose pages are mostly scans extracts the rest and would otherwise report
-success with most of it missing. The URL ingest path stays text-only in 0.4.0:
-a response's declared type is an attacker's field, and extending the magic
-check to fetched bytes is its own change with its own tests, listed here so it
-is a decision rather than a leftover.
+success with most of it missing. The URL ingest path stays text-only — no
+version attached, because the pin said "in 0.4.0" for thirteen releases and a
+dated qualifier on a standing decision reads as one that has since moved. A
+response's declared type is an attacker's field, and extending the magic check
+to fetched bytes is its own change with its own tests, listed here so it is a
+decision rather than a leftover. `docs/api.md` says the same in the same words.
 
 **What falls out for free, and what proves it.** `GET /v1/documents/{id}`
 already presigns `source_url` for `s3` documents, so the original PDF becomes

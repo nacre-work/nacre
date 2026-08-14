@@ -156,6 +156,12 @@ jobs:
       # and the worker marks such a document `failed`, which nothing retries.
       # Two clients had the defect with nothing making them agree.
       - run: pnpm lint:embed-batch
+      # A document describing the authz suite by range reaches its last case.
+      # The plan grew from fifteen to twenty-five and seven documents went on
+      # saying T1-T15 — including CONTRIBUTING.md and the section of
+      # docs/extensions.md that tells a module author which suite to run, so
+      # somebody could run two thirds of it and believe they had run it.
+      - run: pnpm lint:test-plan-range
       # Every caller of a model endpoint an operator configured reports a
       # refusal through one function. A bare status is the wrong answer on 401
       # and 403, where the cause is that this client sends no credential and has

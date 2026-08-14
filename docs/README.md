@@ -5,7 +5,7 @@ model, and reworking it after search is written is expensive.
 
 | Document | Covers |
 |---|---|
-| [authz.md](./authz.md) | **Start here.** Permission model, algorithm, invariants, the T1–T15 test plan |
+| [authz.md](./authz.md) | **Start here.** Permission model, algorithm, invariants, the T1–T25 test plan |
 | [architecture.md](./architecture.md) | Components, data flow, vector storage, reindexing, backups |
 | [mcp.md](./mcp.md) | MCP server: transport, authorization, tools |
 | [mcp-conformance.md](./mcp-conformance.md) | Every normative sentence of the 2026-07-28 binding, and where we stand on it |

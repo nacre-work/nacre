@@ -237,9 +237,21 @@ public key, `NACRE_JWT_PREVIOUS_PUBLIC_KEY_REF` to the old) independently: the
 overlap window is what lets them not restart in lockstep. A shared-secret
 deployment has no such split — the same `NACRE_JWT_SECRET` verifies and signs —
 and that is still supported for a laptop or a Compose run.
-- **EMA** (`io.modelcontextprotocol/enterprise-managed-authorization`): the
-  server advertises the `id-jag` grant profile, accepts an ID-JAG from a
-  corporate IdP, and exchanges it for an access token (RFC 7523).
+
+**EMA** (`io.modelcontextprotocol/enterprise-managed-authorization`) — the
+`id-jag` grant profile, an ID-JAG from a corporate IdP exchanged for an access
+token (RFC 7523) — is the commercial `ema` module's and **not this build's**.
+This paragraph was a bullet in the list above, which read as though the
+transport did it; `docs/config.md` has always said the opposite in the row for
+`NACRE_EMA_*`, and the code agrees with `docs/config.md`: an ID-JAG reaching
+`auth.ts` is "a credential type this build does not understand" and gets the
+same `401` a forged token does.
+
+It arrives, where a deployment has the module, through `registerAuthProvider`
+— an extension point, so the open core neither implements the exchange nor has
+a branch waiting for it. That is the same division `docs/licensing.md` draws,
+and the reason it is worth stating here rather than only there is that this is
+the document an operator reads when a client will not connect.
 
 Where the line falls: **EMA authorizes the connection. Permission on a specific
 document is computed by the Nacre authorization service on every call.** Holding
