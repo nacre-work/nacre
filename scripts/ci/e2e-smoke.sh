@@ -245,6 +245,23 @@ sys.exit(0 if any(h['doc_id'] == want and 'Zanzibar' in h['text'] for h in hits)
   || die "the tail of the large document is not searchable, so a batch was dropped or reordered: ${BODY}"
 say "  its last batch came back too"
 
+# Removed again, and this is load-bearing rather than tidiness. The sections
+# below assert on *relevance* over a corpus small enough that `top_k` returns
+# every permitted chunk — the PDF one says so in as many words, because with a
+# constant-vector stub embedder that is what makes it a test of extraction
+# rather than of ranking. Eighty-six chunks of filler left in the layer breaks
+# that assumption and fails the PDF assertion instead of this one, which is a
+# test failing somewhere other than where the fault is.
+say "remove the large document again, so later sections keep their small corpus"
+req DELETE "/v1/documents/${BIG_DOC}" "$TOKEN" >/dev/null
+BODY=$(req POST /v1/search "$TOKEN" '{"query":"Zanzibar telemetry rotates","top_k":5}')
+# An `if`, not `grep … && die`: under `set -e` the passing branch of that form
+# is a non-zero compound and would end the run as a success.
+if printf '%s' "$BODY" | grep -qF "Zanzibar"; then
+  die "the deleted document is still searchable, which invariant 5 forbids: ${BODY}"
+fi
+say "  gone from results on the next search"
+
 # ── a PDF, all the way through ─────────────────────────────────────────────
 # The one path no unit test can prove: the edge accepts the bytes, the bucket
 # holds them, the worker fetches them back and hands them to the sidecar as a
