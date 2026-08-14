@@ -89,7 +89,29 @@ echo "${MCP_401}" | grep -qi '^HTTP/1.1 401' \
 echo "${MCP_401}" | grep -qi "resource_metadata=\"${WEB}/.well-known/oauth-protected-resource\"" \
   || die "the front-door dropped the port from Host: $(echo "${MCP_401}" | grep -i www-authenticate)"
 
-say "console, /v1, /oauth, /.well-known and /mcp all on the web front-door"
+# And the same assertion for the **scheme**, which is the other half of that
+# identifier and was wrong for every deployment terminating TLS in front of this
+# container.
+#
+# `X-Forwarded-Proto $scheme` sent the scheme of the connection *into* nginx,
+# which is plaintext behind any ingress — so the front door overwrote the outer
+# proxy's correct `https` with `http`, and an HTTPS installation answered
+# `resource_metadata="http://host/..."` while the document at that URL said
+# `"resource":"https://host"`. One installation disagreeing with itself, and a
+# client pointed at a plaintext URL for an OAuth discovery document. Found by
+# reading one header on a real deployment.
+#
+# The stack here is plaintext, so this is the only way to exercise the header:
+# claim `https` the way an outer proxy does and require it to survive. Above,
+# with no such header, the assertion is that it falls back to this connection's
+# scheme — so the two together pin both branches of the map.
+MCP_HTTPS=$(curl -s -i -X POST "${WEB}/mcp" -H 'Content-Type: application/json' \
+  -H 'X-Forwarded-Proto: https' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | tr -d '\r')
+echo "${MCP_HTTPS}" | grep -qi "resource_metadata=\"https://" \
+  || die "the front-door overwrote X-Forwarded-Proto, so an HTTPS installation advertises an http:// discovery URL: $(echo "${MCP_HTTPS}" | grep -i www-authenticate)"
+
+say "console, /v1, /oauth, /.well-known and /mcp all on the web front-door, scheme and port intact"
 
 # ── init: one organization, one admin, the collection ──────────────────────
 say "init"
