@@ -214,6 +214,38 @@ describe('baseline · the two MCP transports answer alike', () => {
     })
   }
 
+  /**
+   * The whole result, for every method in the table.
+   *
+   * The cases above each compare a *slice*, which is what makes their failures
+   * readable — and it is also how two more divergences sat here unseen while
+   * this file was green. `capabilities` was compared by no case at all, so
+   * Streamable HTTP answered `{ tools: {} }` and STDIO
+   * `{ tools: { listChanged: false } }`: one server telling two clients two
+   * different things about what it supports. And `tools/list` was projected to
+   * `r.tools`, so the *wrapper* around it went unasked — HTTP carried `ttlMs`
+   * and `cacheScope` and STDIO carried neither.
+   *
+   * Both are the same defect as the `permission` field this file was written
+   * against, and both survived it, because a projection narrow enough is a
+   * comparison that cannot fail. So the projections stay for their messages and
+   * this asks the question they cannot: **everything, deep, with nothing left
+   * out.**
+   *
+   * A field that must genuinely differ between transports belongs in an
+   * exemption here with its reason written beside it. There is none today —
+   * these three results are the protocol's, and the transport is not one of
+   * their inputs.
+   */
+  for (const method of new Set(SHARED.map((s) => s.method))) {
+    const params = SHARED.find((s) => s.method === method)?.params ?? {}
+    it(`${method} answers with the same object, field for field`, async () => {
+      expect(await overStdio(method, params), `${method} over STDIO`).toEqual(
+        await overHttp(method, params),
+      )
+    })
+  }
+
   it('neither reports a placeholder version', async () => {
     // `serverVersion` is optional on both, and for a while nothing passed one —
     // so both transports told every client they were `0.0.0`. A field carried,

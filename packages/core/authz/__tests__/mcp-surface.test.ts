@@ -488,7 +488,19 @@ describe('baseline · the MCP surface', () => {
     }
     expect(body.result.resultType).toBe('complete')
     expect(body.result.supportedVersions).toEqual([...PROTOCOL_VERSIONS])
-    expect(body.result.capabilities).toEqual({ tools: {} })
+    // The literal rather than the constant, deliberately. This is what goes on
+    // the wire to a client, so a change to `CAPABILITIES` should stop here and
+    // be looked at — a test that imported the value would agree with whatever
+    // the code became, which is the fixture-written-to-match-the-code shape.
+    //
+    // It read `{ tools: {} }` while STDIO answered
+    // `{ tools: { listChanged: false } }`, and each transport's own suite was
+    // green: this file asserted this server and the other asserted that one,
+    // with nothing asking whether they were the same server. `listChanged:
+    // false` is the statement both make now — this server sends no
+    // `notifications/tools/list_changed`, and saying so beats leaving a client
+    // to infer it from an absent field.
+    expect(body.result.capabilities).toEqual({ tools: { listChanged: false } })
     // Nothing in it depends on who asked — unlike tools/list, which is scoped
     // to the caller's layers and is `private` for exactly that reason.
     expect(body.result.cacheScope).toBe('public')

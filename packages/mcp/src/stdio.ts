@@ -4,10 +4,11 @@ import { createInterface } from 'node:readline'
 import { authenticate, Problem, type AuthContext, type VerifyOptions } from '@nacre.work/api'
 import { logger } from '@nacre.work/core'
 
-import { INSTRUCTIONS } from './instructions.js'
-
-import { catalog, onTheWire } from './tools.js'
-import { DISCOVER_TTL_MS, LEGACY_PROTOCOL_VERSIONS, PROTOCOL_VERSION, PROTOCOL_VERSIONS } from './server.js'
+import { catalog } from './tools.js'
+// The same three results the HTTP transport answers with, built once. Each was
+// hand-built in both files until a capability set and a cache hint diverged.
+import { discoverResult, initializeResult, toolsListResult } from './results.js'
+import { PROTOCOL_VERSION } from './server.js'
 import type { Layers, ToolRunner } from './server.js'
 
 /**
@@ -140,37 +141,18 @@ async function dispatch(
     // client cannot fall forward — so what it hears back has to be a revision
     // its own generation knows. Echo the proposal when this server speaks it;
     // counter-offer the newest legacy revision otherwise.
-    case 'initialize': {
-      const asked = ((params ?? {}) as { protocolVersion?: unknown }).protocolVersion
-      return {
-        protocolVersion:
-          typeof asked === 'string' && (PROTOCOL_VERSIONS as readonly string[]).includes(asked)
-            ? asked
-            : LEGACY_PROTOCOL_VERSIONS[0],
-        capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'nacre', version: options.serverVersion ?? '0.0.0' },
-        instructions: INSTRUCTIONS,
-      }
-    }
+    case 'initialize':
+      return initializeResult(
+        ((params ?? {}) as { protocolVersion?: unknown }).protocolVersion,
+        options.serverVersion,
+      )
 
     // The modern era's opening move, which 2026-07-28 makes a MUST. On stdio it
     // is also the probe a dual-era client uses to tell the two apart, so a
     // server without it reads as legacy and the client silently drops a
     // revision.
     case 'server/discover':
-      return {
-        resultType: 'complete',
-        supportedVersions: [...PROTOCOL_VERSIONS],
-        capabilities: { tools: { listChanged: false } },
-        _meta: {
-          'io.modelcontextprotocol/serverInfo': {
-            name: 'nacre',
-            version: options.serverVersion ?? '0.0.0',
-          },
-        },
-        ttlMs: DISCOVER_TTL_MS,
-        cacheScope: 'public',
-      }
+      return discoverResult(options.serverVersion)
 
     case 'notifications/initialized':
       return undefined
@@ -179,7 +161,7 @@ async function dispatch(
       return {}
 
     case 'tools/list':
-      return { tools: onTheWire(catalog(await options.layers.forCaller(auth))) }
+      return toolsListResult(catalog(await options.layers.forCaller(auth)))
 
     case 'tools/call': {
       const call = (params ?? {}) as { name?: unknown; arguments?: unknown }
