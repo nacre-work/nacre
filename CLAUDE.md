@@ -177,6 +177,46 @@ saved reference query, because `check: null` means both "no set" and "not scored
 yet" and only the second was true — the panel already loads the set, so it can
 tell them apart and now does.
 
+**The console has been rendered at 1440 and at 390**, every view and every
+dialog, and four defects came out of it that no suite could see — three of them
+only on a phone, which is the width nobody develops at.
+
+`.row` aligns `flex-end`, which aligns **margin** boxes: `.field` carried
+`margin-bottom` and a bare button in the same row carried none, so every row
+mixing the two hung the button exactly that far below the control beside it.
+The action column wrapped, because five of the six action cells used `.right`
+and the sixth used `.row-end`, and only `.row-end` said `nowrap` — three
+actions on one row stacked onto three lines and took a People row from 58px to
+153px. The `copy` control beside every id was the word `copy` at 39×19, under
+half a touch target, and it was `opacity: 0` until its row was hovered — so on
+a phone, which reports `hover: none`, it was invisible with no gesture that
+revealed it, and `shortId` truncates the id it copies. Every id on those
+screens was unreachable on the device half of them are read on.
+
+`lint:admin-layout` is the repair rather than the four edits: a flex container
+aligned on an edge has children with no margin on that edge, and a control
+revealed on hover is behind `@media (hover: hover)`. Both were run against the
+original defects and against three more written to break them.
+
+Two things that were not layout came out of the same pass. `lint:tokens` was
+named in `admin.css`'s own header — "Nothing here invents a hex value, and
+`lint:tokens` fails the build if one appears" — and **did not exist**, in
+`package.json`, in a workflow or in `scripts/`. The property held, which is
+what made it invisible; a claim that a check exists is worse than a comment
+asking for one, because a reader stops looking. It exists now.
+
+And `docs/assets/admin/people.png` and `grants.png` were **byte-identical
+pictures of Search**. `scripts/screenshots.mjs` had no `GET /v1/me` fixture, so
+`me()` got the 500 an unstubbed call gets, the console left the caller a
+member, hid every admin-only route and fell back to the first allowed view —
+and the run then died on a control that was not there, before printing the
+failure it had already recorded. The images were written anyway. The guard is
+that a shot asserts it is a picture of the screen it is named after, read from
+the **rendered nav** and not from `location.hash`: the router deliberately
+leaves the address alone so a member's bookmark survives, which makes the hash
+a check that can never fail. It throws rather than collecting, because by the
+time the summary prints the wrong picture is already on disk.
+
 Rate limiting, `Idempotency-Key` and cursor pagination are in, which is also
 what Redis is finally for — it had been required configuration, and in every
 Compose profile with the API waiting on its healthcheck, since before anything

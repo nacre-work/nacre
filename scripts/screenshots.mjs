@@ -26,11 +26,12 @@
  * pretty picture of nothing.
  */
 /*
- * `addInitScript` serialises its callback and runs it *in the page*, so the
- * browser globals inside those two callbacks are real there and absent here.
- * Declared rather than disabled, so a genuine typo in this file is still caught.
+ * `addInitScript` and `page.evaluate` serialise their callbacks and run them
+ * *in the page*, so the browser globals inside those callbacks are real there
+ * and absent here. Declared rather than disabled, so a genuine typo in this
+ * file is still caught.
  */
-/* global sessionStorage */
+/* global sessionStorage, document */
 import { createServer } from 'node:http'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { extname, join } from 'node:path'
@@ -73,8 +74,30 @@ const DOC = 'e77a3c10-9d42-4b86-8f51-0a4c7e93b2d6'
 const FIXTURES = {
   // Polled by the header to show whether the API is reachable.
   'GET /v1/health': { status: 'ok' },
+  // What decides which navigation the console draws. There was no fixture for
+  // it, so `me()` got the 500 an unstubbed call gets, `index.ts` caught it and
+  // left the caller a member, and every admin-only route was hidden — a
+  // request for `#/people` fell back to the first allowed view. `people.png`
+  // and `grants.png` in docs/ were byte-identical pictures of **Search**.
+  //
+  // The recorded failure for the unstubbed call was right there and the run
+  // crashed before printing it, so the images were written and shipped anyway.
+  // That is what `landed` below is for: an assertion that the picture is of
+  // the screen it is named after.
+  'GET /v1/me': {
+    organization: 'acme',
+    principal_type: 'user',
+    principal_id: '7c1f0a92-3d84-4b57-a610-8e2d5f47c093',
+    role: 'org_admin',
+  },
   'GET /v1/workspaces': {
-    items: [{ id: WORKSPACE, slug: 'default', name: 'Default', layer_count: 2 }],
+    // `permissions` is what `newLayerButton` reads to decide whether the caller
+    // administers a workspace, and this fixture did not carry it — so the
+    // button stayed disabled, and this script could not get past its third
+    // image. It is the fixture-written-to-match-an-assumption defect: every
+    // field here was one the screenshots happened to need, and the one the
+    // code actually branches on was the one missing.
+    items: [{ id: WORKSPACE, slug: 'default', name: 'Default', layer_count: 2, permissions: ['read', 'write', 'admin'] }],
     next_cursor: null,
   },
   'GET /v1/layers': {
@@ -223,6 +246,39 @@ async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} }
   })
 
   await page.goto(`${base}/${hash}`, { waitUntil: 'networkidle' })
+
+  // The console hides the routes a member may not use and falls back to the
+  // first one it will show, so asking for a screen you are not allowed to see
+  // silently photographs a different screen. Nothing said so, and three images
+  // in docs/ were pictures of Search for exactly that reason.
+  if (hash !== '') {
+    // The **rendered** route, not `location.hash`. The router falls back to
+    // the first screen the caller may use and deliberately leaves the address
+    // alone — a member who follows a bookmark keeps their bookmark — so the
+    // hash agrees with what was asked whatever got drawn. Asking the URL is a
+    // check that can never fail, which is worse than no check. The nav marks
+    // what it actually rendered.
+    const landed = await page.evaluate(
+      () => document.querySelector('.nav a.active')?.getAttribute('href') ?? '',
+    )
+    if (landed !== hash) {
+      // Thrown rather than collected into `failures`, which every other
+      // problem here is. The difference is that this one has already decided
+      // what gets written: the run continues, `docs/` receives a picture of
+      // the wrong screen, and the summary at the end arrives after the damage
+      // — or never, because a later `prepare` clicks a control that is not
+      // there and the timeout kills the process before anything is printed.
+      // That is exactly what happened, and it is why two of these images
+      // shipped as pictures of Search.
+      throw new Error(
+        `${name}: asked for ${hash} and the console showed ${landed || 'the default view'}. ` +
+          'The admin console hides the routes the caller may not use and falls back to the ' +
+          'first one it will show, so this would photograph a different screen. Check the ' +
+          '`GET /v1/me` fixture — its `role` is what decides.',
+      )
+    }
+  }
+
   if (prepare !== undefined) await prepare(page)
   await page.waitForTimeout(250)
 
