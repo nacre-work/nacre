@@ -32,6 +32,7 @@
     "lint:admin-classes": "node scripts/check-admin-classes.mjs",
     "lint:admin-layout": "node scripts/check-admin-layout.mjs",
     "lint:tokens": "node scripts/check-tokens.mjs",
+    "lint:stored-error": "node scripts/check-stored-error.mjs",
     "lint:admin-ids": "node scripts/check-id-fields.mjs",
     "lint:collection-config": "node scripts/check-collection-config.mjs",
     "lint:password": "node scripts/check-password-generator.mjs",

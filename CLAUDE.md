@@ -217,6 +217,19 @@ leaves the address alone so a member's bookmark survives, which makes the hash
 a check that can never fail. It throws rather than collecting, because by the
 time the summary prints the wrong picture is already on disk.
 
+**And the redaction that change added went on one of the two surfaces.**
+`/v1/jobs/{id}` and `ingest_status` put the stored failure through
+`withoutHosts`; `GET /v1/documents/{id}` handed back `documents.error` verbatim,
+and so did `get_document`, an MCP tool resolving `read` — which is reached by a
+delegation, so its caller can be a third party an operator connected. That is
+the exact caller `classifyIngestFailure`'s own header names, receiving
+`http://embedder.internal:8080/embeddings` through the other door. The most
+repeated defect here, committed by the change that wrote the cure. The test
+that pinned it asserted the raw string, which is what a test written beside the
+code always does. `lint:stored-error` asks every surface that returns that
+column, and refuses if it finds none — a check with nothing to hold must not
+report green.
+
 Rate limiting, `Idempotency-Key` and cursor pagination are in, which is also
 what Redis is finally for — it had been required configuration, and in every
 Compose profile with the API waiting on its healthcheck, since before anything

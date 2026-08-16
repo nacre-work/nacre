@@ -173,6 +173,7 @@ jobs:
       - run: pnpm lint:admin-classes
       - run: pnpm lint:admin-layout
       - run: pnpm lint:tokens
+      - run: pnpm lint:stored-error
       - run: pnpm lint:admin-ids
       - run: pnpm lint:workflows
       - run: pnpm migrate

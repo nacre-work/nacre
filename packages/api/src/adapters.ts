@@ -33,6 +33,7 @@ import {
   type QueryablePlan,
   type ReindexState,
   classifyIngestFailure,
+  withoutHosts,
 } from '@nacre.work/core'
 import { createHash } from 'node:crypto'
 
@@ -220,7 +221,17 @@ export class PostgresDocuments implements Documents {
           // Only on `failed`. The column keeps the last error across a retry
           // that succeeded, and reporting that beside `indexed` would describe
           // a document that is fine as a document with a problem.
-          error: row.status === 'failed' ? row.error : null,
+          //
+          // `withoutHosts`, for the same reason `/v1/jobs` has it and applied
+          // here second — which is the defect rather than the ordering. The
+          // stored string carries the embedding endpoint's URL and whatever a
+          // sidecar wrote into its message, and this projection is reached by
+          // `get_document`, an MCP tool resolving `read`, so its caller can be
+          // a third party acting through a delegation somebody granted. That
+          // is the exact caller `classifyIngestFailure` names, and it was
+          // getting `http://embedder.internal:8080/embeddings` from here while
+          // the other surface carefully removed it.
+          error: row.status === 'failed' && row.error !== null ? withoutHosts(row.error) : null,
           // Minted here and nowhere earlier: everything above this line is the
           // permission check, so a link exists only for a caller who has just
           // been found to hold `read` on this document. `write` alone does not
