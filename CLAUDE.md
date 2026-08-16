@@ -326,6 +326,33 @@ none. Both divergences were restored afterwards and the new case caught each
 while every slice stayed green, which is the measurement that says the slices
 were never going to.
 
+**A browser could never reach the MCP transport, whatever the allow-list said.**
+`Origin` was validated — a MUST, and the DNS-rebinding rule the specification
+names — but validating an origin and *admitting* one are two halves, and only
+the first was built. There was no preflight handler and no
+`Access-Control-Allow-Origin` on any reply, so `NACRE_MCP_ALLOWED_ORIGINS` could
+turn a `403` into a response the browser then discarded. `docs/config.md` said
+to set it "only if a browser talks to this transport directly", which nothing
+could do.
+
+Found by sending a preflight at a deployed stand rather than by reading:
+`403 Origin not allowed`, with no `Access-Control-*` header on it. The same
+shape as a variable accepted and read by nothing, one step along — read, and
+insufficient.
+
+`WWW-Authenticate` is exposed, and that is the part worth keeping: a browser
+client reads the RFC 9728 pointer out of the `401` and cannot begin discovery
+without it, so a transport that admits the origin and hides that header has
+admitted a client that can only ever be unauthorized. Credentials are never
+allowed — the token is a header and never a cookie, so credentialed CORS would
+buy nothing and would let a page on an allowed origin act as whoever is signed
+in there.
+
+**Nothing changes with the list empty**, which is the default and what every
+existing deployment has: no header is emitted and a preflight is refused
+exactly as before. A case asserts that, beside the four that assert the browser
+half, and each was checked by restoring the defect.
+
 Rate limiting, `Idempotency-Key` and cursor pagination are in, which is also
 what Redis is finally for — it had been required configuration, and in every
 Compose profile with the API waiting on its healthcheck, since before anything

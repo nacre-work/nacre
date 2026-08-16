@@ -796,6 +796,22 @@ describe('baseline · the MCP surface', () => {
     expect(res.headers.get('mcp-session-id')).toBeNull()
   })
 
+  it('with no allowed origins, nothing about a response changes', async () => {
+    // The default, and the whole of what an existing deployment sees. An empty
+    // list admits no browser, so no CORS header is emitted and a preflight is
+    // refused — which is what this server did before it could admit one at all.
+    const res = await rpc('initialize', {}, ORG_A)
+    expect(res.headers.get('access-control-allow-origin')).toBeNull()
+    expect(res.headers.get('access-control-expose-headers')).toBeNull()
+
+    const preflight = await fetch(`${base}/mcp`, {
+      method: 'OPTIONS',
+      headers: { origin: 'https://console.nacre.test', 'access-control-request-method': 'POST' },
+    })
+    expect(preflight.status).toBe(403)
+    expect(preflight.headers.get('access-control-allow-origin')).toBeNull()
+  })
+
   it('write tools are declared write, and read tools read', async () => {
     const { catalog } = await import('@nacre.work/mcp')
     const tools = catalog(LAYERS[ORG_A] as Layer[])
@@ -808,5 +824,111 @@ describe('baseline · the MCP surface', () => {
     // able to search what it uploaded.
     expect(permission('ingest_document')).toBe('write')
     expect(permission('delete_document')).toBe('write')
+  })
+})
+
+/**
+ * A browser is admitted, or it is not — and admitting it is two halves.
+ *
+ * Validating `Origin` is the half that keeps a browser out. The half that lets
+ * one *in* is CORS: a cross-origin reply the browser will hand to the page, and
+ * a preflight answered before anything but a simple form POST is sent. Neither
+ * existed, so `NACRE_MCP_ALLOWED_ORIGINS` could only turn a 403 into a response
+ * the browser then discarded, while `docs/config.md` said to set it when "a
+ * browser talks to this transport directly" — which nothing could.
+ *
+ * Found by sending a preflight to a deployed stand: `403 Origin not allowed`,
+ * no `Access-Control-*` header anywhere on it.
+ *
+ * Its own server, because the property is the *configuration*: the suite above
+ * runs with no allowed origins and asserts that nothing changed there.
+ */
+describe('baseline · a browser this transport allows can actually reach it', () => {
+  const ALLOWED = 'https://console.nacre.test'
+  let corsServer: Server
+  let corsBase: string
+
+  beforeAll(async () => {
+    corsServer = createMcpServer({
+      verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE, serviceKeys },
+      resourceMetadataUrl: METADATA,
+      resourceMetadata: protectedResourceMetadata({ canonicalUrl: 'https://api.example.test' }),
+      layers: { forCaller: async (auth: AuthContext) => LAYERS[auth.orgId] ?? [] },
+      tools: { call: async () => ({ items: [] }) },
+      allowedOrigins: [ALLOWED],
+    })
+    await new Promise<void>((resolve) => corsServer.listen(0, '127.0.0.1', resolve))
+    corsBase = `http://127.0.0.1:${(corsServer.address() as AddressInfo).port}`
+  })
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => corsServer.close(() => resolve()))
+  })
+
+  it('answers the preflight, naming every header it reads', async () => {
+    const res = await fetch(`${corsBase}/mcp`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: ALLOWED,
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization,content-type',
+      },
+    })
+    expect(res.status).toBe(204)
+    expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED)
+    expect(res.headers.get('access-control-allow-methods')).toContain('POST')
+
+    // The mirrored headers are the ones this transport refuses a request for
+    // disagreeing with, so a browser that may not send them cannot call it.
+    const allowed = (res.headers.get('access-control-allow-headers') ?? '').toLowerCase()
+    for (const header of ['authorization', 'content-type', 'mcp-protocol-version', 'mcp-method']) {
+      expect(allowed, header).toContain(header)
+    }
+    expect(res.headers.get('access-control-max-age')).toBeTruthy()
+  })
+
+  it('lets the browser read the 401 that starts the OAuth walk', async () => {
+    const res = await fetch(`${corsBase}/mcp`, {
+      method: 'POST',
+      headers: { ...MCP_HEADERS, origin: ALLOWED },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    })
+    expect(res.status).toBe(401)
+    expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED)
+    expect(res.headers.get('vary')).toContain('Origin')
+
+    // Without this the pointer at the RFC 9728 document is a header the page
+    // is not allowed to read, and discovery stops at "unauthorized" with no
+    // way forward.
+    expect((res.headers.get('access-control-expose-headers') ?? '')).toContain('WWW-Authenticate')
+    expect(res.headers.get('www-authenticate')).toContain('resource_metadata')
+  })
+
+  it('carries the headers on the discovery document as well', async () => {
+    // The first thing a browser client fetches after the 401. It is routed
+    // before the RPC endpoint, which is exactly how it came to be the one
+    // response left without them in the first draft of this.
+    const res = await fetch(`${corsBase}${PROTECTED_RESOURCE_PATH}`, { headers: { origin: ALLOWED } })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED)
+  })
+
+  it('never allows credentials, and never admits another origin', async () => {
+    const ok = await fetch(`${corsBase}/mcp`, {
+      method: 'POST',
+      headers: { ...MCP_HEADERS, origin: ALLOWED },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    })
+    // A bearer token in a header, never a cookie. Credentialed CORS would buy
+    // nothing and would make somebody else's page able to act as a signed-in
+    // user of an allowed origin.
+    expect(ok.headers.get('access-control-allow-credentials')).toBeNull()
+
+    const other = await fetch(`${corsBase}/mcp`, {
+      method: 'OPTIONS',
+      headers: { origin: 'https://evil.test', 'access-control-request-method': 'POST' },
+    })
+    expect(other.status).toBe(403)
+    expect(other.headers.get('access-control-allow-origin')).toBeNull()
   })
 })

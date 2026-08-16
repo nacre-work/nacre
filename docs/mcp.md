@@ -45,6 +45,16 @@ means to be reachable.
   agent sends none and the attack the rule exists for — DNS rebinding — is by
   definition a browser. The default list is empty, which refuses every browser
   and no agent.
+- **An allowed origin is also answered.** `OPTIONS /mcp` from one gets `204`
+  with the methods and every header this transport reads, and each reply carries
+  `Access-Control-Allow-Origin` and `Vary: Origin`. `WWW-Authenticate` is in
+  `Access-Control-Expose-Headers`, because a browser client reads the RFC 9728
+  pointer out of the `401` and cannot start discovery without it. Credentials
+  are never allowed: the token is a header, never a cookie.
+
+  Validating the origin and admitting it are two halves, and only the first was
+  built — so the variable could turn a `403` into a reply the browser then threw
+  away, and no browser could reach this transport whatever it was set to.
 - `GET` and `DELETE` on the endpoint answer **`405`**, not `404`. Both belonged
   to the revisions with sessions and a standalone SSE stream; `404` is one of
   the signals that sends a client down the deprecated HTTP+SSE path, and this
