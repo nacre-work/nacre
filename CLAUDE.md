@@ -230,6 +230,15 @@ code always does. `lint:stored-error` asks every surface that returns that
 column, and refuses if it finds none — a check with nothing to hold must not
 report green.
 
+**And the two transports answered `tools/list` with different objects.**
+`permission` is this repository's own bookkeeping — MCP's `Tool` has no such
+member — and Streamable HTTP stripped it while STDIO returned it, for the whole
+life of both. `transport-parity.test.ts` exists against exactly that and was
+green, because its case compared the tool *names*: a parity case whose
+projection is narrow enough is a parity case that cannot fail, which is the
+same defect as reading `location.hash` from a router that never rewrites it.
+One function both transports call, and the case compares the keys.
+
 Rate limiting, `Idempotency-Key` and cursor pagination are in, which is also
 what Redis is finally for — it had been required configuration, and in every
 Compose profile with the API waiting on its healthcheck, since before anything

@@ -26,6 +26,30 @@ export interface ToolDefinition {
   readonly permission: ToolPermission
 }
 
+/** A tool as MCP defines one: no `permission`, because that field is ours. */
+export type WireTool = Omit<ToolDefinition, 'permission'>
+
+/**
+ * The catalog as it goes on the wire.
+ *
+ * `permission` is this repository's own bookkeeping — it names what a tool
+ * resolves, and `mcp-surface.test.ts` asserts each one. MCP's `Tool` object has
+ * no such member, so putting it in a response is a non-standard field a client
+ * validating against the schema is entitled to refuse.
+ *
+ * Streamable HTTP stripped it and STDIO did not, so for the whole life of both
+ * transports `tools/list` answered with different objects depending on which
+ * one you asked — and `transport-parity.test.ts`, which exists against exactly
+ * that, compared the tool *names* and was green. One function now, because two
+ * places that have to remember is what produced it, and the parity case
+ * compares the shape.
+ */
+export const onTheWire = (tools: readonly ToolDefinition[]): WireTool[] =>
+  tools.map(({ permission, ...tool }) => {
+    void permission
+    return tool
+  })
+
 /**
  * The description of `search` is generated from the layers this caller can see.
  *
