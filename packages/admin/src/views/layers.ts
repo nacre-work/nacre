@@ -153,7 +153,7 @@ function table(layers: readonly Layer[], root: HTMLElement): HTMLElement {
             : null,
         ),
         h('td', {}, shortId(l.id)),
-        h('td', { class: 'row-end' },
+        h('td', { class: 'right' },
           h('button', { class: 'btn btn-quiet', onclick: () => void rename(l, root) }, 'Rename'),
           // The embedding model, and the recall gate in front of changing it.
           // On the layer rather than a screen of its own: there is at most one

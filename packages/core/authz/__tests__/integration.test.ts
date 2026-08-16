@@ -135,31 +135,79 @@ when('baseline · tenant isolation in the database', () => {
     await pool?.end()
   })
 
+  /**
+   * Every row a scoped connection returns carries the org it was scoped to.
+   *
+   * This is the assertion these two cases make, and it is deliberately not a
+   * census of the fixture. Comparing against an exact list makes the test a
+   * statement about *what else is in the database*, which is not what T1 is
+   * about: any row added to the fixture organization by anything else — another
+   * suite, a developer driving the stack by hand between runs — turns it red
+   * while isolation is intact, and a suite that goes red for reasons unrelated
+   * to the change is one people learn to re-run rather than read.
+   *
+   * It is also strictly stronger. The census caught a leak from org B, because
+   * B is what the fixture names; this catches a leak from *any* tenant, which
+   * is the property the policies actually have to hold.
+   *
+   * The embedding-provider case below already made this argument for its own
+   * table — "the assertion is the property, not a row count" — and the reason
+   * it was not applied here is the reason it is worth writing down: a fix that
+   * lands in one place and not its sibling is the most repeated defect in this
+   * repository.
+   */
+  const everyRowBelongsTo = (org: string, table: string, rows: readonly { org_id: string }[]): void => {
+    for (const [index, row] of rows.entries()) {
+      expect(row.org_id, `${table}[${String(index)}] visible to a connection scoped to ${org}`).toBe(org)
+    }
+  }
+
   it('T1 · a connection scoped to org A sees no org B rows', async () => {
     const seen = await withOrg(pool, A, async (c) => ({
-      documents: (await c.query('SELECT id FROM documents')).rows.map((r) => r.id),
-      layers: (await c.query('SELECT id FROM layers')).rows.map((r) => r.id),
-      users: (await c.query('SELECT id FROM users')).rows.map((r) => r.id),
-      grants: (await c.query('SELECT scope_id FROM grants')).rows.length,
+      documents: (await c.query<{ id: string; org_id: string }>('SELECT id, org_id FROM documents')).rows,
+      layers: (await c.query<{ id: string; org_id: string }>('SELECT id, org_id FROM layers')).rows,
+      users: (await c.query<{ id: string; org_id: string }>('SELECT id, org_id FROM users')).rows,
+      grants: (await c.query<{ id: string; org_id: string }>('SELECT id, org_id FROM grants')).rows,
     }), AS_APP)
 
-    expect(seen.documents).toEqual([ids.docA])
-    expect(seen.layers.sort()).toEqual([ids.contractsA, ids.handbookA].sort())
-    expect(seen.users).toEqual([ids.aliceA])
-    expect(seen.grants).toBe(2)
+    // The fixture is reachable. Without this the loop below passes on an empty
+    // set, which is how a test about what is *visible* fails open — a policy
+    // that hid everything from everybody would satisfy the property and break
+    // the product.
+    expect(seen.documents.map((r) => r.id)).toContain(ids.docA)
+    expect(seen.layers.map((r) => r.id)).toEqual(
+      expect.arrayContaining([ids.contractsA, ids.handbookA]),
+    )
+    expect(seen.users.map((r) => r.id)).toContain(ids.aliceA)
+    expect(seen.grants.length).toBeGreaterThanOrEqual(2)
+
+    for (const [table, rows] of Object.entries(seen)) everyRowBelongsTo(A, table, rows)
   })
 
   it('T1 · row-level security also covers the tables 0001 left open', async () => {
     // users, groups, group_members, service_accounts, sso_configs, audit_events
     // and embedding_providers had no policy until migration 0002.
-    const counts = await withOrg(pool, B, async (c) => ({
-      users: (await c.query('SELECT 1 FROM users')).rowCount,
-      groups: (await c.query('SELECT 1 FROM groups')).rowCount,
-      members: (await c.query('SELECT 1 FROM group_members')).rowCount,
+    //
+    // Org A's rows have to exist before org B seeing none of them means
+    // anything: a fixture that failed to seed would otherwise satisfy this
+    // case by leaving the tables empty.
+    const owner = await withOrg(pool, A, async (c) => ({
+      groups: (await c.query('SELECT id FROM groups')).rowCount ?? 0,
+      members: (await c.query('SELECT group_id FROM group_members')).rowCount ?? 0,
+    }), AS_APP)
+    expect(owner.groups, "org A's groups exist, so there is something to leak").toBeGreaterThan(0)
+    expect(owner.members, "org A's group members exist, so there is something to leak").toBeGreaterThan(0)
+
+    const seen = await withOrg(pool, B, async (c) => ({
+      users: (await c.query<{ id: string; org_id: string }>('SELECT id, org_id FROM users')).rows,
+      groups: (await c.query<{ id: string; org_id: string }>('SELECT id, org_id FROM groups')).rows,
+      members: (await c.query<{ group_id: string; org_id: string }>(
+        'SELECT group_id, org_id FROM group_members',
+      )).rows,
     }), AS_APP)
 
-    // Everything above belongs to org A.
-    expect(counts).toEqual({ users: 1, groups: 0, members: 0 })
+    expect(seen.users.map((r) => r.id)).toContain(ids.bobB)
+    for (const [table, rows] of Object.entries(seen)) everyRowBelongsTo(B, table, rows)
   })
 
   it('the installation-wide default model stays visible to every tenant', async () => {

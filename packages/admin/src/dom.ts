@@ -52,6 +52,49 @@ export const clear = (el: HTMLElement): void => {
 }
 
 /**
+ * An inline icon.
+ *
+ * `createElementNS` and not `h`, which calls `createElement` — an `<svg>` built
+ * in the HTML namespace parses and renders nothing at all, which is the kind of
+ * failure that looks like a missing file. Not an icon font and not an emoji
+ * either: this page loads no font, and an emoji renders differently on every
+ * platform at a size nobody chose.
+ *
+ * `currentColor` throughout, so a state is a class on the button rather than a
+ * second copy of the drawing.
+ */
+export const icon = (...paths: readonly { d?: string; rect?: readonly [number, number, number, number] }[]): SVGElement => {
+  const NS = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(NS, 'svg')
+  for (const [key, value] of Object.entries({
+    viewBox: '0 0 24 24', width: '14', height: '14', fill: 'none',
+    stroke: 'currentColor', 'stroke-width': '2',
+    'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true',
+  })) svg.setAttribute(key, value)
+
+  for (const part of paths) {
+    if (part.rect) {
+      const rect = document.createElementNS(NS, 'rect')
+      const [x, y, w, height] = part.rect
+      rect.setAttribute('x', String(x))
+      rect.setAttribute('y', String(y))
+      rect.setAttribute('width', String(w))
+      rect.setAttribute('height', String(height))
+      rect.setAttribute('rx', '2')
+      svg.append(rect)
+    } else {
+      const path = document.createElementNS(NS, 'path')
+      path.setAttribute('d', part.d ?? '')
+      svg.append(path)
+    }
+  }
+  return svg
+}
+
+const COPY_GLYPH = [{ rect: [9, 9, 12, 12] as const }, { d: 'M5 15V5a2 2 0 0 1 2-2h10' }]
+const DONE_GLYPH = [{ d: 'M20 6 9 17l-5-5' }]
+
+/**
  * A short id, monospaced, with the whole thing available on hover.
  *
  * Head and tail, not the first eight characters. Ids generated together share a
@@ -175,25 +218,49 @@ export const copyText = (text: string): Promise<CopyResult> =>
  *
  * The clipboard can be refused, so the fallback says what actually happened
  * rather than claiming a copy that did not occur.
+ *
+ * ## Why it is an icon
+ *
+ * It was the word `copy`, which measured 39×19 in a browser — a tap target
+ * under half the 44px the platforms ask for, sitting inside a table on a phone.
+ * It also read as a label rather than as something to press, next to the id it
+ * was labelling. It is a square with a glyph now, and the glyph becomes a
+ * checkmark for a moment so the press has an answer.
  */
 export const copyableId = (id: string): HTMLElement => {
   const note = h('span', { class: 'copied' })
-  return h('span', { class: 'idcopy' },
-    shortId(id),
-    h('button', {
-      type: 'button',
-      class: 'btn btn-quiet',
-      title: `Copy ${id}`,
-      onclick: async () => {
-        // On failure the whole id is put on the page rather than into the
-        // clipboard: it is the one thing this control exists to hand over, and
-        // a selectable line of text is a worse answer than a copy and a much
-        // better one than nothing.
-        note.textContent = (await copyText(id)) === 'copied' ? 'copied' : id
-      },
-    }, 'copy'),
-    note,
-  )
+  const button = h('button', { type: 'button', class: 'btn btn-quiet btn-icon', title: `Copy ${id}`, 'aria-label': `Copy ${id}` })
+  button.append(icon(...COPY_GLYPH))
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  button.addEventListener('click', () => {
+    void (async () => {
+      const ok = (await copyText(id)) === 'copied'
+      button.replaceChildren(icon(...(ok ? DONE_GLYPH : COPY_GLYPH)))
+      button.classList.toggle('is-copied', ok)
+      // The glyph is the whole answer for somebody looking at it and no answer
+      // at all for somebody who is not, so the accessible name carries the same
+      // state. Without this a screen reader announces `Copy <id>` before the
+      // press and `Copy <id>` after it.
+      const said = ok ? 'Copied' : `Copy failed — ${id} is on the page`
+      button.setAttribute('aria-label', said)
+      button.title = said
+      // On failure the whole id is put on the page rather than into the
+      // clipboard: it is the one thing this control exists to hand over, and
+      // a selectable line of text is a worse answer than a copy and a much
+      // better one than nothing.
+      note.textContent = ok ? '' : id
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        button.replaceChildren(icon(...COPY_GLYPH))
+        button.classList.remove('is-copied')
+        button.setAttribute('aria-label', `Copy ${id}`)
+        button.title = `Copy ${id}`
+      }, 2000)
+    })()
+  })
+
+  return h('span', { class: 'idcopy' }, shortId(id), button, note)
 }
 
 /**

@@ -264,10 +264,17 @@ when('baseline · the search path', () => {
       c.release()
     }
 
-    expect(await documents.read(as(A), ids.docA)).toMatchObject({
+    // The wording survives and the endpoint does not. This surface handed back
+    // the column verbatim while `/v1/jobs` carefully removed the host from the
+    // same string — and `get_document` is an MCP tool resolving `read`, so its
+    // caller can be a third party acting through a delegation. That is the
+    // caller the redaction was written for, reached through the other door.
+    const failed = await documents.read(as(A), ids.docA)
+    expect(failed).toMatchObject({
       status: 'failed',
-      error: 'the embedding endpoint at http://embedder/embeddings did not answer within 120 s',
+      error: 'the embedding endpoint at [endpoint] did not answer within 120 s',
     })
+    expect(failed?.error).not.toContain('embedder')
 
     // And the layer says so too, which is the other half. `documentCount` stays
     // a count of rows — right, and by itself indistinguishable between a layer

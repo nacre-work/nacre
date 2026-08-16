@@ -177,6 +177,106 @@ saved reference query, because `check: null` means both "no set" and "not scored
 yet" and only the second was true — the panel already loads the set, so it can
 tell them apart and now does.
 
+**The console has been rendered at 1440 and at 390**, every view and every
+dialog, and four defects came out of it that no suite could see — three of them
+only on a phone, which is the width nobody develops at.
+
+`.row` aligns `flex-end`, which aligns **margin** boxes: `.field` carried
+`margin-bottom` and a bare button in the same row carried none, so every row
+mixing the two hung the button exactly that far below the control beside it.
+The action column wrapped, because five of the six action cells used `.right`
+and the sixth used `.row-end`, and only `.row-end` said `nowrap` — three
+actions on one row stacked onto three lines and took a People row from 58px to
+153px. The `copy` control beside every id was the word `copy` at 39×19, under
+half a touch target, and it was `opacity: 0` until its row was hovered — so on
+a phone, which reports `hover: none`, it was invisible with no gesture that
+revealed it, and `shortId` truncates the id it copies. Every id on those
+screens was unreachable on the device half of them are read on.
+
+`lint:admin-layout` is the repair rather than the four edits: a flex container
+aligned on an edge has children with no margin on that edge, and a control
+revealed on hover is behind `@media (hover: hover)`.
+
+Its first version **passed with the defect restored**, and that is the part
+worth keeping. It looked for a rule whose selector carried the margin under the
+container — `.row > .field { margin-bottom: 12px }`, the spelling the fix had
+just removed — while the margin actually lives on a bare `.field` and only the
+cancellation kept it off the row. Deleting one line brought the crooked buttons
+back and the check stayed green: it had learned the shape of the edit rather
+than the property. The cancellation is `> *` now instead of naming a class,
+which closes the same hole one step later, and the check requires that reset on
+every edge-aligned container. Six breaks, including the two that defeated the
+first version.
+
+Two things that were not layout came out of the same pass. `lint:tokens` was
+named in `admin.css`'s own header — "Nothing here invents a hex value, and
+`lint:tokens` fails the build if one appears" — and **did not exist**, in
+`package.json`, in a workflow or in `scripts/`. The property held, which is
+what made it invisible; a claim that a check exists is worse than a comment
+asking for one, because a reader stops looking. It exists now.
+
+And `scripts/screenshots.mjs` could photograph the wrong screen without saying
+so. It had no `GET /v1/me` fixture, so `me()` got the 500 an unstubbed call
+gets, the console left the caller a member, hid every admin-only route and fell
+back to the first allowed view — a run asking for `#/grants` writes a picture
+of Search over `grants.png` and carries on. It had recorded the missing fixture
+as a failure, and then died on a control that was not there before printing it,
+with the images already on disk.
+
+**The committed images were never wrong**, and the first version of this
+paragraph said they were. That claim came from running `md5sum` on the working
+tree *after* a failed run of this script had already overwritten two of them —
+measuring damage this session caused and attributing it to the repository,
+without checking `git show origin/main:` first. The three hashes differ there
+and always did. A defect blamed on the tree is a claim about the tree, and the
+place to check one is the tree.
+
+The guard is that a shot asserts it is a picture of the screen it is named
+after, read from the **rendered nav** and not from `location.hash`: the router
+deliberately leaves the address alone so a member's bookmark survives, which
+makes the hash a check that can never fail. It throws rather than collecting,
+because by the time the summary prints the wrong picture is on disk.
+
+**And the redaction that change added went on one of the two surfaces.**
+`/v1/jobs/{id}` and `ingest_status` put the stored failure through
+`withoutHosts`; `GET /v1/documents/{id}` handed back `documents.error` verbatim,
+and so did `get_document`, an MCP tool resolving `read` — which is reached by a
+delegation, so its caller can be a third party an operator connected. That is
+the exact caller `classifyIngestFailure`'s own header names, receiving
+`http://embedder.internal:8080/embeddings` through the other door. The most
+repeated defect here, committed by the change that wrote the cure. The test
+that pinned it asserted the raw string, which is what a test written beside the
+code always does. `lint:stored-error` asks every surface that returns that
+column, and refuses if it finds none — a check with nothing to hold must not
+report green.
+
+**And the redaction itself held for the example and not for the deployment.**
+The rule needed a dot and a two-letter tail, so it covered `embedder.internal`
+— written in that module's own header — and none of the service names this
+product ships with, every one of which is a single label: `embedder`, `qdrant`,
+`parser`. The way one survived is the lesson: the URL *was* removed, and undici
+then appended its cause verbatim, leaving `getaddrinfo ENOTFOUND embedder` at
+the end of an otherwise clean sentence. IPv6 was untouched entirely. A host is
+recognised by **where it can be** now — after a scheme, in brackets, as
+`name:port`, after a DNS or socket code, after the phrases this repository
+writes itself — because those are positions a machine puts one in, and a
+token's shape is shared with everything a person wrote. Eleven strings this
+stack actually produces are pinned as tests, and the six that must survive
+beside them.
+
+Over-redaction stays in one place and is written down rather than fixed:
+`contract.pdf` and `example.com` are the same string with a different tail, a
+list of extensions goes stale, and of the two ways to be wrong only one leaks.
+
+**And the two transports answered `tools/list` with different objects.**
+`permission` is this repository's own bookkeeping — MCP's `Tool` has no such
+member — and Streamable HTTP stripped it while STDIO returned it, for the whole
+life of both. `transport-parity.test.ts` exists against exactly that and was
+green, because its case compared the tool *names*: a parity case whose
+projection is narrow enough is a parity case that cannot fail, which is the
+same defect as reading `location.hash` from a router that never rewrites it.
+One function both transports call, and the case compares the keys.
+
 Rate limiting, `Idempotency-Key` and cursor pagination are in, which is also
 what Redis is finally for — it had been required configuration, and in every
 Compose profile with the API waiting on its healthcheck, since before anything
@@ -579,7 +679,7 @@ authority over the organization holding it, so `administers` reads the
 connection's ceiling and never a layer's.
 
 `admin` is a ceiling value and is deliberately **not** on the consent screen.
-The MCP surface has no administrative tool at all — its five tools resolve with
+The MCP surface has no administrative tool at all — its six tools resolve with
 `read` or `write` — so the box would do nothing where the person is looking and
 a great deal through REST, where they are not, which is worse than a control
 that does nothing. It stays reachable through the API because it is not an

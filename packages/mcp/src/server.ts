@@ -20,7 +20,7 @@ import {
 } from '@nacre.work/api'
 
 import { INSTRUCTIONS } from './instructions.js'
-import { catalog, type Layer, type ToolDefinition } from './tools.js'
+import { catalog, onTheWire, type Layer, type ToolDefinition } from './tools.js'
 
 /** The revision this server prefers — the head of PROTOCOL_VERSIONS. */
 export const PROTOCOL_VERSION = '2026-07-28'
@@ -754,10 +754,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
           // The catalog depends on this caller's permissions, so the cache is
           // per user. A global cache would serve one caller's catalog — and the
           // layer names inside it — to another.
-          tools: tools.map(({ permission, ...tool }) => {
-            void permission
-            return tool
-          }),
+          tools: onTheWire(tools),
           ttlMs: TOOLS_TTL_MS,
           cacheScope: 'user',
         },

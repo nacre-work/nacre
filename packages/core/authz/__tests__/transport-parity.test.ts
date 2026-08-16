@@ -127,7 +127,20 @@ const SHARED: readonly {
     name: 'tools/list offers the same catalog',
     method: 'tools/list',
     params: {},
-    compare: (r) => (r.tools as { name: string }[]).map((t) => t.name).sort(),
+    // Names *and* the shape of each entry. Comparing names alone let the two
+    // transports answer with different objects for the whole life of both:
+    // Streamable HTTP stripped the internal `permission` field and STDIO
+    // returned it, so a client on one got a member MCP's `Tool` does not
+    // define. A parity case that compares a narrow enough projection is a
+    // parity case that cannot fail, which is the failure this file exists
+    // against — so the keys are part of the comparison.
+    compare: (r) => {
+      const tools = r.tools as Record<string, unknown>[]
+      return {
+        names: tools.map((t) => t.name as string).sort(),
+        keys: [...new Set(tools.flatMap((t) => Object.keys(t)))].sort(),
+      }
+    },
   },
 ]
 

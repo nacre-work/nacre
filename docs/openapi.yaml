@@ -366,6 +366,20 @@ components:
             reporting it beside `indexed` would describe a working document as a
             broken one. It follows the document's own permission, so rule 6
             keeps it away from a caller holding `write` alone.
+
+
+            Anything shaped like a host or a URL is taken out, the same as on
+            `/v1/jobs/{jobId}`. The stored string carries the embedding
+            endpoint's address and whatever a sidecar wrote into its message,
+            and this field is reached by `get_document` over MCP — whose caller
+            can be a third party acting through a delegation.
+
+
+            A **filename** is taken out with them, and that is a known cost
+            rather than an oversight: `contract.pdf` and `example.com` are the
+            same shape, nothing can separate them, and of the two ways to be
+            wrong only one leaks. The unredacted text is in the worker's log,
+            where the operator is.
         updated_at:  { type: string, format: date-time }
         metadata:
           allOf:
