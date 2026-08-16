@@ -1244,22 +1244,29 @@ paths:
   /oauth/consent:
     post:
       operationId: consent
-      summary: Approve an OAuth request, naming the agent a client will act as
+      summary: Approve an OAuth request, as yourself or as an agent
       description: |
         The one call in the OAuth flow that creates authority, and the reason it
-        is inside the authenticated surface: a signed-in person is choosing which
-        **service account** an application gets to act as.
+        is inside the authenticated surface: a signed-in person is choosing what
+        an application gets to act as.
 
-        The token that reaches the client acts as that account and **never** as
-        the person who approved it. That is the design rather than a detail. An
-        agent here is a principal with its own grants, so "what may this agent
-        read" is a different question from "what may you read", and handing an
-        agent the approver's authority would answer the first with the second.
+        **Two answers, and the person is the default.** Omit `service_account_id`
+        and the token is a *delegation*: the application acts as the signed-in
+        person and reaches exactly what they reach, bounded by the ceiling
+        chosen here. Name an agent and the token acts as that account and
+        **never** as the person who approved it — an agent is a principal with
+        its own grants, so "what may this agent read" is a different question
+        from "what may you read", and handing an agent the approver's authority
+        would answer the first with the second.
 
-        The service account must already exist and be visible to the caller.
-        Creating one and granting it anything go through the endpoints that
-        already do those things — a second path to either is how the guarded one
-        gets walked around.
+        Which of the two it is has no flag beside it. Naming an agent is what
+        makes this the agent flow, because two ways to say one thing is two ways
+        for them to disagree.
+
+        A named agent must already exist and be visible to the caller. Creating
+        one and granting it anything go through the endpoints that already do
+        those things — a second path to either is how the guarded one gets
+        walked around.
 
         The unauthenticated half of the flow — `/oauth/register`,
         `/oauth/authorize`, `/oauth/token` — is not in this contract: those are
@@ -1297,12 +1304,15 @@ paths:
       operationId: listConnections
       summary: Applications connected to this organization
       description: |
-        What has been approved and is able to act as an agent.
+        What has been approved, and what each connection acts as — an agent, or
+        the person who approved it.
 
         An `org_admin` sees the organization's; everybody else sees the ones
         they approved. That is not a gradient invented for this endpoint — an
         agent belongs to the organization, so somebody has to be able to end a
-        connection whose approver has left.
+        connection whose approver has left. A delegation is somebody's own, and
+        an administrator can end that too, for the same reason: the person may
+        be gone.
 
         `last_refreshed_at` is *last seen renewing*, and the name says so. An
         access token is verified locally against a key, so its use touches

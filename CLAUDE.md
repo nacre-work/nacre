@@ -1021,6 +1021,26 @@ placed; `PostgresGrants.issue` checks existence now. Neither was a leak — the
 pre-filter's unconditional `must: org_id` held in both cases — and both made
 `404` stop meaning what invariant 4 says it means.
 
+The third was inside one file and disagreed with itself. `/oauth/consent`'s
+description said a signed-in person chooses which **service account** an
+application acts as, and that the token "acts as that account and **never** as
+the person who approved it. That is the design rather than a detail." Its own
+request schema, six hundred lines earlier in the same document, says *"Omit it
+to approve as yourself … naming nobody is a delegation, where the token acts as
+the signed-in person"* — and the consent screen's default is exactly that case. So
+the contract described the flow as the one thing it is not, in the document that
+is normative here, while the schema beside it was right and so were
+`docs/authz.md`, `docs/mcp.md` and `docs/upgrading.md`. Prose written before a
+feature, in a file the feature only touched further down.
+
+This is the class the file already names as resisting a check, arriving from a
+new direction: not a claim repeated across documents but a claim contradicted by
+a schema inside the same one. No mechanical rule was added, because the ones
+that would have caught it — an operation's prose against its own schema's
+requiredness — are narrow enough to be defeated by rewording, which is the
+shape of check this repository keeps deleting. `grep` found the other three
+copies, and they were correct.
+
 **All 25 cases from docs/authz.md run** against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
 round trip that puts the worker and the search path against each other.
