@@ -205,17 +205,27 @@ named in `admin.css`'s own header — "Nothing here invents a hex value, and
 what made it invisible; a claim that a check exists is worse than a comment
 asking for one, because a reader stops looking. It exists now.
 
-And `docs/assets/admin/people.png` and `grants.png` were **byte-identical
-pictures of Search**. `scripts/screenshots.mjs` had no `GET /v1/me` fixture, so
-`me()` got the 500 an unstubbed call gets, the console left the caller a
-member, hid every admin-only route and fell back to the first allowed view —
-and the run then died on a control that was not there, before printing the
-failure it had already recorded. The images were written anyway. The guard is
-that a shot asserts it is a picture of the screen it is named after, read from
-the **rendered nav** and not from `location.hash`: the router deliberately
-leaves the address alone so a member's bookmark survives, which makes the hash
-a check that can never fail. It throws rather than collecting, because by the
-time the summary prints the wrong picture is already on disk.
+And `scripts/screenshots.mjs` could photograph the wrong screen without saying
+so. It had no `GET /v1/me` fixture, so `me()` got the 500 an unstubbed call
+gets, the console left the caller a member, hid every admin-only route and fell
+back to the first allowed view — a run asking for `#/grants` writes a picture
+of Search over `grants.png` and carries on. It had recorded the missing fixture
+as a failure, and then died on a control that was not there before printing it,
+with the images already on disk.
+
+**The committed images were never wrong**, and the first version of this
+paragraph said they were. That claim came from running `md5sum` on the working
+tree *after* a failed run of this script had already overwritten two of them —
+measuring damage this session caused and attributing it to the repository,
+without checking `git show origin/main:` first. The three hashes differ there
+and always did. A defect blamed on the tree is a claim about the tree, and the
+place to check one is the tree.
+
+The guard is that a shot asserts it is a picture of the screen it is named
+after, read from the **rendered nav** and not from `location.hash`: the router
+deliberately leaves the address alone so a member's bookmark survives, which
+makes the hash a check that can never fail. It throws rather than collecting,
+because by the time the summary prints the wrong picture is on disk.
 
 **And the redaction that change added went on one of the two surfaces.**
 `/v1/jobs/{id}` and `ingest_status` put the stored failure through

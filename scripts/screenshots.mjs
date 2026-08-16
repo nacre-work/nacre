@@ -77,13 +77,15 @@ const FIXTURES = {
   // What decides which navigation the console draws. There was no fixture for
   // it, so `me()` got the 500 an unstubbed call gets, `index.ts` caught it and
   // left the caller a member, and every admin-only route was hidden — a
-  // request for `#/people` fell back to the first allowed view. `people.png`
-  // and `grants.png` in docs/ were byte-identical pictures of **Search**.
+  // request for `#/people` fell back to the first allowed view and the run
+  // wrote a picture of Search over `people.png`.
   //
   // The recorded failure for the unstubbed call was right there and the run
-  // crashed before printing it, so the images were written and shipped anyway.
-  // That is what `landed` below is for: an assertion that the picture is of
-  // the screen it is named after.
+  // crashed before printing it, so the wrong images were written anyway. The
+  // ones committed here were never wrong — checked against `origin/main`,
+  // where the three hashes differ — but nothing stopped a run from replacing
+  // them, which is what `landed` below is for: an assertion that the picture
+  // is of the screen it is named after.
   'GET /v1/me': {
     organization: 'acme',
     principal_type: 'user',
@@ -249,8 +251,8 @@ async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} }
 
   // The console hides the routes a member may not use and falls back to the
   // first one it will show, so asking for a screen you are not allowed to see
-  // silently photographs a different screen. Nothing said so, and three images
-  // in docs/ were pictures of Search for exactly that reason.
+  // silently photographs a different screen, over the file named after the
+  // one you asked for. Nothing said so.
   if (hash !== '') {
     // The **rendered** route, not `location.hash`. The router falls back to
     // the first screen the caller may use and deliberately leaves the address
@@ -268,8 +270,8 @@ async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} }
       // the wrong screen, and the summary at the end arrives after the damage
       // — or never, because a later `prepare` clicks a control that is not
       // there and the timeout kills the process before anything is printed.
-      // That is exactly what happened, and it is why two of these images
-      // shipped as pictures of Search.
+      // That is exactly what happened to a working tree here. The committed
+      // images survived it, and only because nobody committed that run.
       throw new Error(
         `${name}: asked for ${hash} and the console showed ${landed || 'the default view'}. ` +
           'The admin console hides the routes the caller may not use and falls back to the ' +
