@@ -53,6 +53,16 @@ export const ACL_GROUPS = [
   // sign-in or carries its own `revoked_at`, so this is the one group whose
   // failure means somebody who cannot sign in is still acting.
   { selector: 'delegation', title: 'T16-T22 · delegated authority' },
+  // Not a T-case, and in the required job because it is the one place `write`
+  // was widened. A caller holding `write` and no `read` can ask what became of
+  // the document it sent — a status, a count and a classified reason — and must
+  // still be refused the document itself. Rule 6 has its own step above for the
+  // resolver; this is the surface that would break it in practice, by answering
+  // with a projection somebody widened later.
+  {
+    selector: 'a writer can see its own ingest',
+    title: 'rule 6 · a writer sees its job and never the document',
+  },
 ]
 
 /** The property run is its own step with its own run count; not a group. */

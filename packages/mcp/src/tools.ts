@@ -145,8 +145,40 @@ export function catalog(layers: readonly Layer[]): readonly ToolDefinition[] {
       },
     },
     {
+      name: 'ingest_status',
+      /**
+       * The tool an agent needs and did not have.
+       *
+       * `ingest_document` answers `queued`, and everything that can go wrong
+       * happens afterwards in the worker — so an agent that ingested and moved
+       * on treated a queued document as an indexed one. There was no way for it
+       * to learn otherwise: `get_document` needs `read`, and rule 6 means the
+       * ingest-only principal this surface is built for does not have it.
+       *
+       * `write`, therefore. What it returns is a status, a chunk count and a
+       * classified reason — never the document.
+       */
+      description:
+        'What became of an ingest. Poll this after ingest_document: `queued` means the work was ' +
+        'accepted, not that it succeeded, and indexing fails afterwards. `indexed` with ' +
+        'chunk_count 0 means the document parsed to no text and is not searchable. On `failed`, ' +
+        'reason says whether re-sending would help — `too_long` and `unreadable` will not change, ' +
+        '`unavailable` may.',
+      permission: 'write',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          job_id: { type: 'string', description: 'From ingest_document' },
+        },
+        required: ['job_id'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'ingest_document',
-      description: 'Add or update a document in a layer.',
+      description:
+        'Add or update a document in a layer. Returns `queued`: the document is accepted, not ' +
+        'yet indexed. Check ingest_status with the job_id before treating it as searchable.',
       // write, and write does not imply read: a service account that only
       // uploads must not be able to search what it uploaded.
       permission: 'write',

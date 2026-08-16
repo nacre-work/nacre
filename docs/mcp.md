@@ -418,6 +418,37 @@ Exactly one of `content` / `url` / an uploaded file. Idempotent on
 no-op. The response is asynchronous: `{ document_id, job_id, status }`.
 Permission: `write`.
 
+**`status` is `queued`, and that is not success.** Parsing, chunking and
+embedding all happen afterwards in the worker, and a document that fails there
+is left in `failed`, which nothing retries. Check `ingest_status` before
+treating the document as searchable.
+
+### `ingest_status`
+
+`{ job_id }`, from `ingest_document`. Returns
+`{ job_id, document_id, status, chunk_count }`, plus `reason` and `error` when
+`status` is `failed`. Permission: **`write`** — and that is the point of the
+tool rather than an oversight in it.
+
+Rule 6 says `write` does not imply `read`, and the ingest-only service account
+is the principal that rule describes. Every other surface that could answer
+"what became of my document" needs `read`, so that principal could hand one
+over, receive `queued`, and never learn the outcome — which is what a silent
+failure needs in order to stay silent. This one resolves `write` as well as
+`read`, and the projection is why that is safe: a status, a count, and a
+classified reason. Never the text, the title or the metadata.
+
+`reason` is one of `too_long`, `unreadable`, `unavailable`, `quota`,
+`internal`. `too_long` and `unreadable` will not change if the same bytes are
+sent again; `unavailable` may. `error` is a sentence for whoever sent the
+document and deliberately **not** the stored one — that carries the embedding
+endpoint's URL and whatever a sidecar wrote into its message, and the caller
+here may be a third party acting through a delegation.
+
+`indexed` with `chunk_count: 0` is a real outcome and is not searchable: the
+document parsed to no text. Absent, another organization's, and one this caller
+reaches by neither permission all answer `404`.
+
 `metadata` is what `search`'s `filters` reads back, and was dropped by the
 server for as long as `filters` did nothing. Keys are lower case letters, digits
 and underscores, at most 32 of them; values are scalars or lists of them, and a

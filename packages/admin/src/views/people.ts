@@ -451,8 +451,13 @@ async function membersPanel(group: Group, root: HTMLElement): Promise<void> {
         message.textContent = explain(error)
       }
     } },
-      type,
-      h('div', { class: 'field grow' }, member.el),
+      // In a `.field`, like the select in every other row in this UI. Bare, it
+      // is a flex item carrying `.input`'s `width: 100%`, so it claimed the
+      // whole row and the member picker beside it — `flex: 1` from `.grow`, and
+      // therefore a basis of zero — collapsed to a sliver behind the Add
+      // button. This was the only row that did not wrap its select.
+      h('label', { class: 'field' }, h('span', {}, 'Kind'), type),
+      h('div', { class: 'field grow' }, h('span', {}, 'Member'), member.el),
       h('button', { type: 'submit', class: 'btn btn-primary' }, 'Add'),
     ),
     message,

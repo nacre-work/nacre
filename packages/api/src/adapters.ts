@@ -32,6 +32,7 @@ import {
   type Permission,
   type QueryablePlan,
   type ReindexState,
+  classifyIngestFailure,
 } from '@nacre.work/core'
 import { createHash } from 'node:crypto'
 
@@ -1326,11 +1327,27 @@ export class PostgresJobs implements Jobs {
       orgId,
       async (client) => {
         // A job id is a document id, so this is the document read with a
-        // different projection — and needs the same check. The status and the
-        // error string are both facts about a document the caller may not be
-        // allowed to know exists.
-        const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'read')
-        if (plan.kind === 'none') return undefined
+        // different projection — and needs the same check. The status is a fact
+        // about a document the caller may not be allowed to know exists.
+        //
+        // **`write` as well as `read`, and that is the point of this endpoint.**
+        // Rule 6 says write does not imply read, and it still does not: what a
+        // writer gets here is whether the document they sent was indexed, and a
+        // reason if it was not. Never its text, never its title, never its
+        // metadata — the projection below is the whole of it.
+        //
+        // Resolving only `read` made this unreachable for exactly the caller it
+        // is for. An ingest-only service account is the principal the write
+        // permission exists to describe, and it could hand over a document,
+        // receive `queued`, and never be able to ask what became of it: the
+        // document endpoint answers `404` to it correctly, and this one did too.
+        // So every agent that ingested over MCP treated `queued` as success,
+        // which is what a silent failure needs to become invisible.
+        const context = await contextFor(client, auth, this.principalsCache)
+        const resolver = activeResolver()
+        const readable = resolver.resolve(context, 'read')
+        const writable = resolver.resolve(context, 'write')
+        if (readable.kind === 'none' && writable.kind === 'none') return undefined
 
         const { rows } = await client.query<{
           id: string
@@ -1347,10 +1364,16 @@ export class PostgresJobs implements Jobs {
         const row = rows[0]
         if (row === undefined) return undefined
 
-        if (plan.kind === 'scoped') {
-          if (plan.deniedDocs.includes(jobId)) return undefined
-          if (!plan.layers.includes(row.layer_id) && !plan.extraDocs.includes(jobId)) return undefined
+        // Reachable through either permission, checked independently. A caller
+        // holding `read` on one layer and `write` on another sees the fate of
+        // documents in both, and of nothing else.
+        const reaches = (plan: ReturnType<typeof resolver.resolve>): boolean => {
+          if (plan.kind === 'none') return false
+          if (plan.kind === 'all') return true
+          if (plan.deniedDocs.includes(jobId)) return false
+          return plan.layers.includes(row.layer_id) || plan.extraDocs.includes(jobId)
         }
+        if (!reaches(readable) && !reaches(writable)) return undefined
 
         const status = (
           ['queued', 'parsing', 'embedding', 'indexed', 'failed'].includes(row.status)
@@ -1365,12 +1388,21 @@ export class PostgresJobs implements Jobs {
         // make a progress bar prettier.
         const progress = status === 'indexed' ? 1 : status === 'failed' ? 0 : 0.5
 
+        // Classified, not repeated. The stored string carries the embedding
+        // endpoint's URL and whatever a sidecar wrote into its message, and the
+        // caller here may be a third party acting through a delegation. What
+        // they get is a reason they can branch on and a sentence about their
+        // document; the raw text stays in Postgres and the worker's log, where
+        // the operator is.
+        const failure = row.error === null ? undefined : classifyIngestFailure(row.error)
+
         return {
           jobId: row.id,
           documentId: row.id,
           status,
           progress,
-          ...(row.error === null ? {} : { error: row.error }),
+          chunkCount: Number(row.chunk_count),
+          ...(failure === undefined ? {} : { reason: failure.reason, error: failure.message }),
         }
       },
       this.role === undefined ? {} : { role: this.role },
