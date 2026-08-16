@@ -277,7 +277,12 @@ tr:hover .idcopy .btn, .idcopy .btn:focus-visible { opacity: 1; }
   color: var(--n-text-faint);
 }
 .field.inline { flex-direction: row; align-items: center; gap: 8px; margin: 0; }
-.field.grow { flex: 1; }
+/* `min-width: 0`, because a flex item will not shrink below its content by
+   default and the things that go in here are lists of email addresses. Without
+   it a long option makes the row wider than its dialog and pushes whatever
+   follows out of view. */
+.field.grow { flex: 1; min-width: 0; }
+.field.grow .input, .field.grow select { max-width: 100%; }
 .row { display: flex; gap: 12px; align-items: flex-end; }
 .row > .field { margin-bottom: 12px; }
 
