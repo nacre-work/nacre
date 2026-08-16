@@ -9,6 +9,7 @@ import {
   rerankerFor,
   type AuthContext,
   type PrincipalsCache,
+  PostgresJobs,
 } from '@nacre.work/api'
 import {
   createPool,
@@ -104,6 +105,11 @@ export function buildServices(
     ...(objects === undefined ? {} : { objects }),
     role: APP_ROLE,
   })
+
+  // The same reader the REST job endpoint uses, for the same reason as the
+  // presigner below: an agent asking what became of its ingest and an operator
+  // asking through REST must not get two different answers about one document.
+  const jobs = new PostgresJobs(pool, APP_ROLE, principalsCache)
 
   // The same presigner as REST. `get_document` over MCP and `GET /v1/documents`
   // describe the same document, and one of them handing back a link while the
@@ -392,6 +398,25 @@ export function buildServices(
             document_id: outcome.documentId,
             job_id: outcome.jobId,
             status: outcome.unchanged ? 'indexed' : 'queued',
+          }
+        }
+        case 'ingest_status': {
+          const jobId = args.job_id
+          if (typeof jobId !== 'string' || jobId === '') throw new Error('job_id is required')
+
+          // Absent, another organization's, and one this caller reaches by
+          // neither `read` nor `write` all answer the same way — a job names a
+          // document, so it is exactly as much of an oracle as the document is.
+          const job = await jobs.read(auth, jobId)
+          if (job === undefined) throw new Error('not found')
+
+          return {
+            job_id: job.jobId,
+            document_id: job.documentId,
+            status: job.status,
+            chunk_count: job.chunkCount,
+            ...(job.reason === undefined ? {} : { reason: job.reason }),
+            ...(job.error === undefined ? {} : { error: job.error }),
           }
         }
         case 'delete_document': {

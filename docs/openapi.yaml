@@ -434,12 +434,52 @@ components:
         - required: [url]
     Job:
       type: object
+      description: >
+        What became of an ingest, for the caller who sent it.
+
+
+        Reachable with **`write`** on the document's layer as well as with
+        `read`, and that is the point of it. Rule 6 says write does not imply
+        read and it still does not: this carries a status, a chunk count and a
+        classified reason, and never the document's text, title or metadata.
+        An ingest-only service account — the principal `write` exists to
+        describe — could otherwise hand over a document, receive `queued`, and
+        have no way to ask what became of it, because every surface that would
+        answer needs `read`.
+
+
+        `indexed` alone does not mean searchable: a document that parses to
+        nothing reaches it too, with `chunk_count: 0`. Check the count.
+      required: [job_id, document_id, status, chunk_count]
       properties:
         job_id:      { type: string }
         document_id: { type: string, format: uuid }
         status:      { type: string, enum: [queued, parsing, embedding, indexed, failed] }
         progress:    { type: number }
-        error:       { type: string }
+        chunk_count:
+          type: integer
+          description: >
+            Chunks indexed. Zero with `indexed` means the document parsed to no
+            text — a real outcome, and not the same as being searchable.
+        reason:
+          type: string
+          enum: [too_long, unreadable, unavailable, quota, internal]
+          description: >
+            Why it failed, stable enough to branch on. `too_long` and
+            `unreadable` will not change on a retry; `unavailable` may.
+
+
+            Present only with `status: failed`.
+        error:
+          type: string
+          description: >
+            The same thing in a sentence, written for whoever sent the document.
+
+
+            **Not the stored error.** That one carries the embedding endpoint's
+            URL and whatever a sidecar wrote into its message, and the caller
+            here may be a third party acting through a delegation. The raw text
+            stays in Postgres and in the worker's log, where the operator is.
     ServiceAccount:
       type: object
       properties:

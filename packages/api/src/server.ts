@@ -36,6 +36,7 @@ import {
   type MultipartPart,
   type ProtectedResourceMetadata,
   type Permission,
+  type IngestFailureReason,
 } from '@nacre.work/core'
 
 import {
@@ -302,6 +303,19 @@ export interface Job {
   readonly documentId: string
   readonly status: 'queued' | 'parsing' | 'embedding' | 'indexed' | 'failed'
   readonly progress: number
+  /**
+   * How many chunks the document indexed as.
+   *
+   * Here because `indexed` alone does not mean a document is searchable: one
+   * that parses to nothing reaches it too, with zero chunks, deliberately — an
+   * emptied file has to sweep its old points. A caller checking its own ingest
+   * wants the number, and the alternative was `GET /v1/documents/{id}`, which
+   * needs `read` and therefore refuses the writer this whole endpoint is for.
+   */
+  readonly chunkCount: number
+  /** Stable, for a program. See `classifyIngestFailure`. */
+  readonly reason?: IngestFailureReason
+  /** For a person. Carries no host, no URL and none of the document. */
   readonly error?: string
 }
 
@@ -2860,6 +2874,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           document_id: job.documentId,
           status: job.status,
           progress: job.progress,
+          chunk_count: job.chunkCount,
+          ...(job.reason === undefined ? {} : { reason: job.reason }),
           ...(job.error === undefined ? {} : { error: job.error }),
         },
         requestId,
