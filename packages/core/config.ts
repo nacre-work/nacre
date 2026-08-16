@@ -85,6 +85,15 @@ export interface Config {
    */
   readonly mcpAllowedOrigins: readonly string[]
   /**
+   * Browser origins the REST API answers, from `NACRE_API_ALLOWED_ORIGINS`.
+   *
+   * Separate from the MCP list because they are separate processes with
+   * separate configuration and, on a split deployment, separate hostnames — one
+   * variable would force a deployment to admit an origin on a surface it did
+   * not mean to.
+   */
+  readonly apiAllowedOrigins: readonly string[]
+  /**
    * The identity provider in front of this installation, if there is one.
    *
    * Optional and empty by default, because a self-hosted Nacre usually has no
@@ -809,6 +818,32 @@ class Reader {
   }
 
   /**
+   * An origin allow-list, where `*` is refused by name.
+   *
+   * Nothing here treats `*` as a wildcard — an origin is admitted by exact
+   * match — so an operator who writes one gets a list that matches nothing
+   * while looking like it opened the surface to everybody. A value that is
+   * configured, accepted and does nothing is the shape this repository keeps
+   * removing, and on an *authorization* boundary the direction of the
+   * misunderstanding is the dangerous one: they would believe they had opened
+   * it, not that they had closed it.
+   *
+   * Refused rather than honoured, because with credentials never allowed a
+   * wildcard would still be a choice nobody should make by typing one
+   * character.
+   */
+  originList(key: string): readonly string[] {
+    const origins = this.stringList(key)
+    if (origins.includes('*')) {
+      this.problems.push(
+        `${key} contains "*", which this product does not treat as a wildcard — an origin is ` +
+          'admitted by exact match. Name each origin, or leave it empty, which allows none.',
+      )
+    }
+    return origins
+  }
+
+  /**
    * A URL, and **an http or https one** — the second half is the part that
    * catches anything.
    *
@@ -925,7 +960,8 @@ export function loadConfig(env: Env = process.env): Config {
     consentUrl:
       r.url('NACRE_OAUTH_CONSENT_URL', { required: false }) ||
       `${r.url('NACRE_CANONICAL_URL').replace(/\/+$/, '')}/#/consent`,
-    mcpAllowedOrigins: r.stringList('NACRE_MCP_ALLOWED_ORIGINS'),
+    mcpAllowedOrigins: r.originList('NACRE_MCP_ALLOWED_ORIGINS'),
+    apiAllowedOrigins: r.originList('NACRE_API_ALLOWED_ORIGINS'),
     oauthAuthorizationServer: r.url('NACRE_OAUTH_AUTHORIZATION_SERVER', { required: false }),
     logLevel: r.oneOf('NACRE_LOG_LEVEL', ['debug', 'info', 'warn', 'error'] as const, 'info'),
     logFormat: r.oneOf('NACRE_LOG_FORMAT', ['json', 'text'] as const, 'json'),

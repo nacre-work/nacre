@@ -282,6 +282,7 @@ async function main(): Promise<void> {
     limitPolicies,
     trustProxy: config.trustProxy,
     ...(config.metricsToken === undefined ? {} : { metricsToken: config.metricsToken }),
+    allowedOrigins: config.apiAllowedOrigins,
     idempotency,
     login,
     auditReader: new PostgresAuditReader(pool, APP_ROLE, principalsCache),

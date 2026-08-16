@@ -2,8 +2,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 
 import {
+  corsHeaders,
   logger,
   MetadataError,
+  preflightHeaders,
   PROTECTED_RESOURCE_PATH,
   type ProtectedResourceMetadata,
 } from '@nacre.work/core'
@@ -477,26 +479,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // **Nothing changes with the list empty**, which is the default: no origin is
   // allowed, so no header below is ever emitted and a preflight is refused
   // exactly as it was.
-  const cors = originAllowed
-    ? {
-        'access-control-allow-origin': origin,
-        // The answer depends on who asked, so a cache must not hand one
-        // origin's response to another.
-        vary: 'Origin',
-        // `WWW-Authenticate` is the whole of the OAuth walk: a browser client
-        // reads the RFC 9728 pointer out of the 401 and goes from there. A
-        // header a browser cannot read is a discovery document it cannot find,
-        // and the flow simply stops at "unauthorized". `RateLimit-*` is here
-        // for the same reason a client is told the limits at all.
-        'access-control-expose-headers':
-          'WWW-Authenticate, RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, Retry-After',
-      }
-    : {}
+  // `packages/core/cors.ts`, not a second copy: the API admits a browser for
+  // the same flow — a client registering and exchanging its code — and two
+  // implementations would disagree about which headers a caller may read.
+  const cors = corsHeaders(origin, options.allowedOrigins ?? [])
 
-  // Deliberately no `Access-Control-Allow-Credentials`. This transport
-  // authenticates with a bearer token in a header and never with a cookie, so
-  // credentialed CORS would buy nothing and would turn an allow-list into a
-  // surface where somebody else's page acts as a signed-in user.
   // Set once rather than at forty call sites. `writeHead` merges what it is
   // given over what was set here, and nothing below sets an `access-control-*`
   // header — so every reply from this point carries them, including the 401
@@ -511,19 +498,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
       send(res, 405, rpcError(null, -32601, 'Method Not Allowed'), { allow: 'POST' })
       return
     }
-    res.writeHead(204, {
-      ...cors,
-      'access-control-allow-methods': 'POST, OPTIONS',
-      // Every header this transport reads on a request. `mcp-protocol-version`,
-      // `mcp-method` and `mcp-name` are the mirrored ones it refuses a request
-      // for disagreeing with, so a browser that cannot send them cannot call
-      // this server at all.
-      'access-control-allow-headers':
-        'authorization, content-type, accept, mcp-protocol-version, mcp-method, mcp-name, mcp-session-id, last-event-id',
-      // Ten minutes. Long enough that a conversation is not one preflight per
-      // turn, short enough that widening the list is not waited out.
-      'access-control-max-age': '600',
-    })
+    res.writeHead(
+      204,
+      preflightHeaders({
+        origin,
+        methods: 'POST, OPTIONS',
+        // Every header this transport reads on a request. `mcp-protocol-version`,
+        // `mcp-method` and `mcp-name` are the mirrored ones it refuses a request
+        // for disagreeing with, so a browser that cannot send them cannot call
+        // this server at all.
+        headers:
+          'authorization, content-type, accept, mcp-protocol-version, mcp-method, mcp-name, mcp-session-id, last-event-id',
+      }),
+    )
     res.end()
     return
   }

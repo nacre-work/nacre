@@ -353,6 +353,27 @@ existing deployment has: no header is emitted and a preflight is refused
 exactly as before. A case asserts that, beside the four that assert the browser
 half, and each was checked by restoring the defect.
 
+**The API needed the same half**, and that is why the implementation is one
+module rather than a second copy. A browser MCP client reads the `401`, finds
+the authorization server, and then registers and exchanges its code on the
+*API* — both by `fetch` from a page on another origin — so a transport that
+admits a browser while the API does not is a walk that stops one step after it
+starts, with the failure in a browser console and in nobody's log.
+`NACRE_API_ALLOWED_ORIGINS` is that list, empty by default because the admin
+console is served from the API's own origin and has never needed one.
+
+`*` is refused at startup on either list. Nothing treats it as a wildcard — an
+origin is admitted by exact match — so it would be a list matching nothing while
+reading as one that opened the surface to everybody, and on an authorization
+boundary that is the dangerous direction to be wrong in. Checked by running
+`loadConfig` three ways: `*` refused by name, a real origin accepted, unset
+empty.
+
+The first version of that also shipped a `parseAllowedOrigins` nothing called,
+because the config reader has its own list parser — an exported function with no
+caller, in the same commit as a check about variables read by nothing. Deleted
+rather than wired up.
+
 Rate limiting, `Idempotency-Key` and cursor pagination are in, which is also
 what Redis is finally for — it had been required configuration, and in every
 Compose profile with the API waiting on its healthcheck, since before anything

@@ -324,3 +324,81 @@ describe('baseline · the HTTP surface', () => {
     expect(res.status).toBe(200)
   })
 })
+
+/**
+ * The API admits a browser, or a browser MCP client cannot finish the walk.
+ *
+ * The transport's `401` names a discovery document; the client reads it, finds
+ * the authorization server, and then **registers and exchanges its code here**
+ * — `/oauth/register` and `/oauth/token`, both by `fetch` from a page on
+ * another origin. With no CORS on this surface the flow stops one step after
+ * the `401`, and the failure is a browser console message nobody's log carries.
+ *
+ * Its own server, because the property is the configuration: the suite above
+ * runs with no allowed origins and asserts that nothing there changed.
+ */
+describe('baseline · a browser this API allows can finish the OAuth walk', () => {
+  const ALLOWED = 'https://demo.nacre.test'
+  let corsServer: Server
+  let corsBase: string
+
+  beforeAll(async () => {
+    corsServer = createApi({
+      verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE },
+      documents: { read: async () => undefined },
+      search: { search: async () => [] },
+      ingest: { queue: async () => undefined, remove: async () => false },
+      audit: { write: async () => {} },
+      allowedOrigins: [ALLOWED],
+    })
+    await new Promise<void>((resolve) => corsServer.listen(0, '127.0.0.1', resolve))
+    corsBase = `http://127.0.0.1:${(corsServer.address() as AddressInfo).port}`
+  })
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => corsServer.close(() => resolve()))
+  })
+
+  it('answers the preflight the token exchange sends', async () => {
+    const res = await fetch(`${corsBase}/v1/search`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: ALLOWED,
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization,content-type',
+      },
+    })
+    expect(res.status).toBe(204)
+    expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED)
+    expect(res.headers.get('access-control-allow-methods')).toContain('POST')
+
+    const allowed = (res.headers.get('access-control-allow-headers') ?? '').toLowerCase()
+    for (const header of ['authorization', 'content-type', 'idempotency-key']) {
+      expect(allowed, header).toContain(header)
+    }
+  })
+
+  it('lets the browser read the headers a client acts on', async () => {
+    const res = await fetch(`${corsBase}/v1/documents/${DOC_A}`, { headers: { origin: ALLOWED } })
+    expect(res.status).toBe(401)
+    expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED)
+    expect(res.headers.get('vary')).toContain('Origin')
+    expect(res.headers.get('access-control-expose-headers') ?? '').toContain('WWW-Authenticate')
+    // Never with credentials: the token is a header and never a cookie.
+    expect(res.headers.get('access-control-allow-credentials')).toBeNull()
+  })
+
+  it('admits nobody else', async () => {
+    const res = await fetch(`${corsBase}/v1/health`, { headers: { origin: 'https://evil.test' } })
+    expect(res.headers.get('access-control-allow-origin')).toBeNull()
+
+    const preflight = await fetch(`${corsBase}/v1/search`, {
+      method: 'OPTIONS',
+      headers: { origin: 'https://evil.test', 'access-control-request-method': 'POST' },
+    })
+    // A `404`, the same answer any unrouted method gets here — an origin this
+    // API does not know is not told that CORS is configured at all.
+    expect(preflight.status).toBe(404)
+    expect(preflight.headers.get('access-control-allow-origin')).toBeNull()
+  })
+})
