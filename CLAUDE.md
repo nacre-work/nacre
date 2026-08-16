@@ -277,6 +277,32 @@ projection is narrow enough is a parity case that cannot fail, which is the
 same defect as reading `location.hash` from a router that never rewrites it.
 One function both transports call, and the case compares the keys.
 
+**Two more were sitting beside it, and the widened case still could not see
+them.** `capabilities` was compared by no case at all, so Streamable HTTP
+answered `{ tools: {} }` and STDIO `{ tools: { listChanged: false } }` — one
+server telling two clients two different things about what it supports. And the
+`tools/list` case projects `r.tools`, so the *wrapper* went unasked: HTTP
+carried `ttlMs` and `cacheScope` and STDIO carried neither, leaving a STDIO
+client with no cache hint for the one result here that is per caller. Each
+transport's own suite was green, because this file asserted this server and that
+file asserted that one, with nothing asking whether they were the same server.
+
+So the repair is `results.ts` rather than a third pair of edits: `initialize`,
+`server/discover` and `tools/list` are the protocol's results and the transport
+is not one of their inputs, so they are built once and both dispatchers return
+what they are given. A divergence now needs a second call site. `listChanged:
+false` is the unification because both readings are correct in the specification
+and only one of them is a *statement*; `ttlMs` and `cacheScope` go on both
+because `server/discover` already carried them on both, which is what makes the
+asymmetry an oversight rather than a decision.
+
+And the parity suite compares the **whole result** now, field for field, for
+every method in its table — the slices stay for their failure messages. A field
+that must genuinely differ belongs in an exemption with its reason; there is
+none. Both divergences were restored afterwards and the new case caught each
+while every slice stayed green, which is the measurement that says the slices
+were never going to.
+
 Rate limiting, `Idempotency-Key` and cursor pagination are in, which is also
 what Redis is finally for — it had been required configuration, and in every
 Compose profile with the API waiting on its healthcheck, since before anything

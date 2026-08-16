@@ -19,22 +19,22 @@ import {
   type VerifyOptions,
 } from '@nacre.work/api'
 
-import { INSTRUCTIONS } from './instructions.js'
-import { catalog, onTheWire, type Layer, type ToolDefinition } from './tools.js'
+import { catalog, type Layer, type ToolDefinition } from './tools.js'
+// Both transports answer `initialize`, `server/discover` and `tools/list` from
+// these, rather than each building its own object — which is how one server
+// came to declare two different capability sets, and to send a cache hint over
+// one transport and not the other. results.ts has the whole argument.
+import { discoverResult, initializeResult, PROTOCOL_VERSIONS, toolsListResult } from './results.js'
 
-/** The revision this server prefers — the head of PROTOCOL_VERSIONS. */
-export const PROTOCOL_VERSION = '2026-07-28'
-
-/** tools/list is cached per user for five minutes — see cacheScope below. */
-export const TOOLS_TTL_MS = 300_000
-
-/**
- * `server/discover` is cached for an hour, and publicly.
- *
- * Longer than the tool catalog because it carries less: a version list and a
- * capability set change when this process is replaced, not when a grant moves.
- */
-export const DISCOVER_TTL_MS = 3_600_000
+// Re-exported because this module is what the package's entry point and the
+// surface tests already import them from.
+export {
+  DISCOVER_TTL_MS,
+  LEGACY_PROTOCOL_VERSIONS,
+  PROTOCOL_VERSION,
+  PROTOCOL_VERSIONS,
+  TOOLS_TTL_MS,
+} from './results.js'
 
 export interface Layers {
   /** The layers this caller may read. Drives both list_layers and the search description. */
@@ -296,36 +296,6 @@ const NAMED_METHODS: Record<string, 'name' | 'uri'> = {
   'resources/read': 'uri',
 }
 
-/**
- * The revisions reachable through `initialize`, newest first.
- *
- * 2026-07-28 splits clients into two eras, and this list is the older one:
- * a **legacy** client opens with `initialize` and negotiates a version in the
- * result, while a **modern** one carries the version on every request in
- * `_meta` and never sends `initialize` at all. This transport serves both,
- * which the specification calls dual-era and its compatibility matrix says
- * works.
- *
- * The list matters because of one asymmetry the matrix states outright:
- * **legacy clients have no fall-forward mechanism.** A modern client that
- * hears a version it does not know retries with one from `supported`; a legacy
- * client can only fail. So whatever `initialize` answers has to be a version
- * that generation of client actually speaks.
- */
-export const LEGACY_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'] as const
-
-/**
- * Every revision this transport can speak, newest first — what
- * `server/discover` advertises and what the `MCP-Protocol-Version` header is
- * checked against.
- *
- * The list is short because the surface is: `tools/list` and `tools/call` are
- * shaped the same in all of them, and nothing here uses a feature that moved.
- * `2025-11-25` was missing and that was not a small omission — it is the
- * newest revision any shipping client knows, so it is the one every real
- * client proposes. See the note on the `initialize` handler.
- */
-export const PROTOCOL_VERSIONS = [PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS] as const
 
 /**
  * `UnsupportedProtocolVersionError`, which the schema pins at -32022 and
@@ -686,26 +656,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
       // anything arriving on `initialize` is by definition a legacy client
       // with no way to fall forward. The newest revision it might know is the
       // newest one in the legacy list, so that is what it is offered.
-      const agreed =
-        typeof asked === 'string' && (PROTOCOL_VERSIONS as readonly string[]).includes(asked)
-          ? asked
-          : LEGACY_PROTOCOL_VERSIONS[0]
-      send(res, 200, {
-        jsonrpc: '2.0',
-        id,
-        result: {
-          protocolVersion: agreed,
-          // Tools and nothing else, which is the whole surface: no resources,
-          // no prompts, no sampling. Declaring a capability this server does
-          // not serve is how a client comes back with a call that 404s.
-          capabilities: { tools: {} },
-          serverInfo: { name: 'nacre', version: options.serverVersion ?? '0.0.0' },
-          // The specification's field for "how to use this server", which we
-          // sent nothing in. One string shared with STDIO — see
-          // instructions.ts, and transport-parity.test.ts asks both.
-          instructions: INSTRUCTIONS,
-        },
-      })
+      send(res, 200, { jsonrpc: '2.0', id, result: initializeResult(asked, options.serverVersion) })
       return
     }
 
@@ -724,41 +675,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
     // metadata document that any other method gets, which is the flow rather
     // than an obstacle to it.
     case 'server/discover': {
-      send(res, 200, {
-        jsonrpc: '2.0',
-        id,
-        result: {
-          resultType: 'complete',
-          supportedVersions: [...PROTOCOL_VERSIONS],
-          capabilities: { tools: {} },
-          _meta: {
-            'io.modelcontextprotocol/serverInfo': {
-              name: 'nacre',
-              version: options.serverVersion ?? '0.0.0',
-            },
-          },
-          ttlMs: DISCOVER_TTL_MS,
-          cacheScope: 'public',
-        },
-      })
+      send(res, 200, { jsonrpc: '2.0', id, result: discoverResult(options.serverVersion) })
       return
     }
 
     case 'tools/list': {
       const layers = await options.layers.forCaller(auth)
       const tools: ToolDefinition[] = [...catalog(layers)]
-      send(res, 200, {
-        jsonrpc: '2.0',
-        id,
-        result: {
-          // The catalog depends on this caller's permissions, so the cache is
-          // per user. A global cache would serve one caller's catalog — and the
-          // layer names inside it — to another.
-          tools: onTheWire(tools),
-          ttlMs: TOOLS_TTL_MS,
-          cacheScope: 'user',
-        },
-      })
+      send(res, 200, { jsonrpc: '2.0', id, result: toolsListResult(tools) })
       return
     }
 
