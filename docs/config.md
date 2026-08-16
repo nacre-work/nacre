@@ -1285,6 +1285,20 @@ browser reaching a server on their network — and an agent sends no `Origin` at
 all, so it is unaffected. Set it only if a browser talks to this transport
 directly.
 
+Naming an origin here does two things, and for a while it did only the first.
+The transport stops refusing that origin, **and** it answers the CORS preflight
+and returns `Access-Control-Allow-Origin` on every reply to it — without which a
+browser discards a response it was allowed to receive. `WWW-Authenticate` is
+exposed, because that header is where a browser client reads the RFC 9728
+pointer that starts the OAuth flow; a client that cannot read it stops at
+"unauthorized" with nowhere to go.
+
+Credentials are never allowed. This transport authenticates with a bearer token
+in a header and never with a cookie, so `Access-Control-Allow-Credentials` would
+buy nothing and would let a page on an allowed origin act as whoever is signed
+in there. With the list empty no header above is emitted at all and a preflight
+is refused, which is exactly what a deployment that never sets it sees.
+
 ## Health and observability
 
 - `/v1/health` — liveness, touching no dependency.

@@ -439,6 +439,95 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
     return
   }
 
+  // `Origin`, before anything else. The specification makes validating it a
+  // MUST and names the attack: without it a page in somebody's browser can
+  // reach an MCP server on their network by rebinding DNS, and this transport
+  // listens on a network interface rather than a socket.
+  //
+  // A browser sends `Origin`; an agent does not, and must not be refused for
+  // it. So an absent header is allowed through and only a *present and
+  // unrecognised* one is refused — which is the distinction the rule is about,
+  // because a rebinding attack is by definition a browser.
+  //
+  // `403`, per the specification, and never `404`: unlike the paths this
+  // server does not route, an origin refusal is about the caller rather than
+  // about what exists.
+  const origin = req.headers.origin
+  const originAllowed = origin !== undefined && (options.allowedOrigins ?? []).includes(origin)
+  if (origin !== undefined && !originAllowed) {
+    send(res, 403, rpcError(null, -32600, 'Origin not allowed'))
+    return
+  }
+
+  // ── the other half of allowing an origin ────────────────────────────────
+  //
+  // Validating `Origin` stops a browser this transport does not want. It does
+  // not *admit* the browser it does: a cross-origin request needs the response
+  // to carry `Access-Control-Allow-Origin`, and anything past a simple form
+  // POST needs a preflight answered first. Neither existed, so
+  // `NACRE_MCP_ALLOWED_ORIGINS` could only ever turn a 403 into a reply the
+  // browser then threw away — and `docs/config.md` said to "set it only if a
+  // browser talks to this transport directly", which nothing could.
+  //
+  // Found by pointing a browser at a deployed stand: the preflight came back
+  // `403 Origin not allowed` with no `Access-Control-*` header on it. The
+  // specification's own transport is built for browser clients as well as
+  // agents; this one answered none of them.
+  //
+  // **Nothing changes with the list empty**, which is the default: no origin is
+  // allowed, so no header below is ever emitted and a preflight is refused
+  // exactly as it was.
+  const cors = originAllowed
+    ? {
+        'access-control-allow-origin': origin,
+        // The answer depends on who asked, so a cache must not hand one
+        // origin's response to another.
+        vary: 'Origin',
+        // `WWW-Authenticate` is the whole of the OAuth walk: a browser client
+        // reads the RFC 9728 pointer out of the 401 and goes from there. A
+        // header a browser cannot read is a discovery document it cannot find,
+        // and the flow simply stops at "unauthorized". `RateLimit-*` is here
+        // for the same reason a client is told the limits at all.
+        'access-control-expose-headers':
+          'WWW-Authenticate, RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, Retry-After',
+      }
+    : {}
+
+  // Deliberately no `Access-Control-Allow-Credentials`. This transport
+  // authenticates with a bearer token in a header and never with a cookie, so
+  // credentialed CORS would buy nothing and would turn an allow-list into a
+  // surface where somebody else's page acts as a signed-in user.
+  // Set once rather than at forty call sites. `writeHead` merges what it is
+  // given over what was set here, and nothing below sets an `access-control-*`
+  // header — so every reply from this point carries them, including the 401
+  // that starts the OAuth walk and the discovery document it points at.
+  for (const [name, value] of Object.entries(cors)) res.setHeader(name, value)
+
+  if (req.method === 'OPTIONS' && path === '/mcp') {
+    if (!originAllowed) {
+      // A preflight with no origin is not a preflight. Refused the way any
+      // unrouted method is, and without a CORS header, so nothing is admitted
+      // by accident.
+      send(res, 405, rpcError(null, -32601, 'Method Not Allowed'), { allow: 'POST' })
+      return
+    }
+    res.writeHead(204, {
+      ...cors,
+      'access-control-allow-methods': 'POST, OPTIONS',
+      // Every header this transport reads on a request. `mcp-protocol-version`,
+      // `mcp-method` and `mcp-name` are the mirrored ones it refuses a request
+      // for disagreeing with, so a browser that cannot send them cannot call
+      // this server at all.
+      'access-control-allow-headers':
+        'authorization, content-type, accept, mcp-protocol-version, mcp-method, mcp-name, mcp-session-id, last-event-id',
+      // Ten minutes. Long enough that a conversation is not one preflight per
+      // turn, short enough that widening the list is not waited out.
+      'access-control-max-age': '600',
+    })
+    res.end()
+    return
+  }
+
   // The path this transport's own 401 names. Served here as well as on the API
   // because a client may be pointed straight at the MCP port — and served from
   // the same document, built once in main, so the two can never disagree about
@@ -458,25 +547,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
         ? options.resourceFromRequest(origin)
         : options.resourceMetadata
     res.end(JSON.stringify(metadata))
-    return
-  }
-
-  // `Origin`, before anything else. The specification makes validating it a
-  // MUST and names the attack: without it a page in somebody's browser can
-  // reach an MCP server on their network by rebinding DNS, and this transport
-  // listens on a network interface rather than a socket.
-  //
-  // A browser sends `Origin`; an agent does not, and must not be refused for
-  // it. So an absent header is allowed through and only a *present and
-  // unrecognised* one is refused — which is the distinction the rule is about,
-  // because a rebinding attack is by definition a browser.
-  //
-  // `403`, per the specification, and never `404`: unlike the paths this
-  // server does not route, an origin refusal is about the caller rather than
-  // about what exists.
-  const origin = req.headers.origin
-  if (origin !== undefined && !(options.allowedOrigins ?? []).includes(origin)) {
-    send(res, 403, rpcError(null, -32600, 'Origin not allowed'))
     return
   }
 
