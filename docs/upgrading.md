@@ -272,6 +272,53 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.17.3 — a document's failure stops naming your infrastructure
+
+**Take the `nacre` image**, and nothing else. No migration, no new variable, no
+new service, and nothing to do afterwards.
+
+Two things a caller could see that it should not have, and both are on the path
+a failed document leaves behind.
+
+`GET /v1/documents/{id}` returned `documents.error` **verbatim** — and so did
+`get_document` over MCP, which resolves `read` and is therefore reachable by a
+third party acting through a delegation somebody approved. That column holds
+whatever went wrong, written by the worker for an operator reading a log: the
+embedding endpoint's address, the parser's, and whatever a sidecar put in its
+message. `/v1/jobs/{id}` had taken those out since 0.17.2; this endpoint had
+not.
+
+And the redaction itself held for a hostname with a dot in it and for nothing
+this product ships with. Service names in the Compose files and in the Helm
+chart are single-label — `embedder`, `qdrant`, `parser`, `minio` — so the rule
+covered the example in its own documentation and missed every deployed
+configuration. The way one survived is worth recognising if you have looked at
+one of these messages: the URL *was* removed, and then the HTTP client appended
+its cause, leaving `getaddrinfo ENOTFOUND embedder` at the end of an otherwise
+clean sentence. IPv6 was not redacted in any form.
+
+A host is now recognised by where it can appear rather than by what it looks
+like: after a scheme, inside brackets, as `name:port`, after a DNS or socket
+error code, and after the phrases this product writes itself.
+
+**What this costs you.** A filename in a parser's message is redacted too —
+`could not extract text from contract.pdf` reads `… from [host]`. That is
+deliberate: `contract.pdf` and `example.com` are the same shape, a list of file
+extensions goes stale, and of the two ways to be wrong only one of them leaks.
+The unredacted text is unchanged in `documents.error` and in the worker's log,
+which is where an operator already is. `SELECT error FROM documents WHERE
+status = 'failed'` still tells you the filename.
+
+**Nothing is retroactive and nothing needs re-ingesting.** The redaction happens
+when the row is read, so upgrading is enough — documents that failed before this
+release answer the same way as documents that fail after it.
+
+Also in this release, and asking nothing of an operator: the admin console's
+layout at phone widths, where the control that copies an id was invisible on a
+touch device and unreachable as a result; and both MCP transports now answer
+`tools/list` with the same object, where STDIO had been returning an extra
+`permission` field that is not part of MCP's `Tool`.
+
 ### 0.17.2 — a document over 22 KB indexes, and the ones that failed need re-ingesting
 
 **Take the `nacre` image** — it carries the API and the worker, and the defect
