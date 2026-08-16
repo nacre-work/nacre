@@ -619,7 +619,7 @@ authority over the organization holding it, so `administers` reads the
 connection's ceiling and never a layer's.
 
 `admin` is a ceiling value and is deliberately **not** on the consent screen.
-The MCP surface has no administrative tool at all — its five tools resolve with
+The MCP surface has no administrative tool at all — its six tools resolve with
 `read` or `write` — so the box would do nothing where the person is looking and
 a great deal through REST, where they are not, which is worse than a control
 that does nothing. It stays reachable through the API because it is not an
