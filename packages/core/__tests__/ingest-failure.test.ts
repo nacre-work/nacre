@@ -33,13 +33,23 @@ describe('classifyIngestFailure', () => {
       'Error: the embedding endpoint at http://embedder.internal:8080/embeddings answered 413'
     const { message } = classifyIngestFailure(stored)
     expect(message).not.toContain('embedder.internal')
-    expect(message).not.toContain('http')
     expect(message).not.toContain('8080')
+    // The wording survives; only the infrastructure in it is gone.
+    expect(message).toContain('answered 413')
+    expect(message).toContain('[endpoint]')
   })
 
-  it('says whether re-sending would help, because that is the caller’s question', () => {
-    expect(classifyIngestFailure('must have less than 512 tokens').message).toMatch(/fail the same way/)
-    expect(classifyIngestFailure('fetch failed').message).toMatch(/again later may work/)
+  /**
+   * The regression the compose smoke caught. A canned sentence per reason threw
+   * away the only detail that made some failures actionable — a scan needs OCR,
+   * and "could not be read" sends an operator hunting for a corrupt file.
+   */
+  it('keeps the wording that says what to do about it', () => {
+    const scan = 'ParseError: this PDF is a scan; 4 of 4 pages need OCR'
+    const { reason, message } = classifyIngestFailure(scan)
+    expect(reason).toBe('unreadable')
+    expect(message).toContain('scan')
+    expect(message).toContain('OCR')
   })
 })
 

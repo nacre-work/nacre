@@ -473,13 +473,17 @@ components:
         error:
           type: string
           description: >
-            The same thing in a sentence, written for whoever sent the document.
+            The failure's own wording, with anything shaped like a host or a
+            URL taken out.
 
 
-            **Not the stored error.** That one carries the embedding endpoint's
-            URL and whatever a sidecar wrote into its message, and the caller
-            here may be a third party acting through a delegation. The raw text
-            stays in Postgres and in the worker's log, where the operator is.
+            Relayed rather than replaced by a sentence written here: a scanned
+            PDF fails with a message naming the scan and pointing at OCR, and a
+            tidier sentence would send somebody hunting for a corrupt file.
+            What is removed is the infrastructure — the embedding endpoint's
+            URL and whatever a sidecar wrote into its message — because the
+            caller here may be a third party acting through a delegation. The
+            unredacted text stays in Postgres and in the worker's log.
     ServiceAccount:
       type: object
       properties:

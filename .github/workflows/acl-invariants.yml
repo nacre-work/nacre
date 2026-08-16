@@ -162,6 +162,15 @@ jobs:
       - name: RLS · the installation default embedding provider is read-only to a tenant
         run: pnpm test:acl:group "embedding_providers"
 
+      # The job endpoint resolves `write` as well as `read`, which is the only
+      # widening on this surface. Its own step because the thing that would go
+      # wrong is silent: a projection grown later to carry the title or the
+      # text turns "a writer learns the fate of its document" into "a writer
+      # reads it", and rule 6 is the invariant most likely to be undone by
+      # somebody adding a convenient field.
+      - name: rule 6 · a writer sees its job and never the document
+        run: pnpm test:acl:group "a writer can see its own ingest"
+
       # Fast on a pull request, exhaustive at night. The nightly run is where a
       # rare interaction between deny and inheritance actually gets found.
       - name: property · resolve vs the reference implementation

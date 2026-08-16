@@ -15,8 +15,11 @@
  * help. It does not need `http://embedder.internal:8080/embeddings`.
  *
  * So a failure becomes a **reason** — a stable string a program can branch on —
- * and a sentence written for the person who sent the document. The raw text
- * stays in Postgres and in the worker's log, where the operator is.
+ * beside the message itself with anything shaped like a host or a URL taken
+ * out. Relaying the real wording matters: a scanned PDF fails with a message
+ * naming the scan and pointing at OCR, and a sentence invented here would
+ * send an operator looking for a corrupt file. The unredacted text stays in
+ * Postgres and in the worker's log, where the operator is.
  *
  * ## The reasons
  *
@@ -43,20 +46,6 @@ export interface IngestFailure {
   readonly message: string
 }
 
-const MESSAGES: Record<IngestFailureReason, string> = {
-  too_long:
-    'A chunk of this document was too long for the embedding model even after being split. ' +
-    'Re-sending it unchanged will fail the same way.',
-  unreadable:
-    'This document could not be read. The format may not be supported, or the bytes may not ' +
-    'match the type they were sent as.',
-  unavailable:
-    'A service this installation depends on did not answer. Nothing is wrong with the document ' +
-    'and sending it again later may work.',
-  quota: 'This organization is at a limit that stopped the document being indexed.',
-  internal: 'Indexing failed for a reason the operator has to look at.',
-}
-
 /**
  * Classify a stored failure.
  *
@@ -81,7 +70,19 @@ export function classifyIngestFailure(raw: string): IngestFailure {
             ? 'unavailable'
             : 'internal'
 
-  return { reason, message: MESSAGES[reason] }
+  // The message is the real one with hosts removed, not a sentence written
+  // here. Replacing it looked safer and threw away the only thing that made
+  // some failures actionable: a scanned PDF fails with a message naming the
+  // scan and pointing at OCR, and "This document could not be read" sends an
+  // operator hunting for a corrupt file instead. The compose smoke asserts
+  // that specific wording survives, and caught exactly this.
+  //
+  // What the caller must not receive is the *infrastructure* in it, which is
+  // what `withoutHosts` takes out. The advice that used to be canned here —
+  // whether re-sending helps — is what `reason` is for, and it is documented
+  // against the reason rather than repeated into every message.
+  const message = withoutHosts(raw).slice(0, 300)
+  return { reason, message }
 }
 
 /**
