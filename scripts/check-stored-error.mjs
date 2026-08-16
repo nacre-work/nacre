@@ -57,30 +57,65 @@ const files = [
   ...sources(join(root, 'packages/mcp/src')),
 ]
 
-// A line that puts the stored column into something a caller receives. The
-// column arrives as `row.error` off a `SELECT … d.error`, so that is the shape
-// worth naming; `error:` on the left is the response field being built.
-const RETURNS_IT = /(^|[^.\w])error\s*:\s*[^,;]*\brow\.error\b/
+/**
+ * Two questions, because one of them was too easy to walk around.
+ *
+ * The first version matched a *line* carrying both `error:` and `row.error`,
+ * which held the one line this repository had and missed three spellings of
+ * the same thing: a formatter wrapping the pair onto two lines, any variable
+ * not called `row`, and `{ ...row }` handing the column over without naming it
+ * at all. It also read comments, so `error: row.error // withoutHosts is
+ * applied upstream` counted as guarded.
+ *
+ * So comments are stripped first, the statement question accepts any
+ * identifier and spans lines — and a second, coarser question stands behind
+ * it: **a file that selects this column at all has to mention the redactor.**
+ * That one cannot be spelled around, because the SQL is the thing that cannot
+ * be renamed.
+ */
+const SELECTS_IT = /\bSELECT\b[\s\S]{0,400}?\berror\b[\s\S]{0,200}?\bFROM\s+documents\b/i
+// `<anything>.error` in a value position, across lines, whatever the variable
+// is called — plus the spread, which hands the column over without naming it.
+const RETURNS_IT = /(^|[^.\w])error\s*:[\s\S]{0,120}?\b[A-Za-z_$][\w$]*\.error\b|\.\.\.\s*row\b/
 const REDACTED = /withoutHosts\s*\(|classifyIngestFailure\s*\(/
+
+/** Comments are prose. A sentence about redaction is not redaction. */
+const withoutComments = (text) =>
+  text
+    .replace(/\/\*[\s\S]*?\*\//g, (b) => b.replace(/[^\n]/g, ' '))
+    .replace(/\/\/[^\n]*/g, (b) => ' '.repeat(b.length))
 
 const problems = []
 let guarded = 0
 
 for (const file of files) {
-  const text = readFileSync(file, 'utf8')
-  const lines = text.split('\n')
+  const source = withoutComments(readFileSync(file, 'utf8'))
+  if (!SELECTS_IT.test(source)) continue
+
+  // The file reads the column. It has to name the redactor somewhere.
+  if (!REDACTED.test(source)) {
+    problems.push(
+      `${relative(root, file)} selects \`documents.error\` and never calls \`withoutHosts\` or ` +
+        '`classifyIngestFailure`. That column holds the worker\'s verbatim failure — the ' +
+        "embedding endpoint's URL, the parser's, whatever a sidecar wrote — and every surface " +
+        'that reads it is reachable by a delegated third party holding `read`.',
+    )
+    continue
+  }
+
+  // And each place it is handed to a caller has to be one of them.
+  const lines = source.split('\n')
   lines.forEach((line, index) => {
-    if (!RETURNS_IT.test(line)) return
-    if (REDACTED.test(line)) {
+    const window = lines.slice(index, index + 3).join('\n')
+    if (!RETURNS_IT.test(window)) return
+    if (REDACTED.test(window)) {
       guarded += 1
       return
     }
     problems.push(
       `${relative(root, file)}:${String(index + 1)} returns \`documents.error\` to a caller ` +
-        'without passing it through `withoutHosts` or `classifyIngestFailure`. That column holds ' +
-        "the worker's verbatim failure — the embedding endpoint's URL, the parser's, whatever a " +
-        'sidecar wrote — and this projection is reachable by a delegated third party holding ' +
-        '`read`. Redact it, or select it under another name and say here why that one is safe.',
+        'without passing it through `withoutHosts` or `classifyIngestFailure`. Redact it, or ' +
+        'select it under another name and say here why that one is safe.',
     )
   })
 }

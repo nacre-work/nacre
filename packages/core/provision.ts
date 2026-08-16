@@ -45,6 +45,26 @@ import type { VectorStore } from './vector/search.js'
  * So the rule is here, `provisionOrganization` applies it before anything else,
  * and no caller can be the one that forgot.
  */
+/**
+ * An email address, checked only enough to refuse what cannot be one.
+ *
+ * Here rather than beside the endpoints because `provisionOrganization` writes
+ * the first `users` row of every organization, and it was the one writer that
+ * did not ask. `init` asked for an `@` and nothing else, so
+ * `--email admin@localhost` created an organization whose administrator holds
+ * an address `POST /v1/users` refuses for anybody else — and the comment above
+ * that line already stated the rule it was breaking: the CLI asks in order to
+ * produce a usage message, and the function refuses regardless.
+ *
+ * Deliberately not RFC 5322. A stricter test rejects addresses that work; what
+ * matters is that the value is a single token with an `@` and a dot after it,
+ * so a name or a uuid typed into the wrong field is refused where the operator
+ * can see it rather than becoming a user nobody can sign in as.
+ */
+export function looksLikeEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+}
+
 export function organizationSlugError(slug: string): string | undefined {
   // The slug becomes the Qdrant collection name, so the characters it may
   // contain are not a matter of taste: one with a slash or a quote in it
@@ -316,6 +336,9 @@ export async function provisionOrganization(
   // check hold for a caller that is not a CLI.
   const wrong = organizationSlugError(options.slug)
   if (wrong !== undefined) throw new Error(`organization slug ${wrong}`)
+  if (!looksLikeEmail(options.email)) {
+    throw new Error(`administrator email does not look like an address: ${options.email}`)
+  }
 
   const collection = collectionName(options.slug)
   const ids = await provisionInPostgres(pool, options, provider, collection, log)

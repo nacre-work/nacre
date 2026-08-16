@@ -2966,7 +2966,14 @@ export class PostgresReindex implements Reindex {
       done,
       failed: state.failed,
       progress: reindexProgress(live),
-      error: state.error ?? null,
+      // Through the redactor for the same reason the document path is, and
+      // found by widening the check that holds that one. A reindex fails the
+      // way an ingest does — `String(error)` off an unreachable embedder — so
+      // this carries the endpoint's address, and `GET /v1/layers/{id}/reindex`
+      // hands it to whoever holds `admin` on the layer. That is a narrower
+      // audience than the document path's `read`, and `admin` is still a
+      // ceiling value a delegation can hold.
+      error: state.error === undefined || state.error === null ? null : withoutHosts(state.error),
       check: state.check ?? null,
     }
   }

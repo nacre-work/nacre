@@ -144,18 +144,10 @@ export interface Groups {
 
 const UUID = /^[0-9a-f-]{36}$/i
 
-/**
- * An email address, checked only enough to refuse what cannot be one.
- *
- * Deliberately not RFC 5322. A stricter test rejects addresses that work, and
- * the column is `citext` with a uniqueness constraint — what matters here is
- * that the value is a single token with an `@` and a dot after it, so a name or
- * a uuid typed into the wrong field is refused where the operator can see it
- * rather than becoming a user nobody can sign in as.
- */
-export function looksLikeEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
-}
+// One rule, in the core, because `provisionOrganization` writes the first
+// `users` row of every organization and has to apply the same one. Re-exported
+// here so the endpoints that already import it from this module keep working.
+export { looksLikeEmail } from '@nacre.work/core'
 
 export class PostgresUsers implements Users {
   constructor(

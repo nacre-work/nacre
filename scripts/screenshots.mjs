@@ -206,6 +206,31 @@ const browser = await chromium.launch(executablePath === undefined ? {} : { exec
 
 const failures = []
 
+/**
+ * The summary, printed from an `exit` hook rather than only at the bottom.
+ *
+ * Everything below records into `failures` and then reports once at the end,
+ * which works right up until something ends the run first — and two things do.
+ * A shot that lands on the wrong screen throws, deliberately, because by the
+ * time a summary prints the wrong picture is already on disk. And a `prepare`
+ * that clicks a control which is not there times out. Either way the process
+ * died with five recorded failures and printed none of them, so CI got no
+ * annotation and the reason was in nobody's output — which is the same defect
+ * as the one three lines further down complains about.
+ *
+ * `exit` fires for an uncaught throw as well as a clean return, so this is the
+ * one place the report is guaranteed to run. The browser and the server are
+ * released by the process ending; there is nothing to await here and an `exit`
+ * handler could not await it anyway.
+ */
+let reported = false
+const reportFailures = () => {
+  if (reported) return
+  reported = true
+  for (const failure of failures) console.error(`::error::${failure}`)
+}
+process.on('exit', reportFailures)
+
 async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} } = {}) {
   // Short viewport plus `fullPage`, so each image is exactly as tall as its
   // screen rather than carrying a band of empty background.
@@ -360,7 +385,7 @@ await browser.close()
 server.close()
 
 if (failures.length > 0) {
-  for (const failure of failures) console.error(`::error::${failure}`)
+  reportFailures()
   process.exit(1)
 }
 console.log('every screen rendered with no page errors and no missing fixture')
