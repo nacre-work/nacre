@@ -272,6 +272,28 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.17.4 — a browser can reach this installation, if you name its origin
+
+**Nothing is required.** Both allow-lists are empty by default, which is what
+every existing deployment has, and an empty list emits no CORS header and
+refuses a preflight exactly as before this release.
+
+What changed is that naming an origin now works. `NACRE_MCP_ALLOWED_ORIGINS`
+made the transport stop refusing a browser and did not make it answer one —
+there was no preflight handler and no `Access-Control-Allow-Origin`, so the
+browser discarded a reply it had been allowed to receive. Setting it did nothing
+you could observe.
+
+Set `NACRE_MCP_ALLOWED_ORIGINS` **and** `NACRE_API_ALLOWED_ORIGINS` if a browser
+client talks to this installation: it reads the `401` from the transport and
+then registers and exchanges its authorization code on the API, so admitting it
+on one surface and not the other is a walk that stops one step after it starts.
+
+`*` is refused at startup on either list. Nothing here treats it as a wildcard —
+an origin is admitted by exact match — so a deployment that sets one gets a
+configuration error naming the variable rather than a list that quietly matches
+nothing.
+
 ### 0.17.3 — a document's failure stops naming your infrastructure
 
 **Take the `nacre` image**, and nothing else. No migration, no new variable, no
