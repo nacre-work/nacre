@@ -102,6 +102,13 @@ export { buildHybridQuery, collectionConfig, collectionName, PAYLOAD_INDEXES, ve
 export type { Branch, CollectionShape, HybridQuery } from './vector/query.js'
 export { encodeDocument, encodeQuery, isEmpty, SPARSE_VECTOR_NAME, tokenize } from './text/bm25.js'
 export type { SparseVector } from './text/bm25.js'
+export {
+  DEFAULT_EMBED_MAX_TOKENS,
+  estimateTokens,
+  refusedForLength,
+  TOKEN_RESERVE,
+  tokenBudget,
+} from './text/tokens.js'
 export { Counter, Gauge, Histogram, Registry, createMetrics } from './metrics.js'
 export type { Labels, Metrics } from './metrics.js'
 export { collectDatabaseGauges } from './observability.js'

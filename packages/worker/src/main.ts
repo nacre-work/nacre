@@ -45,6 +45,7 @@ import {
   embeddingFailure,
   EMBED_TIMEOUT_MS,
 } from './adapters.js'
+import { DEFAULT_CHUNK_CONFIG } from './chunk.js'
 import { ingest } from './ingest.js'
 import { collectOnce } from './collect.js'
 import { pruneOnce } from './prune.js'
@@ -837,6 +838,12 @@ async function main(): Promise<void> {
           vectorName: claim.vectorName,
           externalId: claim.externalId,
           metadata: claim.metadata,
+          // The ceiling the deployment's embedder enforces, so chunking is
+          // bounded by what the model accepts and not only by a character
+          // count. Without it a Cyrillic or CJK corpus failed every document:
+          // 800 characters is 149 tokens of English and 1094 of Korean, and
+          // the endpoint refuses above 512.
+          chunkConfig: { ...DEFAULT_CHUNK_CONFIG, maxTokens: config.embedMaxTokens },
           ...source,
         },
         {

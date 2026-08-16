@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto'
 
-import { encodeDocument, type SparseVector } from '@nacre.work/core'
+import {
+  DEFAULT_EMBED_MAX_TOKENS,
+  encodeDocument,
+  logger,
+  refusedForLength,
+  type SparseVector,
+} from '@nacre.work/core'
 
 import { chunk, DEFAULT_CHUNK_CONFIG, type ChunkConfig } from './chunk.js'
 
@@ -151,6 +157,23 @@ export interface IngestPorts {
   readonly newId: () => string
 }
 
+/**
+ * How many times a document is re-chunked smaller before the ingest gives up.
+ *
+ * Three halvings take a 512-token budget to 64, which is below any chunk a
+ * calibrated estimate produces — so reaching the end of this means the refusal
+ * was never about length in the first place, and one more attempt would be a
+ * fourth identical failure rather than a smaller one.
+ */
+const EMBED_SPLIT_ATTEMPTS = 3
+
+/**
+ * The floor halving stops at. A budget below this makes chunks too small to
+ * carry a sentence, which is a retrieval answer nobody wants and a lot of
+ * vectors to pay for.
+ */
+const MIN_EMBED_TOKENS = 64
+
 export function contentHash(text: string): string {
   return `sha256:${createHash('sha256').update(text, 'utf8').digest('hex')}`
 }
@@ -218,8 +241,8 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
     return { documentId: existing.id, chunkCount: existing.chunkCount, unchanged: true }
   }
 
-  const chunks = chunk(parsed.text, request.chunkConfig ?? DEFAULT_CHUNK_CONFIG)
-  if (chunks.length === 0) {
+  const planned = chunk(parsed.text, request.chunkConfig ?? DEFAULT_CHUNK_CONFIG)
+  if (planned.length === 0) {
     // Nothing to index. Recording the document anyway keeps the idempotency key
     // meaningful — a retry must not re-parse an empty file forever.
     const stored = await ports.documents.upsert({
@@ -252,7 +275,47 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
     return { documentId: stored.id, chunkCount: 0, unchanged: false }
   }
 
-  const vectors = await ports.embedder.embed(chunks.map((c) => c.text))
+  // Chunked to fit the ceiling this deployment configured, and re-chunked
+  // smaller if the endpoint says otherwise. The estimate in `tokens.ts` is
+  // calibrated rather than provable — an ASCII chunk that is all punctuation
+  // costs twice what it is charged — so the endpoint gets the last word.
+  //
+  // Splitting rather than truncating, which is the other repair and the one
+  // the obvious reading suggests. `truncate` is not available on the route
+  // this client speaks: checked against a real Text Embeddings Inference, the
+  // OpenAI-compatible `/embeddings` refuses an over-long input with 413
+  // whether or not `truncate` is set, and only its native `/embed` honours it.
+  // Even where it works it is the wrong answer here — a truncated chunk is
+  // stored whole in Postgres and embedded in part, so the vector stops
+  // describing the text beside it, and nothing downstream can tell.
+  let chunks = planned
+  let vectors: readonly (readonly number[])[]
+  let budget = (request.chunkConfig ?? DEFAULT_CHUNK_CONFIG).maxTokens ?? DEFAULT_EMBED_MAX_TOKENS
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      vectors = await ports.embedder.embed(chunks.map((c) => c.text))
+      break
+    } catch (error) {
+      // Only for length, and only while halving still buys anything. Any other
+      // refusal — a credential, a wrong model name, an endpoint that is down —
+      // is not made better by sending smaller pieces of the same document.
+      if (attempt >= EMBED_SPLIT_ATTEMPTS || !refusedForLength(String(error))) throw error
+      const wider = budget
+      budget = Math.max(Math.floor(budget / 2), MIN_EMBED_TOKENS)
+      chunks = chunk(parsed.text, { ...(request.chunkConfig ?? DEFAULT_CHUNK_CONFIG), maxTokens: budget })
+      // Said out loud, because succeeding quietly here is how a misconfigured
+      // ceiling becomes permanent. The document is saved either way; what this
+      // reports is that every document like it pays for the failed request
+      // first, and that `NACRE_EMBED_MAX_TOKENS` does not match the model.
+      logger.warn('the embedder refused a chunk for length; re-chunking smaller', {
+        document: request.externalId,
+        from_max_tokens: wider,
+        to_max_tokens: budget,
+        attempt: attempt + 1,
+      })
+    }
+  }
+
   if (vectors.length !== chunks.length) {
     // A mismatch means the embedder dropped or reordered something, and writing
     // whatever came back would attach the wrong vector to the wrong text — a

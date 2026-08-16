@@ -37,6 +37,7 @@ NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://embedder:80
 NACRE_DEFAULT_EMBEDDING_MODEL=bge-m3
 NACRE_DEFAULT_EMBEDDING_DIM=1024
 NACRE_EMBED_BATCH=32                  # chunks per request; TEI refuses above its own limit
+NACRE_EMBED_MAX_TOKENS=512            # per-chunk ceiling; a character is not a token
 NACRE_RERANKER_ENDPOINT=http://reranker:80
 NACRE_RERANKER_ENABLED=false          # true needs an endpoint; minimal has none
 NACRE_RERANK_CANDIDATES=50            # fetched from the index, cut to top_k after scoring
@@ -658,6 +659,55 @@ sized for one caller.
 If you raise the server's limit instead, raise it *above* what the client sends
 rather than to the same number. A server that accepts more than any client sends
 costs nothing.
+
+### `NACRE_EMBED_MAX_TOKENS`
+
+**The most tokens one chunk may cost the embedding endpoint. Default 512.**
+
+The other bound on the same request, and the one a character count cannot
+express. Every embedding model has a hard ceiling on a single input — 512 for
+the BGE and E5 families, which is what these profiles start — and **a character
+is not a token.** Under an English tokenizer a Cyrillic or CJK character costs
+several. Measured against a real `bge-small-en-v1.5`, at the 800-character
+chunk this project ships:
+
+| script | tokens for 800 characters |
+|---|---|
+| English | 149 |
+| Hindi | 471 |
+| Greek | 642 |
+| Russian | 655 |
+| Hebrew | 664 |
+| Arabic | 676 |
+| Chinese | 802 |
+| Japanese | 802 |
+| Korean | 1094 |
+
+Seven of the eleven scripts tried are over the ceiling before a document is
+even long. So a Russian or Korean corpus failed **every document**, with the
+endpoint answering `413` and the worker marking each one `failed` — a status
+nothing retries — while the API answered `queued`. English was unaffected,
+which is why it took a non-English corpus to find.
+
+Chunking is bounded by this as well as by the layer's character size, and a
+chunk ends at whichever comes first. English is unchanged: 800 characters costs
+149 tokens, so the character size still binds. Cyrillic and CJK chunks get
+shorter, automatically and per chunk, so a document mixing scripts is cut long
+where it is cheap and short where it is not.
+
+Set it to what your model accepts. A model with a larger window — bge-m3 takes
+8192 — gets larger chunks by saying so here, and nothing else changes.
+
+Getting it **too high** is survivable rather than silent: the endpoint refuses,
+the worker re-chunks smaller and retries, and it says so in a log line naming
+both budgets. The document still indexes; what it costs is the failed request
+first, on every document like it. Getting it too low costs only more vectors.
+
+The cost model behind the bound is calibrated rather than provable — ASCII is
+charged half a token per character, which is above prose and identifiers and
+below a run of pure punctuation — and that trade is why the retry exists. Being
+provably safe would mean charging by UTF-8 bytes, which would cut English
+chunks by a third for text that was never near the ceiling.
 
 ### `NACRE_PARSER_ALLOW_PRIVATE_URLS`
 

@@ -16,13 +16,31 @@
  * searchable; nothing downstream can tell them from real text.
  */
 
+import { DEFAULT_EMBED_MAX_TOKENS, tokenBudget } from '@nacre.work/core'
+
 export interface ChunkConfig {
   readonly size: number
   readonly overlap: number
   readonly strategy: 'recursive'
+  /**
+   * What the embedder will accept, in tokens. Absent means unbounded, which is
+   * only right for a caller that has already checked — `DEFAULT_CHUNK_CONFIG`
+   * carries the real one.
+   *
+   * `size` is the retrieval knob and this is the ceiling; they are two
+   * different questions and a chunk ends at whichever comes first. 800
+   * characters of English is 149 tokens and 800 of Korean is 1094, so a
+   * character budget alone cannot express "small enough to embed".
+   */
+  readonly maxTokens?: number
 }
 
-export const DEFAULT_CHUNK_CONFIG: ChunkConfig = { size: 800, overlap: 120, strategy: 'recursive' }
+export const DEFAULT_CHUNK_CONFIG: ChunkConfig = {
+  size: 800,
+  overlap: 120,
+  strategy: 'recursive',
+  maxTokens: DEFAULT_EMBED_MAX_TOKENS,
+}
 
 export interface Chunk {
   readonly ordinal: number
@@ -31,6 +49,30 @@ export interface Chunk {
 
 /** Largest structural boundary first: paragraphs, then lines, then sentences, then words. */
 const SEPARATORS = ['\n\n', '\n', '. ', ' ']
+
+/**
+ * How many characters from `start` fit inside the token budget.
+ *
+ * Walks forward accumulating the per-character cost rather than estimating the
+ * whole slice and bisecting: one pass, and it stops as soon as the budget is
+ * spent. Returns at least one character, because a loop that can return zero
+ * does not advance — a single astral character costing more than the whole
+ * budget is a document that cannot be chunked, and cutting it out on its own
+ * is better than not terminating.
+ */
+function charactersWithinBudget(text: string, start: number, budget: number): number {
+  let cost = 0
+  let at = start
+  while (at < text.length) {
+    const code = text.codePointAt(at) as number
+    const width = code > 0xffff ? 2 : 1
+    const spend = code < 0x80 ? 0.5 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4
+    if (cost + spend > budget && at > start) break
+    cost += spend
+    at += width
+  }
+  return Math.max(at - start, 1)
+}
 
 /**
  * Where the chunk beginning at `start` ends: just past the last separator that
@@ -91,8 +133,19 @@ export function chunk(text: string, config: ChunkConfig = DEFAULT_CHUNK_CONFIG):
   let start = 0
   let ordinal = 0
 
+  const budget = config.maxTokens === undefined ? undefined : tokenBudget(config.maxTokens)
+
   while (start < normalized.length) {
-    const end = boundaryBefore(normalized, start, config.size)
+    // The narrower of the two bounds, recomputed per chunk because the answer
+    // depends on the text: 800 characters of English costs 149 tokens and 800
+    // of Korean costs 1094, so a document that mixes scripts gets long chunks
+    // where it is cheap and short ones where it is not.
+    const size =
+      budget === undefined
+        ? config.size
+        : Math.min(config.size, charactersWithinBudget(normalized, start, budget))
+
+    const end = boundaryBefore(normalized, start, size)
 
     // trim, not slice-and-glue: the separator stays in the source string, so
     // what is dropped here is only whitespace at the two ends of a substring.

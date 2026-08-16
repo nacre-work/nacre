@@ -1,6 +1,7 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 
+import { estimateTokens, tokenBudget } from '@nacre.work/core'
 import { chunk, DEFAULT_CHUNK_CONFIG, type ChunkConfig } from '../chunk.js'
 
 /**
@@ -138,5 +139,72 @@ describe('chunk', () => {
       ),
       { numRuns: 500 },
     )
+  })
+})
+
+/**
+ * The bound that is not a character count.
+ *
+ * 800 characters is 149 tokens of English and 1094 of Korean, and the endpoint
+ * refuses above 512 — so before this the chunker produced, for seven scripts
+ * out of eleven tried, chunks no embedder would accept. Every document in a
+ * Cyrillic or CJK corpus failed, permanently, while the API answered `queued`.
+ */
+describe('chunk · the embedder’s token ceiling', () => {
+  const budget = (config: ChunkConfig, text: string) =>
+    Math.max(...chunk(text, config).map((c) => estimateTokens(c.text)))
+
+  it('leaves English alone, because the character size binds first', () => {
+    const english = 'Retrieval quality depends on the chunk boundaries as much as on the model. '.repeat(30)
+    const before = chunk(english, { size: 800, overlap: 120, strategy: 'recursive' })
+    const after = chunk(english, DEFAULT_CHUNK_CONFIG)
+    expect(after.map((c) => c.text)).toEqual(before.map((c) => c.text))
+  })
+
+  it('shortens a Cyrillic chunk to something the model will accept', () => {
+    const russian = 'Качество поиска зависит от границ фрагмента не меньше, чем от самой модели. '.repeat(30)
+    // Unbounded, this is what used to be sent, and it is far past the ceiling.
+    const unbounded = budget({ size: 800, overlap: 120, strategy: 'recursive' }, russian)
+    expect(unbounded).toBeGreaterThan(512)
+
+    expect(budget(DEFAULT_CHUNK_CONFIG, russian)).toBeLessThanOrEqual(tokenBudget(512))
+  })
+
+  it('holds for every script that used to overflow', () => {
+    const scripts = {
+      korean: '검색 품질은 모델 자체만큼이나 청크 경계에 좌우됩니다. ',
+      chinese: '检索质量取决于分块边界的程度不亚于取决于模型本身。',
+      japanese: '検索の品質は、モデルそのものと同じくらいチャンクの境界に左右されます。',
+      arabic: 'تعتمد جودة الاسترجاع على حدود الأجزاء بقدر اعتمادها على النموذج نفسه. ',
+      hebrew: 'איכות האחזור תלויה בגבולות המקטע לא פחות מאשר במודל עצמו. ',
+      greek: 'Η ποιότητα ανάκτησης εξαρτάται από τα όρια των τμημάτων όσο και από το μοντέλο. ',
+      emoji: '🔍📚🧩✨🗂️🔐📈🧠🛰️🌍 ',
+    }
+    for (const [name, unit] of Object.entries(scripts)) {
+      const text = unit.repeat(40)
+      expect(budget(DEFAULT_CHUNK_CONFIG, text), `${name} overflows`).toBeLessThanOrEqual(
+        tokenBudget(512),
+      )
+    }
+  })
+
+  it('still covers the whole document — a bound trims chunks, never text', () => {
+    const mixed = 'Поиск NACRE_EMBED_BATCH=32 returns k results 检索质量 قياس '.repeat(20)
+    const joined = chunk(mixed, DEFAULT_CHUNK_CONFIG)
+      .map((c) => c.text)
+      .join('')
+    // Every character of the document appears in some chunk. Overlap means the
+    // joined length is larger, so this asks about coverage rather than equality.
+    for (const piece of mixed.trim().split(/\s+/)) {
+      expect(joined).toContain(piece)
+    }
+  })
+
+  it('advances even when one character costs more than the whole budget', () => {
+    // A four-byte character against a budget of four leaves nothing over, and a
+    // loop that cannot place a character is a loop that does not terminate.
+    const chunks = chunk('🔍🔍🔍', { size: 800, overlap: 0, strategy: 'recursive', maxTokens: 8 })
+    expect(chunks.length).toBeGreaterThan(0)
+    expect(chunks.map((c) => c.text).join('')).toBe('🔍🔍🔍')
   })
 })
