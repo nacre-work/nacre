@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { DEFAULT_EMBED_BATCH } from './endpoint.js'
+import { DEFAULT_EMBED_MAX_TOKENS } from './text/tokens.js'
 
 export interface Config {
   readonly env: 'development' | 'production'
@@ -162,6 +163,15 @@ export interface Config {
    * nothing is gained by guessing on its behalf.
    */
   readonly embedBatch: number
+  /**
+   * The most tokens one input may cost the embedding endpoint.
+   *
+   * Chunking is bounded by this as well as by the layer's character size, and
+   * a character is not a token: 800 characters of English costs 149 and 800 of
+   * Korean costs 1094, so before this existed a Cyrillic or CJK corpus failed
+   * every document while the API answered `queued`.
+   */
+  readonly embedMaxTokens: number
   readonly parserEndpoint: string
   readonly rerankerEndpoint: string | undefined
   readonly rerankerEnabled: boolean
@@ -935,6 +945,10 @@ export function loadConfig(env: Env = process.env): Config {
     embeddingModel: r.optional('NACRE_DEFAULT_EMBEDDING_MODEL'),
     embeddingDim: r.number('NACRE_DEFAULT_EMBEDDING_DIM', 1024, { min: 8, max: 16384 }),
     embedBatch: r.number('NACRE_EMBED_BATCH', DEFAULT_EMBED_BATCH, { min: 1, max: 2048 }),
+    embedMaxTokens: r.number('NACRE_EMBED_MAX_TOKENS', DEFAULT_EMBED_MAX_TOKENS, {
+      min: 16,
+      max: 32_768,
+    }),
     parserEndpoint: r.url('NACRE_PARSER_ENDPOINT'),
     rerankerEndpoint: r.optional('NACRE_RERANKER_ENDPOINT'),
     // False, and it was true. `minimal` has no reranker by definition — the

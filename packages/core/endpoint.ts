@@ -118,9 +118,22 @@ const REASON_LIMIT = 200
  */
 export async function endpointReason(response: Response): Promise<string | undefined> {
   const body: unknown = await response.json().catch(() => undefined)
-  const error = (body as { error?: unknown } | undefined)?.error
+  const shape = body as { error?: unknown; message?: unknown } | undefined
+  const error = shape?.error
+  // `message` at the top level as well as under `error`, because Text
+  // Embeddings Inference uses both and which one depends on the route. Its
+  // native `/embed` answers `{"error": "…"}` and the OpenAI-compatible
+  // `/embeddings` — the one this client speaks — answers `{"message": "…"}`.
+  // Reading only `error` is why a refusal arrived as a bare "answered 413"
+  // with the reason, which named the token count and the ceiling, dropped on
+  // the floor. That silence is most of why the 512-token defect was hard to
+  // find: the endpoint said exactly what was wrong and nothing repeated it.
   const message =
-    typeof error === 'string' ? error : (error as { message?: unknown } | undefined)?.message
+    typeof error === 'string'
+      ? error
+      : typeof (error as { message?: unknown } | undefined)?.message === 'string'
+        ? (error as { message: string }).message
+        : shape?.message
   if (typeof message !== 'string') return undefined
 
   const line = message.replace(/\s+/g, ' ').trim()
