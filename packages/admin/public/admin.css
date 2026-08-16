@@ -176,6 +176,14 @@ a { color: var(--n-accent); }
    the table instead of deforming every row. This lived on `.row-end`, which
    one of the six action cells used — the other five wrapped. */
 .table td.right { white-space: nowrap; }
+/* A relative time, for the same reason and found the same way. "204 days ago"
+   is three words and one value, and a cell will break it across three lines:
+   measured in Chromium at 390, a People row carrying that string was 89px
+   while the rows beside it reading "7 days ago" and "1 day ago" were 66px. The
+   column is as wide as its widest entry, so the oldest row deforms only
+   itself, which reads as a glitch rather than as a wrapped word. Written by
+   `agoCell` rather than by each of the five call sites — see dom.ts. */
+.table td.ago { white-space: nowrap; }
 .table tr.revoked td { opacity: 0.55; }
 
 .slug {

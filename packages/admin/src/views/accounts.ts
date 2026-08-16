@@ -1,7 +1,7 @@
 import type { ServiceAccount } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
-import { ago, clear, copyableId, copyText, h } from '../dom.js'
+import { agoCell, clear, copyableId, copyText, h } from '../dom.js'
 
 /**
  * Service accounts.
@@ -69,8 +69,8 @@ function table(accounts: readonly ServiceAccount[], root: HTMLElement): HTMLElem
         // until now this screen did not show it at all, so the only route was
         // the API.
         h('td', {}, copyableId(a.id)),
-        h('td', { class: 'muted' }, ago(a.createdAt)),
-        h('td', { class: 'muted' }, ago(a.lastUsedAt)),
+        agoCell(a.createdAt),
+        agoCell(a.lastUsedAt),
         h('td', { class: 'right' },
           revoked
             ? null

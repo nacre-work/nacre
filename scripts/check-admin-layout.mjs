@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Two layout rules the admin stylesheet has to keep, each of which was broken
- * in a way no test could see and only a browser at two widths could.
+ * Three layout rules the admin console has to keep, each of which was broken in
+ * a way no test could see and only a browser at two widths could.
  *
  * ## 1. A flex row aligned on an edge has children with no margin on that edge
  *
@@ -29,6 +29,16 @@
  * one, because the pattern is idiomatic and the next person to write it will
  * write it the same way.
  *
+ * ## 3. A value that is one thing does not wrap
+ *
+ * "204 days ago" is three words and one value, and a table cell will break it
+ * across three lines. Measured in Chromium at 390: a People row carrying that
+ * string was 89px while the rows beside it, reading "7 days ago" and "1 day
+ * ago", were 66px — and all three are 58px with the rule. The action column had
+ * already been fixed for the same reason, which is what makes this the second
+ * instance rather than the first, and `agoCell` is where the property lives now
+ * rather than in five call sites that each had to remember.
+ *
  * ## What this cannot see
  *
  * Said plainly, because a check that overclaims is the failure this repository
@@ -38,16 +48,17 @@
  * does not expand, a value from a custom property, or a third rule overriding
  * one of these two is outside what it can follow — and no static reader can
  * tell whether a control is *big enough* or a row *looks* straight. Those stay
- * a browser's answer. What this holds is the two specific mistakes that have
+ * a browser's answer. What this holds is the three specific mistakes that have
  * already been made here, so they cannot be made again silently.
  */
 
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const file = join(root, 'packages/admin/public/admin.css')
+const VIEWS = join(root, 'packages/admin/src/views')
 const css = readFileSync(file, 'utf8')
 
 const problems = []
@@ -204,14 +215,67 @@ for (const rule of hidden) {
   }
 }
 
+// ── 3. a value that is one thing does not wrap ────────────────────────────
+//
+// "204 days ago" is three words and one value, and a table cell will break it
+// across three lines. Measured in Chromium at 390: a People row carrying that
+// string was 89px while the rows beside it, reading "7 days ago" and "1 day
+// ago", were 66px — and every one of them is 58px with the rule. The action
+// column had already been fixed for the same reason on `.right`, which is what
+// makes this the second instance rather than the first.
+//
+// `ago()` is rendered into a `<td>` in three views and five places, so the
+// property had to be remembered five times with nothing that knew there were
+// five. `agoCell` is where it is written now, and this asks two things: that
+// the class it writes actually nowraps, and that no view builds such a cell by
+// hand.
+const AGO_CELL = '.table td.ago'
+const agoRule = all.find((r) =>
+  r.selector.split(',').map((x) => x.trim()).includes(AGO_CELL),
+)
+if (agoRule === undefined) {
+  problems.push(
+    `admin.css has no \`${AGO_CELL}\` rule. \`agoCell\` writes that class on every relative time ` +
+      'in a table and this check holds it; with no rule to read it must not report green.',
+  )
+} else if (declaration(agoRule.body, 'white-space') !== 'nowrap') {
+  problems.push(
+    `\`${AGO_CELL}\` does not say \`white-space: nowrap\`. A relative time is three words and one ` +
+      'value, and without it the oldest row in every table is a third taller than the rest.',
+  )
+}
+
+// And the other half: a cell built by hand rather than through the helper.
+const views = readdirSync(VIEWS).filter((name) => name.endsWith('.ts'))
+if (views.length === 0) {
+  problems.push(
+    'no view sources under packages/admin/src/views — this half of the check reads them, and ' +
+      'with none to read it is asking nothing.',
+  )
+}
+for (const view of views) {
+  const source = readFileSync(join(VIEWS, view), 'utf8')
+  source.split('\n').forEach((line, index) => {
+    if (!/h\(\s*'td'[\s\S]{0,80}?\bago\(/.test(line)) return
+    problems.push(
+      `packages/admin/src/views/${view}:${String(index + 1)} builds a relative-time cell by hand. ` +
+        '`agoCell` is the one that carries the class which stops "204 days ago" wrapping to three ' +
+        'lines — five call sites had to remember before it existed.',
+    )
+  })
+}
+
 if (problems.length > 0) {
   for (const problem of problems) process.stderr.write(`::error::${problem}\n`)
-  process.stderr.write(`\n${String(problems.length)} problem(s) in ${file}.\n`)
+  // Not "in admin.css": rule 3 reads the views too, and a footer naming one
+  // file for a problem in another sends the reader to the wrong place.
+  process.stderr.write(`\n${String(problems.length)} problem(s) in the admin console's layout.\n`)
   process.exit(1)
 }
 
 process.stdout.write(
   `${String(all.length)} rules read: ${String(aligned.length)} edge-aligned flex container(s) ` +
-    `whose children carry no margin on that edge, and ${String(revealed.length)} hover-revealed ` +
-    'control(s), each behind a hover media query.\n',
+    `whose children carry no margin on that edge, ${String(revealed.length)} hover-revealed ` +
+    `control(s) each behind a hover media query, and ${AGO_CELL} nowrapping every relative ` +
+    `time across ${String(views.length)} view(s), none of which builds one by hand.\n`,
 )

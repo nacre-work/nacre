@@ -208,6 +208,29 @@ which closes the same hole one step later, and the check requires that reset on
 every edge-aligned container. Six breaks, including the two that defeated the
 first version.
 
+**A third rule joined it, and it is the action column's defect one cell over.**
+"204 days ago" is three words and one value, and a table cell will break it
+across three lines — measured in Chromium at 390, a People row carrying that
+string was **89px** while the rows beside it reading "7 days ago" and "1 day
+ago" were 66px, and all three are 58px now. The column is as wide as its widest
+entry, so the oldest row deforms only itself, which reads as a rendering glitch
+rather than as a wrapped word. Service accounts had it twice in one row.
+
+`ago()` is rendered into a `<td>` in three views and five places, every one of
+which had to remember, with nothing that knew there were five — so the repair is
+`agoCell`, which writes the class, and the check asks both halves: that the
+class actually nowraps, and that no view builds such a cell by hand. It takes
+the cell's other classes rather than assuming them, because three of the five
+are `muted` and two are not, and a layout fix that recolours two views is a
+layout fix nobody asked for.
+
+What it deliberately did **not** do is chase the rest of the height. A service
+account row is still 66px because `support-agent` breaks at its hyphen, and a
+connection's row is 156px because one cell holds a sentence. Both are content of
+unbounded length, where wrapping is the correct behaviour and `nowrap` would
+buy a row height with a horizontal scroll. The rule is for values that are one
+thing.
+
 Two things that were not layout came out of the same pass. `lint:tokens` was
 named in `admin.css`'s own header — "Nothing here invents a hex value, and
 `lint:tokens` fails the build if one appears" — and **did not exist**, in
