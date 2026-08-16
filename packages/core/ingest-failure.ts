@@ -86,17 +86,82 @@ export function classifyIngestFailure(raw: string): IngestFailure {
 }
 
 /**
- * Whatever is safe to repeat from a stored failure, for a surface that wants to
- * say more than the sentence above.
+ * Whatever is safe to repeat from a stored failure.
  *
- * Strips anything shaped like a URL or a host:port, which is what the endpoint
- * errors carry. Not a general redactor and does not pretend to be one — the
- * classified message is the thing meant for callers, and this exists for the
- * one surface that has an operator on the other end.
+ * ## Redacted by context, not by the shape of a token
+ *
+ * The first version matched anything with a dot and a two-letter tail, and that
+ * is wrong in both directions.
+ *
+ * It **missed** every hostname this product actually deploys with. Service
+ * names in `docker-compose.yml` and in the chart are single-label — `embedder`,
+ * `qdrant`, `parser`, `minio` — so a rule needing a dot held for the example in
+ * the paragraph above (`embedder.internal`) and for nothing that ships. The way
+ * the name survived is worth keeping: the URL was removed, and then undici
+ * appended its cause verbatim, so `getaddrinfo ENOTFOUND embedder` sat at the
+ * end of an otherwise redacted sentence. IPv6 was untouched entirely.
+ *
+ * So a host is now recognised where a host can *be*: after a scheme, inside
+ * brackets, as `name:port`, after a DNS or socket error code, and after the
+ * handful of phrases this repository writes itself. Those are the positions a
+ * machine puts one in, and unlike a token's shape they are not shared with
+ * anything a person wrote.
+ *
+ * ## What it still over-redacts, and why that is the direction to fail in
+ *
+ * The dotted-name rule stays, last, and it cannot tell `contract.pdf` from
+ * `example.com` — nothing can, they are the same string with a different tail,
+ * and a list of file extensions is a list that goes stale. So a filename in a
+ * parser's message becomes `[host]`, which costs the sender the name of their
+ * own document.
+ *
+ * That is the trade taken deliberately: over-redacting a filename is a
+ * usability cost on one message, and under-redacting a hostname is the thing
+ * this function exists to prevent, on a surface a third party reaches through
+ * a delegation. It is stated here and in `docs/openapi.yaml` rather than left
+ * for somebody to discover.
+ *
+ * Not a general redactor and does not pretend to be one: a credential that is
+ * not inside a URL passes through, because there is no shape to match it on.
  */
 export function withoutHosts(raw: string): string {
-  return raw
-    .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"']+/gi, '[endpoint]')
-    .replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?\b/gi, '[host]')
-    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[host]')
+  return (
+    raw
+      // A URL, whatever the scheme. Everything after `://` goes, which is what
+      // takes the userinfo with it: `postgres://user:hunter2@db:5432/x`.
+      .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"']+/gi, '[endpoint]')
+      // IPv6 in brackets, with or without a port: `[fd00:ec2::23]:8080`.
+      .replace(/\[[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,}\](?::\d{1,5})?/gi, '[host]')
+      // Bare IPv6. Three colons at least, so a clock (`12:30:45`) is not one
+      // and `::1:8080` is — the lookbehind rather than `\b` because a leading
+      // `::` has no word boundary in front of it, which is how that one
+      // survived the first attempt at this rule.
+      .replace(/(?<![\w:.])(?:[0-9a-f]{0,4}:){3,}[0-9a-f]{0,4}/gi, '[host]')
+      .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[host]')
+      // `host:port`, which is the shape that makes a bare label a host rather
+      // than a word. This is what catches `embedder:8080` — every service name
+      // this product ships with is single-label.
+      .replace(/\b[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)*:\d{2,5}\b/gi, '[host]')
+      // Node names the host straight after the code, and undici appends the
+      // cause verbatim to a message whose URL has already been taken out — so
+      // `getaddrinfo ENOTFOUND embedder` is where the name actually survived.
+      //
+      // Case-sensitive, and the lookahead skips a second code, because the
+      // real string is `getaddrinfo ENOTFOUND embedder` and the naive rule
+      // redacts `ENOTFOUND` and keeps the host.
+      .replace(
+        /\b(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\s+(?![A-Z_]{3,}\b)[A-Za-z0-9_.[\]-]*[A-Za-z0-9\]]/g,
+        '$1 [host]',
+      )
+      // And our own wording says it in prose, where there is no port and no
+      // code to anchor on.
+      .replace(
+        /\b(could not reach|could not connect to|connection to|connecting to|connect to|no route to)\s+[A-Za-z0-9_.[\]-]*[A-Za-z0-9\]]/gi,
+        '$1 [host]',
+      )
+      // A dotted name. Last, and deliberately kept even though it is the rule
+      // that cannot tell `contract.pdf` from `example.com` — see the note in
+      // this function's header about which way that trade goes.
+      .replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?\b/gi, '[host]')
+  )
 }

@@ -195,8 +195,18 @@ screens was unreachable on the device half of them are read on.
 
 `lint:admin-layout` is the repair rather than the four edits: a flex container
 aligned on an edge has children with no margin on that edge, and a control
-revealed on hover is behind `@media (hover: hover)`. Both were run against the
-original defects and against three more written to break them.
+revealed on hover is behind `@media (hover: hover)`.
+
+Its first version **passed with the defect restored**, and that is the part
+worth keeping. It looked for a rule whose selector carried the margin under the
+container — `.row > .field { margin-bottom: 12px }`, the spelling the fix had
+just removed — while the margin actually lives on a bare `.field` and only the
+cancellation kept it off the row. Deleting one line brought the crooked buttons
+back and the check stayed green: it had learned the shape of the edit rather
+than the property. The cancellation is `> *` now instead of naming a class,
+which closes the same hole one step later, and the check requires that reset on
+every edge-aligned container. Six breaks, including the two that defeated the
+first version.
 
 Two things that were not layout came out of the same pass. `lint:tokens` was
 named in `admin.css`'s own header — "Nothing here invents a hex value, and
@@ -239,6 +249,24 @@ that pinned it asserted the raw string, which is what a test written beside the
 code always does. `lint:stored-error` asks every surface that returns that
 column, and refuses if it finds none — a check with nothing to hold must not
 report green.
+
+**And the redaction itself held for the example and not for the deployment.**
+The rule needed a dot and a two-letter tail, so it covered `embedder.internal`
+— written in that module's own header — and none of the service names this
+product ships with, every one of which is a single label: `embedder`, `qdrant`,
+`parser`. The way one survived is the lesson: the URL *was* removed, and undici
+then appended its cause verbatim, leaving `getaddrinfo ENOTFOUND embedder` at
+the end of an otherwise clean sentence. IPv6 was untouched entirely. A host is
+recognised by **where it can be** now — after a scheme, in brackets, as
+`name:port`, after a DNS or socket code, after the phrases this repository
+writes itself — because those are positions a machine puts one in, and a
+token's shape is shared with everything a person wrote. Eleven strings this
+stack actually produces are pinned as tests, and the six that must survive
+beside them.
+
+Over-redaction stays in one place and is written down rather than fixed:
+`contract.pdf` and `example.com` are the same string with a different tail, a
+list of extensions goes stale, and of the two ways to be wrong only one leaks.
 
 **And the two transports answered `tools/list` with different objects.**
 `permission` is this repository's own bookkeeping — MCP's `Tool` has no such

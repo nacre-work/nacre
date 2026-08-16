@@ -121,19 +121,56 @@ if (aligned.length === 0) {
   process.exit(1)
 }
 
+/**
+ * Every edge-aligned container zeroes that edge on **all** its children.
+ *
+ * This is the rule that actually holds the property, and the first version of
+ * this check did not have it. It looked for a rule whose *selector* carried a
+ * non-zero margin under the container — which catches `.row > .field {
+ * margin-bottom: 12px }`, the spelling the fix removed, and not the state the
+ * file was one deletion away from: the margin lives on a bare `.field`, and
+ * only the cancellation kept it off. Deleting one line restored the crooked
+ * buttons and this check stayed green. A check that goes green on the defect it
+ * was written for is worse than no check.
+ *
+ * Naming the class in the cancellation has the same hole one step later: the
+ * next child class with a margin reintroduces it with nothing failing. `> *`
+ * has no such gap, so that is what is required.
+ */
 for (const container of aligned) {
+  const reset = all.some(
+    (rule) =>
+      rule.selector
+        .split(',')
+        .map((s) => s.trim())
+        .includes(`${container.selector} > *`) &&
+      declaration(rule.body, container.edge) !== null &&
+      !nonZero(declaration(rule.body, container.edge)),
+  )
+  if (!reset) {
+    problems.push(
+      `\`${container.selector}\` aligns on \`${container.align}\` and has no ` +
+        `\`${container.selector} > * { ${container.edge}: 0 }\`. That alignment is on margin ` +
+        'boxes, so any child carrying a margin on that edge sits that far off every sibling ' +
+        'that does not — the crooked-button defect. Reset it for every child rather than for ' +
+        'the classes that happen to be in there today.',
+    )
+  }
+
   for (const rule of all) {
     for (const selector of rule.selector.split(',').map((s) => s.trim())) {
-      // A child or descendant of the aligned container: `.row > .field`,
-      // `.row .field`. Not the container itself.
+      // A descendant rule can out-specify the `> *` reset: `.row .pick`
+      // (0,2,0) beats `.row > *` (0,1,0). So the reset is necessary and this
+      // is what makes it sufficient.
       if (!selector.startsWith(container.selector + ' ')) continue
       const value = declaration(rule.body, container.edge)
       if (nonZero(value)) {
         problems.push(
           `\`${selector}\` sets \`${container.edge}: ${value}\` inside \`${container.selector}\`, ` +
-            `which aligns on \`${container.align}\`. That aligns margin boxes, so this child's ` +
-            `control ends ${value} above every sibling in the row that carries no such margin — ` +
-            'the crooked-button defect. Put the spacing on the row instead.',
+            `which aligns on \`${container.align}\`, and out-specifies the \`> *\` reset. That ` +
+            `aligns margin boxes, so this child's control ends ${value} above every sibling ` +
+            'carrying no such margin — the crooked-button defect. Put the spacing on the ' +
+            'container instead.',
         )
       }
     }

@@ -132,6 +132,7 @@ a { color: var(--n-accent); }
 
 .view-head { display: flex; align-items: flex-start; gap: 20px; margin-bottom: 20px; }
 .view-head > div { flex: 1; }
+.view-head > * { margin-top: 0; }
 .lede { color: var(--n-text-muted); margin: 6px 0 0; max-width: 62ch; }
 
 .note {
@@ -337,7 +338,12 @@ a { color: var(--n-accent); }
    So the spacing moves to the row and the children carry none, which makes the
    alignment a property of the row rather than of every child remembering. */
 .row { display: flex; gap: 12px; align-items: flex-end; margin-bottom: 12px; }
-.row > .field { margin-bottom: 0; }
+/* Every child, not `.field` by name. Naming the class means the next child
+   class with a margin reintroduces the defect silently, which is what made
+   the check for this pass with the fix deleted: it was matching the spelling
+   rather than the property. `lint:admin-layout` requires this reset on every
+   edge-aligned container now. */
+.row > * { margin-bottom: 0; }
 
 /* One control's worth of space, whichever of the four things is in it — a
    select, a name, a sentence, or the id field that appears only when the list
@@ -495,7 +501,7 @@ th.tick {
 
 .qrows { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
 .qrow { display: flex; gap: 10px; align-items: flex-end; }
-.qrow .field { margin-bottom: 0; }
+.qrow > * { margin-bottom: 0; }
 .row-actions { display: flex; gap: 8px; margin-bottom: 10px; }
 .plain { list-style: none; padding: 0; margin: 8px 0 0; font-size: 13px; }
 .plain li { margin-bottom: 2px; }
@@ -519,6 +525,7 @@ th.tick {
 }
 .hit-head { display: flex; align-items: flex-start; gap: 16px; }
 .hit-head > div { flex: 1; }
+.hit-head > * { margin-top: 0; }
 .hit-meta { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
 .score { font-size: 12px; color: var(--n-text-faint); }
 .hit-text { margin: 10px 0 0; color: var(--n-text-muted); font-size: 14px; max-width: 78ch; }

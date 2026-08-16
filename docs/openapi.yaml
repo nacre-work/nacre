@@ -373,6 +373,13 @@ components:
             endpoint's address and whatever a sidecar wrote into its message,
             and this field is reached by `get_document` over MCP — whose caller
             can be a third party acting through a delegation.
+
+
+            A **filename** is taken out with them, and that is a known cost
+            rather than an oversight: `contract.pdf` and `example.com` are the
+            same shape, nothing can separate them, and of the two ways to be
+            wrong only one leaks. The unredacted text is in the worker's log,
+            where the operator is.
         updated_at:  { type: string, format: date-time }
         metadata:
           allOf:
