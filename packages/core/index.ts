@@ -12,6 +12,7 @@ export {
 export type { Metadata } from './metadata.js'
 export { loadConfig, loadJwtKeys, loadJwtVerification, keyFingerprint, ConfigError } from './config.js'
 export { protectedResourceMetadata, PROTECTED_RESOURCE_PATH, JWKS_PATH } from './oauth.js'
+export { corsHeaders, isPreflight, preflightHeaders } from './cors.js'
 export {
   AUTHORIZATION_SERVER_PATH,
   AUTHORIZE_PATH,

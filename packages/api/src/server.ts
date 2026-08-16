@@ -18,6 +18,9 @@ import {
   AUTHORIZATION_SERVER_PATH,
   AUTHORIZE_PATH,
   CODE_TTL_MS,
+  corsHeaders,
+  isPreflight,
+  preflightHeaders,
   REGISTER_PATH,
   TOKEN_PATH,
   authorizationServerMetadata,
@@ -896,6 +899,20 @@ export interface ApiOptions {
    */
   readonly metricsToken?: string
   /**
+   * Browser origins this API answers, from `NACRE_API_ALLOWED_ORIGINS`.
+   *
+   * Absent means none, which is the default and what every existing deployment
+   * has: the admin console is served from this same origin, so it has never
+   * needed one.
+   *
+   * A browser MCP client does: it registers and exchanges its authorization
+   * code here, both by `fetch` from a page on another origin, and without this
+   * the whole OAuth walk stops after the `401` that starts it. Same list, same
+   * rules and the same module as the MCP transport's — see
+   * `packages/core/cors.ts`.
+   */
+  readonly allowedOrigins?: readonly string[]
+  /**
    * The RFC 9728 document served at `/.well-known/oauth-protected-resource`.
    *
    * Passed in rather than built here so the API and the MCP transport serve
@@ -1704,6 +1721,41 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   const requestId = randomUUID()
   const url = new URL(req.url ?? '/', 'http://localhost')
   const instance = url.pathname
+
+  // ── admitting a browser ─────────────────────────────────────────────────
+  //
+  // Set before anything routes, so every reply carries them — including the
+  // `401` a client reads `WWW-Authenticate` off to find the discovery document.
+  // `writeHead` merges what it is given over what is set here, and nothing
+  // below writes an `access-control-*` header.
+  //
+  // Empty is the default: no header is emitted and a preflight is a `404` like
+  // any other unrouted method, which is exactly what this API did before.
+  const allowedOrigins = options.allowedOrigins ?? []
+  const cors = corsHeaders(req.headers.origin, allowedOrigins)
+  for (const [name, value] of Object.entries(cors)) res.setHeader(name, value)
+
+  if (isPreflight(req.method)) {
+    const origin = req.headers.origin
+    if (origin === undefined || !allowedOrigins.includes(origin)) {
+      const problem = notFound(instance, requestId)
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+    res.writeHead(
+      204,
+      preflightHeaders({
+        origin,
+        methods: 'GET, POST, PATCH, PUT, DELETE, OPTIONS',
+        // What this API reads. `idempotency-key` is the one the MCP transport
+        // has never heard of, and a browser that may not send it cannot make
+        // the retry-safe call the contract asks for.
+        headers: 'authorization, content-type, accept, idempotency-key, if-none-match',
+      }),
+    )
+    res.end()
+    return
+  }
 
   if (req.method === 'GET' && instance === '/metrics') {
     // Unauthenticated by default, like every Prometheus endpoint, and therefore

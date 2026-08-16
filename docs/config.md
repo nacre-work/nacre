@@ -1299,6 +1299,24 @@ buy nothing and would let a page on an allowed origin act as whoever is signed
 in there. With the list empty no header above is emitted at all and a preflight
 is refused, which is exactly what a deployment that never sets it sees.
 
+`NACRE_API_ALLOWED_ORIGINS` is the same list for the REST API, and empty by
+default for the same reason: the admin console is served from the API's own
+origin, so nothing has ever needed one. A **browser** MCP client does — it
+registers and exchanges its authorization code at `/oauth/register` and
+`/oauth/token`, both by `fetch` from a page on another origin, so without this
+the walk stops after the `401` that starts it.
+
+Two variables rather than one, because these are two processes with two
+configurations and, on a split deployment, two hostnames: a single list would
+admit an origin on a surface the operator did not mean to open. Both are read
+by one implementation — `packages/core/cors.ts` — so they cannot disagree about
+which headers a caller may read.
+
+**`*` is refused at startup**, by name, on either list. Nothing here treats it
+as a wildcard — an origin is admitted by exact match — so a `*` would be a list
+that matches nothing while reading as one that opened the surface to everybody.
+On an authorization boundary that is the dangerous direction to be wrong in.
+
 ## Health and observability
 
 - `/v1/health` — liveness, touching no dependency.
