@@ -1,15 +1,4 @@
-import {
-  ConfigError,
-  createPool,
-  generatePassword,
-  hashPassword,
-  loadConfig,
-  loadJwtKeys,
-  organizationSlugError,
-  provisionOrganization,
-  VectorStore,
-  vectorStoreOptions,
-} from '@nacre.work/core'
+import { ConfigError, VectorStore, createPool, generatePassword, hashPassword, loadConfig, loadJwtKeys, looksLikeEmail, organizationSlugError, provisionOrganization, vectorStoreOptions } from '@nacre.work/core'
 import type { ProvisionOptions } from '@nacre.work/core'
 import { SignJWT } from 'jose'
 import { pathToFileURL } from 'node:url'
@@ -56,7 +45,7 @@ export function parseArgs(argv: readonly string[]): Options | string {
   // this from being the copy that drifts.
   const wrong = organizationSlugError(slug)
   if (wrong !== undefined) return `--org ${wrong}`
-  if (!email.includes('@')) return `--email does not look like an address: ${email}`
+  if (!looksLikeEmail(email)) return `--email does not look like an address: ${email}`
 
   return {
     slug,
