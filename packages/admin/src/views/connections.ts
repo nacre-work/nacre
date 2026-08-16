@@ -1,5 +1,5 @@
 import { client, explain } from '../api.js'
-import { ago, clear, h } from '../dom.js'
+import { agoCell, clear, h } from '../dom.js'
 
 /**
  * Applications connected to this organization, and forgetting one.
@@ -165,10 +165,11 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
           // "you" for your own, the address for anyone else's, and the id only
           // where the row points at a user this organization no longer has.
           h('td', {}, ...actsAs(c, me)),
-          h('td', {}, ago(c.createdAt)),
+          agoCell(c.createdAt, ''),
           // Renewal is the only thing the server sees: an access token is
-          // verified locally and its use touches nothing.
-          h('td', {}, c.lastRefreshedAt === null ? 'never' : ago(c.lastRefreshedAt)),
+          // verified locally and its use touches nothing. `ago(null)` is
+          // already "never", so the ternary this replaced was saying it twice.
+          agoCell(c.lastRefreshedAt, ''),
           h('td', {}, ended ? h('span', { class: 'muted' }, 'forgotten') : forget),
         ),
       )

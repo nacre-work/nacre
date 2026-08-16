@@ -1,7 +1,7 @@
 import type { Group, GroupMember, User } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
-import { ago, clear, copyableId, copyText, h, shortId } from '../dom.js'
+import { agoCell, clear, copyableId, copyText, h, shortId } from '../dom.js'
 import { picker } from '../pick.js'
 
 /**
@@ -89,7 +89,7 @@ function userTable(users: readonly User[], root: HTMLElement): HTMLElement {
         h('td', {}, h('span', { class: 'slug' }, u.role)),
         // The id, because issuing a grant to one person takes it.
         h('td', {}, copyableId(u.id)),
-        h('td', { class: 'muted' }, ago(u.createdAt)),
+        agoCell(u.createdAt),
         h('td', { class: 'right' },
           h('button', { class: 'btn btn-quiet', onclick: () => void editUser(u, root) }, 'Edit'),
           h('button', { class: 'btn btn-quiet', onclick: () => confirmReset(u, root) }, 'Reset password'),

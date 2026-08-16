@@ -294,3 +294,25 @@ export function ago(iso: string | null): string {
   }
   return `${value} ${label}${value === 1 ? '' : 's'} ago`
 }
+
+/**
+ * A relative time as a table cell, which is the only way one appears.
+ *
+ * "204 days ago" is three words and one value, and a table cell is happy to
+ * break it across three lines. It did: measured in Chromium at 390, a People
+ * row carrying that string was **89px** while the rows beside it, reading "7
+ * days ago" and "1 day ago", were 66px. The column is as wide as its widest
+ * entry, so the oldest row in a table deforms only itself, which reads as a
+ * rendering glitch rather than as a wrapped word.
+ *
+ * The same shape as the action column, which wrapped for the same reason and
+ * was fixed on `.right`. That fix is why this is a helper and not a sixth
+ * class on a fifth call site: `ago()` is rendered into a `<td>` in three views
+ * and five places, every one of which had to remember, with nothing that knew
+ * there were five. `lint:admin-layout` asks.
+ *
+ * The class is taken rather than assumed so this changes no view's colour —
+ * three of the five cells are `muted` and two are not.
+ */
+export const agoCell = (iso: string | null, className = 'muted'): HTMLElement =>
+  h('td', { class: `ago${className === '' ? '' : ` ${className}`}` }, ago(iso))
