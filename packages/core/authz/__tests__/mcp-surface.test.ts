@@ -11,6 +11,7 @@ import {
   TOOLS_TTL_MS,
   type Layer,
 } from '@nacre.work/mcp'
+import { mcpWalkHeaders } from '@nacre.work/core'
 import { SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -881,7 +882,13 @@ describe('baseline · a browser this transport allows can actually reach it', ()
     // The mirrored headers are the ones this transport refuses a request for
     // disagreeing with, so a browser that may not send them cannot call it.
     const allowed = (res.headers.get('access-control-allow-headers') ?? '').toLowerCase()
-    for (const header of ['authorization', 'content-type', 'mcp-protocol-version', 'mcp-method']) {
+    for (const header of ['mcp-method', 'mcp-name', 'mcp-session-id', 'last-event-id']) {
+      expect(allowed, header).toContain(header)
+    }
+    // And the set every surface an MCP client reaches has to admit, asked from
+    // the shared list rather than spelled out — the API had spelled its own out
+    // and was missing `mcp-protocol-version` for the whole life of both.
+    for (const header of mcpWalkHeaders()) {
       expect(allowed, header).toContain(header)
     }
     expect(res.headers.get('access-control-max-age')).toBeTruthy()

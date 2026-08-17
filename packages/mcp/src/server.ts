@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 
 import {
+  allowedRequestHeaders,
   corsHeaders,
   logger,
   MetadataError,
@@ -503,12 +504,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
       preflightHeaders({
         origin,
         methods: 'POST, OPTIONS',
-        // Every header this transport reads on a request. `mcp-protocol-version`,
-        // `mcp-method` and `mcp-name` are the mirrored ones it refuses a request
+        // What this transport reads on top of what every MCP client sends.
+        // `mcp-method` and `mcp-name` are mirrored headers it refuses a request
         // for disagreeing with, so a browser that cannot send them cannot call
         // this server at all.
-        headers:
-          'authorization, content-type, accept, mcp-protocol-version, mcp-method, mcp-name, mcp-session-id, last-event-id',
+        headers: allowedRequestHeaders(['mcp-method', 'mcp-name', 'mcp-session-id', 'last-event-id']),
       }),
     )
     res.end()

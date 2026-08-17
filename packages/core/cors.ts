@@ -42,6 +42,42 @@
 const EXPOSED = 'WWW-Authenticate, RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, Retry-After'
 
 /**
+ * What a browser MCP client sends at **every** surface it touches.
+ *
+ * `mcp-protocol-version` is the one that is not obvious, and it is the reason
+ * this constant exists rather than two hand-written lists. The MCP SDK puts
+ * that header on every request of the walk — including the `GET` for
+ * `/.well-known/oauth-protected-resource` and the one for
+ * `/.well-known/oauth-authorization-server`, both of which the **API** serves.
+ * The API's list did not have it, so the preflight admitted the origin and
+ * refused the header, and a browser cancelled the request before it was sent.
+ *
+ * The walk still finished, which is what made this invisible: the SDK retries
+ * discovery without the header, so what a deployment saw was two `net::ERR_FAILED`
+ * lines in a browser console and a flow that worked anyway. A client that does
+ * not retry gets no metadata at all — and a resource server whose metadata a
+ * browser cannot read is the same "admitted a client that can only ever be
+ * unauthorized" shape that put `WWW-Authenticate` in `EXPOSED` above.
+ *
+ * Found by driving the deployed stand's `/agent` page in a real browser and
+ * reading the failed requests' headers, not by reading either list.
+ *
+ * Each surface adds what only it reads. Neither can drop what is here.
+ */
+const MCP_WALK = ['authorization', 'content-type', 'accept', 'mcp-protocol-version'] as const
+
+/**
+ * The `Access-Control-Allow-Headers` value for a surface, from what it alone
+ * reads. The shared set above is prepended rather than repeated.
+ */
+export function allowedRequestHeaders(own: readonly string[]): string {
+  return [...MCP_WALK, ...own.filter((header) => !MCP_WALK.includes(header as (typeof MCP_WALK)[number]))].join(', ')
+}
+
+/** The shared set, for a check that wants to ask a surface whether it admits it. */
+export const mcpWalkHeaders = (): readonly string[] => MCP_WALK
+
+/**
  * What a response carries for this origin — empty unless it is allowed.
  *
  * `origin` is the request's `Origin` header. Absent means an agent rather than
