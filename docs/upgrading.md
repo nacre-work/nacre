@@ -272,6 +272,30 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.17.5 — a browser MCP client can read this installation's metadata
+
+**Take the `nacre` image**, and nothing else. No migration, no new variable, and
+nothing to do afterwards. A deployment with both allow-lists empty — which is
+the default and what most installations have — is unaffected either way.
+
+If you did name an origin in 0.17.4, one request of the OAuth walk was being
+refused and you would not have noticed. `Access-Control-Allow-Headers` was
+written out by hand on each surface; the MCP transport's carried
+`mcp-protocol-version` and the API's did not — and the API is what serves both
+`/.well-known` documents a browser MCP client reads. The preflight admitted the
+origin and refused the header, so the browser cancelled discovery before it was
+sent.
+
+Nothing broke, which is why this needed finding rather than reporting. The MCP
+SDK retries discovery without the header, so the walk finished and what a
+deployment saw was two `net::ERR_FAILED` lines in a browser console and a flow
+that worked anyway. A client that does not retry gets no metadata at all.
+
+`curl` sees none of it, because `curl` sends no preflight: both documents answer
+`200` with the right `Access-Control-Allow-Origin`. If you want to check your own
+installation, send an `OPTIONS` with `Access-Control-Request-Headers:
+mcp-protocol-version` and look for that name in the answer.
+
 ### 0.17.4 — a browser can reach this installation, if you name its origin
 
 **Nothing is required.** Both allow-lists are empty by default, which is what
