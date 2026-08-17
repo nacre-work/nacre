@@ -2,6 +2,7 @@ import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 
 import { createApi, type AuditEvent, type AuthContext, type DocumentView } from '@nacre.work/api'
+import { mcpWalkHeaders } from '@nacre.work/core'
 import { SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -373,7 +374,23 @@ describe('baseline · a browser this API allows can finish the OAuth walk', () =
     expect(res.headers.get('access-control-allow-methods')).toContain('POST')
 
     const allowed = (res.headers.get('access-control-allow-headers') ?? '').toLowerCase()
-    for (const header of ['authorization', 'content-type', 'idempotency-key']) {
+    for (const header of ['idempotency-key', 'if-none-match']) {
+      expect(allowed, header).toContain(header)
+    }
+
+    /*
+     * And everything an MCP client sends, because this API is one of the
+     * surfaces one talks to: it serves both `/.well-known` documents, and the
+     * SDK puts `mcp-protocol-version` on those requests too. Without it the
+     * preflight admitted the origin and refused the header, so a browser
+     * cancelled discovery before it was sent — and the walk still finished,
+     * because the SDK retries without it. What a deployment saw was two
+     * `net::ERR_FAILED` lines in a console and a flow that worked anyway.
+     *
+     * Asked from the shared list rather than spelled out here, so a surface
+     * cannot drop one and leave the case passing on the ones it kept.
+     */
+    for (const header of mcpWalkHeaders()) {
       expect(allowed, header).toContain(header)
     }
   })

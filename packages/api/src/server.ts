@@ -18,6 +18,7 @@ import {
   AUTHORIZATION_SERVER_PATH,
   AUTHORIZE_PATH,
   CODE_TTL_MS,
+  allowedRequestHeaders,
   corsHeaders,
   isPreflight,
   preflightHeaders,
@@ -1747,10 +1748,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       preflightHeaders({
         origin,
         methods: 'GET, POST, PATCH, PUT, DELETE, OPTIONS',
-        // What this API reads. `idempotency-key` is the one the MCP transport
-        // has never heard of, and a browser that may not send it cannot make
-        // the retry-safe call the contract asks for.
-        headers: 'authorization, content-type, accept, idempotency-key, if-none-match',
+        // What this API reads *on top of* what every MCP client sends. That
+        // shared set is not optional here: this API serves the two `/.well-known`
+        // documents a browser MCP client reads, and the SDK puts
+        // `mcp-protocol-version` on those requests too.
+        //
+        // `idempotency-key` is the one the MCP transport has never heard of, and
+        // a browser that may not send it cannot make the retry-safe call the
+        // contract asks for.
+        headers: allowedRequestHeaders(['idempotency-key', 'if-none-match']),
       }),
     )
     res.end()

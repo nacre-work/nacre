@@ -374,6 +374,27 @@ because the config reader has its own list parser — an exported function with 
 caller, in the same commit as a check about variables read by nothing. Deleted
 rather than wired up.
 
+**And the two surfaces then wrote their own header lists, so the API refused the
+one header every MCP client sends.** `Access-Control-Allow-Headers` was a string
+literal on each side; the MCP transport's had `mcp-protocol-version` and the
+API's did not — and the API is what serves both `/.well-known` documents a
+browser MCP client reads. The preflight admitted the origin and refused the
+header, so the browser cancelled discovery before it left.
+
+Nothing failed. The MCP SDK retries discovery without the header, so the walk
+finished and what a deployment saw was two `net::ERR_FAILED` lines in a console
+and a flow that worked anyway. A client that does not retry gets no metadata at
+all, which is the same "admitted a client that can only ever be unauthorized"
+shape that put `WWW-Authenticate` in the exposed list one paragraph up — arriving
+on the request side.
+
+The shared set is a constant both surfaces build their list from now, each
+adding only what it alone reads, and the two suites ask it from that constant
+rather than spelling it out — a case that names its own headers is a case that
+passes on the ones the surface kept. Found by driving a deployed page in a real
+browser and reading the failed requests' *headers*: `curl` gets a `200` from
+both documents, because `curl` sends no preflight.
+
 Rate limiting, `Idempotency-Key` and cursor pagination are in, which is also
 what Redis is finally for — it had been required configuration, and in every
 Compose profile with the API waiting on its healthcheck, since before anything
