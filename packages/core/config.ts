@@ -508,8 +508,61 @@ function loadEd25519(ref: string, variable: string): { private: KeyObject; publi
  * what recovery codes are for, and why they are minted at enrolment rather than
  * on demand.
  */
+/**
+ * The key as a value rather than as a file.
+ *
+ * `NACRE_JWT_SECRET` is already a plain environment variable, so key material
+ * arriving that way is how this product ships by default and refusing it only
+ * here would be the codebase disagreeing with itself. Every orchestrator injects
+ * a secret as an environment variable, and a deployment that has to mount a file
+ * for one 32-byte value is a deployment that will find a way not to.
+ *
+ * **Base64 or hex, and exactly 32 bytes.** Not an arbitrary string: a passphrase
+ * somebody typed would be accepted, stretched by nothing, and every sealed
+ * secret in the installation would be worth whatever that passphrase was. The
+ * refusal names the command that produces a correct one.
+ *
+ * The file is still the better one where a platform offers it — an environment
+ * variable is readable through `docker inspect` and `/proc/<pid>/environ`, and a
+ * file can be mounted read-only from a secret store. That is a recommendation
+ * and not a rule, which is what the two variables express.
+ */
+function decodeSecondFactorKey(value: string): Buffer {
+  const text = value.trim()
+  const advice =
+    'It takes 32 bytes as base64 or hex: `openssl rand -base64 32`, or point ' +
+    'NACRE_2FA_KEY_REF at a file instead.'
+
+  if (/^[0-9a-f]{64}$/iu.test(text)) return Buffer.from(text, 'hex')
+
+  if (/^[A-Za-z0-9+/_-]+={0,2}$/u.test(text)) {
+    const bytes = Buffer.from(text, 'base64')
+    if (bytes.length === 32) return bytes
+    throw new ConfigError([
+      `NACRE_2FA_KEY decodes to ${String(bytes.length)} bytes rather than 32. ${advice}`,
+    ])
+  }
+
+  throw new ConfigError([`NACRE_2FA_KEY is not base64 or hex. ${advice}`])
+}
+
 export function loadSecondFactorKey(env: NodeJS.ProcessEnv = process.env): Buffer | undefined {
   const ref = env.NACRE_2FA_KEY_REF
+  const inline = env.NACRE_2FA_KEY
+
+  if (ref !== undefined && ref !== '' && inline !== undefined && inline !== '') {
+    // Refused rather than resolved by precedence, exactly as the two token-key
+    // variables are: whichever this picked, the other would be set, apparently
+    // in use, and ignored — and the operator finds out when the authenticators
+    // they enrolled stop opening.
+    throw new ConfigError([
+      'NACRE_2FA_KEY and NACRE_2FA_KEY_REF are both set. They are two answers to ' +
+        '"what seals a second factor" and there is no order of precedence worth ' +
+        'inventing. Set one.',
+    ])
+  }
+
+  if (inline !== undefined && inline !== '') return decodeSecondFactorKey(inline)
   if (ref === undefined || ref === '') return undefined
 
   let path: string

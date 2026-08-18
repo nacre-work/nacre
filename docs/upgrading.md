@@ -286,15 +286,28 @@ an older replica serving beside it is unaffected.
 To offer a second factor, generate a key and name it:
 
 ```
+NACRE_2FA_KEY=$(openssl rand -base64 32)
+```
+
+or, as a file:
+
+```
 openssl rand -out nacre_2fa.key 32
 NACRE_2FA_KEY_REF=file:///run/secrets/nacre_2fa.key
 ```
 
-`file://` only and at least 32 bytes, on the same argument as the token signing
-key: every platform with a secret store presents one as a file, and a scheme
-that fetched over the network would put a client on the startup path. The API is
-the only process that needs it — the MCP transport verifies tokens and never
-issues one.
+Set one, not both — both is refused rather than resolved by precedence, the same
+as the two token-key variables. As a value it is base64 or hex and **exactly 32
+bytes**; an arbitrary string is refused rather than stretched, or every sealed
+secret would be worth whatever somebody typed.
+
+The file is the better one where your platform offers it: an environment
+variable is readable through `docker inspect` and `/proc/<pid>/environ`, while a
+file can be mounted read-only from a secret store. It is a recommendation and
+not a rule — `NACRE_JWT_SECRET` beside it is a plain value too.
+
+The API is the only process that needs it: the MCP transport verifies tokens and
+never issues one.
 
 **There is no mode that stores a TOTP secret in the clear.** Unset the variable
 and enrolment is refused rather than degraded; a product that half-does a second
