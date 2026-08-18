@@ -326,6 +326,21 @@ jobs:
           node packages/core/dist/migrate-main.js
           NACRE_PLAYWRIGHT="$(cat /tmp/nacre-playwright-dir)/node_modules/playwright/index.mjs" \
             node scripts/webauthn-e2e.mjs
+      - name: the sign-in gate, end to end
+        env:
+          NACRE_PG_URL: postgres://nacre:nacre@127.0.0.1:5432/nacre
+        run: |
+          set -euo pipefail
+          # Beside the ceremony above rather than in a job of its own: both want
+          # a browser and a database, and installing a browser is the expensive
+          # half that this job has already paid for.
+          #
+          # It registers a real sign-in gate, so what it drives is the whole
+          # walk a customer's policy produces — the enrolment step, the codes,
+          # and a console that opens with no second sign-in. Every unit suite
+          # under it proves one half against a stub of the next.
+          NACRE_PLAYWRIGHT="$(cat /tmp/nacre-playwright-dir)/node_modules/playwright/index.mjs" \
+            node scripts/sign-in-gate-e2e.mjs
       # The images this wrote are thrown away with the runner. Regenerating them
       # is the author's job, and `git status` on their machine is what says the
       # committed ones are stale — not a runner whose fonts are not theirs.

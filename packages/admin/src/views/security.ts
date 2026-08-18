@@ -88,9 +88,26 @@ async function renderPassword(panel: HTMLElement): Promise<void> {
     message.textContent = 'Changing…'
     try {
       const changed = await changeOwnPassword(current.value, next.value)
-      if (!changed) {
+      if (changed === false) {
         message.className = 'form-message error'
         message.textContent = 'That is not your current password.'
+        return
+      }
+      if (changed !== true) {
+        /*
+         * A gate answered, and **the password is already changed** — the server
+         * commits the statement before it mints the session. So this is not a
+         * failure: it is a person with a new password and no session, and
+         * saying otherwise would leave them typing the old one.
+         *
+         * The session is gone with it, so the honest next screen is the sign-in
+         * one, which is where the enrolment step lives. Reloading is what puts
+         * it up: this view is inside a console the router will not draw
+         * without a token.
+         */
+        message.className = 'form-message'
+        message.textContent = `${changed.reason} Your password was changed — sign in with the new one and add a factor.`
+        globalThis.setTimeout(() => globalThis.location.reload(), 4000)
         return
       }
       current.value = ''
@@ -292,12 +309,15 @@ async function enrolKey(root: HTMLElement): Promise<void> {
             try {
               const options = await client().secondFactor.beginWebAuthn()
               const made = await webauthn.create(options)
-              const codes = await client().secondFactor.finishWebAuthn({
+              const confirmed = await client().secondFactor.finishWebAuthn({
                 ...made,
                 label: label.value.trim(),
               })
               dialog.close()
-              if (codes.length > 0) showRecoveryCodes(codes, root)
+              // `tokens` is for the enrolment-challenge door and is always
+              // absent here: this screen is reached with a session, so there is
+              // nothing to adopt.
+              if (confirmed.recoveryCodes.length > 0) showRecoveryCodes(confirmed.recoveryCodes, root)
               else void securityView(root)
             } catch (error) {
               button.disabled = false
@@ -397,9 +417,9 @@ function second(
           message.className = 'form-message'
           message.textContent = 'Checking…'
           try {
-            const codes = await client().secondFactor.confirm(begun.id, code.value.trim())
+            const confirmed = await client().secondFactor.confirm(begun.id, code.value.trim())
             dialog.close()
-            if (codes.length > 0) showRecoveryCodes(codes, root)
+            if (confirmed.recoveryCodes.length > 0) showRecoveryCodes(confirmed.recoveryCodes, root)
             else void securityView(root)
           } catch (error) {
             message.className = 'form-message error'

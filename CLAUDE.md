@@ -1860,6 +1860,51 @@ the `location.hash` defect arriving in a case written this same day. It is asked
 of a `Login` that has a store now, in both directions, and both restorations
 were measured: the old version green, the new one red.
 
+**And the console had to learn the answer, or the point would have been a
+surface nothing could act on.** That is the defect `GET /v1/auth/methods` exists
+to prevent — a screen offering what the server refuses — arriving from the other
+side: a server offering what the screen cannot use. So the outcome runs the
+whole way out, and every step of that was a compile error rather than a choice.
+
+The SDK carries it on **four** methods, and `enrolmentFrom` is one reader
+because four copies of the same three fields is four chances to read
+`access_token` off a body that has none and store the string `undefined` as a
+session. `#renew` is where that would have been silent: a renewal answered by a
+gate carries no tokens, so the seam drops the refresh token, tells
+`onSignInGate`, and lets the `401` surface — the session really is over, and the
+spent token is not redeemable.
+
+`confirm` and `finishWebAuthn` return `{ recoveryCodes, tokens }` now rather
+than a bare list. `tokens` is present only through the enrolment door, and
+making it an object turned both call sites into compile errors instead of
+adding a field every existing caller would ignore.
+
+**Two different `403`s reach `POST /v1/me/password` now**, and the SDK matches
+on the problem **type** rather than the status. It swallowed every `403` as
+"wrong current password", so a policy refusal would have been reported as a typo
+and the person would have retyped a password that was correct. A status is too
+coarse to carry two facts; a stable `type` is what RFC 9457 has for it.
+
+The console's screen shows the gate's own words, offers whichever kinds the
+installation has, and — the part worth naming — **shows the recovery codes
+before the console opens**. They are printed once, and signing somebody straight
+in would have thrown away the only thing that gets them back after a lost phone,
+which an administrator deliberately cannot undo.
+
+`scripts/sign-in-gate-e2e.mjs` is what says this works, and it registers a
+**real gate** rather than stubbing a response: password, enrolment step, secret,
+code, ten codes, Continue, console — with the core's `issue`, the challenge, the
+narrow door, the SDK and the screen all real. Every suite under it proves one
+half against a stub of the next, and mocks agree with whatever they were written
+to. Deleting the console's one branch reproduces 0.19.0's state exactly and the
+run names it.
+
+Two of its own assertions were wrong first, and both are the harness failing in
+the shapes the product does: it read `nacre.token` where the console writes
+`nacre.admin.token`, reporting no session on a console that had plainly opened;
+and it cleared `sessionStorage` without reloading, so the signed-in screen
+stayed up and the sign-in form it then looked for was never going to exist.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

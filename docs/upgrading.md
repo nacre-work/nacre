@@ -303,6 +303,20 @@ token is accepted. It reaches four routes, listed in
 [extensions.md](./extensions.md), and confirming a factor through it answers
 with the recovery codes **and** a session.
 
+**The SDK and the console handle all of this**, so a deployment running the
+shipped admin UI needs nothing. Two changes are visible to anybody writing
+against `@nacre.work/sdk`:
+
+- `secondFactor.confirm` and `secondFactor.finishWebAuthn` return
+  `{ recoveryCodes, tokens }` rather than a bare list of codes. `tokens` is
+  present only where the enrolment was reached with an enrolment challenge.
+- `changePassword` distinguishes its two `403`s by the problem **type**. If you
+  match on the status alone, a policy refusal will read as a wrong password.
+
+`onSignInGate` is a new client option: it fires when a **renewal** is answered
+by a gate. Without it the only signal is the `401` every request afterwards
+gets, which looks exactly like an expired session.
+
 ### 0.19.0 — a second factor you cannot be phished out of
 
 **One migration, no new variables, and nothing to configure.** WebAuthn needs

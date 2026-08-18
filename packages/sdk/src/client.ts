@@ -22,7 +22,9 @@ import type {
   ReferenceQueryInput,
   ReindexStatus,
   BegunSecondFactor,
+  ConfirmedSecondFactor,
   SecondFactor,
+  SecondFactorEnrolmentRequired,
   SignIn,
   Tokens,
   Workspace,
@@ -105,6 +107,17 @@ export interface ClientOptions {
    * `auth.login`/`auth.refresh` methods, which hand the tokens back directly.
    */
   readonly onTokens?: (tokens: Tokens) => void
+  /**
+   * Called when a **renewal** is answered by a sign-in gate rather than by a
+   * new pair — an organization turned on a policy while this session was live.
+   *
+   * Separate from `onTokens` because the two mean opposite things: one says the
+   * session continues and this says it is over and why. Without it the only
+   * signal is the `401` every request afterwards gets, which is
+   * indistinguishable from an expired session and sends a person to a sign-in
+   * screen that will hand them the same challenge again.
+   */
+  readonly onSignInGate?: (outcome: SecondFactorEnrolmentRequired) => void
 }
 
 interface RequestOptions {
@@ -139,6 +152,7 @@ export class NacreClient {
   readonly #fetch: typeof globalThis.fetch
   #refreshToken: string | undefined
   readonly #onTokens: ((tokens: Tokens) => void) | undefined
+  readonly #onSignInGate: ((outcome: SecondFactorEnrolmentRequired) => void) | undefined
   /** The one in-flight renewal, shared by every request that 401s during it. */
   #renewing: Promise<boolean> | undefined
 
@@ -155,6 +169,7 @@ export class NacreClient {
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis)
     this.#refreshToken = options.refreshToken
     this.#onTokens = options.onTokens
+    this.#onSignInGate = options.onSignInGate
   }
 
   async #once(options: RequestOptions): Promise<unknown> {
@@ -277,9 +292,9 @@ export class NacreClient {
     const refreshToken = this.#refreshToken
     if (refreshToken === undefined) return false
 
-    let tokens: Tokens | undefined
+    let renewed: Tokens | SecondFactorEnrolmentRequired | undefined
     try {
-      tokens = await this.auth.refresh(refreshToken)
+      renewed = await this.auth.refresh(refreshToken)
     } catch {
       // A transport error says nothing about the token's validity, so keep it
       // and let a later request try again rather than ending the session on a
@@ -289,14 +304,30 @@ export class NacreClient {
 
     // `undefined` is the server refusing the refresh token: the session is over
     // and re-presenting it only 401s again, so drop it and let the 401 surface.
-    if (tokens === undefined) {
+    if (renewed === undefined) {
       this.#refreshToken = undefined
       return false
     }
 
-    this.#token = tokens.accessToken
-    this.#refreshToken = tokens.refreshToken
-    this.#onTokens?.(tokens)
+    /*
+     * A gate answered instead of renewing, and this is the case that would have
+     * been silent.
+     *
+     * The body carries no `access_token`, so a renewal that assumed tokens
+     * would store the string `"undefined"` and every request afterwards would
+     * 401 with nothing anywhere saying why. The refresh token is spent by the
+     * server either way, so the session is over: drop it, tell whoever is
+     * listening, and let the 401 surface to the caller.
+     */
+    if ('secondFactorEnrolmentRequired' in renewed) {
+      this.#refreshToken = undefined
+      this.#onSignInGate?.(renewed)
+      return false
+    }
+
+    this.#token = renewed.accessToken
+    this.#refreshToken = renewed.refreshToken
+    this.#onTokens?.(renewed)
     return true
   }
 
@@ -1257,7 +1288,7 @@ export class NacreClient {
           expiresIn: Number(body.expires_in ?? 0),
         }
       }
-      return tokensFrom(body)
+      return enrolmentFrom(body) ?? tokensFrom(body)
     },
 
     /**
@@ -1268,7 +1299,7 @@ export class NacreClient {
      */
     secondFactor: async (
       input: { challenge: string } & ({ code: string } | { assertion: WebAuthnAssertion }),
-    ): Promise<Tokens | undefined> => {
+    ): Promise<Tokens | SecondFactorEnrolmentRequired | undefined> => {
       const body = await this.#unauthorized<Record<string, unknown>>({
         method: 'POST',
         path: '/v1/auth/second-factor',
@@ -1278,7 +1309,9 @@ export class NacreClient {
           ...('code' in input ? { code: input.code } : { assertion: assertionJson(input.assertion) }),
         },
       })
-      return body === undefined ? undefined : tokensFrom(body)
+      // A gate runs *after* the proof rather than instead of it, so one that
+      // wanted a particular kind can still send this person to enrol.
+      return body === undefined ? undefined : (enrolmentFrom(body) ?? tokensFrom(body))
     },
 
     /**
@@ -1307,14 +1340,19 @@ export class NacreClient {
      * time the legitimate holder has exchanged one, a second presentation of it
      * is either a bug or a theft and there is no way to tell which.
      */
-    refresh: async (refreshToken: string): Promise<Tokens | undefined> => {
+    refresh: async (
+      refreshToken: string,
+    ): Promise<Tokens | SecondFactorEnrolmentRequired | undefined> => {
       const body = await this.#unauthorized<Record<string, unknown>>({
         method: 'POST',
         path: '/v1/auth/refresh',
         noAuthRefresh: true,
         body: { refresh_token: refreshToken },
       })
-      return body === undefined ? undefined : tokensFrom(body)
+      // A renewal is gated like a sign-in, so a policy turned on while somebody
+      // is signed in reaches them here. The presented token is spent either
+      // way: this is the end of that session, not something to retry.
+      return body === undefined ? undefined : (enrolmentFrom(body) ?? tokensFrom(body))
     },
 
     /**
@@ -1415,19 +1453,41 @@ export class NacreClient {
   readonly changePassword = async (input: {
     currentPassword: string
     newPassword: string
-  }): Promise<Tokens | undefined> => {
+  }): Promise<Tokens | SecondFactorEnrolmentRequired | undefined> => {
     try {
       const body = (await this.#request({
         method: 'POST',
         path: '/v1/me/password',
         body: { current_password: input.currentPassword, new_password: input.newPassword },
       })) as Record<string, unknown>
-      return tokensFrom(body)
+      // A gate can answer here too, and when it does **the password is already
+      // changed** — the statement commits before the session is minted. So this
+      // is a person with a new password and no session, and reporting it as a
+      // failure would leave them typing the old one.
+      return enrolmentFrom(body) ?? tokensFrom(body)
     } catch (error) {
-      // Only the refusal. A password below the minimum is a `400` and raises,
-      // because that one is about what the caller sent and a person retyping
-      // needs to be told which rule they missed.
-      if (error instanceof NacreError && error.status === 403) return undefined
+      /*
+       * Only the wrong-password refusal, matched on the problem **type** and
+       * not on the status.
+       *
+       * Two different `403`s reach this endpoint now: this one, and a sign-in
+       * gate refusing outright. They are different facts — one is fixed by
+       * retyping and the other never is — and a status is too coarse to tell
+       * them apart, which is what a stable `type` is for. Matching on `403`
+       * alone would report a policy refusal as a typo, and the person would
+       * retype a password that was correct all along.
+       *
+       * A password below the minimum is a `400` and raises, because that one is
+       * about what the caller sent and a person retyping needs to be told which
+       * rule they missed.
+       */
+      if (
+        error instanceof NacreError &&
+        error.status === 403 &&
+        error.type !== 'https://nacre.work/errors/sign-in-refused'
+      ) {
+        return undefined
+      }
       throw error
     }
   }
@@ -1474,13 +1534,13 @@ export class NacreClient {
     },
 
     /** Confirm it, and take the recovery codes — they are printed once. */
-    confirm: async (id: string, code: string): Promise<readonly string[]> => {
+    confirm: async (id: string, code: string): Promise<ConfirmedSecondFactor> => {
       const body = (await this.#request({
         method: 'POST',
         path: `/v1/me/second-factor/${encodeURIComponent(id)}/confirm`,
         body: { code },
-      })) as { recovery_codes?: readonly string[] }
-      return body.recovery_codes ?? []
+      })) as Record<string, unknown>
+      return confirmedFrom(body)
     },
 
     /**
@@ -1536,7 +1596,7 @@ export class NacreClient {
       attestationObject: string
       clientDataJSON: string
       label?: string
-    }): Promise<readonly string[]> => {
+    }): Promise<ConfirmedSecondFactor> => {
       const body = (await this.#request({
         method: 'POST',
         path: '/v1/me/second-factor/webauthn/finish',
@@ -1546,8 +1606,8 @@ export class NacreClient {
           client_data_json: input.clientDataJSON,
           ...(input.label === undefined ? {} : { label: input.label }),
         },
-      })) as { recovery_codes?: readonly string[] }
-      return body.recovery_codes ?? []
+      })) as Record<string, unknown>
+      return confirmedFrom(body)
     },
 
     /**
@@ -1680,6 +1740,39 @@ function assertionOptionsFrom(body: Record<string, unknown>): WebAuthnAssertionO
     rpId: String(body.rp_id ?? ''),
     allowCredentials: (body.allow_credentials ?? []) as readonly string[],
     timeoutMs: Number(body.timeout_ms ?? 0),
+  }
+}
+
+/**
+ * The enrolment outcome, or nothing where the body is an ordinary one.
+ *
+ * One reader, because **four** endpoints can answer with this — sign-in, the
+ * second half of a sign-in, a refresh and a password change — and four copies
+ * of the same three fields is four chances for one of them to read
+ * `access_token` off a body that has none and store `"undefined"` as a session.
+ */
+function enrolmentFrom(body: Record<string, unknown>): SecondFactorEnrolmentRequired | undefined {
+  if (body.second_factor_enrolment_required !== true) return undefined
+  return {
+    secondFactorEnrolmentRequired: true,
+    challenge: String(body.challenge ?? ''),
+    expiresIn: Number(body.expires_in ?? 0),
+    reason: String(body.reason ?? ''),
+  }
+}
+
+/**
+ * A confirmed enrolment: the codes, and the session where there is one.
+ *
+ * There is one only when the enrolment was reached through an **enrolment
+ * challenge** — a client whose token is a session gets no pair back, because it
+ * already has one. Both spellings go through here so the two routes that
+ * confirm cannot drift.
+ */
+function confirmedFrom(body: Record<string, unknown>): ConfirmedSecondFactor {
+  return {
+    recoveryCodes: (body.recovery_codes ?? []) as readonly string[],
+    tokens: typeof body.access_token === 'string' ? tokensFrom(body) : undefined,
   }
 }
 

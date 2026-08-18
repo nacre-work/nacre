@@ -332,7 +332,45 @@ export interface SecondFactorRequired {
   readonly expiresIn: number
 }
 
-export type SignIn = Tokens | SecondFactorRequired
+/**
+ * What a sign-in returns when a policy demands a second factor this account
+ * does not have.
+ *
+ * Produced by a commercial module registered on the core's `registerSignInGate`
+ * — an installation running no module never answers this. It is in the union
+ * regardless, because a client written today is the client that meets it on the
+ * day a customer turns a policy on, and one that read `accessToken` and found
+ * nothing would report a broken sign-in for a working one.
+ *
+ * The challenge is **not** a session and not a sign-in challenge either. Point
+ * a client at it as its token and it reaches the four enrolment routes and
+ * nothing else; every other path answers `401`.
+ */
+export interface SecondFactorEnrolmentRequired {
+  readonly secondFactorEnrolmentRequired: true
+  readonly challenge: string
+  /** Seconds. Longer than a sign-in challenge: this is a setup, not a code. */
+  readonly expiresIn: number
+  /** The gate's own words, meant to be shown to the person. */
+  readonly reason: string
+}
+
+export type SignIn = Tokens | SecondFactorRequired | SecondFactorEnrolmentRequired
+
+/**
+ * What comes back from confirming an enrolment.
+ *
+ * `tokens` is present only where the enrolment was reached with an **enrolment
+ * challenge** rather than a session — there, confirming is the end of a sign-in
+ * as well, and being made to enrol and then asked to sign in again is the
+ * moment a person gives up. An object rather than a bare list of codes so that
+ * a caller has to say what it does with the session; returning the codes alone
+ * and adding the pair later would be a field every existing call site ignores.
+ */
+export interface ConfirmedSecondFactor {
+  readonly recoveryCodes: readonly string[]
+  readonly tokens: Tokens | undefined
+}
 
 /** Which kinds an installation can enrol. */
 export type SecondFactorKind = 'totp' | 'webauthn'

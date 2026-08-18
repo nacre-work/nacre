@@ -102,6 +102,22 @@ export async function login(context: Context): Promise<string> {
       : tokens
   if (session === undefined) throw new Error('Sign-in refused.')
 
+  /*
+   * A gate wants a second factor this account does not have.
+   *
+   * Refused here rather than walked through, and that is a limit of this
+   * surface rather than an omission. Enrolling TOTP means showing a QR code or
+   * a secret to type into a phone, and enrolling a key needs
+   * `navigator.credentials` — the same reason a key cannot be used to sign in
+   * from a terminal. So this says where the flow exists instead of half-running
+   * it: the console does the enrolment, and this command works afterwards.
+   */
+  if ('secondFactorEnrolmentRequired' in session) {
+    throw new Error(
+      `${session.reason}\nEnrol one in the admin console at ${url}, then sign in here again.`,
+    )
+  }
+
   const path = saveSession(
     { baseUrl: url, token: session.accessToken, refreshToken: session.refreshToken },
     context.env,

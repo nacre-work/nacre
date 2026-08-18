@@ -105,6 +105,23 @@ export async function confirmPasswordReset(
   return bare.auth.confirmPasswordReset(token, password)
 }
 
+/**
+ * A person the server will not give a session until they enrol a factor.
+ *
+ * Returned rather than handled here for the same reason `SecondFactorPending`
+ * is: this module has no screen to ask on. The difference is what the challenge
+ * reaches — that one answers a factor the account already has, and this one is
+ * spent by *adding* one.
+ */
+export interface EnrolmentPending {
+  readonly enrolmentRequired: true
+  readonly challenge: string
+  readonly baseUrl: string
+  /** The gate's own words. Shown, because a demand nobody can read is a fault. */
+  readonly reason: string
+  readonly kinds: readonly SecondFactorKind[]
+}
+
 /** A challenge to answer, when the password alone was not the whole sign-in. */
 export interface SecondFactorPending {
   readonly challenge: string
@@ -126,7 +143,7 @@ export async function signInWithPassword(input: {
   password: string
   organization?: string
   baseUrl: string
-}): Promise<boolean | SecondFactorPending> {
+}): Promise<boolean | SecondFactorPending | EnrolmentPending> {
   // A bare client on the plain `fetch`: there is nothing to renew with yet, and
   // pointing the renewing one at the sign-in call is a loop waiting to happen.
   const bare = new NacreClient({ baseUrl: input.baseUrl, token: 'unauthenticated' })
@@ -158,7 +175,57 @@ export async function signInWithPassword(input: {
     return { challenge: tokens.challenge, baseUrl: input.baseUrl, kinds }
   }
 
+  /*
+   * A correct password, and a policy that will not turn it into a session until
+   * this person has a second factor.
+   *
+   * The same shape one step along: nothing was refused, and the caller is being
+   * asked for more. What comes back is not a session — a screen that adopted it
+   * would store `undefined` as an access token and then report every call as a
+   * broken server.
+   */
+  if ('secondFactorEnrolmentRequired' in tokens) {
+    const kinds = await bare.auth
+      .methods()
+      .then((m) => m.secondFactorKinds)
+      .catch(() => [] as readonly SecondFactorKind[])
+    return {
+      enrolmentRequired: true,
+      challenge: tokens.challenge,
+      baseUrl: input.baseUrl,
+      reason: tokens.reason,
+      kinds,
+    }
+  }
+
   keep(tokens, input.baseUrl)
+  return true
+}
+
+/**
+ * Enrol a factor with an enrolment challenge, and keep the session it returns.
+ *
+ * The challenge is the client's **token** here, which is the whole trick: it
+ * reaches the four enrolment routes and nothing else, so this needs no separate
+ * client surface — the ordinary `secondFactor` methods work, and everything
+ * else they might have reached answers `401`.
+ *
+ * The pair comes back from the confirm rather than from a second sign-in.
+ * Adopting it here rather than in a view is the same rule `changeOwnPassword`
+ * follows: a view that forgot would leave somebody who did everything the
+ * policy asked staring at a sign-in screen.
+ */
+export function enrolmentClient(input: { challenge: string; baseUrl: string }): NacreClient {
+  return new NacreClient({ baseUrl: input.baseUrl, token: input.challenge })
+}
+
+/** Adopt the session a confirmed enrolment handed back. `false` where none did. */
+export function keepEnrolmentSession(
+  confirmed: { tokens: { accessToken: string; refreshToken: string } | undefined },
+  baseUrl: string,
+): boolean {
+  if (confirmed.tokens === undefined) return false
+  keep(confirmed.tokens, baseUrl)
   return true
 }
 
@@ -170,7 +237,7 @@ export async function signInWithPassword(input: {
  */
 export async function signInSecondFactor(
   input: { challenge: string; baseUrl: string } & ({ code: string } | { assertion: WebAuthnAssertion }),
-): Promise<boolean> {
+): Promise<boolean | EnrolmentPending> {
   const bare = new NacreClient({ baseUrl: input.baseUrl, token: 'unauthenticated' })
   const tokens = await bare.auth.secondFactor(
     'code' in input
@@ -178,6 +245,20 @@ export async function signInSecondFactor(
       : { challenge: input.challenge, assertion: input.assertion },
   )
   if (tokens === undefined) return false
+  // A gate runs after the proof, so one that wants a *particular* kind can send
+  // somebody who just used the other one to enrol.
+  if ('secondFactorEnrolmentRequired' in tokens) {
+    return {
+      enrolmentRequired: true,
+      challenge: tokens.challenge,
+      baseUrl: input.baseUrl,
+      reason: tokens.reason,
+      kinds: await bare.auth
+        .methods()
+        .then((m) => m.secondFactorKinds)
+        .catch(() => [] as readonly SecondFactorKind[]),
+    }
+  }
   keep(tokens, input.baseUrl)
   return true
 }
@@ -189,7 +270,9 @@ export async function signInSecondFactor(
  * one order — options, the browser's prompt, the exchange — and a view holding
  * the middle one is a view that can be written to skip the first.
  */
-export async function signInWithKey(input: { challenge: string; baseUrl: string }): Promise<boolean> {
+export async function signInWithKey(
+  input: { challenge: string; baseUrl: string },
+): Promise<boolean | EnrolmentPending> {
   const bare = new NacreClient({ baseUrl: input.baseUrl, token: 'unauthenticated' })
   const options = await bare.auth.secondFactorWebAuthn(input.challenge)
   if (options === undefined) return false
@@ -212,9 +295,29 @@ export async function signInWithKey(input: { challenge: string; baseUrl: string 
 export async function changeOwnPassword(
   currentPassword: string,
   newPassword: string,
-): Promise<boolean> {
+): Promise<boolean | EnrolmentPending> {
   const tokens = await client().changePassword({ currentPassword, newPassword })
   if (tokens === undefined) return false
+  /*
+   * A gate answered, and **the password is already changed** — the server
+   * commits the statement before it mints the session. Reporting this as a
+   * failure would leave somebody going on typing the old one, so it is carried
+   * out with the challenge that gets them a session.
+   */
+  if ('secondFactorEnrolmentRequired' in tokens) {
+    const base = readBase()
+    forget()
+    return {
+      enrolmentRequired: true,
+      challenge: tokens.challenge,
+      baseUrl: base,
+      reason: tokens.reason,
+      kinds: await new NacreClient({ baseUrl: base, token: 'unauthenticated' }).auth
+        .methods()
+        .then((m) => m.secondFactorKinds)
+        .catch(() => [] as readonly SecondFactorKind[]),
+    }
+  }
   keep(tokens, readBase())
   return true
 }
@@ -281,7 +384,7 @@ function renewingFetch(): typeof globalThis.fetch {
     // attempt returns whatever it gets.
     if (refresh === null) return first
 
-    let renewed: { accessToken: string; refreshToken: string } | undefined
+    let renewed: Awaited<ReturnType<NacreClient['auth']['refresh']>>
     try {
       renewed = await new NacreClient({
         baseUrl: readBase(),
@@ -289,6 +392,21 @@ function renewingFetch(): typeof globalThis.fetch {
       }).auth.refresh(refresh)
     } catch {
       renewed = undefined
+    }
+
+    /*
+     * A gate answered the renewal instead of renewing it.
+     *
+     * The body carries no access token, so adopting it would store `undefined`
+     * and every call afterwards would 401 with nothing saying why. The refresh
+     * token is spent by the server either way, so the session is over — the
+     * sign-in screen is the honest place to land, and the person meets the
+     * enrolment step there rather than a message about a token.
+     */
+    if (renewed !== undefined && 'secondFactorEnrolmentRequired' in renewed) {
+      forget()
+      onSessionEnded()
+      return first
     }
 
     if (renewed === undefined) {

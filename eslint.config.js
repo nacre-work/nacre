@@ -29,6 +29,12 @@ export default tseslint.config(
         // Earned its place the same way: the WebAuthn end-to-end signs a token
         // with a secret it builds here, exactly as the suites do.
         TextEncoder: 'readonly',
+        // For the *browser* side of a `page.evaluate`, which is lexically in
+        // these files and runs somewhere else entirely. `sessionStorage` and
+        // friends are reached through this rather than being listed, because
+        // listing them would tell the linter a Node script may use them — and
+        // one that did would fail at run time with the check green.
+        globalThis: 'readonly',
       },
     },
   },
