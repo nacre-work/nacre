@@ -42,6 +42,7 @@ const users: Users = {
         createdAt: '2026-01-01T00:00:00.000Z',
         disabledAt: null,
         hasPassword: true,
+        shared: false,
       },
     ],
   }),
@@ -57,6 +58,7 @@ const users: Users = {
             createdAt: '2026-01-01T00:00:00.000Z',
             disabledAt: null,
             hasPassword: true,
+            shared: false,
           },
         },
   update: async (_a, id) =>
@@ -67,6 +69,9 @@ const users: Users = {
         : id === USER
           ? 'updated'
           : 'no-user',
+  // A stub with no shared accounts, which is what an installation that has
+  // never minted one has.
+  isShared: async () => false,
   resetPassword: async (_a, id) =>
     id === PLATFORM_ADMIN
       ? 'platform-admin'

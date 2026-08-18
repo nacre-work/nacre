@@ -74,6 +74,19 @@ index traversal, so for them the query never reached the document.
 That is the whole product in one query. When you want to point it at your own
 documents, carry on below.
 
+**The engineer and the contractor are marked `shared`**, because a demonstration
+prints its logins for anybody to use. Such an account has no `/v1/me` credential
+surface — it cannot enrol a second factor, change its own password, or be sent a
+reset link — since a credential several people hold has no one person for a
+factor to belong to, and the first holder to enrol one would lock out every
+other with no route back: an administrator deliberately cannot remove somebody's
+second factor. Its password is still reset by an administrator, which is how a
+published credential is rotated. If you publish a login of your own, create it
+with `nacre users create you@example.com --shared`, or tick *Several people
+will hold this password* in the console's New user dialog. Either way the
+choice is fixed at creation: clearing it on an account whose password is
+already out would reopen that surface to whoever holds it.
+
 Reset it with `docker compose --profile demo down -v`. The model is
 English-only and the corpus is fiction; a real installation picks its own
 embedder, which is what the rest of this page is about.

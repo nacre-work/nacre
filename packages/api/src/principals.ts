@@ -51,6 +51,15 @@ export interface UserView {
    * has no local credential to steal.
    */
   readonly hasPassword: boolean
+  /**
+   * Whether this credential is one several people hold.
+   *
+   * In the listing because an administrator who ticked that box when creating
+   * the account has no other way to see it afterwards — and it decides whether
+   * the person on the other end can hold a second factor at all, which is
+   * exactly the kind of thing a screen must be able to say.
+   */
+  readonly shared: boolean
 }
 
 export interface Users {
@@ -66,6 +75,14 @@ export interface Users {
     auth: AuthContext,
     email: string,
     role: 'org_admin' | 'member',
+    /**
+     * A credential more than one person will hold — a published demo login.
+     *
+     * It has no `/v1/me` credential surface: no second factor, no password
+     * change, no recovery link. An administrator still resets its password
+     * here, which is how whoever published it rotates one.
+     */
+    shared?: boolean,
   ): Promise<{ user: UserView; password: string } | undefined>
   /**
    * Change the role, the disabled state, or both.
@@ -98,6 +115,19 @@ export interface Users {
     auth: AuthContext,
     id: string,
   ): Promise<{ password: string } | 'platform-admin' | 'no-user'>
+  /**
+   * Whether this account is one more than one person holds.
+   *
+   * Takes ids rather than an `AuthContext` because the caller is the request
+   * path asking about *itself*, before any of the administrative checks the
+   * rest of this port makes — there is no administrator here, only a person
+   * finding out whether the surface in front of them is theirs.
+   *
+   * `false` for an account that is not there. The routes that ask have already
+   * authenticated the id, so the row exists; answering `false` for a missing
+   * one keeps this from becoming a way to probe which ids do.
+   */
+  isShared(orgId: string, userId: string): Promise<boolean>
 }
 
 export interface GroupView {
@@ -177,9 +207,10 @@ export class PostgresUsers implements Users {
           created_at_text: string
           disabled_at: Date | null
           has_password: boolean
+          shared: boolean
         }>(
           `SELECT id, email, role, created_at, created_at::text AS created_at_text,
-                  disabled_at, (password_hash IS NOT NULL) AS has_password
+                  disabled_at, (password_hash IS NOT NULL) AS has_password, shared
              FROM users WHERE org_id = $1${seek} ORDER BY created_at, id${cap}`,
           after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
         )
@@ -195,6 +226,7 @@ export class PostgresUsers implements Users {
           createdAt: r.created_at.toISOString(),
           disabledAt: r.disabled_at?.toISOString() ?? null,
           hasPassword: r.has_password,
+          shared: r.shared,
         }))
 
         return pageOf(users, page, (u, i) => ({
@@ -210,6 +242,7 @@ export class PostgresUsers implements Users {
     auth: AuthContext,
     email: string,
     role: 'org_admin' | 'member',
+    shared?: boolean,
   ): Promise<{ user: UserView; password: string } | undefined> {
     const password = generatePassword()
     // Outside the transaction on purpose: scrypt at OWASP's minimum takes long
@@ -227,11 +260,11 @@ export class PostgresUsers implements Users {
         // everything after it, so recovering would need a savepoint. The empty
         // result says the same thing without one.
         const { rows } = await client.query<{ id: string; created_at: Date }>(
-          `INSERT INTO users (org_id, email, role, password_hash)
-           VALUES ($1,$2,$3,$4)
+          `INSERT INTO users (org_id, email, role, password_hash, shared)
+           VALUES ($1,$2,$3,$4,$5)
            ON CONFLICT (org_id, email) DO NOTHING
            RETURNING id, created_at`,
-          [auth.orgId, email, role, passwordHash],
+          [auth.orgId, email, role, passwordHash, shared === true],
         )
 
         const row = rows[0]
@@ -246,6 +279,7 @@ export class PostgresUsers implements Users {
             createdAt: row.created_at.toISOString(),
             disabledAt: null,
             hasPassword: true,
+            shared: shared === true,
           },
         }
       },
@@ -380,6 +414,21 @@ export class PostgresUsers implements Users {
       )
       return (rowCount ?? 0) > 0 ? { password } : 'no-user'
     })
+  }
+
+  async isShared(orgId: string, userId: string): Promise<boolean> {
+    return withOrg(
+      this.pool,
+      orgId,
+      async (client) => {
+        const { rows } = await client.query<{ shared: boolean }>(
+          'SELECT shared FROM users WHERE org_id = $1 AND id = $2',
+          [orgId, userId],
+        )
+        return rows[0]?.shared === true
+      },
+      this.scope,
+    )
   }
 }
 

@@ -164,15 +164,24 @@ export class PasswordRecovery {
         const userId = rows[0]?.user_id
         if (userId === undefined) return undefined
 
-        const { rows: people } = await client.query<{ email: string; disabled_at: Date | null }>(
-          'SELECT email, disabled_at FROM users WHERE org_id = $1 AND id = $2',
-          [orgId, userId],
-        )
+        const { rows: people } = await client.query<{
+          email: string
+          disabled_at: Date | null
+          shared: boolean
+        }>('SELECT email, disabled_at, shared FROM users WHERE org_id = $1 AND id = $2', [
+          orgId,
+          userId,
+        ])
         const person = people[0]
         // A disabled account is refused, and the token is spent anyway: it was
         // issued before the account was disabled, and leaving it live would be
         // a link that starts working again if the account is ever re-enabled.
-        if (person === undefined || person.disabled_at !== null) return undefined
+        //
+        // `shared` is asked here as well as where a token is issued, and that
+        // is not a second copy of one check: a token minted before the account
+        // was marked would otherwise still work, which is the same window the
+        // line above closes for `disabled`.
+        if (person === undefined || person.disabled_at !== null || person.shared) return undefined
 
         await client.query('UPDATE users SET password_hash = $2 WHERE id = $1', [userId, hash])
 
@@ -240,8 +249,16 @@ export class PasswordRecovery {
         orgId,
         async (scoped) => {
           const { rows } = await scoped.query<{ id: string }>(
+            // `NOT shared` in the WHERE clause rather than checked after, for
+            // the reason every predicate here is: an account more than one
+            // person holds has no mailbox that belongs to one of them, so a
+            // link sent to it lets whichever of them reads first take it from
+            // the rest. The endpoint still answers 204 — that is what stops it
+            // being an oracle — so this is a token that is never minted rather
+            // than a refusal anybody can observe.
             `SELECT id FROM users
-              WHERE org_id = $1 AND email = $2 AND disabled_at IS NULL AND password_hash IS NOT NULL`,
+              WHERE org_id = $1 AND email = $2 AND disabled_at IS NULL
+                AND password_hash IS NOT NULL AND NOT shared`,
             [orgId, email],
           )
           return rows[0]

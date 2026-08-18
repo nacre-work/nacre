@@ -192,7 +192,15 @@ done
 # contract number" return nothing rather than an error.
 CREDENTIALS=""
 for person in engineer contractor; do
-  created="$($CLI users create "${person}@${DEMO_EMAIL_DOMAIN}" --json)"
+  # `--shared`, because these two credentials are printed for anybody to use.
+  #
+  # A shared account has no `/v1/me` credential surface: no second factor, no
+  # password change, no recovery link. Without it the first visitor to enrol a
+  # factor locks out every other one *permanently* — an administrator
+  # deliberately cannot remove somebody's second factor — and the only repair is
+  # to rebuild the demo. Changing the password does the same, and the password
+  # is on the page.
+  created="$($CLI users create "${person}@${DEMO_EMAIL_DOMAIN}" --shared --json)"
   id="$(printf '%s' "$created" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).id))")"
   password="$(printf '%s' "$created" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).password))")"
   CREDENTIALS="${CREDENTIALS}$(printf '  %-24s %s\n' "${person}@${DEMO_EMAIL_DOMAIN}" "$password")\n"

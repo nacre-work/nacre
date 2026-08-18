@@ -48,6 +48,9 @@ const users: Users = {
   list: async () => ({ nextCursor: null, items: [] }),
   create: async () => busy(),
   update: async () => 'updated',
+  // A stub with no shared accounts, which is what an installation that has
+  // never minted one has.
+  isShared: async () => false,
   resetPassword: async () => busy(),
 }
 

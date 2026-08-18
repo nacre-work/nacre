@@ -217,6 +217,16 @@ export interface User {
   readonly disabledAt: string | null
   /** Whether a local password is set at all. False is an SSO-only account. */
   readonly hasPassword: boolean
+  /**
+   * Whether this credential is one several people hold — a published demo
+   * login, a kiosk, a read-only account handed round a team.
+   *
+   * Such an account has no `/v1/me` credential surface: it cannot enrol a
+   * second factor, change its own password, or be sent a reset link. An
+   * administrator still resets its password, which is how a published one is
+   * rotated. It is fixed at creation and cannot be changed afterwards.
+   */
+  readonly shared: boolean
 }
 
 export interface CreatedUser extends User {
@@ -332,7 +342,45 @@ export interface SecondFactorRequired {
   readonly expiresIn: number
 }
 
-export type SignIn = Tokens | SecondFactorRequired
+/**
+ * What a sign-in returns when a policy demands a second factor this account
+ * does not have.
+ *
+ * Produced by a commercial module registered on the core's `registerSignInGate`
+ * — an installation running no module never answers this. It is in the union
+ * regardless, because a client written today is the client that meets it on the
+ * day a customer turns a policy on, and one that read `accessToken` and found
+ * nothing would report a broken sign-in for a working one.
+ *
+ * The challenge is **not** a session and not a sign-in challenge either. Point
+ * a client at it as its token and it reaches the four enrolment routes and
+ * nothing else; every other path answers `401`.
+ */
+export interface SecondFactorEnrolmentRequired {
+  readonly secondFactorEnrolmentRequired: true
+  readonly challenge: string
+  /** Seconds. Longer than a sign-in challenge: this is a setup, not a code. */
+  readonly expiresIn: number
+  /** The gate's own words, meant to be shown to the person. */
+  readonly reason: string
+}
+
+export type SignIn = Tokens | SecondFactorRequired | SecondFactorEnrolmentRequired
+
+/**
+ * What comes back from confirming an enrolment.
+ *
+ * `tokens` is present only where the enrolment was reached with an **enrolment
+ * challenge** rather than a session — there, confirming is the end of a sign-in
+ * as well, and being made to enrol and then asked to sign in again is the
+ * moment a person gives up. An object rather than a bare list of codes so that
+ * a caller has to say what it does with the session; returning the codes alone
+ * and adding the pair later would be a field every existing call site ignores.
+ */
+export interface ConfirmedSecondFactor {
+  readonly recoveryCodes: readonly string[]
+  readonly tokens: Tokens | undefined
+}
 
 /** Which kinds an installation can enrol. */
 export type SecondFactorKind = 'totp' | 'webauthn'
@@ -441,6 +489,21 @@ export interface Self {
   readonly principalType: 'user' | 'service_account'
   readonly principalId: string
   readonly role: UserRole
+  /**
+   * Whether this principal may change its own password and second factor.
+   *
+   * False for a service account, for a delegation, and for a **shared** account
+   * — a credential more than one person holds, such as a published demo login,
+   * where there is no "the person" to hold a factor and the first holder to
+   * enrol one would lock out every other.
+   *
+   * It is here so a screen can leave those controls off rather than drawing
+   * ones that answer `404`. `true` against an older API that does not report
+   * it, which is the safe direction: showing a control the server refuses costs
+   * a readable error, and hiding one it would have accepted takes a working
+   * feature away.
+   */
+  readonly holdsOwnCredentials: boolean
 }
 
 /**

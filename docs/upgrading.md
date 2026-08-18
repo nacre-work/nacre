@@ -272,7 +272,49 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
-### 0.20.0 — a module can require a second factor
+### 0.20.0 — a module can require a second factor, and a shared account cannot
+
+**One migration, no new variables.** `0032` adds `users.shared` — `false` for
+every existing row, so nothing changes for any account that belongs to somebody
+— and a trigger that refuses a second factor on one.
+
+#### If you publish a login, mark it shared
+
+This is the half to act on. An account **more than one person holds** — a demo
+login printed on a page, a shared read-only account handed round a team — could
+until now enrol a second factor and change its own password. The first holder to
+do either **locks out every other one**, and an administrator deliberately
+cannot remove somebody's second factor, so the only repair is to reissue the
+credential and tell everybody.
+
+Until 0.19.0 a deployment had an accidental guard: with no `NACRE_2FA_KEY` the
+whole surface answered `404`. WebAuthn needs no key, so that guard is gone —
+correctly, because it was installation-wide and this property is not. An
+installation may have one shared account and a hundred people.
+
+Mark such an account when you create it:
+
+```
+nacre users create demo@example.com --shared
+```
+
+or `{"shared": true}` on `POST /v1/users`. It then has no `/v1/me` credential
+surface at all — no second factor, no password change, no reset link — while
+`POST /v1/users/{id}/password` still sets its password, which is how you rotate
+a published one. It cannot be changed afterwards; a new account is cheap.
+
+**There is no migration for an account you have already published.** The column
+defaults to `false` and nothing can guess which of your accounts are shared. If
+somebody has already enrolled a factor on one, that account is not recoverable
+as itself — create a replacement with `--shared` and publish that.
+
+`GET /v1/me` gains `holds_own_credentials`, which is what the console reads to
+leave those controls off rather than drawing ones that answer `404`.
+
+The `demo` Compose profile marks its two logins shared, so a stand started from
+this release is closed by default.
+
+#### The extension point
 
 **No migration, no new variables, and nothing changes on a deployment running
 no commercial module.** `registerSignInGate` is a sixth extension point; the
@@ -302,6 +344,20 @@ The enrolment challenge is not a session and is refused everywhere an access
 token is accepted. It reaches four routes, listed in
 [extensions.md](./extensions.md), and confirming a factor through it answers
 with the recovery codes **and** a session.
+
+**The SDK and the console handle all of this**, so a deployment running the
+shipped admin UI needs nothing. Two changes are visible to anybody writing
+against `@nacre.work/sdk`:
+
+- `secondFactor.confirm` and `secondFactor.finishWebAuthn` return
+  `{ recoveryCodes, tokens }` rather than a bare list of codes. `tokens` is
+  present only where the enrolment was reached with an enrolment challenge.
+- `changePassword` distinguishes its two `403`s by the problem **type**. If you
+  match on the status alone, a policy refusal will read as a wrong password.
+
+`onSignInGate` is a new client option: it fires when a **renewal** is answered
+by a gate. Without it the only signal is the `401` every request afterwards
+gets, which looks exactly like an expired session.
 
 ### 0.19.0 — a second factor you cannot be phished out of
 

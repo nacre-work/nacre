@@ -85,6 +85,11 @@ function userTable(users: readonly User[], root: HTMLElement): HTMLElement {
           // An SSO-only account has no local password, which is why a reset
           // would be answering a question nobody asked.
           u.hasPassword ? null : h('span', { class: 'tag' }, 'sso'),
+          // A credential several people hold. Shown because it is fixed at
+          // creation and decides whether this person can hold a second factor
+          // at all — an administrator who ticked that box has no other way to
+          // see it afterwards, and the row is where they would look.
+          u.shared ? h('span', { class: 'tag' }, 'shared') : null,
         ),
         h('td', {}, h('span', { class: 'slug' }, u.role)),
         // The id, because issuing a grant to one person takes it.
@@ -138,6 +143,7 @@ function openUser(root: HTMLElement): void {
     h('option', { value: 'member' }, 'member — reaches only what a grant gives'),
     h('option', { value: 'org_admin' }, 'org_admin — administers this organization'),
   )
+  const shared = h('input', { type: 'checkbox' }) as HTMLInputElement
   const message = h('p', { class: 'form-message' })
 
   const dialog = h('dialog', { class: 'dialog' },
@@ -149,6 +155,7 @@ function openUser(root: HTMLElement): void {
         const created = await client().users.create(
           email.value.trim(),
           role.value === 'org_admin' ? 'org_admin' : 'member',
+          { shared: shared.checked },
         )
         showSecret(dialog, created.password, `${created.email} created`, root)
       } catch (error) {
@@ -159,10 +166,19 @@ function openUser(root: HTMLElement): void {
       h('h2', {}, 'New user'),
       h('label', { class: 'field' }, h('span', {}, 'Email'), email),
       h('label', { class: 'field' }, h('span', {}, 'Role'), role),
+      h('label', { class: 'field inline' }, shared, h('span', {}, 'Several people will hold this password')),
       h('p', { class: 'hint' },
         'A new member reaches nothing until a grant says otherwise — issue one to them, or add them to a group that already has one.'),
       h('p', { class: 'hint' },
         'The password is generated here and shown once. It is not accepted as input: a password an administrator chose is one they know.'),
+      // What the box does, in the terms of what goes wrong without it. An
+      // administrator ticking it is publishing a credential, and the thing they
+      // need to know is that this is the choice which stops the first person to
+      // use it from taking it away from the rest.
+      h('p', { class: 'hint' },
+        'Tick it for a login you will publish or hand round — a demonstration, a kiosk, a read-only account for a team. It then cannot enrol a second factor, change its own password, or be sent a reset link: there is nobody for a factor to belong to, and whoever enrolled one first would lock out everybody else, which no administrator can undo. You still reset its password here, which is how you rotate a published one.'),
+      h('p', { class: 'hint' },
+        'It cannot be changed afterwards — clearing it on an account whose password is already out would reopen that door to whoever holds it. Make a new account instead.'),
       message,
       h('div', { class: 'dialog-actions' },
         h('button', { type: 'button', class: 'btn', onclick: () => dialog.close() }, 'Cancel'),

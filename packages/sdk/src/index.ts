@@ -45,6 +45,8 @@ export type {
   BegunSecondFactor,
   SecondFactor,
   SecondFactorKind,
+  ConfirmedSecondFactor,
+  SecondFactorEnrolmentRequired,
   SecondFactorRequired,
   WebAuthnAssertion,
   WebAuthnAssertionOptions,

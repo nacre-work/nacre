@@ -18,6 +18,12 @@
   flow. It is a *token shape*, never a principal: nothing is ever granted to a
   delegation, and `grants.principal_type` does not admit one. See
   "Delegated authority".
+- **Shared account** — a user whose credential more than one person holds: a
+  published demo login, a kiosk, a read-only account handed round a team. It is
+  a *property of a user* (`users.shared`) and not a principal type: it is
+  granted to, resolved and filtered exactly like any other user, and changes
+  nothing about permission evaluation. What it changes is authentication — see
+  the rule below.
 
 ## Authentication is not authorization, and this document is about the second
 
@@ -74,10 +80,34 @@ administrator could manage would be a thing the account's administrator holds,
 and it would then bound nothing an administrator can already do. The whole
 surface is under `/v1/me`.
 
-**A service account and a delegation are refused.** A key is not a person and
-has nobody to carry an authenticator; a delegation is a third party acting for
-somebody, and letting it change how that somebody signs in would be an
-escalation out of what was approved at consent.
+**A service account, a delegation and a shared account are refused.** A key is
+not a person and has nobody to carry an authenticator; a delegation is a third
+party acting for somebody, and letting it change how that somebody signs in
+would be an escalation out of what was approved at consent.
+
+A **shared account** is the third, and it is refused for the reason the first
+rule above exists. A credential several people hold has no "the person" for a
+factor to belong to — and since an administrator cannot remove one, the first
+holder to enrol would lock out every other holder with no route back. The same
+argument closes the password: none of them may change it for the rest. So a
+shared account has no `/v1/me` credential surface at all — no second factor, no
+password change, no reset link, every one a `404`. Its password is set by an
+administrator, which is how a published credential is rotated: such an account's
+credentials are *administered* rather than held, which is the whole of what the
+property says.
+
+It is refused in three places on purpose, and they are not three copies of one
+check. A **trigger** on `user_second_factors` refuses the row whichever surface
+issued it, so a route written later without the check is a `500` rather than a
+lockout. `Login.changePassword` refuses **before** verifying the current
+password — checking it first would make the endpoint answer whether the
+published password is still current, and the point is that it is public. And the
+routes answer the `404` a caller reads. `GET /v1/me` reports
+`holds_own_credentials` so a screen can leave those controls off rather than
+drawing ones that fail.
+
+The property cannot be cleared. Clearing it on an account whose password is
+already public would reopen the surface to whoever holds that password.
 
 **Recovery codes are the way past a factor, so they are held to a factor's
 rules.** Ten, printed once at the first enrolment of either kind, spent one at a

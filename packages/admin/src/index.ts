@@ -11,6 +11,9 @@ import {
   signOut,
   whenSessionEnds,
   signInWithKey,
+  enrolmentClient,
+  keepEnrolmentSession,
+  type EnrolmentPending,
   type SecondFactorPending,
 } from './api.js'
 import * as webauthn from './webauthn.js'
@@ -280,6 +283,147 @@ function signInView(): void {
     }
 
     /**
+     * Enrolment, on the sign-in screen, because a policy will not let this
+     * person in until they have a factor.
+     *
+     * It replaces the form for the same reason `askForCode` does: the password
+     * is spent, and a screen still showing it invites a retype that starts a
+     * second sign-in and invalidates the challenge in hand.
+     *
+     * **The recovery codes are shown before the console opens.** They are
+     * printed once, and signing somebody straight in would be this screen
+     * throwing away the only thing that gets them back after a lost phone —
+     * which an administrator deliberately cannot undo.
+     */
+    const askToEnrol = (
+      pending: EnrolmentPending,
+      say: (text: string, bad?: boolean) => void,
+      start: () => void,
+    ): void => {
+      const api = enrolmentClient({ challenge: pending.challenge, baseUrl: pending.baseUrl })
+      const offersKey = pending.kinds.includes('webauthn') && webauthn.usable()
+      const offersCode = pending.kinds.includes('totp')
+
+      /** The last screen before the console, and the only sight of the codes. */
+      const showCodes = (codes: readonly string[]): void => {
+        clear(forms)
+        forms.append(
+          h('div', {},
+            h('h2', {}, 'Save these recovery codes'),
+            h('p', {},
+              'Each one works instead of your authenticator, once. They are shown now and ' +
+              'never again — this installation keeps only their hashes.'),
+            h('pre', { class: 'secret' }, codes.join('\n')),
+            h('p', { class: 'hint' },
+              'If you lose both, an administrator cannot get you back in: they can reset a ' +
+              'password and deliberately cannot touch a second factor.'),
+            h('button', {
+              type: 'button',
+              class: 'btn btn-primary btn-block',
+              onclick: () => start(),
+            }, 'Continue'),
+          ),
+        )
+      }
+
+      /** Adopt the session the confirm handed back, or say why there is none. */
+      const finish = (confirmed: { recoveryCodes: readonly string[]; tokens: { accessToken: string; refreshToken: string } | undefined }): void => {
+        if (!keepEnrolmentSession(confirmed, pending.baseUrl)) {
+          // The factor was added and the server still did not issue a session —
+          // another gate refused, or this one wanted the other kind. Saying so
+          // beats a console that opens with no token.
+          return say('That factor was added, but this organization still will not sign you in. Ask an administrator.', true)
+        }
+        if (confirmed.recoveryCodes.length > 0) showCodes(confirmed.recoveryCodes)
+        else start()
+      }
+
+      const withKey = async (): Promise<void> => {
+        say('Waiting for the authenticator…')
+        try {
+          const made = await webauthn.create(await api.secondFactor.beginWebAuthn())
+          finish(await api.secondFactor.finishWebAuthn({ ...made, label: 'Security key' }))
+        } catch (error) {
+          say(webauthn.describe(error), true)
+        }
+      }
+
+      const withCode = async (): Promise<void> => {
+        say('Setting up…')
+        try {
+          const begun = await api.secondFactor.begin({ label: 'Authenticator' })
+          const code = h('input', {
+            class: 'input',
+            inputmode: 'numeric',
+            autocomplete: 'one-time-code',
+            placeholder: '000000',
+            'aria-label': 'Code',
+          }) as HTMLInputElement
+          clear(forms)
+          forms.append(
+            h('form', { onsubmit: async (event: Event) => {
+              event.preventDefault()
+              say('Checking…')
+              try {
+                finish(await api.secondFactor.confirm(begun.id, code.value.trim()))
+              } catch (error) {
+                say(explain(error), true)
+              }
+            } },
+              h('h2', {}, 'Set up an authenticator'),
+              h('p', {}, 'Add this secret to your authenticator app, then type what it shows.'),
+              // The secret as text and not only as a link: this console is on a
+              // private network more often than not, and somebody with a
+              // desktop authenticator has nothing to scan.
+              h('pre', { class: 'secret' }, begun.secret),
+              h('label', { class: 'field' }, h('span', {}, 'Code'), code),
+              message,
+              h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Confirm'),
+            ),
+          )
+          code.focus()
+        } catch (error) {
+          say(explain(error), true)
+        }
+      }
+
+      clear(forms)
+      forms.append(
+        h('div', {},
+          h('h2', {}, 'Add a second factor'),
+          // The gate's own words. A demand somebody cannot read is
+          // indistinguishable from the product being broken.
+          h('p', {}, pending.reason),
+          h('p', { class: 'hint' },
+            'Your password was correct. This organization requires a second factor, and this ' +
+            'is the only thing you can do until you have one.'),
+          message,
+          ...(offersKey
+            ? [h('button', {
+                type: 'button',
+                class: 'btn btn-primary btn-block',
+                onclick: () => void withKey(),
+              }, 'Use a security key')]
+            : []),
+          ...(offersCode
+            ? [h('button', {
+                type: 'button',
+                class: offersKey ? 'btn btn-block' : 'btn btn-primary btn-block',
+                onclick: () => void withCode(),
+              }, 'Use an authenticator app')]
+            : []),
+          // Neither offered is a deployment that cannot satisfy its own policy,
+          // and saying so beats a screen with no controls on it.
+          ...(offersKey || offersCode
+            ? []
+            : [h('p', { class: 'hint' },
+                'This installation offers no second factor this browser can enrol. ' +
+                'Ask an administrator.')]),
+        ),
+      )
+    }
+
+    /**
      * The second field, once the password has been accepted.
      *
      * It replaces the form rather than appearing under it: the password is
@@ -319,7 +463,8 @@ function signInView(): void {
         say('Waiting for the authenticator…')
         try {
           const ok = await signInWithKey({ challenge: pending.challenge, baseUrl: pending.baseUrl })
-          if (!ok) return say('That key is not one this account holds.', true)
+          if (ok === false) return say('That key is not one this account holds.', true)
+          if (ok !== true) return askToEnrol(ok, say, start)
           start()
         } catch (error) {
           say(webauthn.describe(error), true)
@@ -339,7 +484,10 @@ function signInView(): void {
             })
             // One refusal again: a wrong code, an expired challenge and an
             // account disabled in the last five minutes are one answer.
-            if (!ok) return say('That code is not valid.', true)
+            if (ok === false) return say('That code is not valid.', true)
+            // A gate can still answer after the proof: one that wants a
+            // particular kind refuses the other one here.
+            if (ok !== true) return askToEnrol(ok, say, start)
             start()
           } catch (error) {
             say(explain(error), true)
@@ -387,6 +535,10 @@ function signInView(): void {
         // One refusal with one message, deliberately. The server does not say
         // which of five things was wrong and neither does this.
         if (ok === false) return say('Those credentials are not valid.', true)
+        // A gate wants a factor this account does not have. Checked before the
+        // second-factor case because both are objects and only one of them has
+        // a code to ask for.
+        if (ok !== true && 'enrolmentRequired' in ok) return askToEnrol(ok, say, start)
         /*
          * A correct password and a second factor still to produce.
          *

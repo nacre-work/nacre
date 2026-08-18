@@ -611,7 +611,7 @@ components:
         timeout_ms: { type: integer }
     Self:
       type: object
-      required: [organization, principal_type, principal_id, role]
+      required: [organization, principal_type, principal_id, role, holds_own_credentials]
       properties:
         organization:
           type: string
@@ -623,6 +623,25 @@ components:
           description: |
             `group` cannot appear: a group is granted to, never authenticated as.
         principal_id: { type: string, format: uuid }
+        holds_own_credentials:
+          type: boolean
+          description: |
+            Whether this principal may change its own password and its own
+            second factor. False for three classes, and the surfaces answer
+            `404` for all three.
+
+            A **service account** is a key and has nobody to carry an
+            authenticator. A **delegation** is a third party acting for
+            somebody, and changing how they sign in is not what was approved.
+            And a **shared account** is a credential more than one person holds
+            — a published demo login — where there is no "the person" for a
+            factor to belong to, and the first holder to enrol one would lock
+            out every other holder with no administrative route back, because an
+            administrator deliberately cannot remove somebody's second factor.
+
+            It is here so a screen can leave those controls **off** rather than
+            drawing ones that answer `404` — the same reason `GET /auth/methods`
+            exists, applied to the account instead of to the installation.
         role:
           type: string
           enum: [platform_admin, org_admin, member]
@@ -801,7 +820,7 @@ components:
           description: RFC 8707. What the resulting token is bound to.
     User:
       type: object
-      required: [id, email, role, created_at, disabled_at, has_password]
+      required: [id, email, role, created_at, disabled_at, has_password, shared]
       properties:
         id:         { type: string, format: uuid }
         email:      { type: string, format: email }
@@ -818,6 +837,20 @@ components:
           description: >
             Whether a local password is set at all — false is an SSO-only
             account. Never the hash, and never anything derived from it.
+        shared:
+          type: boolean
+          description: |
+            Whether this credential is one several people hold.
+
+            Such an account has no `/v1/me` credential surface: it cannot enrol
+            a second factor, change its own password, or be sent a reset link.
+            An administrator still resets its password, which is how a published
+            credential is rotated.
+
+            Fixed at creation and not changeable afterwards, so it is in the
+            listing rather than only in the creation response: an administrator
+            who set it has no other way to see it again, and it decides whether
+            the person on the other end can hold a second factor at all.
         password:
           type: string
           description: >
@@ -2845,6 +2878,31 @@ paths:
               properties:
                 email: { type: string, format: email }
                 role:  { type: string, enum: [member, org_admin], default: member }
+                shared:
+                  type: boolean
+                  default: false
+                  description: |
+                    A credential more than one person will hold — a published
+                    demo login is the case this exists for.
+
+                    It has **no `/v1/me` credential surface**: no second factor,
+                    no password change, and no password-reset link. There is no
+                    "the person" for a factor to belong to, and the first holder
+                    to enrol one would lock out every other holder permanently,
+                    since an administrator deliberately cannot remove somebody's
+                    second factor.
+
+                    An administrator still sets its password through
+                    `POST /users/{id}/password`, which is how whoever published
+                    the credential rotates it. Its credentials are administered
+                    rather than held, which is the whole of what this says.
+
+                    It cannot be changed afterwards. Clearing it on an account
+                    whose password is already public would reopen the surface to
+                    whoever holds that password; setting it on somebody's real
+                    account would take their second factor's meaning away
+                    without removing the factor. Both are a new account, which
+                    is cheap.
       responses:
         '201':
           description: Created. The only time the password exists outside this process.
