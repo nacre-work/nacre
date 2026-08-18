@@ -1446,6 +1446,88 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+  /me/password:
+    post:
+      operationId: changeOwnPassword
+      summary: Change your own password
+      tags: [auth]
+      description: |
+        The person themselves choosing a password, having produced the current
+        one. Under `/me` and with no id in the path, so there is nowhere to put
+        somebody else's.
+
+        `POST /users/{id}/password` beside it is the other thing: an
+        administrator issuing a *generated* password to a colleague who lost
+        theirs, returned once because a generated one has to be shown. This one
+        generates nothing, returns no password, and needs no administrator —
+        which on a single-administrator installation is the point.
+
+        **The current password is the only proof this takes.** A session is not
+        enough: changing the password is the first thing somebody with a stolen
+        session does, and it is what locks the owner out. A second factor is
+        deliberately not asked for — it bounds sign-in, and demanding a code
+        would mean somebody whose phone is lost cannot change a password they
+        know is compromised.
+
+        **Every other session ends**, because the reason to change a password is
+        usually that somebody else knows it. All refresh tokens for the account
+        are revoked, including the caller's — an access token does not say which
+        refresh token issued it — so a fresh pair comes back with the answer and
+        the client must adopt it. A `204` here would sign a person out of the
+        browser they changed their password in.
+
+        A second factor is untouched, the same as on a recovery link.
+
+        A password is at least 12 characters and there is no other rule.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string, format: password }
+                new_password:     { type: string, format: password, minLength: 12 }
+      responses:
+        '200':
+          description: >
+            Changed. The pair that replaces every session this just ended,
+            including the caller's own.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '400':
+          description: >
+            A field is missing, or the new password is too short. The one thing
+            this endpoint explains, because it is about what the caller sent —
+            a bare refusal is a person retyping something that will never be
+            accepted.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: >
+            The current password is not correct.
+
+
+            Deliberately not a 401. On an authenticated route that means "your
+            session is over", and clients renew on it and replay — so a wrong
+            password would spend a refresh token, fail again, and reach the
+            person as two failures for something retyping fixes. Not a 404
+            either: the caller is looking straight at their own account, so
+            there is nothing invisible for invariant 4 to protect.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: >
+            A service account, which has no password, or a delegation, which was
+            not approved to change how somebody signs in.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503': { $ref: '#/components/responses/PasswordGateFull' }
   /me/second-factor:
     get:
       operationId: listSecondFactors

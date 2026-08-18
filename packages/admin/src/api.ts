@@ -161,6 +161,29 @@ export async function signInSecondFactor(input: {
   return true
 }
 
+/**
+ * Change this session's password, and keep the pair that replaces it.
+ *
+ * The server revokes **every** refresh token for the account, including this
+ * browser's, so a client that did not adopt what comes back would work until
+ * its access token expired and then be signed out fifteen minutes after
+ * changing a password successfully — which reads as the change having broken
+ * something. Adopting it is not optional, so it happens here rather than in a
+ * view that could forget.
+ *
+ * `false` is a wrong current password. A password below the minimum raises,
+ * because that one is about what was typed and the person needs to be told.
+ */
+export async function changeOwnPassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<boolean> {
+  const tokens = await client().changePassword({ currentPassword, newPassword })
+  if (tokens === undefined) return false
+  keep(tokens, readBase())
+  return true
+}
+
 function keep(tokens: { accessToken: string; refreshToken: string }, baseUrl: string): void {
   sessionStorage.setItem(TOKEN_KEY, tokens.accessToken)
   sessionStorage.setItem(REFRESH_KEY, tokens.refreshToken)

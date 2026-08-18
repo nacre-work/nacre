@@ -1362,6 +1362,44 @@ export class NacreClient {
    * Every method here answers `404` on an installation with no
    * `NACRE_2FA_KEY_REF`, for a service account, and for a delegation.
    */
+  /**
+   * Change the password of the account this token belongs to.
+   *
+   * The current one is required and is the only proof this takes — a session is
+   * not enough, because changing the password is the first thing somebody with
+   * a stolen session does. It is not `POST /v1/users/{id}/password`, which is
+   * an administrator issuing a generated password to somebody else.
+   *
+   * **It ends every other session and returns the pair that replaces this
+   * one.** A client holding a refresh token must adopt what comes back or its
+   * next renewal fails: the old refresh token was revoked by the same
+   * statement. `undefined` is a wrong current password — one refusal, and it is
+   * a `403` rather than a `401` so that a client renewing on `401` does not
+   * spend a refresh token retrying something retyping fixes.
+   *
+   * Answers `404` for a service account, which has no password, and for a
+   * delegation, which was not approved to change how somebody signs in.
+   */
+  readonly changePassword = async (input: {
+    currentPassword: string
+    newPassword: string
+  }): Promise<Tokens | undefined> => {
+    try {
+      const body = (await this.#request({
+        method: 'POST',
+        path: '/v1/me/password',
+        body: { current_password: input.currentPassword, new_password: input.newPassword },
+      })) as Record<string, unknown>
+      return tokensFrom(body)
+    } catch (error) {
+      // Only the refusal. A password below the minimum is a `400` and raises,
+      // because that one is about what the caller sent and a person retyping
+      // needs to be told which rule they missed.
+      if (error instanceof NacreError && error.status === 403) return undefined
+      throw error
+    }
+  }
+
   readonly secondFactor = {
     /** What is enrolled, and how many recovery codes are left. */
     list: async (): Promise<{ items: readonly SecondFactor[]; recoveryCodesLeft: number }> => {
