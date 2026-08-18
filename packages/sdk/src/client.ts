@@ -33,6 +33,10 @@ import type {
   ServiceAccount,
   User,
   UserRole,
+  SecondFactorKind,
+  WebAuthnAssertion,
+  WebAuthnAssertionOptions,
+  WebAuthnRegistrationOptions,
 } from './types.js'
 
 /**
@@ -1262,14 +1266,36 @@ export class NacreClient {
      * Both go here. From outside they answer the same question, and a separate
      * method would say which one a person is using.
      */
-    secondFactor: async (input: { challenge: string; code: string }): Promise<Tokens | undefined> => {
+    secondFactor: async (
+      input: { challenge: string } & ({ code: string } | { assertion: WebAuthnAssertion }),
+    ): Promise<Tokens | undefined> => {
       const body = await this.#unauthorized<Record<string, unknown>>({
         method: 'POST',
         path: '/v1/auth/second-factor',
         noAuthRefresh: true,
-        body: { challenge: input.challenge, code: input.code },
+        body: {
+          challenge: input.challenge,
+          ...('code' in input ? { code: input.code } : { assertion: assertionJson(input.assertion) }),
+        },
       })
       return body === undefined ? undefined : tokensFrom(body)
+    },
+
+    /**
+     * The options a browser needs before it can produce an assertion.
+     *
+     * Takes the sign-in challenge and nothing else, which is what keeps it from
+     * being a way to ask which authenticators an address holds: reaching it
+     * costs a correct password.
+     */
+    secondFactorWebAuthn: async (challenge: string): Promise<WebAuthnAssertionOptions | undefined> => {
+      const body = await this.#unauthorized<Record<string, unknown>>({
+        method: 'POST',
+        path: '/v1/auth/second-factor/webauthn',
+        noAuthRefresh: true,
+        body: { challenge },
+      })
+      return body === undefined ? undefined : assertionOptionsFrom(body)
     },
 
     /**
@@ -1297,13 +1323,19 @@ export class NacreClient {
      * One boolean, so a sign-in screen can leave the recovery link off where no
      * sender is configured rather than showing one that answers 404.
      */
-    methods: async (): Promise<{ passwordReset: boolean }> => {
+    methods: async (): Promise<{
+      passwordReset: boolean
+      secondFactorKinds: readonly SecondFactorKind[]
+    }> => {
       const body = (await this.#request({
         method: 'GET',
         path: '/v1/auth/methods',
         noAuthRefresh: true,
-      })) as { password_reset?: boolean }
-      return { passwordReset: body.password_reset === true }
+      })) as { password_reset?: boolean; second_factor_kinds?: readonly SecondFactorKind[] }
+      return {
+        passwordReset: body.password_reset === true,
+        secondFactorKinds: body.second_factor_kinds ?? [],
+      }
     },
 
     /**
@@ -1402,14 +1434,22 @@ export class NacreClient {
 
   readonly secondFactor = {
     /** What is enrolled, and how many recovery codes are left. */
-    list: async (): Promise<{ items: readonly SecondFactor[]; recoveryCodesLeft: number }> => {
+    list: async (): Promise<{
+      items: readonly SecondFactor[]
+      recoveryCodesLeft: number
+      kinds: readonly SecondFactorKind[]
+    }> => {
       const body = (await this.#request({ method: 'GET', path: '/v1/me/second-factor' })) as {
         items?: readonly Record<string, unknown>[]
         recovery_codes_left?: number
+        kinds?: readonly SecondFactorKind[]
       }
       return {
         items: (body.items ?? []).map(secondFactorFrom),
         recoveryCodesLeft: body.recovery_codes_left ?? 0,
+        // What this installation can enrol. Empty rather than assumed, so a
+        // screen reading it draws nothing rather than a control that 404s.
+        kinds: body.kinds ?? [],
       }
     },
 
@@ -1449,12 +1489,79 @@ export class NacreClient {
      * The code is not ceremony: taking the factor off is the first thing
      * somebody with a stolen session does.
      */
-    remove: async (id: string, code: string): Promise<void> => {
+    remove: async (id: string, proof: string | WebAuthnAssertion): Promise<void> => {
       await this.#request({
         method: 'DELETE',
         path: `/v1/me/second-factor/${encodeURIComponent(id)}`,
-        body: { code },
+        body: typeof proof === 'string' ? { code: proof } : { assertion: assertionJson(proof) },
       })
+    },
+
+    /**
+     * Start enrolling a security key. Two calls, because a ceremony is two.
+     *
+     * The challenge has to exist on the server before the browser is asked for
+     * anything, or the signature would be over a number the client chose.
+     */
+    beginWebAuthn: async (): Promise<WebAuthnRegistrationOptions> => {
+      const body = (await this.#request({
+        method: 'POST',
+        path: '/v1/me/second-factor/webauthn',
+      })) as Record<string, unknown>
+      const rp = (body.rp ?? {}) as Record<string, unknown>
+      const user = (body.user ?? {}) as Record<string, unknown>
+      return {
+        challenge: String(body.challenge ?? ''),
+        rp: { id: String(rp.id ?? ''), name: String(rp.name ?? '') },
+        user: {
+          id: String(user.id ?? ''),
+          name: String(user.name ?? ''),
+          displayName: String(user.display_name ?? ''),
+        },
+        algorithms: (body.algorithms ?? []) as readonly number[],
+        excludeCredentials: (body.exclude_credentials ?? []) as readonly string[],
+        timeoutMs: Number(body.timeout_ms ?? 0),
+      }
+    },
+
+    /**
+     * Register what the authenticator signed, and take the recovery codes.
+     *
+     * No confirm step: producing the attestation *is* the proof, which is the
+     * difference from TOTP, where a secret is handed over and only a code says
+     * it landed.
+     */
+    finishWebAuthn: async (input: {
+      challenge: string
+      attestationObject: string
+      clientDataJSON: string
+      label?: string
+    }): Promise<readonly string[]> => {
+      const body = (await this.#request({
+        method: 'POST',
+        path: '/v1/me/second-factor/webauthn/finish',
+        body: {
+          challenge: input.challenge,
+          attestation_object: input.attestationObject,
+          client_data_json: input.clientDataJSON,
+          ...(input.label === undefined ? {} : { label: input.label }),
+        },
+      })) as { recovery_codes?: readonly string[] }
+      return body.recovery_codes ?? []
+    },
+
+    /**
+     * A challenge for proving possession to this surface, which `remove` needs.
+     *
+     * On an installation with no `NACRE_2FA_KEY` this is the only proof there
+     * is, so without it a security key could be enrolled and never removed.
+     */
+    beginWebAuthnProof: async (): Promise<WebAuthnAssertionOptions> => {
+      const body = (await this.#request({
+        method: 'POST',
+        path: '/v1/me/second-factor/webauthn/assert',
+      })) as Record<string, unknown>
+      return assertionOptionsFrom(body)
     },
   }
 
@@ -1544,10 +1651,35 @@ function providerFrom(p: Record<string, unknown>): EmbeddingProvider {
 function secondFactorFrom(f: Record<string, unknown>): SecondFactor {
   return {
     id: String(f.id),
-    kind: 'totp',
+    // Read rather than written. It said `'totp'` from when there was one kind,
+    // which is the shape a mapper agreeing with itself always has: the field
+    // was on the wire and this ignored it, so every security key would have
+    // listed as an authenticator app.
+    kind: f.kind === 'webauthn' ? 'webauthn' : 'totp',
     label: String(f.label ?? ''),
     createdAt: String(f.created_at ?? ''),
     lastUsedAt: f.last_used_at === null || f.last_used_at === undefined ? null : String(f.last_used_at),
+  }
+}
+
+/** One writer for the wire shape, so two call sites cannot spell it two ways. */
+function assertionJson(a: WebAuthnAssertion): Record<string, string> {
+  return {
+    credential_id: a.credentialId,
+    authenticator_data: a.authenticatorData,
+    client_data_json: a.clientDataJSON,
+    signature: a.signature,
+    challenge: a.challenge,
+  }
+}
+
+/** And one reader, for the two paths that hand these out. */
+function assertionOptionsFrom(body: Record<string, unknown>): WebAuthnAssertionOptions {
+  return {
+    challenge: String(body.challenge ?? ''),
+    rpId: String(body.rp_id ?? ''),
+    allowCredentials: (body.allow_credentials ?? []) as readonly string[],
+    timeoutMs: Number(body.timeout_ms ?? 0),
   }
 }
 

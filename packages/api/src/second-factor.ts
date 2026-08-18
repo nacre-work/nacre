@@ -355,7 +355,6 @@ export class SecondFactors {
    */
   async verify(orgId: string, userId: string, code: string): Promise<boolean> {
     const key = this.deps.key
-    if (key === undefined) return false
 
     return withOrg(
       this.deps.pool,
@@ -371,10 +370,19 @@ export class SecondFactors {
         )
         if ((spent.rowCount ?? 0) > 0) return true
 
+        // Only TOTP rows have a code to compare, and only a sealing key can
+        // open one. The guard is here rather than at the top of the method
+        // because a WebAuthn-only installation has no key and *does* mint
+        // recovery codes — refusing before the UPDATE above would leave every
+        // one of them unspendable, which is the printed sheet not working on
+        // the day somebody's key is in the other coat.
+        if (key === undefined) return false
+
         const { rows } = await client.query<FactorRow>(
           `SELECT id, secret, last_step, failed_attempts, locked_until
              FROM user_second_factors
-            WHERE org_id = $1 AND user_id = $2 AND confirmed_at IS NOT NULL
+            WHERE org_id = $1 AND user_id = $2 AND kind = 'totp'
+              AND confirmed_at IS NOT NULL
             ORDER BY created_at
               FOR UPDATE`,
           [orgId, userId],

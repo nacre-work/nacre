@@ -131,7 +131,7 @@ when('the second factor', () => {
      */
     const tokens = await login.completeSecondFactor(
       (challenged as { challenge: string }).challenge,
-      totpCode(begun!.secret, totpStep() + 1),
+      { kind: 'code', code: totpCode(begun!.secret, totpStep() + 1) },
     )
     expect(tokens?.accessToken.length).toBeGreaterThan(20)
 
@@ -139,7 +139,7 @@ when('the second factor', () => {
     expect(
       await login.completeSecondFactor(
         (again as { challenge: string }).challenge,
-        totpCode(begun!.secret, totpStep() + 1),
+        { kind: 'code', code: totpCode(begun!.secret, totpStep() + 1) },
       ),
     ).toBeUndefined()
   })

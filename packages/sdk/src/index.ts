@@ -44,7 +44,11 @@ export { NacreError, NacreTransportError, type Problem } from './errors.js'
 export type {
   BegunSecondFactor,
   SecondFactor,
+  SecondFactorKind,
   SecondFactorRequired,
+  WebAuthnAssertion,
+  WebAuthnAssertionOptions,
+  WebAuthnRegistrationOptions,
   SignIn,
   Connection,
   Self,

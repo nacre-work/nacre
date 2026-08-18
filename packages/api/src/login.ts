@@ -13,6 +13,10 @@ import type { KeyObject } from 'node:crypto'
 import { jwtVerify, SignJWT } from 'jose'
 import type { Pool, PoolClient } from 'pg'
 
+// A type only, and therefore no cycle: the store imports nothing from here.
+// Restating its shape would be a second answer about what a ceremony needs.
+import type { WebAuthnAssertionOptions } from './second-factor.js'
+
 /**
  * Email and password sign-in.
  *
@@ -129,7 +133,31 @@ export interface LoginDeps {
 export interface SecondFactorGate {
   required(orgId: string, userId: string): Promise<boolean>
   verify(orgId: string, userId: string, code: string): Promise<boolean>
+  beginWebAuthnAssertion(orgId: string, userId: string): Promise<WebAuthnAssertionOptions | undefined>
+  verifyWebAuthnAssertion(orgId: string, userId: string, response: WebAuthnProof): Promise<boolean>
 }
+
+/** What a browser hands back from `navigator.credentials.get`. */
+export interface WebAuthnProof {
+  readonly credentialId: string
+  readonly authenticatorData: Uint8Array
+  readonly clientDataJSON: Uint8Array
+  readonly signature: Uint8Array
+  readonly challenge: string
+}
+
+/**
+ * The proof the second half of a sign-in takes, and it is a union on purpose.
+ *
+ * A six-digit code and an assertion are not two spellings of one argument: the
+ * first is a string a person read off a screen and the second is a signature
+ * over an origin. Making the parameter a union means a caller has to say which
+ * it holds, and a handler that forgot the new kind is a compile error rather
+ * than a route that silently only ever accepts the old one.
+ */
+export type SecondFactorProof =
+  | { readonly kind: 'code'; readonly code: string }
+  | { readonly kind: 'webauthn'; readonly response: WebAuthnProof }
 
 /**
  * Sign-in has three outcomes now, and a union rather than a nullable pair.
@@ -272,12 +300,61 @@ export class Login {
    * all of them into one refusal. Which of the four it was is not something a
    * client needs and is something an attacker would use.
    */
-  async completeSecondFactor(challenge: string, code: string): Promise<Tokens | undefined> {
+  async completeSecondFactor(challenge: string, proof: SecondFactorProof): Promise<Tokens | undefined> {
     const gate = this.deps.secondFactors
     if (gate === undefined) return undefined
 
-    let userId: string
-    let orgId: string
+    const who = await this.readChallenge(challenge)
+    if (who === undefined) return undefined
+    const { orgId, userId } = who
+
+    const proved =
+      proof.kind === 'code'
+        ? await gate.verify(orgId, userId, proof.code)
+        : await gate.verifyWebAuthnAssertion(orgId, userId, proof.response)
+    if (!proved) return undefined
+
+    // Re-read the row rather than trusting the challenge for anything but
+    // identity: five minutes is long enough to be disabled, and the role in the
+    // token has to be the one the database holds now.
+    const user = await this.userById(orgId, userId)
+    if (user === undefined || user.disabled_at !== null) return undefined
+
+    return this.issue(user, undefined)
+  }
+
+  /**
+   * The options a browser needs for the assertion half of a sign-in.
+   *
+   * It takes the same challenge `login` handed back, and that is the whole
+   * reason this method is here rather than on the store: the JWT is what says
+   * who is signing in, and it is signed by a key the store does not have. An
+   * endpoint that took a user id instead would answer "which authenticators
+   * does this person hold" to anybody who asked.
+   *
+   * `undefined` where the challenge is not one of ours, where it has expired,
+   * and where the person has no key enrolled — one refusal, for the reason
+   * every refusal on this path is one.
+   */
+  async beginSecondFactorWebAuthn(challenge: string): Promise<WebAuthnAssertionOptions | undefined> {
+    const gate = this.deps.secondFactors
+    if (gate === undefined) return undefined
+    const who = await this.readChallenge(challenge)
+    if (who === undefined) return undefined
+    return gate.beginWebAuthnAssertion(who.orgId, who.userId)
+  }
+
+  /**
+   * Who a sign-in challenge names, or nothing.
+   *
+   * One reader for the two halves that consult it, because a challenge whose
+   * audience is checked on one path and not the other is an access token
+   * accepted as a challenge — which is exactly what `challengeAudience` exists
+   * to stop.
+   */
+  private async readChallenge(
+    challenge: string,
+  ): Promise<{ readonly orgId: string; readonly userId: string } | undefined> {
     try {
       const { payload } = await jwtVerify(challenge, this.verificationKey, {
         issuer: this.deps.issuer,
@@ -288,21 +365,10 @@ export class Login {
       if (payload.purpose !== 'second-factor' || typeof payload.sub !== 'string' || typeof payload.org !== 'string') {
         return undefined
       }
-      userId = payload.sub
-      orgId = payload.org
+      return { orgId: payload.org, userId: payload.sub }
     } catch {
       return undefined
     }
-
-    if (!(await gate.verify(orgId, userId, code))) return undefined
-
-    // Re-read the row rather than trusting the challenge for anything but
-    // identity: five minutes is long enough to be disabled, and the role in the
-    // token has to be the one the database holds now.
-    const user = await this.userById(orgId, userId)
-    if (user === undefined || user.disabled_at !== null) return undefined
-
-    return this.issue(user, undefined)
   }
 
   /**

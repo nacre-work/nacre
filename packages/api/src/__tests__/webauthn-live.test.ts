@@ -98,6 +98,27 @@ async function offerAssertion(user = userId): Promise<void> {
   )
 }
 
+/**
+ * The second person enrols on the other algorithm's fixture, because a
+ * credential id is unique per organization and reusing the first would collide
+ * — and because a second algorithm exercised end to end is free here.
+ */
+async function enrolOther(): Promise<readonly string[]> {
+  await pool.query(
+    `INSERT INTO webauthn_challenges (org_id, user_id, purpose, challenge, expires_at)
+     VALUES ($1, $2, 'register', $3, now() + interval '5 min')
+     ON CONFLICT (org_id, challenge) DO NOTHING`,
+    [orgId, otherId, FIXTURES.rs256.registration.challenge],
+  )
+  const codes = await factors.finishWebAuthnRegistration(orgId, otherId, 'their key', {
+    attestationObject: un64(FIXTURES.rs256.registration.attestationObject),
+    clientDataJSON: un64(FIXTURES.rs256.registration.clientDataJSON),
+    challenge: FIXTURES.rs256.registration.challenge,
+  })
+  if (codes === undefined) throw new Error('the rs256 enrolment was refused')
+  return codes
+}
+
 const assertWith = async (user = userId) =>
   factors.verifyWebAuthnAssertion(orgId, user, {
     credentialId: F.registration.id,
@@ -229,6 +250,29 @@ when('a WebAuthn factor', () => {
 
   it('offers nothing to sign in with where nothing is enrolled', async () => {
     expect(await factors.beginWebAuthnAssertion(orgId, otherId)).toBeUndefined()
+  })
+
+  /*
+   * The recovery codes an enrolment printed have to be spendable, and on this
+   * installation there is no other way to spend one: `verify` is where a code
+   * is redeemed and it began with `if (key === undefined) return false`.
+   *
+   * That guard was right about TOTP and wrong about the sheet of codes beside
+   * it — so a WebAuthn-only deployment printed ten of them at enrolment and
+   * refused every one, which is the person whose key is in the other coat
+   * locked out with a valid code in their hand. Nothing failed: the codes are
+   * minted by one method and redeemed by another, and no case asked the second
+   * on an installation with no key.
+   */
+  it('redeems a recovery code where there is no sealing key at all', async () => {
+    const codes = (await factors.list(orgId, otherId)).length === 0 ? await enrolOther() : []
+    expect(codes).toHaveLength(10)
+    expect(await factors.recoveryCodesLeft(orgId, otherId)).toBe(10)
+
+    expect(await factors.verify(orgId, otherId, codes[0]!)).toBe(true)
+    expect(await factors.recoveryCodesLeft(orgId, otherId)).toBe(9)
+    // And spent, because the UPDATE that finds one is what marks it used.
+    expect(await factors.verify(orgId, otherId, codes[0]!)).toBe(false)
   })
 
   it('excludes what is already registered when enrolling again', async () => {
