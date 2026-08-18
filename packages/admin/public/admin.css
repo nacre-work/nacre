@@ -197,6 +197,11 @@ a { color: var(--n-accent); }
    line and `g1` on the next — which reads as two values and made every row in
    the id column a line taller than the rest. */
 .id { font-size: 12px; color: var(--n-text-muted); white-space: nowrap; }
+/* A resolved name sits where a `.id` would, so the two columns line up whether
+   or not this token could read the list that names them. Not `nowrap`: an
+   address or a layer slug is content of unbounded length, and the rule about
+   not wrapping is for values that are one short thing. */
+.named { font-size: 13px; color: var(--n-text); overflow-wrap: anywhere; }
 
 .tag {
   font-family: var(--n-font-mono); font-size: 10px; letter-spacing: 0.06em;
