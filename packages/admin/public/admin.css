@@ -422,9 +422,15 @@ a { color: var(--n-accent); }
   background: var(--n-surface-sunk); border: 1px solid var(--n-line);
   border-radius: 6px; padding: 12px; user-select: all;
 }
+/* `--n-error` and not `--n-deny`, which is the same hex and a different
+   meaning: the brand reserves `--n-deny` for one of four permission semantics
+   and says not to reassign them, and "you have eight recovery codes left" is a
+   status. Zero pixels change; what changes is what the token claims. Raised
+   while giving the product's mail the same rule, where the caution rule is the
+   same colour and had to pick a name. */
 .warn {
   font-size: 14px; color: var(--n-text);
-  border-left: 3px solid var(--n-deny); padding-left: 12px; margin: 0 0 16px;
+  border-left: 3px solid var(--n-error); padding-left: 12px; margin: 0 0 16px;
   max-width: 60ch;
 }
 .form-message { min-height: 1.4em; margin: 0 0 8px; font-size: 13px; color: var(--n-text-muted); }

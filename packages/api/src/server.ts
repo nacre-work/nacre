@@ -52,6 +52,7 @@ import {
   type VerifyOptions,
 } from './auth.js'
 import { badRequest, internal, notAdministeredHere, notFound, Problem, tooBusy } from './errors.js'
+import { passwordChangedMessage, secondFactorMessage } from './messages.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
 import type { Login, SecondFactorProof, SessionOutcome, Tokens, WebAuthnProof } from './login.js'
@@ -1554,24 +1555,7 @@ async function notifySecurityChange(
   try {
     const address = await options.secondFactors?.emailOf(orgId, userId)
     if (address === undefined || address === null) return
-    await mailer.send({
-      to: address,
-      subject: what === 'enrolled' ? 'A second factor was added to your Nacre account' : 'A second factor was removed from your Nacre account',
-      text:
-        what === 'enrolled'
-          ? [
-              'An authenticator was just added to this account.',
-              '',
-              'If it was not you, somebody is signing in as you: change your password',
-              'and tell your administrator.',
-            ].join('\n')
-          : [
-              'An authenticator was just removed from this account.',
-              '',
-              'Removing one is the first thing somebody with a stolen session does. If',
-              'it was not you, change your password and tell your administrator.',
-            ].join('\n'),
-    })
+    await mailer.send(secondFactorMessage(address, what))
   } catch (error) {
     logger.warn('could not send a security notice', {
       request_id: requestId,
@@ -4050,19 +4034,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // changed, and refusing the request over a notice would be worse than a
       // notice that did not arrive.
       void options.mailer
-        ?.send({
-          to: outcome.email,
-          subject: 'Your Nacre password was changed',
-          text: [
-            'The password for this account was just changed from a signed-in session.',
-            '',
-            'Every other session was signed out. Any second factor on the account is',
-            'untouched and is still required.',
-            '',
-            'If this was not you, somebody knew your password — reset it from the',
-            'sign-in screen and tell your administrator.',
-          ].join('\n'),
-        })
+        ?.send(passwordChangedMessage(outcome.email, 'session'))
         .catch(() => undefined)
 
       // The pair that replaces the sessions this just ended. Answering 204 and

@@ -348,6 +348,14 @@ rather than confirmations: a password changed through a recovery link, and a
 second factor added or removed. The person who receives one and did not do it is
 the one who needs to know.
 
+Every message is `multipart/alternative` — the same words as plain text and in
+the brand's own palette — and both parts are rendered from one description, so
+neither can say something the other does not. A message that asks for an action
+shows the link **as its own URL** beside the button, so a reader who has been
+taught to look at a link before pressing it can. `packages/api/src/messages.ts`
+is all of them in one file, which is where to read what this installation says
+to somebody without reading the handler around it.
+
 ### The access log is readable
 
 `GET /v1/audit`, newest first, cursor-paged, as JSON, JSONL or CSV by content

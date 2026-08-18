@@ -124,6 +124,7 @@ jobs:
       - run: pnpm lint:admin-classes
       - run: pnpm lint:admin-layout
       - run: pnpm lint:tokens
+      - run: pnpm lint:mail-palette
       - run: pnpm lint:stored-error
       - run: pnpm lint:email-rule
       # And no screen asks a person to type an id. Nobody knows a uuid: the one
@@ -319,6 +320,20 @@ jobs:
           # and the first version of this job ignored.
           NACRE_PLAYWRIGHT="$tools/node_modules/playwright/index.mjs" node scripts/screenshots.mjs
           echo "$tools" > /tmp/nacre-playwright-dir
+      - name: every message the product sends, rendered
+        run: |
+          set -euo pipefail
+          # Beside the screens rather than in a job of its own, on the same
+          # argument the two walks below make: installing a browser is the
+          # expensive half and this job has already paid for it.
+          #
+          # It renders the product's own message list — not a reconstruction —
+          # and asks a browser what a paragraph computes to. That is the
+          # question a string assertion cannot answer, and the one that would
+          # have caught a font stack whose quotes closed the `style` attribute
+          # and dropped every declaration after it.
+          NACRE_PLAYWRIGHT="$(cat /tmp/nacre-playwright-dir)/node_modules/playwright/index.mjs" \
+            node scripts/mail-preview.mjs
       - name: the WebAuthn ceremony, end to end
         env:
           NACRE_PG_URL: postgres://nacre:nacre@127.0.0.1:5432/nacre

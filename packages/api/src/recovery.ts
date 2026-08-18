@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto'
 
-import { consoleUrl, hashPassword, type Mailer, withOrg } from '@nacre.work/core'
+import { hashPassword, type Mailer, withOrg } from '@nacre.work/core'
 import type { Pool } from 'pg'
+
+import { passwordChangedMessage, passwordResetMessage } from './messages.js'
 
 /**
  * Recovering a password, by email, without a `psql` session.
@@ -118,22 +120,9 @@ export class PasswordRecovery {
       this.scope,
     )
 
-    const link = consoleUrl(this.deps.consoleBase, `#/reset?token=${encodeURIComponent(token)}`)
-    await this.deps.mailer.send({
-      to: address,
-      subject: 'Reset your Nacre password',
-      text: [
-        'Somebody asked to reset the password for this address.',
-        '',
-        link,
-        '',
-        `The link works once and expires in ${String(Math.round(RESET_TTL_SECONDS / 60))} minutes.`,
-        'If it was not you, nothing has changed and you can ignore this message.',
-        '',
-        'Resetting a password does not remove a second factor: you will still be',
-        'asked for a code afterwards.',
-      ].join('\n'),
-    })
+    await this.deps.mailer.send(
+      passwordResetMessage(address, this.deps.consoleBase, token, RESET_TTL_SECONDS),
+    )
   }
 
   /**
@@ -203,19 +192,7 @@ export class PasswordRecovery {
     // A notice, not a confirmation: the person who receives this and did not do
     // it is the one who needs to know, and they need to know now.
     await this.deps.mailer
-      .send({
-        to: address,
-        subject: 'Your Nacre password was changed',
-        text: [
-          'The password for this address has just been changed using a recovery link.',
-          '',
-          'Every other session was signed out. Any second factor on the account is',
-          'untouched and is still required.',
-          '',
-          'If this was not you, whoever did it can read your mail — change the',
-          'password again from a device you trust and tell your administrator.',
-        ].join('\n'),
-      })
+      .send(passwordChangedMessage(address, 'recovery-link'))
       // Dropped rather than raised: the password *is* changed, and refusing the
       // request over a notice would be worse than a notice that did not arrive.
       .catch(() => undefined)

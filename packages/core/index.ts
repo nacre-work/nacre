@@ -103,7 +103,15 @@ export {
   endpointUrl,
   modelEndpointRefused,
 } from './endpoint.js'
-export { consoleUrl, createMailer, type Mailer, type MailConfig, type Message } from './mail.js'
+export {
+  type Block,
+  consoleUrl,
+  createMailer,
+  type Mailer,
+  type MailConfig,
+  message,
+  type Message,
+} from './mail.js'
 export { documentKey, S3, S3Error } from './s3.js'
 export type { S3Options } from './s3.js'
 export type { Hit, SearchRequest, VectorStoreOptions } from './vector/search.js'

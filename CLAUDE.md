@@ -1967,6 +1967,111 @@ no other way to see it again — and it decides whether the person on the other
 end can hold a second factor at all, which is exactly the kind of thing a
 screen has to be able to say.
 
+**The one screen that hands a value over had no way to hand it over.** "Add an
+authenticator" printed a thirty-two character base32 secret in a box with
+nothing to press — `user-select: all` is a selection and not a copy, and it
+wants a keystroke the person holding a phone does not have — and truncated the
+`otpauth://` link to 48 characters with the rest in a `title`, which is a
+tooltip and needs a pointer, on the one string whose whole purpose is to be
+opened *on a phone*. Every id on every other screen has had a copy control
+since the console was rendered at 390.
+
+There is a **QR code** on it now, and it is encoded here.
+`packages/admin/src/qr.ts` is byte mode, error correction level M, versions 1
+to 40 by capacity, and no dependency: this package's one runtime dependency is
+the SDK, the page is `script-src 'self'` so a CDN is not an option, and the
+thing being drawn is a credential. The obligation that comes with writing one
+is checking it against something that did not come from here — `jsqr`, pinned,
+a dev-only dependency of a private package, fed the matrix as pixels with its
+quiet zone. Asserting on the matrix would have pinned whatever the encoder
+produced on the day it was written.
+
+It found three defects before the first symbol was scannable, and one of them
+would have shipped a picture no phone could read at exactly the length this
+feature uses. The format-information strip was placed with x and y swapped, and
+was written without being *reserved*, so data was laid into it and then masked.
+And the alignment patterns were excluded by "this module is already spoken for"
+rather than by index — position 6 is the timing line, so from version 7 every
+legitimate pattern sitting on it was skipped, and an `otpauth://` URL is
+version 7. Restoring that one fails the otpauth case and every case above 120
+bytes while the short ones stay green, which is the measurement that says it is
+about alignment.
+
+Black on white is the one deliberate exception to `lint:tokens`: a QR is read
+by a camera and a threshold, so its two values are a scanning requirement, and
+inverting it for a dark theme is how a symbol stops working.
+
+The recovery codes can be **saved** as well as read. They are printed once and
+an administrator deliberately cannot restore them, so that dialog is the only
+moment they exist outside a hash. The file goes through Web Share where the
+browser has it — the public stand learned from an iPhone that Safari does not
+save an `<a download>`, it *navigates* to the blob, and here a reload does not
+bring the codes back.
+
+Two checks came out of that work and neither is about QR codes. **A dialog
+whose action you cannot reach is a dialog you cannot finish**, and that dialog
+now carries a picture, a secret, a link and a field before Confirm — a
+`<dialog>` scrolls only because the user-agent stylesheet says so, and a
+`max-height` written here would take it away. The check's first version set
+`scrollTop` and measured, and `overflow: hidden` still honours a *programmatic*
+scroll: restoring that rule left every button comfortably inside the viewport
+and the check green. It had measured a scroll no thumb can perform, which is
+the narrow-projection defect this file names three times, produced inside a
+check written the same hour.
+
+**And the stale-bundle guard knew about one of two inputs.** It read
+`packages/admin/src`, so `packages/admin/public/admin.css` was invisible to it
+— and the stylesheet is where every layout defect that script exists to find
+lives. Found by falling into it: a rule added to `.dialog` to prove the new
+check could fail changed nothing, because `dist/` still carried the old
+stylesheet. What counts as source is discovered now, out of the bundle's own
+sourcemap, so the SDK's sources are covered without being named, and a missing
+map is a refusal.
+
+**The messages this product sends are in the brand, and both parts come from
+one description.** They were plain text, on an argument written in
+`mail.ts`'s own header: that each is one sentence and one link, that an HTML
+part doubles what has to be escaped, and that a link in an HTML mail is the
+shape a phishing filter and a suspicious reader both distrust.
+
+Only the last was ever about the reader, and it is answered rather than avoided
+— **the link is shown as its own URL**, beside the button, so somebody can see
+where it goes before pressing it. That is more than the plain-text version
+offered, where the link was the only thing on its line and nothing said where
+it went. The first two are answered by there being one description and one
+escaper: a `Message` is a list of blocks and `message()` renders both parts.
+
+A `Message` carries a brand only that module can apply, so a message cannot be
+assembled by hand with one part missing — it does not typecheck. That is what
+found the **fifth** message while the paragraph claiming there were four was
+being written: the count had come from `mailer.send` call sites rather than
+from the messages. `packages/api/src/messages.ts` is all of them in one file
+now, which is also what lets the preview render the real ones rather than
+retyping them.
+
+`lint:mail-palette` is the repair for the one thing an email cannot do. A mail
+client resolves no custom property, so those colours are literals — the only
+ones in this repository — and the check reads them back out of the brand mirror
+the console ships, following one level of `var()`. A colour that moved in the
+brand fails here rather than sending last year's teal to everybody who forgets
+a password. Each of its three refusals was produced: a drifted value, a colour
+naming no token, and the palette moving out from under it.
+
+The renderer is asked what it **computes to**, not only what it says.
+`scripts/mail-preview.mjs` renders the product's own list at 390 and reads the
+paragraph's colour, size and leading back out of a browser — which is what
+caught the defect a string assertion never would have: the brand's font stacks
+are spelled with double quotes, and interpolated into `style="…"` that closes
+the attribute at the first character of the family name. Every declaration
+after `font-family` was dropped. The markup still parsed and nothing threw;
+what was lost was the size, the leading and the colour of every paragraph. It
+runs in the `console` job, where a browser is already installed.
+
+Writing it also turned up the console's `.warn` reaching for `--n-deny`, which
+the brand reserves for one of four permission semantics and says not to
+reassign. `--n-error` is the same hex, so the correction is zero pixels and one
+fewer place where a permission colour means something else.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
