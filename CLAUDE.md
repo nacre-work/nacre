@@ -1747,6 +1747,50 @@ produces *now* — so the script compares the newest file under `packages/admin/
 against the newest under `dist` and refuses rather than rendering. Checked by
 touching a source file and watching it refuse.
 
+**A flake failed the 0.19.0 release, and the response is two checks rather than
+one fix.** `second-factor-live.test.ts` read the wall clock three times across
+one case — confirm, sign in, replay — and a TOTP step is thirty seconds while
+the case takes two. So about one run in fifteen crossed a boundary between the
+second read and the third, computed a code for a step that had never been
+spent, and watched the server correctly accept it. The assertion said "a spent
+code is refused"; what it asked was "these three clock reads landed in the same
+window". Green on the pull request, red on the merge that **was** the release:
+nothing published, nothing tagged, four images unbuilt.
+
+The worse half is that the class had already been diagnosed **in the same
+session**. `hybrid-live.test.ts` was found to be a coin flip an hour earlier,
+fixed, and its commit message names the property in as many words — a test
+whose claim depends on something it does not control. Finding one instance is
+not a licence to repair the instance, which this file has said twice; the sweep
+did not happen and the release paid for it.
+
+So `lint:test-clock` closes the mechanism and `scripts/flake-hunt.mjs` closes
+the class. The first **discovers** its subject rather than naming `totpStep` —
+every export whose instant defaults to `new Date()`, of which there is one, so
+the next helper written that way is covered on the day it exists. It refuses
+outright if it finds none, because a check with nothing to hold must not report
+green. It deliberately does **not** ban `new Date()` in tests: twenty of the
+twenty-five clock reads here are an expiry sixty seconds out used within
+milliseconds, and flagging those would report twenty things and name none of
+them.
+
+The hunt is the part no static rule can do, because the hazard is the ratio
+between a window and a duration. It runs the suite N times and reports any case
+that failed **sometimes** — every time is a broken test the ordinary suite
+already catches. Nightly rather than per pull request: a flake is a property of
+`main`, so it is looked for on `main`'s clock, and a find is a red scheduled run
+somebody reads in the morning rather than a release nobody can undo.
+
+**And the first hunt reported a second flake that did not exist.** Eight cases
+failed in runs 11 and 12 of a twenty-run background pass — and those runs were
+executing against a tree being edited at the time, since the release's defect
+had been injected into that same file to demonstrate the hunt. The failures
+were contamination cascading through a shared database. That is this file's own
+recorded mistake — measuring damage this session caused and attributing it to
+the repository — arriving a second time, and it was one report away from being
+written down as a finding. Twenty-five runs on a clean tree: no case failed in
+any of them.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
