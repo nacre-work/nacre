@@ -249,6 +249,56 @@ jobs:
 
   # The public repo must build and test without access to nacre-enterprise.
   # If this job fails, the open/commercial boundary has leaked.
+  # The console, in a real browser, on every screen there is a picture of.
+  #
+  # `scripts/screenshots.mjs` regenerates `docs/assets/admin/` and had always
+  # been a **generator** somebody ran by hand. It carries assertions now — no
+  # page error, no unstubbed call, the picture is of the screen it is named
+  # after, and every control has room above it — and a check nobody runs is
+  # worse than no check, which is this repository's own rule.
+  #
+  # **The images are not compared**, deliberately. Whether a layout "fits" is
+  # decided by the font the runner happens to have, so a byte comparison would
+  # be red on somebody's machine and green here for reasons that are about
+  # neither the code nor the design — the sibling repository lost an afternoon
+  # to exactly that. What is asserted is what a browser *decides*: geometry,
+  # errors, and which view rendered.
+  #
+  # Playwright is installed for the job rather than being a dependency, on the
+  # same argument the script's own header makes: a browser driver in every
+  # contributor's `pnpm install` is the wrong trade for a script run rarely.
+  console:
+    name: console
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      # The whole workspace, not `--filter admin`: the console's `tsc -b` needs
+      # the SDK's declarations, and a filtered build leaves it with fifteen
+      # `Cannot find module '@nacre.work/sdk'` errors. Found by this job failing
+      # in fifteen seconds, before it ever reached a browser.
+      - run: pnpm build
+      - name: every screen in a browser
+        run: |
+          set -euo pipefail
+          # Into a directory of its own, so this repository stays free of it.
+          # An ESM `import` resolves from the importing file rather than from
+          # NODE_PATH, so the script is told where the package is.
+          tools=$(mktemp -d)
+          printf '{"name":"nacre-console-check","private":true}\n' > "$tools/package.json"
+          (cd "$tools" && pnpm add playwright@1 >/dev/null)
+          "$tools/node_modules/.bin/playwright" install --with-deps chromium
+          # The module's own path, not NODE_PATH: this is an ESM import and
+          # NODE_PATH is a CommonJS mechanism, which the script's header says
+          # and the first version of this job ignored.
+          NACRE_PLAYWRIGHT="$tools/node_modules/playwright/index.mjs" node scripts/screenshots.mjs
+      # The images this wrote are thrown away with the runner. Regenerating them
+      # is the author's job, and `git status` on their machine is what says the
+      # committed ones are stale — not a runner whose fonts are not theirs.
+
   boundary:
     name: boundary
     runs-on: ubuntu-latest
