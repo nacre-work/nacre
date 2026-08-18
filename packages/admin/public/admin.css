@@ -405,6 +405,14 @@ a { color: var(--n-accent); }
   display: flex; align-items: start; gap: 8px;
 }
 .secretrow > * { margin-bottom: 0; }
+/* The QR code. Centred and given a light plate of its own: the symbol is drawn
+   black on white because a camera and a threshold decide what it says, and a
+   dark theme must not invert it — so the plate is part of the image rather
+   than the surface behind it. `lint:tokens` reads stylesheets, and there is no
+   colour here for that reason. */
+.qrbox { display: flex; justify-content: center; margin: 0 0 12px; }
+.qrbox > * { margin-bottom: 0; }
+.qr { display: block; width: 208px; height: 208px; border-radius: 6px; }
 .secretrow .secret, .secretrow .otpauth { flex: 1 1 0; min-width: 0; }
 /* Shown whole. It was truncated to 48 characters with the rest in a `title`,
    which is a tooltip a phone does not have — and this is a link somebody opens

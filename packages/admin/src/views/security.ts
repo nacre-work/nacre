@@ -2,6 +2,7 @@ import type { SecondFactor, SecondFactorKind } from '@nacre.work/sdk'
 
 import { changeOwnPassword, client, explain } from '../api.js'
 import { clear, copyControl, h } from '../dom.js'
+import { qrSvg } from '../qr.js'
 import * as webauthn from '../webauthn.js'
 
 /**
@@ -450,7 +451,19 @@ function second(
   const urlCopy = copyControl(begun.otpauthUrl, begun.otpauthUrl, 'Copy the setup link')
 
   return h('div', {},
-    h('p', {}, 'Add this secret to your authenticator, then type the code it shows.'),
+    h('p', {}, 'Scan this with your authenticator, then type the code it shows.'),
+    // The three ways in, in the order people take them.
+    //
+    // The camera first, because typing thirty-two base32 characters into a
+    // phone is the step somebody abandons — and the step they get wrong, since
+    // base32 has no `0`, `1` or `8` and a mistyped character is six digits that
+    // never work with no way to tell which half is broken.
+    //
+    // The picture is not a fallback for the others: it is the path, and they
+    // are the fallbacks. `qrSvg` draws the same `otpauth://` URL the link
+    // carries, so there is one string here and three ways to take it.
+    h('div', { class: 'qrbox' }, qrSvg(begun.otpauthUrl, 'Setup QR code for this authenticator')),
+    h('p', { class: 'hint' }, 'Or add the secret by hand:'),
     // The value and a way to take it. Reported as a gap: the secret sat in a
     // box with nothing to press, and `user-select: all` is a selection rather
     // than a copy — it still needs a keystroke somebody on a phone does not

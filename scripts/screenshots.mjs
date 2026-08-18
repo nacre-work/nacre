@@ -34,7 +34,7 @@
 /* global sessionStorage, document */
 import { createServer } from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { extname, join } from 'node:path'
+import { extname, join, resolve } from 'node:path'
 
 /**
  * Playwright is deliberately not a dependency of this workspace.
@@ -99,18 +99,55 @@ if (!existsSync(join(BUNDLE, 'index.html'))) {
  *
  * Newest source against newest output, which is coarse and is enough: the
  * failure being guarded against is a whole build that did not happen.
+ *
+ * **What counts as source is discovered, not listed**, and that is the second
+ * version. The first read `packages/admin/src` and nothing else — so a change
+ * to `packages/admin/public/admin.css` was invisible to it, and the stylesheet
+ * is where every layout defect this script exists to find actually lives. Found
+ * by falling into it: a rule added to `.dialog` to prove the new check could
+ * fail changed nothing, because `dist/` still carried the old stylesheet and
+ * the guard had nothing to say. A check that knows about one of two inputs is
+ * the shape this repository keeps naming, arriving inside the guard written
+ * against it.
+ *
+ * The sourcemap is what knows. esbuild records every file it bundled, so the
+ * SDK's own sources — which are compiled into this bundle and are equally
+ * capable of being stale — are covered without being named. `public/` is the
+ * other half and is copied rather than bundled, so it appears in no map and is
+ * walked.
  */
 const newest = (dir) =>
   readdirSync(dir, { withFileTypes: true, recursive: true })
     .filter((e) => e.isFile())
     .reduce((latest, e) => Math.max(latest, statSync(join(e.parentPath, e.name)).mtimeMs), 0)
 
+/** Every file the bundle was built from, out of the bundle's own sourcemap. */
+function bundledSources() {
+  const map = join(BUNDLE, 'app.js.map')
+  if (!existsSync(map)) {
+    // Refused rather than skipped. With no map there is no way to know what
+    // this bundle was built from, and a guard that quietly covers nothing is
+    // worse than none — it is read as "the bundle is current".
+    console.error(
+      `::error::${map} is missing, so there is no way to tell which sources this bundle ` +
+        'was built from. Run `pnpm build` before rendering.',
+    )
+    process.exit(1)
+  }
+  const { sources } = JSON.parse(readFileSync(map, 'utf8'))
+  return sources.map((s) => resolve(BUNDLE, s)).filter((s) => existsSync(s))
+}
+
 const built = newest(BUNDLE)
-const written = newest('packages/admin/src')
-if (written > built) {
+const inputs = [...bundledSources(), 'packages/admin/public']
+const stale = inputs.filter((input) =>
+  (statSync(input).isDirectory() ? newest(input) : statSync(input).mtimeMs) > built,
+)
+if (stale.length > 0) {
   console.error(
-    `::error::${BUNDLE} is older than packages/admin/src — rebuild before rendering, ` +
-      'or this pass photographs the console as it was and reports success',
+    `::error::${BUNDLE} is older than ${stale[0]}${stale.length > 1 ? ` and ${stale.length - 1} other input(s)` : ''}` +
+      ' — rebuild before rendering, or this pass photographs the console as it was and ' +
+      'reports success',
   )
   process.exit(1)
 }
@@ -418,11 +455,80 @@ async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} }
   await page.waitForTimeout(250)
 
   await controlHeadroom(page, name)
+  await dialogActionsReachable(page, name)
 
   const file = join(OUT, `${name}.png`)
   await page.screenshot({ path: file, fullPage: true })
   console.log(`  ${file}`)
   await page.close()
+}
+
+/**
+ * A dialog whose action you cannot reach is a dialog you cannot finish.
+ *
+ * `controlHeadroom` beside this asks whether a control has room *above* it.
+ * This asks the other question, which no reading of the stylesheet answers: is
+ * the thing that completes the dialog on the screen at all.
+ *
+ * It became worth asking when the enrolment dialog grew a QR code. That dialog
+ * now carries a picture, a secret, a link and a field before its Confirm
+ * button, and a `<dialog>` scrolls only because the user-agent stylesheet says
+ * `overflow: auto` — a `max-height` or an `overflow` written here would take it
+ * away, and the visible result is a button nobody can press with nothing in a
+ * log. The property is asserted rather than assumed, which is the difference
+ * between knowing the browser does it and believing it.
+ *
+ * The question is asked of the **scrolled** dialog, because "fits on the
+ * screen" is not the property. A tall dialog that scrolls is fine; one that
+ * neither fits nor scrolls is not, and only scrolling to the end tells them
+ * apart. Restored afterwards, or every dialog would be photographed at its
+ * bottom.
+ *
+ * **And whether it scrolls is a second question, because the first one could
+ * not fail.** The initial version set `scrollTop` and measured — and
+ * `overflow: hidden` still honours a *programmatic* scroll, so restoring that
+ * rule on `.dialog` left every button comfortably inside the viewport and the
+ * check green. What it had measured was a scroll no thumb and no wheel can
+ * perform. That is the narrow-projection defect this repository names three
+ * times, produced here inside a check written the same hour. So the computed
+ * `overflow-y` is asked of any dialog that overflows at all: `auto` or
+ * `scroll`, and anything else is a dialog whose end nobody can reach.
+ */
+async function dialogActionsReachable(page, name) {
+  const problems = await page.evaluate(() => {
+    const found = []
+    for (const dialog of document.querySelectorAll('dialog[open]')) {
+      const actions = [...dialog.querySelectorAll('.dialog-actions button')]
+      if (actions.length === 0) continue
+
+      const overflows = dialog.scrollHeight > dialog.clientHeight + 1
+      const overflow = globalThis.getComputedStyle(dialog).overflowY
+      if (overflows && overflow !== 'auto' && overflow !== 'scroll') {
+        found.push({
+          why: `it is ${dialog.scrollHeight}px of content in a ${dialog.clientHeight}px box ` +
+            `with overflow-y: ${overflow}, so nothing below the fold can be reached`,
+        })
+      }
+
+      const was = dialog.scrollTop
+      dialog.scrollTop = dialog.scrollHeight
+      for (const action of actions) {
+        const box = action.getBoundingClientRect()
+        if (box.bottom <= globalThis.innerHeight + 0.5 && box.top >= -0.5) continue
+        found.push({
+          why: `its "${action.textContent.trim().slice(0, 32)}" button ends at ` +
+            `${Math.round(box.bottom)}px in a ${globalThis.innerHeight}px viewport with the ` +
+            'dialog scrolled to its end',
+        })
+      }
+      dialog.scrollTop = was
+    }
+    return found
+  })
+
+  for (const problem of problems) {
+    failures.push(`${name}: this dialog cannot be finished — ${problem.why}`)
+  }
 }
 
 /**
