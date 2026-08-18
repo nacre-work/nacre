@@ -1453,6 +1453,50 @@ the CLI and the console got their second field: neither would have been noticed
 by a type that let the challenge be ignored, and ignoring it means issuing a
 session to somebody who never produced a code.
 
+**A password can be recovered, and the whole feature is absent where no relay
+is configured.** `POST /v1/users/{id}/password` has existed since there were
+users and it is an *administrator* setting somebody else's; the person who
+forgot theirs had no route, and on a single-administrator installation — which
+the open core mostly is — neither did the administrator. The route people find
+instead is `psql`, which is the shape this repository keeps closing.
+
+**The token carries its organization**, `<org_id>.<secret>`, and that is the
+design rather than a convenience. Resolving a credential outside `withOrg` has
+exactly two mechanisms here, and migration 0008 says in its own words that
+`users` gets neither "as a decision rather than an omission". A token that names
+its tenant means redemption reads through `withOrg` like everything else, so the
+one path a stranger reaches unauthenticated opens no cross-tenant lookup. The
+organization id is not a secret from the person holding the link — it is in
+their own `/v1/me` — and the half beside it is.
+
+`204` whatever happened: no account, an address in two organizations, a disabled
+account, a rate limit already met, a relay that refused. Anything else makes the
+one endpoint needing no credential into the account-enumeration oracle that
+sign-in is careful not to be.
+
+**A reset does not touch a second factor**, or an email account would be a way
+around one. It does end every other session, because a reset is what somebody
+does when they think their password is known.
+
+`nodemailer` is the second dependency this package has taken, and the argument
+is the one the parser made in reverse: it has **no dependencies of its own**, and
+the alternative is two hundred lines of SMTP here — dot-stuffing,
+quoted-printable, and header encoding over addresses that come out of the
+database. Header injection on that last one is a defect with a name, and trading
+a zero-dependency package for the chance to write it myself is not a trade worth
+making.
+
+`GET /v1/auth/methods` exists so the console can leave the link **off the
+screen** rather than showing one that answers `404`. A screen offering what the
+server refuses is a defect this console has already shipped once, and the fix
+was the same shape: ask, do not assume.
+
+Wiring it turned that up again from the other side. `recovery` was spread into
+the `Login` constructor instead of the server options and **nothing complained**
+— an excess property in a spread is not checked — so the routes would have been
+mounted nowhere while every gate stayed green. Found by reading the file rather
+than by any check, which is the honest version of how it was found.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

@@ -66,6 +66,43 @@ export function signInWithToken(token: string, baseUrl: string): void {
  * — in the same time. A screen that distinguished them would hand back the
  * information the API is careful not to give.
  */
+/**
+ * Whether this installation offers a recovery link at all.
+ *
+ * Asked before the sign-in screen draws, so the link is **absent** rather than
+ * present-and-failing where no sender is configured. A control that answers
+ * "email is not configured" reads as a broken application and tells an
+ * unauthenticated stranger about the deployment besides.
+ *
+ * A deployment this cannot reach answers `false`: an unreachable API is a
+ * screen with nothing on it either way, and guessing `true` would put a link
+ * there that cannot work.
+ */
+export async function signInMethods(baseUrl: string): Promise<{ passwordReset: boolean }> {
+  try {
+    const bare = new NacreClient({ baseUrl, token: 'unauthenticated' })
+    return await bare.auth.methods()
+  } catch {
+    return { passwordReset: false }
+  }
+}
+
+/** Ask for a link. Resolves the same whether or not the address has an account. */
+export async function requestPasswordReset(baseUrl: string, email: string): Promise<void> {
+  const bare = new NacreClient({ baseUrl, token: 'unauthenticated' })
+  await bare.auth.requestPasswordReset(email)
+}
+
+/** Spend a link. `false` for one that never existed, was spent, or expired. */
+export async function confirmPasswordReset(
+  baseUrl: string,
+  token: string,
+  password: string,
+): Promise<boolean> {
+  const bare = new NacreClient({ baseUrl, token: 'unauthenticated' })
+  return bare.auth.confirmPasswordReset(token, password)
+}
+
 /** A challenge to answer, when the password alone was not the whole sign-in. */
 export interface SecondFactorPending {
   readonly challenge: string

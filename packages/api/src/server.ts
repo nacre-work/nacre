@@ -55,6 +55,8 @@ import { badRequest, internal, notAdministeredHere, notFound, Problem } from './
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
 import type { Login, LoginOutcome, Tokens } from './login.js'
+import { MIN_PASSWORD_LENGTH, type PasswordRecovery } from './recovery.js'
+import type { Mailer } from '@nacre.work/core'
 import type { SecondFactors } from './second-factor.js'
 import type {
   ConsentSubject,
@@ -944,6 +946,16 @@ export interface ApiOptions {
    * did before.
    */
   readonly secondFactors?: SecondFactors
+  /**
+   * Password recovery, when the deployment configured a sender.
+   *
+   * Absent, the two routes are not mounted and `/v1/auth/methods` says so, so
+   * the console leaves the link off the screen rather than offering a control
+   * that answers 404.
+   */
+  readonly recovery?: PasswordRecovery
+  /** For security notices. Absent where the deployment configured no sender. */
+  readonly mailer?: Mailer
   /** Layer reindex. Absent means the reindex paths answer 404. */
   readonly reindex?: Reindex
   /** The reindex recall gate's query set. Absent means those paths answer 404. */
@@ -1505,6 +1517,56 @@ const neverCached = (instance: string): boolean =>
  * key, and an operator reading `KEYS nacre:rl:*` should not be reading a list
  * of who has an account here.
  */
+/**
+ * Tell a person their second factor changed, where this deployment can.
+ *
+ * Best effort in every direction: no sender configured means no message, a
+ * relay that refuses is a log line, and neither stops the change that already
+ * happened. The address is read here rather than carried through the handler,
+ * because `AuthContext` holds a principal id and not an address.
+ *
+ * The two events are worth a message for the same reason a password change is:
+ * a factor appearing on an account, or disappearing from one, is what somebody
+ * taking it over does first.
+ */
+async function notifySecurityChange(
+  options: ApiOptions,
+  orgId: string,
+  userId: string,
+  what: 'enrolled' | 'removed',
+  requestId: string,
+): Promise<void> {
+  const mailer = options.mailer
+  if (mailer === undefined) return
+  try {
+    const address = await options.secondFactors?.emailOf(orgId, userId)
+    if (address === undefined || address === null) return
+    await mailer.send({
+      to: address,
+      subject: what === 'enrolled' ? 'A second factor was added to your Nacre account' : 'A second factor was removed from your Nacre account',
+      text:
+        what === 'enrolled'
+          ? [
+              'An authenticator was just added to this account.',
+              '',
+              'If it was not you, somebody is signing in as you: change your password',
+              'and tell your administrator.',
+            ].join('\n')
+          : [
+              'An authenticator was just removed from this account.',
+              '',
+              'Removing one is the first thing somebody with a stolen session does. If',
+              'it was not you, change your password and tell your administrator.',
+            ].join('\n'),
+    })
+  } catch (error) {
+    logger.warn('could not send a security notice', {
+      request_id: requestId,
+      error: String(error).slice(0, 200),
+    })
+  }
+}
+
 async function handleAuth(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1689,6 +1751,102 @@ async function handleAuth(
     })
 
     send(res, 200, tokenJson(tokens), requestId)
+    return
+  }
+
+  /*
+   * What this installation offers before anybody has signed in.
+   *
+   * One boolean, and it exists so the console can leave the recovery link
+   * **off the screen** where no sender is configured rather than showing a
+   * control that answers 404. A screen offering what the server refuses is a
+   * defect this console has already shipped once.
+   *
+   * It tells a stranger that this deployment can send email, which is what they
+   * would learn by pressing the link anyway. It says nothing about any address.
+   */
+  if (instance === '/v1/auth/methods') {
+    send(res, 200, { password_reset: options.recovery !== undefined }, requestId)
+    return
+  }
+
+  /*
+   * Ask for a recovery link.
+   *
+   * **`204` whatever happened**, including for an address with no account, an
+   * address in two organizations, a disabled account and a send that failed.
+   * Anything else makes this the account-enumeration oracle the sign-in path is
+   * careful not to be — and this one needs no credential at all.
+   */
+  if (instance === '/v1/auth/password-reset' && options.recovery !== undefined) {
+    const email = (body ?? {}) as { email?: unknown }
+    if (typeof email.email !== 'string') {
+      const problem = badRequest(instance, requestId, "'email' is required.")
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+
+    // The same two buckets sign-in has, and for the same reasons: the address
+    // one defends a mailbox from being flooded on somebody's behalf, and the
+    // source one bounds the sweep across a directory that never repeats an
+    // address.
+    if (options.limits !== undefined && options.limitPolicies?.login !== undefined) {
+      const subject = createHash('sha256').update(email.email.trim().toLowerCase()).digest('hex').slice(0, 32)
+      const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 })
+      const decisions = [await options.limits.check(subject, 'login')]
+      if (source !== undefined && options.limitPolicies.login_source !== undefined) {
+        decisions.push(await options.limits.check(`src:${source}`, 'login_source'))
+      }
+      if (decisions.some((d) => !d.allowed)) {
+        // Still 204. A 429 here would say "this address is being asked about",
+        // which is the thing the endpoint refuses to say.
+        send(res, 204, null, requestId)
+        return
+      }
+    }
+
+    // Awaited, but its failure is swallowed: the answer is the same either way,
+    // and an unhandled rejection would take the process down over a relay being
+    // briefly unreachable.
+    await options.recovery.request(email.email).catch((error: unknown) => {
+      logger.warn('could not start a password recovery', {
+        request_id: requestId,
+        error: String(error).slice(0, 200),
+      })
+    })
+    send(res, 204, null, requestId)
+    return
+  }
+
+  if (instance === '/v1/auth/password-reset/confirm' && options.recovery !== undefined) {
+    const { token, password } = (body ?? {}) as { token?: unknown; password?: unknown }
+    if (typeof token !== 'string' || typeof password !== 'string') {
+      const problem = badRequest(instance, requestId, "'token' and 'password' are required.")
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+
+    const outcome = await options.recovery.redeem(token, password)
+    if (outcome === 'too-short') {
+      // The one thing this endpoint does say, because it is about what the
+      // caller sent rather than about what exists. A refusal with no reason
+      // here is a person retyping a password that will never be accepted.
+      const problem = badRequest(
+        instance,
+        requestId,
+        `A password is at least ${String(MIN_PASSWORD_LENGTH)} characters. Length is the whole rule — there is no requirement about digits or symbols.`,
+      )
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+    if (outcome === 'refused') {
+      // One answer for a link that never existed, one already used, one that
+      // expired, and an account disabled since it was sent.
+      refuse()
+      return
+    }
+
+    send(res, 204, null, requestId)
     return
   }
 
@@ -3190,6 +3348,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           detail: {},
           requestId,
         })
+        // A notice, where the deployment can send one. The person who did not
+        // do this is the one who needs to know, and a second factor appearing
+        // on an account is exactly what somebody taking it over would do.
+        // Dropped rather than raised: the enrolment happened.
+        void notifySecurityChange(options, auth.orgId, userId, 'enrolled', requestId)
         // Printed once. A second call returns an empty list rather than new
         // codes, because reissuing them here would invalidate the set somebody
         // has already written down.
@@ -3231,6 +3394,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           detail: {},
           requestId,
         })
+        void notifySecurityChange(options, auth.orgId, userId, 'removed', requestId)
         send(res, 204, null, requestId)
         return
       }

@@ -272,11 +272,34 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
-### 0.18.0 — a second factor, if you give it a key
+### 0.18.0 — a second factor and password recovery, both if you configure them
 
-**One migration and one optional variable**, and doing nothing is a supported
-answer: without the variable the whole surface answers `404` and sign-in is
+**Two migrations and two optional groups of variables**, and doing nothing is a
+supported answer for both: without them the surfaces answer `404` and sign-in is
 exactly what it was.
+
+Migration `0030` adds `password_reset_tokens`, and recovery is offered where the
+installation names a relay and a sender:
+
+```
+NACRE_SMTP_URL=smtps://nacre%40example.com:secret@smtp.example.com:465
+NACRE_MAIL_FROM=Nacre <nacre@example.com>
+```
+
+Both or neither — a relay with no sender parses and then fails on the first
+message, which is a log line rather than a refusal you would notice. Without
+them, `GET /v1/auth/methods` reports `password_reset: false` and the console
+leaves the link off its sign-in screen rather than showing one that cannot work.
+
+The link a message carries is built from `NACRE_CANONICAL_URL`, never from a
+`Host` header — a recovery link built from a request header points wherever the
+requester said. If that variable names something a person cannot open in a
+browser, the link will not be openable either.
+
+Two things worth knowing before you turn it on. A reset **ends every other
+session** for that account, which is the point rather than a side effect. And a
+reset **does not touch a second factor**: if it did, an email account would be a
+way around one.
 
 Migration `0029` adds `user_second_factors` and `user_recovery_codes`. It
 creates two tables and grants the application role on them; it reads nothing

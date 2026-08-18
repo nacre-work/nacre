@@ -3,6 +3,8 @@ import {
   explain,
   readBase,
   readToken,
+  requestPasswordReset,
+  signInMethods,
   signInSecondFactor,
   signInWithPassword,
   signInWithToken,
@@ -17,6 +19,7 @@ import { consentView } from './views/consent.js'
 import { grantsView } from './views/grants.js'
 import { layersView } from './views/layers.js'
 import { peopleView } from './views/people.js'
+import { resetView } from './views/reset.js'
 import { searchView } from './views/search.js'
 import { securityView } from './views/security.js'
 
@@ -159,6 +162,21 @@ function route(main: HTMLElement, nav: HTMLElement, isAdmin: boolean): void {
   // everybody who can sign in, because choosing an agent is not an
   // administrative act — it is the same permission as issuing the grant that
   // makes the agent worth anything.
+  /*
+   * Setting a password from a recovery link.
+   *
+   * Before the sign-in check and outside the nav, like the consent screen and
+   * for the same reason: whoever arrives here has no session — that is the
+   * whole point of the link — and a router that asked them to sign in first
+   * would be asking for the thing they came to replace.
+   */
+  if (location.hash.startsWith('#/reset')) {
+    clear(nav)
+    clear(main)
+    resetView(main)
+    return
+  }
+
   if (location.hash.startsWith('#/consent')) {
     clear(nav)
     clear(main)
@@ -218,6 +236,103 @@ function signInView(): void {
     const organization = h('input', { class: 'input', placeholder: 'only if you have accounts in several' })
     const base = h('input', { class: 'input mono', value: readBase() })
 
+  /**
+     * The recovery link, if this installation can send one.
+     *
+     * Re-asked whenever the API field changes, because the answer belongs to the
+     * deployment being signed in to and somebody pointing the console at a
+     * different one is asking a different question.
+     */
+    const recoveryLink = h('p', { class: 'hint' })
+    const askWhetherRecoveryExists = (): void => {
+      clear(recoveryLink)
+      void signInMethods(base.value.trim().replace(/\/+$/, '')).then((methods) => {
+        if (!methods.passwordReset) return
+        clear(recoveryLink)
+        recoveryLink.append(
+          h('a', {
+            href: '#',
+            onclick: (event: Event) => {
+              event.preventDefault()
+              forgotten(email.value.trim(), base.value.trim().replace(/\/+$/, ''), say)
+            },
+          }, 'Forgotten your password?'),
+        )
+      })
+    }
+
+    /**
+     * Ask for a link, and say the same thing either way.
+     *
+     * The message is deliberately about what *this screen* did rather than about
+     * what exists: the server answers 204 for an address with no account, and a
+     * console that said "sent" only sometimes would hand back the information the
+     * API refuses to give.
+     */
+    const forgotten = (address: string, baseUrl: string, say: (text: string, bad?: boolean) => void): void => {
+      if (address === '') return say('Type your email address first.', true)
+      say('Asking…')
+      void requestPasswordReset(baseUrl, address)
+        .then(() => say(`If ${address} has an account here, a link is on its way. It works once and expires in an hour.`))
+        .catch((error: unknown) => say(explain(error), true))
+    }
+
+    /**
+     * The second field, once the password has been accepted.
+     *
+     * It replaces the form rather than appearing under it: the password is
+     * already spent, and a screen still showing it invites somebody to retype and
+     * resubmit, which starts a second sign-in and invalidates the challenge they
+     * are holding.
+     */
+    const askForCode = (
+      pending: SecondFactorPending,
+      say: (text: string, bad?: boolean) => void,
+      start: () => void,
+    ): void => {
+      const code = h('input', {
+        class: 'input',
+        inputmode: 'numeric',
+        autocomplete: 'one-time-code',
+        placeholder: '000000',
+        'aria-label': 'Code',
+      }) as HTMLInputElement
+
+      clear(forms)
+      forms.append(
+        h('form', { onsubmit: async (event: Event) => {
+          event.preventDefault()
+          say('Checking…')
+          try {
+            const ok = await signInSecondFactor({
+              challenge: pending.challenge,
+              code: code.value.trim(),
+              baseUrl: pending.baseUrl,
+            })
+            // One refusal again: a wrong code, an expired challenge and an
+            // account disabled in the last five minutes are one answer.
+            if (!ok) return say('That code is not valid.', true)
+            start()
+          } catch (error) {
+            say(explain(error), true)
+          }
+        } },
+          h('h2', {}, 'Two-factor'),
+          h('label', { class: 'field' }, h('span', {}, 'Code'), code),
+          h('p', { class: 'hint' },
+            'From your authenticator, or one of the recovery codes you saved when you enrolled.'),
+          // The same element `say` writes into. It lives inside the form that is
+          // being replaced, so leaving it out here would detach it and every
+          // message after this point would go to nothing.
+          message,
+          h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Continue'),
+        ),
+      )
+      code.focus()
+    }
+    askWhetherRecoveryExists()
+    base.addEventListener('change', askWhetherRecoveryExists)
+
     return h('form', { onsubmit: async (e: Event) => {
       e.preventDefault()
       say('Signing in…')
@@ -255,61 +370,16 @@ function signInView(): void {
         ' printed. The session renews itself and ends when you sign out or close the tab.'),
       message,
       h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Sign in'),
+      /*
+       * Placed empty and filled in only if the server says it can send.
+       *
+       * Asked rather than assumed: a link that answers 404 reads as a broken
+       * application, and this console has already shipped a screen offering
+       * what the API refuses. It is added asynchronously because the answer
+       * needs the API address that is on this very form.
+       */
+      recoveryLink,
     )
-  }
-
-  /**
-   * The second field, once the password has been accepted.
-   *
-   * It replaces the form rather than appearing under it: the password is
-   * already spent, and a screen still showing it invites somebody to retype and
-   * resubmit, which starts a second sign-in and invalidates the challenge they
-   * are holding.
-   */
-  const askForCode = (
-    pending: SecondFactorPending,
-    say: (text: string, bad?: boolean) => void,
-    start: () => void,
-  ): void => {
-    const code = h('input', {
-      class: 'input',
-      inputmode: 'numeric',
-      autocomplete: 'one-time-code',
-      placeholder: '000000',
-      'aria-label': 'Code',
-    }) as HTMLInputElement
-
-    clear(forms)
-    forms.append(
-      h('form', { onsubmit: async (event: Event) => {
-        event.preventDefault()
-        say('Checking…')
-        try {
-          const ok = await signInSecondFactor({
-            challenge: pending.challenge,
-            code: code.value.trim(),
-            baseUrl: pending.baseUrl,
-          })
-          // One refusal again: a wrong code, an expired challenge and an
-          // account disabled in the last five minutes are one answer.
-          if (!ok) return say('That code is not valid.', true)
-          start()
-        } catch (error) {
-          say(explain(error), true)
-        }
-      } },
-        h('h2', {}, 'Two-factor'),
-        h('label', { class: 'field' }, h('span', {}, 'Code'), code),
-        h('p', { class: 'hint' },
-          'From your authenticator, or one of the recovery codes you saved when you enrolled.'),
-        // The same element `say` writes into. It lives inside the form that is
-        // being replaced, so leaving it out here would detach it and every
-        // message after this point would go to nothing.
-        message,
-        h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Continue'),
-      ),
-    )
-    code.focus()
   }
 
   const tokenForm = (): HTMLElement => {

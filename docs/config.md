@@ -110,6 +110,19 @@ NACRE_EMA_TRUSTED_ISSUERS=
 # `/proc/<pid>/environ`, and a file can be mounted read-only from a secret store.
 # That is a recommendation, not a rule — `NACRE_JWT_SECRET` beside it is a plain
 # value too.
+# Sending mail. All or nothing: a relay with no sender address parses and then
+# fails on the first message, which is a log line rather than a refusal you would
+# notice. Unset, password recovery is **absent** — the routes are not mounted,
+# `GET /v1/auth/methods` says so, and the console shows no link, because a
+# control that answers "email is not configured" tells an unauthenticated
+# stranger about the deployment.
+#
+# The link in a message is built from NACRE_CANONICAL_URL and never from a Host
+# header: a recovery link built from a request header points wherever the
+# requester said.
+NACRE_SMTP_URL=                        # smtp:// or smtps://user:pass@host:port
+NACRE_MAIL_FROM=                       # the From: address; a relay refuses one it does not own
+
 NACRE_2FA_KEY=                         # base64 or hex, exactly 32 bytes
 NACRE_2FA_KEY_REF=                     # or file:// to >=32 bytes; set one, not both
 

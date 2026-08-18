@@ -1291,6 +1291,55 @@ export class NacreClient {
       return body === undefined ? undefined : tokensFrom(body)
     },
 
+    /**
+     * What this installation offers before anybody has signed in.
+     *
+     * One boolean, so a sign-in screen can leave the recovery link off where no
+     * sender is configured rather than showing one that answers 404.
+     */
+    methods: async (): Promise<{ passwordReset: boolean }> => {
+      const body = (await this.#request({
+        method: 'GET',
+        path: '/v1/auth/methods',
+        noAuthRefresh: true,
+      })) as { password_reset?: boolean }
+      return { passwordReset: body.password_reset === true }
+    },
+
+    /**
+     * Ask for a recovery link.
+     *
+     * Resolves whatever happened — an address with no account and one with an
+     * account are the same answer, deliberately, and a client that reported
+     * otherwise would be inventing the information the server refuses to give.
+     */
+    requestPasswordReset: async (email: string): Promise<void> => {
+      await this.#request({
+        method: 'POST',
+        path: '/v1/auth/password-reset',
+        noAuthRefresh: true,
+        body: { email },
+      })
+    },
+
+    /**
+     * Spend a link and set the password. `false` for a refusal.
+     *
+     * A refusal is a link that never existed, one already spent, one that
+     * expired, or an account disabled since it was sent — one answer for all
+     * four. A password below the minimum raises instead, because that one is
+     * about what the caller sent.
+     */
+    confirmPasswordReset: async (token: string, password: string): Promise<boolean> => {
+      const done = await this.#unauthorized({
+        method: 'POST',
+        path: '/v1/auth/password-reset/confirm',
+        noAuthRefresh: true,
+        body: { token, password },
+      })
+      return done !== undefined
+    },
+
     /** End the session. Idempotent: an already-revoked token is not an error. */
     logout: async (refreshToken: string): Promise<void> => {
       await this.#request({

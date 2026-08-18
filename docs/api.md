@@ -177,6 +177,59 @@ does. A service account and a delegation are refused — a key has nobody to car
 an authenticator, and a third party acting for somebody must not be able to
 change how that somebody signs in.
 
+### Recovering a password
+
+```
+GET  /v1/auth/methods                        → {password_reset}
+POST /v1/auth/password-reset          {email}            → 204
+POST /v1/auth/password-reset/confirm  {token, password}  → 204
+```
+
+`POST /v1/users/{id}/password` is an **administrator** setting somebody else's.
+This is the person who forgot theirs — and on a single-administrator
+installation, which the open core mostly is, the administrator who forgot theirs
+had no route that did not go through the database.
+
+Offered only where the installation configured `NACRE_SMTP_URL` and
+`NACRE_MAIL_FROM`. Without them the two routes are not mounted and
+`GET /v1/auth/methods` reports `password_reset: false`, so a sign-in screen
+leaves the link off rather than showing a control that answers `404`.
+
+**`204` whatever happened.** An address with no account, an address in two
+organizations, a disabled account, a rate limit already met and a relay that
+refused all answer the same — anything else makes this the account-enumeration
+oracle the sign-in path is careful not to be, and this one needs no credential.
+
+**The token carries its organization**, shaped `<org_id>.<secret>`. Redemption
+therefore knows the tenant before it reads anything, so the table is read
+through `withOrg` like every other and the one path a stranger can reach
+unauthenticated opens no cross-tenant lookup. Migration 0008 says `users` gets
+no `authenticating` policy "as a decision rather than an omission"; this keeps
+that decision. The organization id is not a secret from the person holding the
+link — it is in their own `/v1/me` — and the half beside it is.
+
+A link **works once and expires in an hour**, and asking again invalidates the
+previous one: two live links is two things to steal for one account. The spend
+is the statement that finds it, so two requests cannot both succeed.
+
+Setting a password **ends every other session**. A reset is what somebody does
+when they think their password is known, and leaving the refresh tokens alive
+would leave whoever knows it signed in.
+
+**A reset does not touch a second factor.** If it did, an email account would be
+a way around one, which is the thing a second factor exists to not be.
+
+A password is at least 12 characters and there is no other rule. A requirement
+for a digit and a symbol produces `Password1!` and a person who writes it down;
+length is the only one that reliably buys entropy. That refusal is a `400` with
+the number in it — the one thing these endpoints explain, because it is about
+what the caller sent rather than about what exists.
+
+Two more messages go out where a sender is configured, and both are notices
+rather than confirmations: a password changed through a recovery link, and a
+second factor added or removed. The person who receives one and did not do it is
+the one who needs to know.
+
 ### The access log is readable
 
 `GET /v1/audit`, newest first, cursor-paged, as JSON, JSONL or CSV by content
