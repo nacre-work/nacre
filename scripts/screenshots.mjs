@@ -246,11 +246,30 @@ const reportFailures = () => {
 }
 process.on('exit', reportFailures)
 
+/**
+ * The instant every screen is rendered at.
+ *
+ * The fixtures carry absolute dates and the views render *relative* times, so
+ * without this the images drift with the wall clock: two runs eleven minutes
+ * apart differed because a `created_at` crossed 181 days, and `accounts.png`
+ * and `people.png` therefore changed on every regeneration with no code change.
+ * That is how a screenshot diff stops meaning anything — a real change arrives
+ * in a commit that also rewrites two unrelated files, and nobody looks.
+ *
+ * The same reasoning as the pinned API base a few lines down, which was caught
+ * the same way. After the newest fixture date, so every "N days ago" is a
+ * positive number a reader recognises.
+ */
+const NOW = new Date('2026-03-15T09:00:00Z')
+
 async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} } = {}) {
   // Short viewport plus `fullPage`, so each image is exactly as tall as its
   // screen rather than carrying a band of empty background.
   const page = await browser.newPage({ viewport: { width: 1280, height: 640 }, deviceScaleFactor: 2 })
   page.on('pageerror', (error) => failures.push(`${name}: ${String(error)}`))
+
+  // Before anything navigates, or the module has already read the clock.
+  await page.clock.setFixedTime(NOW)
 
   // The base is pinned to the address the quickstart uses, on every screen and
   // not only the signed-in ones. Left unset it defaults to `location.origin`,
@@ -335,10 +354,124 @@ async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} }
   if (prepare !== undefined) await prepare(page)
   await page.waitForTimeout(250)
 
+  await controlHeadroom(page, name)
+
   const file = join(OUT, `${name}.png`)
   await page.screenshot({ path: file, fullPage: true })
   console.log(`  ${file}`)
   await page.close()
+}
+
+/**
+ * A control flush against whatever is above it is a control you miss.
+ *
+ * `lint:admin-layout` reads the stylesheet and this is **geometry**, which
+ * needs a browser — and this script already opens one on every screen. The
+ * instance that made it worth writing: the recovery link sat at **zero pixels**
+ * under the Sign in button, because `.hint` carries no top margin and
+ * `.btn-block` only a small one, so a mis-tap on a full-width button lands on
+ * "forgotten your password".
+ *
+ * The question is deliberately the general one — for every control, how far is
+ * the nearest box that ends above it and overlaps it horizontally — rather than
+ * control-against-control. The sibling repository learned that the narrow way
+ * round: it compared controls to controls, and the next instance was a control
+ * under a *paragraph*, which such a rule cannot see. An ancestor never
+ * qualifies, since an ancestor's bottom is below its child's; what qualifies is
+ * the heading, paragraph or row the control follows.
+ *
+ * Eight pixels, which is what the platforms ask for between targets.
+ *
+ * Scoped to the view and to any open dialog. The masthead is `position: sticky`
+ * and overlaps whatever has scrolled under it, so measuring against it would
+ * report a distance that is about scrolling rather than about layout.
+ */
+const MIN_HEADROOM = 8
+
+async function controlHeadroom(page, name) {
+  const tight = await page.evaluate((min) => {
+    const visible = (n) => n.getClientRects().length > 0
+    /*
+     * One root at a time, never across two.
+     *
+     * A dialog is a layer *over* the page, so a control in it is a few pixels
+     * under whatever the page happened to have painted there — the first
+     * version reported the New user dialog's Cancel button as five pixels under
+     * the users table behind it, which is a fact about stacking and not about
+     * layout. What a person sees is one surface at a time, and that is what this
+     * measures.
+     */
+    const roots = [...document.querySelectorAll('dialog[open]')]
+    if (roots.length === 0) roots.push(...document.querySelectorAll('.main, .signin'))
+    const within = (selector) => roots.flatMap((r) => [...r.querySelectorAll(selector)]).filter(visible)
+
+    const controls = within('button, select, input, textarea, a[href]')
+    const boxes = within('*')
+    const label = (n) => n.id || n.textContent.trim().slice(0, 32) || n.className || n.tagName.toLowerCase()
+    const row = (n) => n.closest('tr')
+    const field = (n) => n.closest('label, .field')
+
+    const found = []
+    for (const control of controls) {
+      const c = control.getBoundingClientRect()
+      let nearest = null
+      for (const other of boxes) {
+        if (other === control || other.contains(control) || control.contains(other)) continue
+
+        /*
+         * Three exclusions, and every one of them is an arrangement where being
+         * close is the design rather than a defect. Without them this reported
+         * thirty things across fourteen screens and named the one real defect
+         * among them, which is a check nobody reads.
+         *
+         * A field's own label. `.field` is `label > span + input`, so the span
+         * above the box *is* that box's name — four pixels is what a form looks
+         * like, and eight would be a form with gaps in it.
+         */
+        if (field(control) !== null && field(control) === field(other)) continue
+        /*
+         * A different row of the same table. Row height is the table's business
+         * and `lint:admin-layout` already governs it; the distance between one
+         * row's action and the next row's is a property of density, not of
+         * whether a control has room.
+         */
+        if (row(control) !== null && row(other) !== null && row(control) !== row(other)) continue
+
+        const o = other.getBoundingClientRect()
+        // Ends above it, and shares some horizontal extent with it. The half
+        // pixel is for a border that rounds the other way.
+        if (o.bottom > c.top + 0.5) continue
+        if (o.right < c.left + 0.5 || o.left > c.right - 0.5) continue
+        /*
+         * Beside it rather than above it. An inline box on the same line — the
+         * text a copy control sits next to — ends a pixel or two above the
+         * control's top because the two are baseline-aligned, and reading that
+         * as "no headroom" is reading a line box as a stack. What says they are
+         * stacked is that the box above spans a real part of the control's
+         * width, so a 30px icon beside a sentence does not qualify and a
+         * paragraph over a button does.
+         */
+        const shared = Math.min(o.right, c.right) - Math.max(o.left, c.left)
+        if (shared < Math.min(c.width, o.width) * 0.5) continue
+
+        const gap = c.top - o.bottom
+        if (nearest === null || gap < nearest.gap) {
+          nearest = { gap: Math.round(gap), above: label(other) }
+        }
+      }
+      if (nearest !== null && nearest.gap < min) found.push({ below: label(control), ...nearest })
+    }
+    return found
+  }, MIN_HEADROOM)
+
+  for (const t of tight) {
+    failures.push(
+      `${name}: "${t.below}" sits ${String(t.gap)}px under "${t.above}". A control needs ` +
+        `${String(MIN_HEADROOM)}px of headroom from whatever is above it — flush against it, the ` +
+        'thing you meant to press is the thing you miss. This is geometry, so `lint:admin-layout` ' +
+        'cannot see it; the margin that is missing is on one of the two.',
+    )
+  }
 }
 
 console.log(`rendering ${BUNDLE} into ${OUT}/`)

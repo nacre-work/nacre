@@ -1578,11 +1578,43 @@ missing an item; regenerating them is part of this rather than noise.
 
 The link itself sat at **zero pixels** under the Sign in button — `.hint`
 carries no top margin and `.btn-block` only a small one — so a mis-tap on a
-full-width button lands on "forgotten your password". That is fixed as an
-instance and is deliberately *not* claimed as a repair: `lint:admin-layout`
-reads the stylesheet and this is geometry, which needs a browser. The check
-that would find the next one belongs in `screenshots.mjs`, which already opens
-every screen in one, and is written down as work rather than as a comment.
+full-width button lands on "forgotten your password".
+
+**`screenshots.mjs` measures that now**, which is what turns it from an instance
+into a repair. `lint:admin-layout` reads the stylesheet and this is geometry;
+that script already opens every screen in a browser, so the question goes where
+the browser is: for every control, how far is the nearest box that ends above it
+and overlaps it horizontally. The general question rather than
+control-against-control, because the sibling repository learned that the narrow
+way round and its next instance was a control under a *paragraph*.
+
+**Its first version reported thirty things across fourteen screens and named the
+one real defect among them**, which is a check nobody reads. Three of the four
+arrangements it flagged are ones where being close is the design: a field's own
+label four pixels above its input, one table row's action against the next
+row's, and an inline sibling on the same line whose box ends a pixel high
+because the two are baseline-aligned. Each is excluded by name and with its
+reason. The fourth was the check's own defect — a modal is a layer *over* the
+page, so the New user dialog's Cancel button was measured against the users
+table behind it, which is a fact about stacking. It measures one root at a time
+now. Zero findings on a clean tree, and restoring the flush link names exactly
+it.
+
+**And the run itself is in CI**, as `console`, which is what stops this being a
+gate somebody has to remember to run. Playwright is installed for the job rather
+than becoming a dependency. The **images are not compared** and that is
+deliberate: whether a layout fits is decided by whatever font the runner has, so
+a byte comparison would be red on one machine and green on another for reasons
+about neither the code nor the design. What is asserted is what a browser
+decides — geometry, page errors, missing fixtures, and which view rendered.
+
+That job is only possible because the clock is frozen. `accounts.png` and
+`people.png` used to change on a wall-clock boundary with no code change — two
+runs eleven minutes apart differed because a `created_at` crossed 181 days,
+since the fixtures carry absolute dates and the views render relative times. A
+regeneration that rewrites unrelated files is how a screenshot diff stops
+meaning anything. `page.clock.setFixedTime` pins it, checked by rendering twice
+and comparing bytes.
 
 **And three of the four routes that hash answered `500` under load.**
 `core/passwords.ts` bounds how many scrypt calls run at once — the pool is
