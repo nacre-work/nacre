@@ -1497,6 +1497,23 @@ the `Login` constructor instead of the server options and **nothing complained**
 mounted nowhere while every gate stayed green. Found by reading the file rather
 than by any check, which is the honest version of how it was found.
 
+Redemption writes `users.password_hash` and is therefore the second written
+exemption in `check-platform-admin-target.mjs`. It is a real exemption rather
+than a routing change: the only way to reach that statement is to hold a
+single-use secret emailed to the address on the row it writes, so the actor and
+the target are one person and there is nobody to escalate over — and refusing a
+platform administrator there would leave the account that administers the
+installation as the one account whose only recovery is `psql`, which is the hole
+this endpoint closes.
+
+**The second exemption is what made the mechanism matter.** Exemptions are keyed
+by file, so a second method in the same file writing the same statement text was
+waved through by an argument written about the first one — a write nobody argued
+for, admitted by a check whose whole subject is arguing for writes. Each
+exemption now has to match **exactly one** section: zero is the stale entry it
+already refused, and two is the new hole. Both branches were checked by
+producing them.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
