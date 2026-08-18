@@ -22,12 +22,16 @@ import type { Migration } from '../db/migrate.js'
  *   * that `requirePrivileges: false` actually reaches the connection, since
  *     the premise is a role that would be refused with it on.
  *
- * The nullable-checksum case is the one worth keeping. It is not hypothetical:
- * `@nacre.work/enterprise-tenancy` shipped its own runner whose ledger had
- * `checksum text` with no NOT NULL, and every database that ran it before the
- * digest was added carries rows with NULL. A generic runner that read those as
- * a mismatch would refuse every installation older than the check, on the
- * commit that was meant to remove a duplicated file.
+ * The nullable-checksum case is the one worth keeping, and it is not
+ * hypothetical. A runner written before this one existed had a ledger with
+ * `checksum text` and no NOT NULL, so every database it touched before the
+ * digest was added carries rows with NULL. A generic runner reading those as a
+ * mismatch would refuse every installation older than the check — on the commit
+ * meant to *remove* the duplicated file, which is the worst moment for it.
+ *
+ * Which runner is deliberately not named here. This package must not know what
+ * else is installed beside it, and the `boundary` job says so by refusing the
+ * name; the property is what matters and it is stated without one.
  */
 
 const url = process.env.NACRE_PG_URL
@@ -140,13 +144,13 @@ when('the migration ledger is a parameter', () => {
 
 when('a ledger from an older runner', () => {
   /**
-   * Exactly the shape `enterprise-tenancy` created: nullable checksum, and a
-   * row recorded before the digest existed.
+   * Exactly the shape an earlier runner created: a nullable checksum column,
+   * and a row recorded before the digest existed.
    */
   beforeAll(async () => {
     if (!url) return
-    // `checksum text`, nullable — the column `enterprise-tenancy`'s runner
-    // creates, rather than none at all. That distinction cost this file a
+    // `checksum text`, nullable — the column an earlier runner creates, rather
+    // than none at all. That distinction cost this file a
     // failure of its own: the first version created the table without the
     // column and then read it, which is the harness failing in the shape the
     // product does.
