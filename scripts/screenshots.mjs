@@ -46,13 +46,33 @@ import { extname, join } from 'node:path'
  *   pnpm dlx playwright@1 install chromium   # once, if you have no browser
  *   pnpm dlx --package=playwright@1 node scripts/screenshots.mjs
  */
+/*
+ * `NACRE_PLAYWRIGHT` names the module, and it exists because a bare specifier
+ * cannot be pointed anywhere.
+ *
+ * An ESM `import` resolves from the importing file's directory upward. It does
+ * **not** consult `NODE_PATH` — that is a CommonJS mechanism — so a job that
+ * installs playwright into a directory of its own and sets `NODE_PATH` gets
+ * this file's own refusal, which is what the `console` job did on the pull
+ * request that added it.
+ *
+ * The paragraph above already said so, and the first version of that job used
+ * `NODE_PATH` anyway; it looked right locally because an earlier `npx` run had
+ * left playwright in this repository's `node_modules`, so the bare import
+ * resolved and the environment variable was doing nothing. A check verified
+ * under a condition the runner does not have is a check verified against
+ * nothing.
+ */
+const specifier = process.env.NACRE_PLAYWRIGHT ?? 'playwright'
 let chromium
 try {
-  ;({ chromium } = await import('playwright'))
+  ;({ chromium } = await import(specifier))
 } catch {
   console.error(
     '::error::playwright is not installed. It is not a dependency of this repository on purpose ' +
-      '— see the note at the top of this file for how to run it.',
+      '— see the note at the top of this file for how to run it. Installing it elsewhere and ' +
+      'setting NODE_PATH does not work: this is an ESM import. Set NACRE_PLAYWRIGHT to the ' +
+      "module's own path instead, for example …/node_modules/playwright/index.mjs.",
   )
   process.exit(1)
 }

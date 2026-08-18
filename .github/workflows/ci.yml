@@ -291,7 +291,10 @@ jobs:
           printf '{"name":"nacre-console-check","private":true}\n' > "$tools/package.json"
           (cd "$tools" && pnpm add playwright@1 >/dev/null)
           "$tools/node_modules/.bin/playwright" install --with-deps chromium
-          NODE_PATH="$tools/node_modules" node scripts/screenshots.mjs
+          # The module's own path, not NODE_PATH: this is an ESM import and
+          # NODE_PATH is a CommonJS mechanism, which the script's header says
+          # and the first version of this job ignored.
+          NACRE_PLAYWRIGHT="$tools/node_modules/playwright/index.mjs" node scripts/screenshots.mjs
       # The images this wrote are thrown away with the runner. Regenerating them
       # is the author's job, and `git status` on their machine is what says the
       # committed ones are stale — not a runner whose fonts are not theirs.
