@@ -272,11 +272,15 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
-### 0.18.0 — a second factor and password recovery, both if you configure them
+### 0.18.0 — three ways to hold an account, and two of them are optional
 
 **Two migrations and two optional groups of variables**, and doing nothing is a
 supported answer for both: without them the surfaces answer `404` and sign-in is
 exactly what it was.
+
+The third — changing your own password — needs nothing configured at all and is
+described further down. It is the one recovery path every installation has,
+which is why it is not behind a variable.
 
 Migration `0030` adds `password_reset_tokens`, and recovery is offered where the
 installation names a relay and a sender:
