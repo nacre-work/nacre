@@ -165,22 +165,47 @@ signs in.
 ### A second factor
 
 ```
-POST   /v1/auth/second-factor        {challenge, code}   → the token pair
-GET    /v1/me/second-factor                              → what is enrolled
-POST   /v1/me/second-factor          {label?}            → a secret, once
-POST   /v1/me/second-factor/{id}/confirm  {code}         → recovery codes, once
-DELETE /v1/me/second-factor/{id}     {code}              → 204
+POST   /v1/auth/second-factor          {challenge, code|assertion} → the token pair
+POST   /v1/auth/second-factor/webauthn {challenge}                 → assertion options
+GET    /v1/me/second-factor                                        → what is enrolled
+POST   /v1/me/second-factor            {label?}                    → a TOTP secret, once
+POST   /v1/me/second-factor/{id}/confirm       {code}              → recovery codes, once
+POST   /v1/me/second-factor/webauthn                               → creation options
+POST   /v1/me/second-factor/webauthn/finish    {challenge, …}      → recovery codes, once
+POST   /v1/me/second-factor/webauthn/assert                        → assertion options
+DELETE /v1/me/second-factor/{id}       {code|assertion}            → 204
 ```
 
-TOTP — the six digits an authenticator shows. Offered only where the
-installation set `NACRE_2FA_KEY`; without a key to seal a secret with, the
-whole surface answers `404` and sign-in is unchanged. There is deliberately no
-mode that stores a secret in the clear, because a product that half-does a
-second factor is worse than one that does none.
+**Two kinds, and which are offered is answered rather than assumed.** `GET
+/v1/auth/methods` carries `second_factor_kinds` before anybody has signed in,
+and the listing above carries `kinds` for somebody who has. A screen that drew
+a control this installation refuses would be the defect this API keeps closing.
+
+**TOTP** — the six digits an authenticator shows — is offered only where the
+installation set `NACRE_2FA_KEY`. A shared secret has to be kept, so it has to
+be sealed, and there is deliberately no mode that stores one in the clear.
+
+**WebAuthn** needs no key at all: it stores a public key and no secret, so a
+database dump hands over nothing that can produce an assertion. Its relying
+party is `NACRE_CANONICAL_URL`'s hostname and the origins it accepts are that
+URL's origin plus `NACRE_API_ALLOWED_ORIGINS`. It is what an installation with
+no `NACRE_2FA_KEY` offers, which is most of them — and it is the kind whose
+signature covers the origin, so an assertion produced for a page pretending to
+be this one does not verify here.
+
+Each is two calls, because a ceremony is two: the challenge has to exist in the
+database before the browser is asked for anything, or the signature would be
+over a number the client chose. There is no confirm step on the WebAuthn side —
+producing the attestation *is* the proof the credential arrived.
+
+**Removing one takes a current proof of either kind**, because the account
+decides what it can produce and not the factor being removed. Sending both a
+`code` and an `assertion` is a `400` rather than a precedence.
 
 **A second factor decides whether a session starts. It grants nothing.** The
 permitted set is still computed per request from `grants`, and a token minted
-after a correct code reaches exactly what the same token reaches without one.
+after a correct code or a verified assertion reaches exactly what the same token
+reaches without one.
 
 Where an account has one, `POST /v1/auth/login` answers `200` with
 `{second_factor_required: true, challenge, expires_in}` instead of tokens —
@@ -190,6 +215,13 @@ access token is accepted; one that could be presented as a bearer token would be
 a way past the factor it exists to demand. The role and the account's state are
 re-read when the session is issued rather than trusted from it: five minutes is
 long enough to be disabled.
+
+**A challenge is single-use, in both ceremonies**, spent by the statement that
+finds it. An assertion captured on the wire is otherwise replayable for as long
+as its challenge is, and nothing else in the ceremony stops that. A challenge
+issued for an enrolment cannot be spent on a sign-in: the first is asked for by
+somebody already signed in, and one pool would let a session mint the input to a
+ceremony it is not in.
 
 **A code is single-use.** The step it belonged to is stored, and a code at or
 before it is refused however correct it is — otherwise a code is good for the

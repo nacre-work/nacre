@@ -33,20 +33,40 @@ So, precisely:
   an `org_id`, a principal, and a role — and `resolve` is given that object and
   nothing about how it was obtained.
 - **A second factor decides whether a session starts. It grants nothing.** A
-  token minted after a correct TOTP code reaches exactly what the same token
-  reaches without one, because the permitted set is computed per request from
-  `grants`. Nothing in `packages/core/authz` reads a factor, and a factor that
-  could widen access would be a second answer to the question this document
-  exists to answer once.
+  token minted after a correct code or a verified assertion reaches exactly what
+  the same token reaches without one, because the permitted set is computed per
+  request from `grants`. Nothing in `packages/core/authz` reads a factor, and a
+  factor that could widen access would be a second answer to the question this
+  document exists to answer once. This holds for both kinds and is why adding
+  the second one changed nothing in the resolver.
 - The one place the two meet is the **delegation**, and it meets them the other
   way round: a delegation carries a *ceiling*, which can only ever narrow. See
   "The permission ceiling".
 
 ### What a second factor is, in this installation
 
-TOTP — RFC 6238, six digits, thirty seconds — enrolled per person and never on
-their behalf. Two rules follow from that and are worth stating here rather than
-only in `docs/api.md`, because both are about authority:
+Two kinds, and a person may hold either or both.
+
+**TOTP** — RFC 6238, six digits, thirty seconds — is the one every authenticator
+app speaks. It bounds a stolen password and does not bound a convincing page:
+six digits typed into a site that looks like this one work exactly as well
+there as here, and the person who typed them has no way to know.
+
+**WebAuthn** is the one whose signature covers the origin, so an assertion
+produced for the wrong site does not verify at the right one. That is the whole
+reason to carry a second kind rather than more of the first. It also stores a
+**public key and no secret**, which is why it needs no sealing key and TOTP
+does: a database dump hands over nothing that can produce an assertion.
+
+So an installation may offer the *stronger* kind and not the weaker one, and
+that is the default — WebAuthn needs only `NACRE_CANONICAL_URL`, which every
+deployment already sets, while TOTP needs `NACRE_2FA_KEY`. Which kinds are
+offered is answered by `GET /v1/auth/methods` and by the second-factor listing,
+so a screen asks rather than assuming.
+
+Both are enrolled per person and never on their behalf. Three rules follow from
+that and are worth stating here rather than only in `docs/api.md`, because all
+three are about authority:
 
 **An administrator cannot enrol, read or remove somebody's second factor.** They
 can reset a password: that is what administering an account means. A factor an
@@ -60,13 +80,21 @@ somebody, and letting it change how that somebody signs in would be an
 escalation out of what was approved at consent.
 
 **Recovery codes are the way past a factor, so they are held to a factor's
-rules.** Ten, printed once at enrolment, spent one at a time, and deleted with
-the last factor — a set of long-lived credentials behind an account with no
-second factor is nobody's intention.
+rules.** Ten, printed once at the first enrolment of either kind, spent one at a
+time, and deleted with the last factor — a set of long-lived credentials behind
+an account with no second factor is nobody's intention. They are also the only
+second factor a **terminal** can produce: a WebAuthn ceremony needs a browser,
+so `nacre login` against a key-only account is a recovery code by design and not
+by omission.
 
-A deployment that has configured no key for sealing secrets offers none of this
-and refuses enrolment. There is deliberately no mode in which a secret is stored
-in the clear.
+**Removing a factor takes a current proof of either kind**, because the account
+decides what it can produce and not the factor being removed. Asking for a key
+to remove a key would demand the thing that is lost in exactly the case somebody
+reaches that dialog in.
+
+A deployment that has configured neither a sealing key nor a canonical URL
+offers none of this and refuses enrolment. There is deliberately no mode in
+which a TOTP secret is stored in the clear.
 
 ## Resolution rules
 

@@ -504,7 +504,7 @@ cannot be read back from the API, the database or a backup — losing one means
 minting another, which is the trade for a key that a leaked backup does not
 carry.
 
-![The Security screen: a password form, and one enrolled authenticator with its recovery-code count](./assets/admin/security.png)
+![The Security screen: a password form, and two enrolled factors — an authenticator app and a security key — with the recovery-code count under them](./assets/admin/security.png)
 
 **Security** is the caller's own account and never anybody else's. Changing a
 password takes the current one and signs out every other session — including
@@ -512,11 +512,19 @@ the other browser somebody left signed in — while this one carries on with a
 fresh token. It needs nothing configured and is the recovery path every
 installation has; a link by email needs `NACRE_SMTP_URL`.
 
-A second factor needs `NACRE_2FA_KEY`. Without one the
-panel says so and the password form is still there — the two are independent,
-which is what an installation that has configured neither is looking at:
+**A second factor comes in two kinds and the panel draws the ones that work.**
+A security key needs nothing configured — its relying party is
+`NACRE_CANONICAL_URL`, which is already set — so an installation with no
+`NACRE_2FA_KEY` offers that and not the authenticator app:
 
-![The same screen with no second-factor key: the password form, and a panel explaining why enrolment is not offered](./assets/admin/security-no-key.png)
+![The Security screen offering a security key only: one enrolled key, and a single Add a security key button](./assets/admin/security-keys-only.png)
+
+The kinds come off the server rather than being assumed, which is why the two
+screens differ by one button rather than by a message. An installation that
+offers neither — no key and no canonical URL — is what this looks like, and the
+password form is still there, because the two panels are independent:
+
+![The same screen with neither kind available: the password form, and a panel explaining why enrolment is not offered](./assets/admin/security-no-key.png)
 
 There is deliberately no administrative counterpart. An administrator resets a
 password and cannot touch anybody's second factor — one they could enrol or

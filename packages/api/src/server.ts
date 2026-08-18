@@ -54,10 +54,14 @@ import {
 import { badRequest, internal, notAdministeredHere, notFound, Problem, tooBusy } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
-import type { Login, Tokens } from './login.js'
+import type { Login, SecondFactorProof, Tokens, WebAuthnProof } from './login.js'
 import { MIN_PASSWORD_LENGTH, type PasswordRecovery } from './recovery.js'
 import type { Mailer } from '@nacre.work/core'
-import type { SecondFactors } from './second-factor.js'
+import type {
+  SecondFactors,
+  WebAuthnAssertionOptions,
+  WebAuthnRegistrationOptions,
+} from './second-factor.js'
 import type {
   ConsentSubject,
   LayerNarrowing,
@@ -939,11 +943,15 @@ export interface ApiOptions {
   readonly workspaces?: Workspaces
   readonly embeddingProviders?: EmbeddingProviders
   /**
-   * The second factor, when the deployment has a key to seal one with.
+   * The second factor, in whichever kinds this installation can offer.
    *
-   * Optional and absent by default: every installation that has not configured
-   * `NACRE_2FA_KEY` answers 404 on this surface and signs in exactly as it
-   * did before.
+   * Optional, and its `kinds` decide the surface rather than its presence: a
+   * deployment with no `NACRE_2FA_KEY` and no canonical URL offers none and
+   * answers 404 here exactly as it did before, one with a key offers TOTP, and
+   * one with a canonical URL offers WebAuthn — which is every deployment,
+   * since that URL is already required. It used to read "when the deployment
+   * has a key to seal one with", which was true while there was one kind and
+   * would now describe the weaker half as the whole.
    */
   readonly secondFactors?: SecondFactors
   /**
@@ -1609,7 +1617,15 @@ async function handleAuth(
   requestId: string,
   options: ApiOptions,
 ): Promise<void> {
-  if (options.login === undefined || req.method !== 'POST') {
+  // Every route here produces a credential and therefore takes a body, with
+  // exactly one exception: `/v1/auth/methods` is a **read**, and the contract
+  // has said `get` since it was written. A blanket `!== 'POST'` refused it, so
+  // the endpoint whose whole job is telling a sign-in screen what exists
+  // answered 404 — and the console, reading `password_reset` off a problem
+  // document, hid the recovery link on every deployment including the ones
+  // with a relay configured. The feature did the opposite of its purpose.
+  const reads = instance === '/v1/auth/methods'
+  if (options.login === undefined || req.method !== (reads ? 'GET' : 'POST')) {
     const problem = notFound(instance, requestId)
     send(res, problem.status, problem.toJSON(), requestId)
     return
@@ -1773,7 +1789,19 @@ async function handleAuth(
    * would learn by pressing the link anyway. It says nothing about any address.
    */
   if (instance === '/v1/auth/methods') {
-    send(res, 200, { password_reset: options.recovery !== undefined }, requestId)
+    send(
+      res,
+      200,
+      {
+        password_reset: options.recovery !== undefined,
+        // Which second factors this installation can *challenge* with. A
+        // sign-in screen that offered "use your security key" where the
+        // deployment has no relying party would be the same defect the
+        // recovery link was: a control the server refuses.
+        second_factor_kinds: options.secondFactors?.kinds ?? [],
+      },
+      requestId,
+    )
     return
   }
 
@@ -1867,10 +1895,46 @@ async function handleAuth(
    * survives a Redis restart; this one is the bound that costs an attacker
    * their source.
    */
+  /*
+   * The options a browser needs before it can produce an assertion.
+   *
+   * It takes the sign-in challenge and nothing else, so this is not a route
+   * that will tell a stranger which authenticators an address holds: the
+   * challenge is a JWT this server signed one password ago. Not rate limited
+   * separately, because reaching it costs a correct password.
+   */
+  if (instance === '/v1/auth/second-factor/webauthn') {
+    const challenge = (body as { challenge?: unknown } | undefined)?.challenge
+    if (typeof challenge !== 'string') {
+      const problem = badRequest(instance, requestId, "'challenge' is required.")
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+    const begun = await options.login.beginSecondFactorWebAuthn(challenge)
+    if (begun === undefined) {
+      // One refusal for a challenge that is not ours, one that has expired, and
+      // a person holding no key — the same rule the rest of this path follows.
+      refuse()
+      return
+    }
+    send(res, 200, assertionOptionsJson(begun), requestId)
+    return
+  }
+
   if (instance === '/v1/auth/second-factor') {
-    const { challenge, code } = (body ?? {}) as { challenge?: unknown; code?: unknown }
-    if (typeof challenge !== 'string' || typeof code !== 'string') {
-      const problem = badRequest(instance, requestId, "'challenge' and 'code' are required.")
+    const { challenge, code, assertion } = (body ?? {}) as {
+      challenge?: unknown
+      code?: unknown
+      assertion?: unknown
+    }
+    if (typeof challenge !== 'string') {
+      const problem = badRequest(instance, requestId, "'challenge' is required.")
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+    const proof = readProof(code, assertion)
+    if (proof === undefined) {
+      const problem = badRequest(instance, requestId, "Either 'code' or 'assertion' is required.")
       send(res, problem.status, problem.toJSON(), requestId)
       return
     }
@@ -1894,7 +1958,7 @@ async function handleAuth(
       }
     }
 
-    const tokens = await options.login.completeSecondFactor(challenge, code)
+    const tokens = await options.login.completeSecondFactor(challenge, proof)
     if (tokens === undefined) {
       // One refusal for an expired challenge, a forged one, a wrong code and a
       // disabled account alike. Which of the four it was is nothing a client
@@ -1911,8 +1975,10 @@ async function handleAuth(
       result: 'allow',
       target: { user_id: tokens.userId },
       // The journal says which door, because "signed in with a second factor"
-      // and "signed in with a password" are different facts to an investigator.
-      detail: { second_factor: true },
+      // and "signed in with a password" are different facts to an investigator
+      // — and so are the two kinds of second factor, since only one of them is
+      // proof against a page that looked like this one.
+      detail: { second_factor: true, second_factor_kind: proof.kind },
       requestId,
     })
 
@@ -1947,6 +2013,71 @@ async function handleAuth(
 
   const problem = notFound(instance, requestId)
   send(res, problem.status, problem.toJSON(), requestId)
+}
+
+/**
+ * A WebAuthn assertion out of a request body, or nothing.
+ *
+ * One parser, because two routes take one: the second half of a sign-in and
+ * taking a factor off an account. Two would be two ideas of which fields are
+ * required and which encoding they arrive in, and the half that got it wrong
+ * would refuse every authenticator with a message about neither.
+ *
+ * base64url throughout, which is what a browser reports and what
+ * `webauthn_challenges.challenge` stores — so the comparison downstream is a
+ * string equality and never an encoding round trip.
+ */
+function readAssertion(value: unknown): WebAuthnProof | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const it = value as Record<string, unknown>
+  const fields = ['credential_id', 'authenticator_data', 'client_data_json', 'signature', 'challenge']
+  if (fields.some((f) => typeof it[f] !== 'string' || it[f] === '')) return undefined
+  const bytes = (name: string): Uint8Array => new Uint8Array(Buffer.from(it[name] as string, 'base64url'))
+  return {
+    credentialId: it.credential_id as string,
+    authenticatorData: bytes('authenticator_data'),
+    clientDataJSON: bytes('client_data_json'),
+    signature: bytes('signature'),
+    challenge: it.challenge as string,
+  }
+}
+
+/**
+ * Which of the two proofs a body carries.
+ *
+ * Both present is a refusal rather than a precedence. A caller sending each is
+ * a caller with two ideas of how it is signing in, and resolving that by
+ * preferring one leaves the other apparently offered and ignored — which is
+ * the argument `loadConfig` makes about a secret and a key ref together.
+ */
+function readProof(code: unknown, assertion: unknown): SecondFactorProof | undefined {
+  const hasCode = typeof code === 'string' && code !== ''
+  if (hasCode && assertion !== undefined) return undefined
+  if (hasCode) return { kind: 'code', code: code as string }
+  const response = readAssertion(assertion)
+  return response === undefined ? undefined : { kind: 'webauthn', response }
+}
+
+/** The wire shape of what a browser needs for `navigator.credentials.get`. */
+function assertionOptionsJson(options: WebAuthnAssertionOptions): Record<string, unknown> {
+  return {
+    challenge: options.challenge,
+    rp_id: options.rpId,
+    allow_credentials: options.allowCredentials,
+    timeout_ms: options.timeoutMs,
+  }
+}
+
+/** And for `navigator.credentials.create`. */
+function registrationOptionsJson(options: WebAuthnRegistrationOptions): Record<string, unknown> {
+  return {
+    challenge: options.challenge,
+    rp: { id: options.rp.id, name: options.rp.name },
+    user: { id: options.user.id, name: options.user.name, display_name: options.user.displayName },
+    algorithms: options.algorithms,
+    exclude_credentials: options.excludeCredentials,
+    timeout_ms: options.timeoutMs,
+  }
 }
 
 function tokenJson(tokens: Tokens): Record<string, unknown> {
@@ -3463,6 +3594,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
               last_used_at: f.lastUsedAt?.toISOString() ?? null,
             })),
             recovery_codes_left: left,
+            // What this installation can enrol, so the screen draws the
+            // controls that work rather than one that answers 404. The same
+            // "ask, do not assume" rule `GET /v1/auth/methods` exists for: a
+            // deployment with no `NACRE_2FA_KEY` offers `webauthn` alone.
+            kinds: factors.kinds,
           },
           requestId,
         )
@@ -3487,6 +3623,91 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           { id: begun.id, secret: begun.secret, otpauth_url: begun.otpauthUrl, label: named },
           requestId,
         )
+        return
+      }
+
+      /*
+       * Enrolling a key, which is two calls because a ceremony is.
+       *
+       * The first hands out a challenge and what the authenticator needs to
+       * see; the second brings back what it signed. They are separate because
+       * the challenge has to exist in the database before the browser is asked
+       * for anything — a server that made one up when the answer arrived would
+       * be verifying a signature over a number the client chose.
+       */
+      if (rest === '/webauthn' && req.method === 'POST') {
+        const begun = await factors.beginWebAuthnRegistration(auth.orgId, userId)
+        if (begun === undefined) {
+          // This installation offers TOTP only. 404 rather than a message
+          // about configuration, for the reason the whole block is behind one.
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        send(res, 201, registrationOptionsJson(begun), requestId)
+        return
+      }
+
+      if (rest === '/webauthn/finish' && req.method === 'POST') {
+        const it = (body ?? {}) as Record<string, unknown>
+        const label = typeof it.label === 'string' && it.label.trim() !== '' ? it.label.trim().slice(0, 60) : 'Security key'
+        const fields = ['challenge', 'attestation_object', 'client_data_json']
+        if (fields.some((f) => typeof it[f] !== 'string' || it[f] === '')) {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "'challenge', 'attestation_object' and 'client_data_json' are required.",
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        const codes = await factors.finishWebAuthnRegistration(auth.orgId, userId, label, {
+          attestationObject: new Uint8Array(Buffer.from(it.attestation_object as string, 'base64url')),
+          clientDataJSON: new Uint8Array(Buffer.from(it.client_data_json as string, 'base64url')),
+          challenge: it.challenge as string,
+        })
+        if (codes === undefined) {
+          // One refusal for a spent challenge, a wrong origin, an unsupported
+          // algorithm and a signature that does not verify. Telling them apart
+          // would describe this server's checks to whoever is probing them.
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `user:${userId}`,
+          action: 'second_factor.enrol',
+          result: 'allow',
+          target: { user_id: userId },
+          detail: { kind: 'webauthn' },
+          requestId,
+        })
+        void notifySecurityChange(options, auth.orgId, userId, 'enrolled', requestId)
+        send(res, 200, { recovery_codes: codes }, requestId)
+        return
+      }
+
+      /*
+       * A challenge for proving possession to *this* surface, which exists
+       * because taking a factor off takes a current proof and an assertion
+       * cannot be produced without one.
+       *
+       * `purpose = 'authenticate'` is the same pool a sign-in spends from, and
+       * that is deliberate rather than an oversight: this caller has a session,
+       * so a challenge they can spend on a sign-in buys them nothing they do
+       * not already hold. What must not share a pool is *enrolment*, since
+       * that one is asked for by somebody already signed in and would let a
+       * session mint the input to a ceremony it is not in.
+       */
+      if (rest === '/webauthn/assert' && req.method === 'POST') {
+        const begun = await factors.beginWebAuthnAssertion(auth.orgId, userId)
+        if (begun === undefined) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        send(res, 200, assertionOptionsJson(begun), requestId)
         return
       }
 
@@ -3527,21 +3748,48 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
-      if (rest !== '' && !rest.includes('/') && req.method === 'DELETE') {
+      /*
+       * Taking a factor off, and the condition is what it is because the one
+       * it replaced could never be true. `rest` is `/{id}` for this route, so
+       * `!rest.includes('/')` asked whether a string beginning with a slash
+       * contains one — false for every id, always. `DELETE
+       * /v1/me/second-factor/{id}` answered 404 from the day it was written
+       * and shipped that way in 0.18.0: a second factor could be enrolled and
+       * never removed, on the one surface an administrator deliberately
+       * cannot reach on somebody's behalf.
+       *
+       * No suite could see it. `second-factor-live.test.ts` calls
+       * `factors.remove` directly and passes, because the store was never the
+       * broken half — nothing had asked the *server* for this path.
+       */
+      if (rest.startsWith('/') && !rest.slice(1).includes('/') && req.method === 'DELETE') {
         const id = rest.slice(1)
-        const code = (body as { code?: unknown } | undefined)?.code
-        if (!UUID_SHAPE.test(id) || typeof code !== 'string') {
-          const problem = badRequest(instance, requestId, "'code' is required to remove a second factor.")
+        const { code, assertion } = (body ?? {}) as { code?: unknown; assertion?: unknown }
+        const proof = readProof(code, assertion)
+        if (!UUID_SHAPE.test(id) || proof === undefined) {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "Either 'code' or 'assertion' is required to remove a second factor.",
+          )
           send(res, problem.status, problem.toJSON(), requestId)
           return
         }
         /*
-         * A current code to take one off, and that is the whole reason this
+         * A current proof to take one off, and that is the whole reason this
          * endpoint takes a body at all. Removing the second factor is the first
          * thing somebody with a stolen session does, and a session is exactly
          * what the factor exists to be more than.
+         *
+         * Either kind, because an account can hold either kind — an
+         * installation with no `NACRE_2FA_KEY` has no code to ask for, and
+         * demanding one there would make every WebAuthn factor permanent.
          */
-        if (!(await factors.verify(auth.orgId, userId, code))) {
+        const proved =
+          proof.kind === 'code'
+            ? await factors.verify(auth.orgId, userId, proof.code)
+            : await factors.verifyWebAuthnAssertion(auth.orgId, userId, proof.response)
+        if (!proved) {
           const problem = notFound(instance, requestId)
           send(res, problem.status, problem.toJSON(), requestId)
           return

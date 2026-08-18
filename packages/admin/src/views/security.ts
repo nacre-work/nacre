@@ -1,7 +1,8 @@
-import type { SecondFactor } from '@nacre.work/sdk'
+import type { SecondFactor, SecondFactorKind } from '@nacre.work/sdk'
 
 import { changeOwnPassword, client, explain } from '../api.js'
 import { clear, h } from '../dom.js'
+import * as webauthn from '../webauthn.js'
 
 /**
  * The caller's own second factor.
@@ -12,11 +13,12 @@ import { clear, h } from '../dom.js'
  * thing the account's administrator holds instead. So this view names nobody
  * and takes no id — everything it calls is under `/v1/me`.
  *
- * The whole section is absent where the installation configured no
- * `NACRE_2FA_KEY`: the API answers 404 and this says so plainly rather than
- * offering a control that cannot work. A page that offers what the server
- * refuses is the defect this console already shipped once, when it drew
- * administrative screens for a platform administrator the API answers 404 to.
+ * **Which kinds are offered is read and never assumed.** `kinds` comes back
+ * with the listing: `totp` needs `NACRE_2FA_KEY` and `webauthn` needs only the
+ * canonical URL, so an installation can offer the stronger of the two and not
+ * the weaker one. A page that offers what the server refuses is the defect this
+ * console already shipped once, when it drew administrative screens for a
+ * platform administrator the API answers 404 to.
  */
 export async function securityView(root: HTMLElement): Promise<void> {
   clear(root)
@@ -120,20 +122,26 @@ async function renderPassword(panel: HTMLElement): Promise<void> {
   )
 }
 
+interface Factors {
+  readonly items: readonly SecondFactor[]
+  readonly recoveryCodesLeft: number
+  readonly kinds: readonly SecondFactorKind[]
+}
+
 async function renderFactors(panel: HTMLElement, root: HTMLElement): Promise<void> {
-  let state: { items: readonly SecondFactor[]; recoveryCodesLeft: number }
+  let state: Factors
   try {
     state = await client().secondFactor.list()
   } catch (error) {
     clear(panel)
-    // 404 here is the installation, not the caller: no key configured, so there
-    // is nothing to offer and saying why is better than an empty panel.
+    // 404 here is the installation, not the caller: it offers neither kind, so
+    // there is nothing to offer and saying why is better than an empty panel.
     panel.append(
       h('h2', {}, 'Second factor'),
       h('div', { class: 'empty' },
         h('h2', {}, 'Not available on this installation'),
         h('p', {},
-          'A second factor needs a key to seal its secret with. Until an operator sets NACRE_2FA_KEY there is nowhere to keep one, and nothing here stores a secret in the clear in the meantime.'),
+          'An authenticator app needs a key to seal its secret with, and a security key needs a canonical URL to register against. This installation has neither.'),
         h('p', { class: 'muted' }, explain(error)),
       ),
     )
@@ -143,27 +151,80 @@ async function renderFactors(panel: HTMLElement, root: HTMLElement): Promise<voi
   clear(panel)
   panel.append(
     h('h2', {}, 'Second factor'),
-    h('p', { class: 'muted' },
-      'A code that changes every thirty seconds, from an authenticator app. It decides whether a session starts and grants nothing.'),
-    state.items.length === 0 ? none(root) : enrolled(state, root),
+    h('p', { class: 'muted' }, describeKinds(state.kinds)),
+    state.items.length === 0 ? none(state, root) : enrolled(state, root),
+    ...insecure(state.kinds),
   )
 }
 
-const none = (root: HTMLElement): HTMLElement =>
+/** What this installation can enrol, in the words a person reads. */
+function describeKinds(kinds: readonly SecondFactorKind[]): string {
+  const both = kinds.includes('totp') && kinds.includes('webauthn')
+  if (both) {
+    return 'A security key, or a code that changes every thirty seconds. Either decides whether a session starts and neither grants anything.'
+  }
+  if (kinds.includes('webauthn')) {
+    return 'A security key or the authenticator built into this device. It decides whether a session starts and grants nothing.'
+  }
+  return 'A code that changes every thirty seconds, from an authenticator app. It decides whether a session starts and grants nothing.'
+}
+
+/*
+ * The one thing the server cannot know and this page can.
+ *
+ * `PublicKeyCredential` does not exist outside a secure context, and this
+ * console is served over plain HTTP on a private network more often than not —
+ * so an installation that offers WebAuthn perfectly correctly still has a
+ * browser that cannot run the ceremony. Said here rather than left to a
+ * `navigator.credentials is undefined` from a pressed button, which reads as a
+ * broken application instead of a deployment fact.
+ */
+const insecure = (kinds: readonly SecondFactorKind[]): readonly HTMLElement[] =>
+  kinds.includes('webauthn') && !webauthn.usable()
+    ? [h('p', { class: 'note' },
+        h('strong', {}, 'A security key needs HTTPS. '),
+        'This page is not a secure context, so the browser will not run the ceremony. Reach this console over https, or over http://localhost.')]
+    : []
+
+const none = (state: Factors, root: HTMLElement): HTMLElement =>
   h('div', { class: 'empty' },
     h('h2', {}, 'No second factor'),
-    h('p', {}, 'Your password alone opens this account. An authenticator app adds a code that changes every thirty seconds.'),
-    h('button', { class: 'btn btn-primary', onclick: () => void enrol(root) }, 'Add an authenticator'),
+    h('p', {}, 'Your password alone opens this account.'),
+    h('div', { class: 'row' }, ...addButtons(state, root, 'btn btn-primary')),
   )
 
-function enrolled(
-  state: { items: readonly SecondFactor[]; recoveryCodesLeft: number },
-  root: HTMLElement,
-): HTMLElement {
+/**
+ * One button per kind this installation offers, in the order they are worth
+ * having: a security key is the one whose signature covers the origin, so a
+ * page pretending to be this one cannot use what it collects.
+ */
+function addButtons(state: Factors, root: HTMLElement, cls: string): readonly HTMLElement[] {
+  const buttons: HTMLElement[] = []
+  if (state.kinds.includes('webauthn')) {
+    buttons.push(h('button', {
+      class: cls,
+      // Disabled rather than absent where the browser cannot run a ceremony:
+      // the installation does offer this, and hiding it would say otherwise.
+      // The note under the panel is what says why.
+      ...(webauthn.usable() ? {} : { disabled: 'disabled' }),
+      onclick: () => void enrolKey(root),
+    }, 'Add a security key'))
+  }
+  if (state.kinds.includes('totp')) {
+    buttons.push(h('button', {
+      class: buttons.length === 0 ? cls : 'btn',
+      onclick: () => void enrol(root),
+    }, 'Add an authenticator app'))
+  }
+  return buttons
+}
+
+function enrolled(state: Factors, root: HTMLElement): HTMLElement {
   return h('div', {},
     h('table', { class: 'table' },
       h('thead', {}, h('tr', {},
         h('th', {}, 'Authenticator'),
+        h('th', {}, 'Kind'),
         h('th', {}, 'Added'),
         h('th', {}, 'Last used'),
         h('th', { class: 'right' }, ''),
@@ -171,10 +232,13 @@ function enrolled(
       h('tbody', {}, ...state.items.map((f) =>
         h('tr', {},
           h('td', {}, f.label),
+          // Read off the row rather than assumed. Two kinds need telling apart
+          // here, because only one of them can be removed without a code.
+          h('td', { class: 'muted nowrap' }, f.kind === 'webauthn' ? 'Security key' : 'Authenticator app'),
           h('td', { class: 'muted' }, new Date(f.createdAt).toLocaleDateString()),
           h('td', { class: 'muted' }, f.lastUsedAt === null ? 'never' : new Date(f.lastUsedAt).toLocaleDateString()),
           h('td', { class: 'right' },
-            h('button', { class: 'btn btn-quiet btn-danger', onclick: () => remove(f, root) }, 'Remove'),
+            h('button', { class: 'btn btn-quiet btn-danger', onclick: () => remove(f, state, root) }, 'Remove'),
           ),
         ),
       )),
@@ -187,12 +251,70 @@ function enrolled(
     h('p', { class: 'note' },
       h('strong', {}, `${String(state.recoveryCodesLeft)} recovery code(s) left.`),
       ' ',
-      'They were shown once, when you enrolled. Each works instead of a code and is spent when it is used; they are the way back in when the phone is not.',
+      // Not "when the phone is not": on an installation offering only security
+      // keys there is no phone in the story, and a sentence naming one reads as
+      // being about somebody else's account.
+      'They were shown once, when you enrolled. Each works instead of a second factor and is spent when it is used; they are the way back in when the authenticator is gone.',
     ),
-    h('div', { class: 'row' },
-      h('button', { class: 'btn', onclick: () => void enrol(root) }, 'Add another'),
-    ),
+    h('div', { class: 'row' }, ...addButtons(state, root, 'btn')),
   )
+}
+
+/**
+ * Enrolling a security key, which is one dialog rather than two steps.
+ *
+ * The authenticator's own prompt is the second step, and it belongs to the
+ * browser. There is nothing to confirm afterwards either: producing the
+ * attestation *is* the proof the credential arrived, which is the difference
+ * from a shared secret handed over and only later shown to have landed.
+ */
+async function enrolKey(root: HTMLElement): Promise<void> {
+  const message = h('p', { class: 'form-message' })
+  const label = h('input', { class: 'input', value: 'Security key', 'aria-label': 'Name' }) as HTMLInputElement
+
+  const dialog = h('dialog', { class: 'dialog' },
+    h('div', {},
+      h('h2', {}, 'Add a security key'),
+      h('label', { class: 'field' }, h('span', {}, 'Name'), label),
+      h('p', { class: 'hint' }, 'Two keys need telling apart later.'),
+      h('p', {}, 'Your browser will ask for the key, or for the authenticator built into this device. Nothing about it is stored here except a public key — there is no secret on this side to leak.'),
+      message,
+      h('div', { class: 'dialog-actions' },
+        h('button', { type: 'button', class: 'btn', onclick: () => dialog.close() }, 'Cancel'),
+        h('button', {
+          type: 'button',
+          class: 'btn btn-primary',
+          onclick: async (event: Event) => {
+            const button = event.currentTarget as HTMLButtonElement
+            button.disabled = true
+            message.className = 'form-message'
+            message.textContent = 'Waiting for the authenticator…'
+            try {
+              const options = await client().secondFactor.beginWebAuthn()
+              const made = await webauthn.create(options)
+              const codes = await client().secondFactor.finishWebAuthn({
+                ...made,
+                label: label.value.trim(),
+              })
+              dialog.close()
+              if (codes.length > 0) showRecoveryCodes(codes, root)
+              else void securityView(root)
+            } catch (error) {
+              button.disabled = false
+              message.className = 'form-message error'
+              // A cancelled prompt and a timeout are one `NotAllowedError`, and
+              // both are things a person does routinely rather than faults.
+              message.textContent = webauthn.describe(error)
+            }
+          },
+        }, 'Continue'),
+      ),
+    ),
+  ) as HTMLDialogElement
+
+  document.body.append(dialog)
+  dialog.showModal()
+  dialog.addEventListener('close', () => dialog.remove())
 }
 
 /**
@@ -320,9 +442,25 @@ function showRecoveryCodes(codes: readonly string[], root: HTMLElement): void {
   dialog.addEventListener('close', () => dialog.remove())
 }
 
-/** Removing one takes a current code — see the endpoint's own note on why. */
-function remove(factor: SecondFactor, root: HTMLElement): void {
+/**
+ * Removing one takes a current proof — see the endpoint's own note on why.
+ *
+ * **Which proof is decided by what this account can produce, not by what is
+ * being removed.** A code is accepted for any factor, so it is offered
+ * wherever there is one to type; a key is offered where the account holds one.
+ * Deciding by `factor.kind` instead would ask for a key to remove a key on an
+ * account whose key is the thing that is lost, which is exactly the case
+ * somebody reaches this dialog in.
+ *
+ * With no TOTP anywhere on the installation there is no code to ask for at
+ * all, which is why the assertion path exists: without it a security key could
+ * be enrolled and never taken off.
+ */
+function remove(factor: SecondFactor, state: Factors, root: HTMLElement): void {
   const message = h('p', { class: 'form-message' })
+  const byCode = state.kinds.includes('totp')
+  const byKey = state.items.some((f) => f.kind === 'webauthn') && webauthn.usable()
+
   const code = h('input', {
     class: 'input',
     inputmode: 'numeric',
@@ -331,30 +469,63 @@ function remove(factor: SecondFactor, root: HTMLElement): void {
     'aria-label': 'Code',
   }) as HTMLInputElement
 
+  const done = (): void => {
+    dialog.close()
+    void securityView(root)
+  }
+  const failed = (error: unknown, describe: (e: unknown) => string): void => {
+    message.className = 'form-message error'
+    message.textContent = describe(error)
+  }
+
   const dialog = h('dialog', { class: 'dialog' },
     h('div', {},
       h('h2', {}, `Remove ${factor.label}?`),
-      h('p', {}, 'Type a current code from it, or one of your recovery codes. Removing a second factor is the first thing somebody with a stolen session would do, which is why this asks.'),
-      h('label', { class: 'field' }, h('span', {}, 'Code'), code),
+      h('p', {}, 'Removing a second factor is the first thing somebody with a stolen session would do, which is why this asks for a current one.'),
+      ...(byCode
+        ? [
+            h('p', {}, 'Type a current code from an authenticator app, or one of your recovery codes.'),
+            h('label', { class: 'field' }, h('span', {}, 'Code'), code),
+          ]
+        : []),
+      ...(byKey && byCode ? [h('p', { class: 'hint' }, 'Or prove it with a security key instead.')] : []),
+      ...(byKey && !byCode ? [h('p', {}, 'Your browser will ask for a security key you have already enrolled.')] : []),
       message,
       h('div', { class: 'dialog-actions' },
         h('button', { type: 'button', class: 'btn', onclick: () => dialog.close() }, 'Cancel'),
-        h('button', {
-          type: 'button',
-          class: 'btn btn-danger',
-          onclick: async () => {
-            message.className = 'form-message'
-            message.textContent = 'Removing…'
-            try {
-              await client().secondFactor.remove(factor.id, code.value.trim())
-              dialog.close()
-              void securityView(root)
-            } catch (error) {
-              message.className = 'form-message error'
-              message.textContent = explain(error)
-            }
-          },
-        }, 'Remove'),
+        ...(byKey
+          ? [h('button', {
+              type: 'button',
+              class: byCode ? 'btn btn-danger btn-quiet' : 'btn btn-danger',
+              onclick: async () => {
+                message.className = 'form-message'
+                message.textContent = 'Waiting for the authenticator…'
+                try {
+                  const options = await client().secondFactor.beginWebAuthnProof()
+                  await client().secondFactor.remove(factor.id, await webauthn.get(options))
+                  done()
+                } catch (error) {
+                  failed(error, webauthn.describe)
+                }
+              },
+            }, byCode ? 'Use a security key' : 'Remove')]
+          : []),
+        ...(byCode
+          ? [h('button', {
+              type: 'button',
+              class: 'btn btn-danger',
+              onclick: async () => {
+                message.className = 'form-message'
+                message.textContent = 'Removing…'
+                try {
+                  await client().secondFactor.remove(factor.id, code.value.trim())
+                  done()
+                } catch (error) {
+                  failed(error, explain)
+                }
+              },
+            }, 'Remove')]
+          : []),
       ),
     ),
   ) as HTMLDialogElement

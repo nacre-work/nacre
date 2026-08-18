@@ -528,10 +528,40 @@ components:
       required: [id, kind, label, created_at, last_used_at]
       properties:
         id:    { type: string, format: uuid }
-        kind:  { type: string, enum: [totp] }
+        kind:  { type: string, enum: [totp, webauthn] }
         label: { type: string }
         created_at:   { type: string, format: date-time }
         last_used_at: { type: [string, 'null'], format: date-time }
+    WebAuthnAssertion:
+      type: object
+      description: >
+        What `navigator.credentials.get` produced, base64url throughout —
+        which is what a browser reports and what this server stores, so the
+        comparison is a string equality and never an encoding round trip.
+      required: [credential_id, authenticator_data, client_data_json, signature, challenge]
+      properties:
+        credential_id:      { type: string }
+        authenticator_data: { type: string }
+        client_data_json:   { type: string }
+        signature:          { type: string }
+        challenge:
+          type: string
+          description: >
+            The challenge this ceremony was issued. Echoed rather than read out
+            of `client_data_json`: the server compares the two, and a check
+            whose both sides come from the same place is a check that cannot
+            fail.
+    WebAuthnAssertionOptions:
+      type: object
+      required: [challenge, rp_id, allow_credentials, timeout_ms]
+      properties:
+        challenge: { type: string, description: 'base64url. Single-use and short-lived.' }
+        rp_id:     { type: string, description: "The canonical URL's hostname." }
+        allow_credentials:
+          type: array
+          items: { type: string }
+          description: 'base64url credential ids this account may answer with.'
+        timeout_ms: { type: integer }
     Self:
       type: object
       required: [organization, principal_type, principal_id, role]
@@ -971,9 +1001,9 @@ paths:
       operationId: signInMethods
       summary: What this installation offers before anybody has signed in
       description: >
-        One boolean, so a sign-in screen can leave the recovery link **off**
-        where no sender is configured rather than showing a control that answers
-        404. A screen offering what the server refuses reads as a broken
+        What a sign-in screen may offer, so it can leave the recovery link
+        **off** where no sender is configured rather than showing a control that
+        answers 404. A screen offering what the server refuses reads as a broken
         application rather than as a deployment choice.
 
 
@@ -987,9 +1017,17 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [password_reset]
+                required: [password_reset, second_factor_kinds]
                 properties:
                   password_reset: { type: boolean }
+                  second_factor_kinds:
+                    type: array
+                    items: { type: string, enum: [totp, webauthn] }
+                    description: >
+                      Which second factors this installation can challenge
+                      with, so a sign-in screen does not offer "use your
+                      security key" where there is no relying party. The same
+                      rule `password_reset` is here for, one field along.
   /auth/password-reset:
     post:
       operationId: requestPasswordReset
@@ -1069,16 +1107,57 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '503': { $ref: '#/components/responses/PasswordGateFull' }
+  /auth/second-factor/webauthn:
+    post:
+      operationId: beginSignInWebAuthn
+      summary: The options a browser needs to produce an assertion
+      description: >
+        Hands back a challenge and which credentials this account may answer
+        with, so a page can call `navigator.credentials.get`. Takes the sign-in
+        challenge and nothing else — a route that took an address or a user id
+        would tell a stranger which authenticators somebody holds, and this one
+        costs a correct password to reach.
+
+
+        `401` where the challenge is not one this server signed, where it has
+        expired, and where the account holds no security key, which are one
+        refusal for the reason every refusal on this path is one.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge]
+              properties:
+                challenge: { type: string, description: 'From the login response.' }
+      responses:
+        '200':
+          description: What to hand `navigator.credentials.get`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebAuthnAssertionOptions' }
+        '401':
+          description: Not a challenge of ours, expired, or no key enrolled.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
   /auth/second-factor:
     post:
       summary: Finish a sign-in with a second factor
       description: >
         The second half of `POST /auth/login`, for an account that has a
-        confirmed factor. Takes the challenge that call returned and a code — a
-        six-digit one from an authenticator, or a recovery code. Both are
-        accepted here rather than on two paths, because from outside they answer
-        the same question and a separate route would say which one a person is
-        using.
+        confirmed factor. Takes the challenge that call returned and **one**
+        proof: `code` — six digits from an authenticator, or a recovery code —
+        or `assertion`, from a security key. A code and a recovery code arrive
+        on the same field because from outside they answer the same question
+        and a separate route would say which one a person is using.
+
+
+        Sending both is a `400` rather than a precedence. A caller with two
+        proofs has two ideas of how it is signing in, and picking one leaves the
+        other apparently offered and ignored.
 
 
         The challenge is a short-lived token bound to an audience that is not
@@ -1094,10 +1173,16 @@ paths:
           application/json:
             schema:
               type: object
-              required: [challenge, code]
+              required: [challenge]
               properties:
                 challenge: { type: string, description: 'From the login response.' }
                 code:      { type: string, description: 'Six digits from an authenticator, or a recovery code.' }
+                assertion:
+                  allOf: [{ $ref: '#/components/schemas/WebAuthnAssertion' }]
+                  description: >
+                    What `navigator.credentials.get` produced, for an account
+                    holding a security key. Get the options from `POST
+                    /auth/second-factor/webauthn` first.
       responses:
         '200':
           description: Signed in
@@ -1554,12 +1639,20 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [items, recovery_codes_left]
+                required: [items, recovery_codes_left, kinds]
                 properties:
                   items:
                     type: array
                     items: { $ref: '#/components/schemas/SecondFactor' }
                   recovery_codes_left: { type: integer }
+                  kinds:
+                    type: array
+                    items: { type: string, enum: [totp, webauthn] }
+                    description: >
+                      What this installation can enrol, so a screen draws the
+                      controls that work rather than one that answers 404.
+                      `totp` needs `NACRE_2FA_KEY`; `webauthn` needs only the
+                      canonical URL, which every deployment sets.
         '404':
           description: No second factor on this installation, or the caller is not a person.
           content:
@@ -1582,6 +1675,13 @@ paths:
         Repeating this with a label that already has an unconfirmed enrolment
         replaces it: somebody who closed the page before scanning has no way to
         name what they abandoned.
+
+        This is the **TOTP** enrolment and it answers `404` where the
+        installation configured no `NACRE_2FA_KEY`, even though the surface
+        itself is reachable — read `kinds` from the `GET` beside it rather than
+        assuming. A security key goes through
+        `POST /me/second-factor/webauthn` and needs no key to seal anything,
+        since it stores a public key and no secret at all.
       tags: [auth]
       requestBody:
         required: false
@@ -1653,15 +1753,169 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+  /me/second-factor/webauthn:
+    post:
+      operationId: beginWebAuthnEnrolment
+      summary: Start enrolling a security key
+      description: |
+        The first of two calls, because a ceremony is two: this hands out a
+        challenge and what the authenticator has to see, and
+        `POST /me/second-factor/webauthn/finish` brings back what it signed.
+
+        They are separate because the challenge has to exist in the database
+        before the browser is asked for anything. A server that made one up when
+        the answer arrived would be verifying a signature over a number the
+        client chose, which is the one thing the challenge exists to prevent.
+
+        `exclude_credentials` carries what this account already holds, so an
+        authenticator the person is touching refuses to make a second credential
+        rather than quietly making one.
+
+        `404` where this installation offers no WebAuthn — it needs
+        `NACRE_CANONICAL_URL` and nothing else, so that is a deployment with no
+        canonical URL — and for a service account and a delegation, as
+        everything under `/me/second-factor` is.
+      tags: [auth]
+      responses:
+        '201':
+          description: What to hand `navigator.credentials.create`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [challenge, rp, user, algorithms, exclude_credentials, timeout_ms]
+                properties:
+                  challenge: { type: string, description: 'base64url. Echo it back on finish.' }
+                  rp:
+                    type: object
+                    required: [id, name]
+                    properties:
+                      id:   { type: string, description: "The canonical URL's hostname. Never a URL and never a port." }
+                      name: { type: string }
+                  user:
+                    type: object
+                    required: [id, name, display_name]
+                    properties:
+                      id:           { type: string, format: uuid }
+                      name:         { type: string }
+                      display_name: { type: string }
+                  algorithms:
+                    type: array
+                    items: { type: integer }
+                    description: 'COSE identifiers: -7 ES256, -257 RS256, -8 EdDSA.'
+                  exclude_credentials:
+                    type: array
+                    items: { type: string }
+                    description: 'base64url credential ids this account already holds.'
+                  timeout_ms: { type: integer }
+        '404':
+          description: This installation offers no WebAuthn, or the caller is not a person.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /me/second-factor/webauthn/finish:
+    post:
+      operationId: finishWebAuthnEnrolment
+      summary: Register what the authenticator signed, and take the recovery codes
+      description: |
+        Verifies the attestation against the challenge, the relying party and
+        the origin, and stores the public key. There is no confirm step and no
+        secret to prove arrived: producing the attestation **is** the proof,
+        which is the difference from TOTP, where a secret is handed over and
+        only a code says it landed.
+
+        The recovery codes come back here and only here, on the first factor an
+        account enrols. A second enrolment returns an empty list rather than a
+        new set, because reissuing would invalidate the sheet somebody already
+        wrote down.
+
+        `404` for a challenge already spent, a wrong origin, an algorithm this
+        server does not accept and a signature that does not verify alike.
+        Telling them apart would describe this server's checks to whoever is
+        probing them.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge, attestation_object, client_data_json]
+              properties:
+                challenge:          { type: string, description: 'The one this ceremony was issued.' }
+                attestation_object: { type: string, description: 'base64url, as the browser reports it.' }
+                client_data_json:   { type: string, description: 'base64url, as the browser reports it.' }
+                label:              { type: string, maxLength: 60, description: "Defaults to 'Security key'." }
+      responses:
+        '200':
+          description: Enrolled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recovery_codes]
+                properties:
+                  recovery_codes:
+                    type: array
+                    items: { type: string }
+                    description: 'Empty where this account already had a set.'
+        '400':
+          description: A field is missing.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: The ceremony was refused, in one wording for every way it can be.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /me/second-factor/webauthn/assert:
+    post:
+      operationId: beginWebAuthnProof
+      summary: A challenge for proving possession to this surface
+      description: |
+        `DELETE /me/second-factor/{id}` takes a current proof, and an assertion
+        cannot be produced without a challenge. This is where a signed-in person
+        gets one — on an installation with no `NACRE_2FA_KEY` it is the only
+        proof there is, so without it a security key could be enrolled and never
+        removed.
+
+        The challenge is drawn from the same pool a sign-in spends from, and
+        that is deliberate: this caller already holds a session, so a challenge
+        they could also spend signing in buys them nothing they do not have.
+        What must not share a pool is *enrolment*, which is asked for by
+        somebody already signed in and would otherwise let a session mint the
+        input to a ceremony it is not in.
+
+        `404` where the account holds no security key.
+      tags: [auth]
+      responses:
+        '200':
+          description: What to hand `navigator.credentials.get`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebAuthnAssertionOptions' }
+        '404':
+          description: No security key on this account, or the caller is not a person.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
   /me/second-factor/{id}:
     delete:
       operationId: removeSecondFactor
       summary: Remove an authenticator
       description: |
-        Takes a **current code** in the body, and that is the whole reason this
+        Takes a **current proof** in the body, and that is the whole reason this
         method has one: removing the second factor is the first thing somebody
         with a stolen session does, and a session is exactly what the factor
         exists to be more than.
+
+        Either kind, because an account may hold either kind. `code` is six
+        digits or a recovery code; `assertion` is what a security key produced
+        against a challenge from `POST /me/second-factor/webauthn/assert`. An
+        installation with no `NACRE_2FA_KEY` has no code to ask for, and
+        demanding one there would make every security key permanent. Sending
+        both is a `400`.
 
         Removing the last factor deletes the recovery codes with it. They are
         the way past a second factor, so leaving them behind an account that no
@@ -1676,13 +1930,20 @@ paths:
           application/json:
             schema:
               type: object
-              required: [code]
               properties:
                 code: { type: string, description: 'Six digits, or a recovery code.' }
+                assertion:
+                  allOf: [{ $ref: '#/components/schemas/WebAuthnAssertion' }]
+                  description: 'What a security key produced. Exactly one of the two.'
       responses:
         '204': { description: Removed }
+        '400':
+          description: Neither proof was sent, or both were.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '404':
-          description: No such factor, or the code was wrong.
+          description: No such factor, or the proof was wrong.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }

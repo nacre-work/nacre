@@ -1646,6 +1646,107 @@ exemption now has to match **exactly one** section: zero is the stale entry it
 already refused, and two is the new hole. Both branches were checked by
 producing them.
 
+**A second factor you cannot be phished out of.** TOTP bounds a stolen password
+and does not bound a convincing page: six digits typed into a site that looks
+like this one work exactly as well there as here, and the person who typed them
+has no way to know. WebAuthn is the kind whose signature covers the origin, so
+an assertion produced for the wrong site does not verify at the right one — that
+is the whole reason to carry a second kind rather than more of the first.
+
+It needs **no configuration at all**, and that asymmetry is the feature rather
+than a convenience. A TOTP secret is shared, so it has to be kept and therefore
+sealed, which is what `NACRE_2FA_KEY` is for; a WebAuthn credential leaves a
+public key here and nothing else, so a database dump hands over nothing that can
+produce an assertion. The relying party is `NACRE_CANONICAL_URL`'s hostname and
+the origins are that URL's plus `NACRE_API_ALLOWED_ORIGINS` — a `NACRE_WEBAUTHN_*`
+variable would be a second answer to a question the deployment has answered
+twice. So the installation with **no** key now offers the *stronger* of the two
+and not the weaker one, which is most of them.
+
+`packages/core/webauthn.ts` has no dependency and needs none: `node:crypto`
+imports a **JWK** directly, and COSE and JWK are the same parameters under
+different names, so the conversion is a field mapping rather than ASN.1. The
+CBOR decoder is a subset — CTAP2 requires canonical encoding, so every
+indefinite length, every tag and every non-canonical integer is a refusal rather
+than a branch, and the bounds are depth, entries and bytes.
+
+The fixtures are **genuine bytes from Chrome's virtual authenticator**, driven
+through the Chrome DevTools Protocol by `scripts/webauthn-fixtures.mjs` and
+regenerable. Hand-encoding them would have proved the verifier against whatever
+the encoder believed, which is the fixture-written-to-match-the-code shape this
+file already names twice. ES256, RS256 and EdDSA, and the refusals beside them.
+
+Three properties are the ones a verifier gets wrong. The origin is compared by
+**equality** and never by suffix, because `https://evil-nacre.work` ends with
+`nacre.work`. A challenge is **single-use**, spent by the `UPDATE` that finds it
+— an assertion captured on the wire is replayable for exactly as long as its
+challenge is, and nothing else in the ceremony stops that. And a challenge
+issued for an *enrolment* cannot be spent on a sign-in, which is in the `WHERE`
+clause rather than checked after: enrolment is asked for by somebody already
+signed in, and one pool would let a session mint the input to a ceremony it is
+not in.
+
+**The first version of the counter test could not fail.** It asserted
+`sign_count > 0`, which the registration already satisfies, so removing the
+write left it green. It compares against the counter read out of the assertion's
+own authenticator data now.
+
+Writing the routes found **two defects that shipped in 0.18.0**, and both are the
+same shape: a path nothing had ever asked the *server* for.
+
+`DELETE /v1/me/second-factor/{id}` answered `404` from the day it was written.
+Its condition was `!rest.includes('/')` over a `rest` that is `/{id}` — false for
+every id, always — so **a second factor could be enrolled and never removed**, on
+the one surface an administrator deliberately cannot reach on somebody's behalf.
+The store's own live case calls `remove` directly and passed throughout, because
+the store was never the broken half.
+
+`GET /v1/auth/methods` answered `404` too, because `handleAuth` refused anything
+but `POST`: every route there produces a credential and takes a body, and this
+one is a read. So the endpoint that exists **so the console can leave the
+recovery link off the screen** never answered, and the console — reading
+`password_reset` off a problem document — hid the link on every deployment,
+including the ones with a relay configured. The feature did the exact opposite of
+its purpose, in the file whose header explains why it is there.
+
+`contract-surface.test.ts` is the repair rather than the second fix. It excluded
+`/auth/*` **by prefix**, on the argument that those are all POSTs whose bodies it
+does not construct — true when it was written, and it silently stopped covering
+the one `GET` added later. A blanket exclusion is a check that shrinks without
+saying so; the condition is `op.method === 'GET'`, which is what the argument
+actually was. It names exactly this defect when the refusal is restored.
+
+And a **recovery code could not be spent where there is no sealing key**:
+`verify` opened with `if (key === undefined) return false`, which is right about
+TOTP and wrong about the sheet of codes redeemed by the same method. The guard
+sits below the redemption now, and the select it guards asks for `kind = 'totp'`
+— which also stops a mixed account trying to open a `NULL` secret.
+
+**The whole ceremony is driven in a real browser against a real database**, by
+`scripts/webauthn-e2e.mjs`, and that is what says the wiring works rather than
+each half separately: Chrome's virtual authenticator over CDP on one end and
+Postgres on the other, with the console's encoding, the routes, the store and
+the verifier in between and nothing stubbed. Fourteen assertions — the panel
+offering one kind and not two on an installation with no key, ten recovery
+codes, the JWK and the algorithm in the row, a sign-in on the key alone, the
+counter moving, a forged challenge refused, and the factor removed on an
+assertion.
+
+That last one is the 0.18.0 `DELETE` defect by name, and restoring it turns the
+run red — which is the measurement that says this check would have caught what
+every green suite missed. It runs in the `console` job, which grew a Postgres
+service rather than becoming a job of its own: the expensive half, installing a
+browser, was already paid for there.
+
+**And the screenshot pass photographed a bundle that was two commits old and
+reported success.** A `pnpm build` had failed on a type error, leaving the
+previous `dist` in place; the run rendered every screen, found no page error and
+no missing fixture, and none of the changed code was in the page at all. "Test
+what you write by running it" has a corollary — run the artifact the source
+produces *now* — so the script compares the newest file under `packages/admin/src`
+against the newest under `dist` and refuses rather than rendering. Checked by
+touching a source file and watching it refuse.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

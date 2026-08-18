@@ -68,7 +68,14 @@ when('the second factor', () => {
       client.release()
     }
 
-    factors = new SecondFactors({ pool, key: randomBytes(32), issuer: 'https://api.example.test' })
+    factors = new SecondFactors({
+      pool,
+      key: randomBytes(32),
+      issuer: 'https://api.example.test',
+      // `localhost`, because that is what the WebAuthn fixtures were made
+      // against — a virtual authenticator refuses an address outright.
+      relyingParty: { id: 'localhost', name: 'Nacre', origins: ['http://localhost:8099'] },
+    })
     login = new Login({
       pool,
       key: Buffer.from('a'.repeat(64)),
@@ -124,7 +131,7 @@ when('the second factor', () => {
      */
     const tokens = await login.completeSecondFactor(
       (challenged as { challenge: string }).challenge,
-      totpCode(begun!.secret, totpStep() + 1),
+      { kind: 'code', code: totpCode(begun!.secret, totpStep() + 1) },
     )
     expect(tokens?.accessToken.length).toBeGreaterThan(20)
 
@@ -132,7 +139,7 @@ when('the second factor', () => {
     expect(
       await login.completeSecondFactor(
         (again as { challenge: string }).challenge,
-        totpCode(begun!.secret, totpStep() + 1),
+        { kind: 'code', code: totpCode(begun!.secret, totpStep() + 1) },
       ),
     ).toBeUndefined()
   })

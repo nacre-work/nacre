@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto'
+
 import {
   generateRecoveryCode,
   generateTotpSecret,
@@ -6,8 +8,12 @@ import {
   otpauthUrl,
   RECOVERY_CODE_COUNT,
   sealTotpSecret,
+  SUPPORTED_ALGORITHMS,
+  verifyAssertion,
+  verifyRegistration,
   verifyTotp,
   withOrg,
+  type PublicKey,
 } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
@@ -42,7 +48,7 @@ const LOCK_SECONDS = 15 * 60
 
 export interface EnrolledFactor {
   readonly id: string
-  readonly kind: 'totp'
+  readonly kind: FactorKind
   readonly label: string
   readonly createdAt: Date
   readonly lastUsedAt: Date | null
@@ -63,22 +69,90 @@ interface FactorRow {
   readonly locked_until: Date | null
 }
 
+export type FactorKind = 'totp' | 'webauthn'
+
+/**
+ * Where a WebAuthn ceremony happens, and it needs no new configuration.
+ *
+ * The relying party id is `NACRE_CANONICAL_URL`'s hostname and the origin list
+ * is that URL's origin plus whatever `NACRE_API_ALLOWED_ORIGINS` already
+ * admits — the console is served from the API's own origin unless a deployment
+ * has said otherwise, and if it has said otherwise it has said so there. A
+ * `NACRE_WEBAUTHN_*` variable would be a second answer to a question the
+ * deployment has already answered twice.
+ */
+export interface RelyingParty {
+  /** A registrable domain: `nacre.example.com`, never a URL and never a port. */
+  readonly id: string
+  /** What the authenticator shows. */
+  readonly name: string
+  /** Compared for equality. A suffix match would admit `evil-nacre.work`. */
+  readonly origins: readonly string[]
+}
+
+export interface WebAuthnRegistrationOptions {
+  readonly challenge: string
+  readonly rp: { readonly id: string; readonly name: string }
+  readonly user: { readonly id: string; readonly name: string; readonly displayName: string }
+  readonly algorithms: readonly number[]
+  readonly excludeCredentials: readonly string[]
+  readonly timeoutMs: number
+}
+
+export interface WebAuthnAssertionOptions {
+  readonly challenge: string
+  readonly rpId: string
+  readonly allowCredentials: readonly string[]
+  readonly timeoutMs: number
+}
+
+/** Only what these two use of a client, so a transaction can be handed in. */
+type PoolClientQuery = (text: string, values?: readonly unknown[]) => Promise<{ rowCount: number | null }>
+
 export interface SecondFactorDeps {
   readonly pool: Pool
-  /** `undefined` when the deployment configured no key; see the header. */
+  /**
+   * The sealing key, or `undefined` where the deployment configured none.
+   *
+   * **TOTP needs it and WebAuthn does not.** A TOTP secret is shared, so it has
+   * to be kept and therefore sealed; a WebAuthn credential leaves a public key
+   * here and nothing else, so there is nothing a dump could hand over. That is
+   * why `available` became per kind rather than staying one boolean: an
+   * installation with no key can still offer the *stronger* of the two, and
+   * refusing it because the weaker one has no key would be an accident of how
+   * this class was first written.
+   */
   readonly key: Buffer | undefined
   /** What an authenticator shows above the account. */
   readonly issuer: string
+  readonly relyingParty: RelyingParty
   readonly role?: string
   readonly now?: () => Date
 }
 
+/** How long a ceremony has to finish. Long enough to find a key in a drawer. */
+const CHALLENGE_TTL_SECONDS = 300
+
 export class SecondFactors {
   constructor(private readonly deps: SecondFactorDeps) {}
 
-  /** Whether this installation can hold a second factor at all. */
+  /**
+   * Whether this installation can hold a second factor at all.
+   *
+   * True where *either* kind is offered, which since WebAuthn is every
+   * installation: it needs no sealing key, only the canonical URL every
+   * deployment already sets.
+   */
   get available(): boolean {
-    return this.deps.key !== undefined
+    return this.kinds.length > 0
+  }
+
+  /** The kinds this installation offers, so a screen can draw what works. */
+  get kinds(): readonly FactorKind[] {
+    const offered: FactorKind[] = []
+    if (this.deps.key !== undefined) offered.push('totp')
+    if (this.deps.relyingParty.id !== '') offered.push('webauthn')
+    return offered
   }
 
   private get scope(): { role?: string } {
@@ -97,7 +171,11 @@ export class SecondFactors {
    * somebody locks themselves out at the moment they turn 2FA on.
    */
   async required(orgId: string, userId: string): Promise<boolean> {
-    if (!this.available) return false
+    // Deliberately not gated on `available`. A deployment that removes a key
+    // still has the rows, and answering "no factor required" for somebody who
+    // enrolled one would turn a configuration change into a silent downgrade
+    // of every account that had turned it on.
+    if (this.deps.key === undefined && this.deps.relyingParty.id === '') return false
     return withOrg(
       this.deps.pool,
       orgId,
@@ -114,14 +192,13 @@ export class SecondFactors {
   }
 
   async list(orgId: string, userId: string): Promise<readonly EnrolledFactor[]> {
-    if (!this.available) return []
     return withOrg(
       this.deps.pool,
       orgId,
       async (client) => {
         const { rows } = await client.query<{
           id: string
-          kind: 'totp'
+          kind: FactorKind
           label: string
           created_at: Date
           last_used_at: Date | null
@@ -278,7 +355,6 @@ export class SecondFactors {
    */
   async verify(orgId: string, userId: string, code: string): Promise<boolean> {
     const key = this.deps.key
-    if (key === undefined) return false
 
     return withOrg(
       this.deps.pool,
@@ -294,10 +370,19 @@ export class SecondFactors {
         )
         if ((spent.rowCount ?? 0) > 0) return true
 
+        // Only TOTP rows have a code to compare, and only a sealing key can
+        // open one. The guard is here rather than at the top of the method
+        // because a WebAuthn-only installation has no key and *does* mint
+        // recovery codes — refusing before the UPDATE above would leave every
+        // one of them unspendable, which is the printed sheet not working on
+        // the day somebody's key is in the other coat.
+        if (key === undefined) return false
+
         const { rows } = await client.query<FactorRow>(
           `SELECT id, secret, last_step, failed_attempts, locked_until
              FROM user_second_factors
-            WHERE org_id = $1 AND user_id = $2 AND confirmed_at IS NOT NULL
+            WHERE org_id = $1 AND user_id = $2 AND kind = 'totp'
+              AND confirmed_at IS NOT NULL
             ORDER BY created_at
               FOR UPDATE`,
           [orgId, userId],
@@ -399,6 +484,284 @@ export class SecondFactors {
           [orgId, userId],
         )
         return rows[0]?.email
+      },
+      this.scope,
+    )
+  }
+
+  /* ───────────────────────────── WebAuthn ───────────────────────────────
+   *
+   * Four calls, two ceremonies. Each begins by issuing a challenge this server
+   * stores and ends by spending it — **single use**, because the signature
+   * covers the challenge and an assertion captured on the wire is replayable
+   * for exactly as long as its challenge is. Nothing else in the ceremony
+   * stops that.
+   *
+   * The challenge is spent by the UPDATE that finds it, the way a recovery code
+   * and a password reset link are, so two requests cannot both succeed on one.
+   */
+
+  /** Mint and store a challenge. Returned base64url, which is what the browser wants. */
+  private async issueChallenge(
+    orgId: string,
+    userId: string,
+    purpose: 'register' | 'authenticate',
+  ): Promise<string> {
+    const challenge = randomBytes(32).toString('base64url')
+    await withOrg(
+      this.deps.pool,
+      orgId,
+      async (client) => {
+        await client.query(
+          `INSERT INTO webauthn_challenges (org_id, user_id, purpose, challenge, expires_at)
+           VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5::int))`,
+          [orgId, userId, purpose, challenge, CHALLENGE_TTL_SECONDS],
+        )
+      },
+      this.scope,
+    )
+    return challenge
+  }
+
+  /**
+   * Spend one, and refuse a challenge that is not outstanding for this person
+   * and this ceremony.
+   *
+   * The purpose is in the WHERE clause rather than checked afterwards: a
+   * challenge issued for enrolment must not be spendable on a sign-in, or a
+   * session could mint the input to a ceremony it is not in.
+   */
+  private async spendChallenge(
+    client: { query: PoolClientQuery },
+    orgId: string,
+    userId: string,
+    purpose: 'register' | 'authenticate',
+    challenge: string,
+  ): Promise<boolean> {
+    const { rowCount } = await client.query(
+      `UPDATE webauthn_challenges SET used_at = now()
+        WHERE org_id = $1 AND user_id = $2 AND purpose = $3 AND challenge = $4
+          AND used_at IS NULL AND expires_at > now()`,
+      [orgId, userId, purpose, challenge],
+    )
+    return (rowCount ?? 0) === 1
+  }
+
+  /**
+   * Start enrolling an authenticator.
+   *
+   * `excludeCredentials` carries what this person has already registered, so an
+   * authenticator they are holding refuses to make a second credential rather
+   * than quietly making one — which is the difference between "you already have
+   * this key" and two rows nobody can tell apart.
+   */
+  async beginWebAuthnRegistration(
+    orgId: string,
+    userId: string,
+  ): Promise<WebAuthnRegistrationOptions | undefined> {
+    if (!this.kinds.includes('webauthn')) return undefined
+
+    const person = await withOrg(
+      this.deps.pool,
+      orgId,
+      async (client) => {
+        const { rows } = await client.query<{ email: string }>(
+          'SELECT email FROM users WHERE org_id = $1 AND id = $2',
+          [orgId, userId],
+        )
+        return rows[0]
+      },
+      this.scope,
+    )
+    if (person === undefined) return undefined
+
+    const existing = await this.credentialIds(orgId, userId)
+    const challenge = await this.issueChallenge(orgId, userId, 'register')
+
+    return {
+      challenge,
+      rp: { id: this.deps.relyingParty.id, name: this.deps.relyingParty.name },
+      // The **account** id and never the email, because this value is stored on
+      // the authenticator and may be shown by a password manager. A uuid says
+      // nothing to anybody who reads the device.
+      user: { id: Buffer.from(userId).toString('base64url'), name: person.email, displayName: person.email },
+      algorithms: [...SUPPORTED_ALGORITHMS],
+      excludeCredentials: existing,
+      timeoutMs: CHALLENGE_TTL_SECONDS * 1000,
+    }
+  }
+
+  /** Every credential id this person has, for `allowCredentials` and `excludeCredentials`. */
+  private async credentialIds(orgId: string, userId: string): Promise<readonly string[]> {
+    return withOrg(
+      this.deps.pool,
+      orgId,
+      async (client) => {
+        const { rows } = await client.query<{ credential_id: string }>(
+          `SELECT credential_id FROM user_second_factors
+            WHERE org_id = $1 AND user_id = $2 AND kind = 'webauthn'
+              AND confirmed_at IS NOT NULL AND credential_id IS NOT NULL
+            ORDER BY created_at`,
+          [orgId, userId],
+        )
+        return rows.map((row) => row.credential_id)
+      },
+      this.scope,
+    )
+  }
+
+  /**
+   * Finish enrolling one, and hand back recovery codes if this is the first
+   * factor of any kind.
+   *
+   * Confirmed in the same statement that inserts it, unlike TOTP: there is no
+   * second step to prove the credential reached anything, because producing the
+   * attestation *is* that proof. A TOTP secret can be generated and never
+   * scanned; a WebAuthn credential cannot be registered without the
+   * authenticator having made it.
+   */
+  async finishWebAuthnRegistration(
+    orgId: string,
+    userId: string,
+    label: string,
+    response: { readonly attestationObject: Uint8Array; readonly clientDataJSON: Uint8Array; readonly challenge: string },
+  ): Promise<readonly string[] | undefined> {
+    if (!this.kinds.includes('webauthn')) return undefined
+
+    let registered
+    try {
+      registered = verifyRegistration({
+        attestationObject: response.attestationObject,
+        clientDataJSON: response.clientDataJSON,
+        challenge: response.challenge,
+        rpId: this.deps.relyingParty.id,
+        origins: this.deps.relyingParty.origins,
+      })
+    } catch {
+      // One refusal for every way a registration can be wrong. Telling them
+      // apart would describe this server's checks to whoever is probing them.
+      return undefined
+    }
+
+    return withOrg(
+      this.deps.pool,
+      orgId,
+      async (client) => {
+        if (!(await this.spendChallenge(client, orgId, userId, 'register', response.challenge))) {
+          return undefined
+        }
+
+        await client.query(
+          `INSERT INTO user_second_factors
+             (org_id, user_id, kind, label, credential_id, public_key, alg, sign_count, confirmed_at)
+           VALUES ($1, $2, 'webauthn', $3, $4, $5::jsonb, $6, $7, now())`,
+          [
+            orgId,
+            userId,
+            label,
+            Buffer.from(registered.credentialId).toString('base64url'),
+            JSON.stringify(registered.publicKey.jwk),
+            registered.publicKey.alg,
+            registered.signCount,
+          ],
+        )
+
+        const { rows: existing } = await client.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM user_recovery_codes
+            WHERE org_id = $1 AND user_id = $2 AND used_at IS NULL`,
+          [orgId, userId],
+        )
+        if (Number(existing[0]?.count ?? '0') > 0) return []
+
+        const codes = Array.from({ length: RECOVERY_CODE_COUNT }, () => generateRecoveryCode())
+        for (const one of codes) {
+          await client.query(
+            'INSERT INTO user_recovery_codes (org_id, user_id, code_hash) VALUES ($1, $2, $3)',
+            [orgId, userId, hashRecoveryCode(one)],
+          )
+        }
+        return codes
+      },
+      this.scope,
+    )
+  }
+
+  /** The options a sign-in needs, or nothing where this person has no key enrolled. */
+  async beginWebAuthnAssertion(
+    orgId: string,
+    userId: string,
+  ): Promise<WebAuthnAssertionOptions | undefined> {
+    if (!this.kinds.includes('webauthn')) return undefined
+    const allow = await this.credentialIds(orgId, userId)
+    if (allow.length === 0) return undefined
+    return {
+      challenge: await this.issueChallenge(orgId, userId, 'authenticate'),
+      rpId: this.deps.relyingParty.id,
+      allowCredentials: allow,
+      timeoutMs: CHALLENGE_TTL_SECONDS * 1000,
+    }
+  }
+
+  /**
+   * Verify an assertion at sign-in.
+   *
+   * The counter is written back in the same transaction that spent the
+   * challenge, because a counter that is checked and not stored is a counter
+   * that only ever compares against zero — which is the clone detection not
+   * existing rather than being lenient.
+   */
+  async verifyWebAuthnAssertion(
+    orgId: string,
+    userId: string,
+    response: {
+      readonly credentialId: string
+      readonly authenticatorData: Uint8Array
+      readonly clientDataJSON: Uint8Array
+      readonly signature: Uint8Array
+      readonly challenge: string
+    },
+  ): Promise<boolean> {
+    if (!this.kinds.includes('webauthn')) return false
+
+    return withOrg(
+      this.deps.pool,
+      orgId,
+      async (client) => {
+        if (!(await this.spendChallenge(client, orgId, userId, 'authenticate', response.challenge))) {
+          return false
+        }
+
+        const { rows } = await client.query<{ id: string; public_key: Record<string, string>; alg: number; sign_count: string | null }>(
+          `SELECT id, public_key, alg, sign_count FROM user_second_factors
+            WHERE org_id = $1 AND user_id = $2 AND kind = 'webauthn'
+              AND credential_id = $3 AND confirmed_at IS NOT NULL
+              FOR UPDATE`,
+          [orgId, userId, response.credentialId],
+        )
+        const row = rows[0]
+        if (row === undefined) return false
+
+        let assertion
+        try {
+          assertion = verifyAssertion({
+            authenticatorData: response.authenticatorData,
+            clientDataJSON: response.clientDataJSON,
+            signature: response.signature,
+            challenge: response.challenge,
+            rpId: this.deps.relyingParty.id,
+            origins: this.deps.relyingParty.origins,
+            publicKey: { alg: row.alg as PublicKey['alg'], jwk: row.public_key },
+            storedSignCount: Number(row.sign_count ?? 0),
+          })
+        } catch {
+          return false
+        }
+
+        await client.query(
+          'UPDATE user_second_factors SET last_used_at = now(), sign_count = $2 WHERE id = $1',
+          [row.id, String(assertion.signCount)],
+        )
+        return true
       },
       this.scope,
     )

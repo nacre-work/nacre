@@ -33,7 +33,7 @@
  */
 /* global sessionStorage, document */
 import { createServer } from 'node:http'
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { extname, join } from 'node:path'
 
 /**
@@ -82,6 +82,36 @@ const OUT = 'docs/assets/admin'
 
 if (!existsSync(join(BUNDLE, 'index.html'))) {
   console.error(`::error::${BUNDLE} is not built — run \`pnpm --filter @nacre.work/admin build\` first`)
+  process.exit(1)
+}
+
+/*
+ * And built *since* the sources it is built from.
+ *
+ * A bundle that exists is not a bundle that is current, and this script cannot
+ * tell by looking at a screen: a stale `dist` renders perfectly and photographs
+ * the console as it was. That is not hypothetical — a `pnpm build` that failed
+ * on a type error left the previous bundle in place, this pass ran against it,
+ * and it reported every screen rendering with no page errors while none of the
+ * changed code was in the page at all. "Run the artifact, not the source that
+ * produces it" is the rule; the corollary is that the artifact has to be the
+ * one the source produces *now*.
+ *
+ * Newest source against newest output, which is coarse and is enough: the
+ * failure being guarded against is a whole build that did not happen.
+ */
+const newest = (dir) =>
+  readdirSync(dir, { withFileTypes: true, recursive: true })
+    .filter((e) => e.isFile())
+    .reduce((latest, e) => Math.max(latest, statSync(join(e.parentPath, e.name)).mtimeMs), 0)
+
+const built = newest(BUNDLE)
+const written = newest('packages/admin/src')
+if (written > built) {
+  console.error(
+    `::error::${BUNDLE} is older than packages/admin/src — rebuild before rendering, ` +
+      'or this pass photographs the console as it was and reports success',
+  )
   process.exit(1)
 }
 
@@ -171,15 +201,22 @@ const FIXTURES = {
   // unstubbed call gets, and the link was left off the picture — the same shape
   // as the missing `/v1/me` fixture that once photographed the wrong screen,
   // arriving on the one screen that is rendered signed out.
-  'GET /v1/auth/methods': { password_reset: true },
+  'GET /v1/auth/methods': { password_reset: true, second_factor_kinds: ['totp', 'webauthn'] },
   // The Security screen. Two panels — a password form and what is enrolled —
   // and the second is the only one an installation can be without.
+  //
+  // `kinds` is what the panel draws its buttons from, so the default fixture
+  // is the installation offering both: a screen rendered against one kind
+  // would photograph half the controls and say nothing about the other half.
   'GET /v1/me/second-factor': {
     items: [
       { id: 'f0a51c73-9b28-4e64-8d17-2a6c4f0b9e35', kind: 'totp', label: 'Phone',
         created_at: '2026-02-14T09:20:00.000Z', last_used_at: '2026-03-12T08:05:00.000Z' },
+      { id: '5d3b8e17-6c04-4a92-b7e5-1f8a0c3d6b24', kind: 'webauthn', label: 'Yubikey',
+        created_at: '2026-02-20T11:02:00.000Z', last_used_at: null },
     ],
     recovery_codes_left: 8,
+    kinds: ['totp', 'webauthn'],
   },
   'GET /v1/groups': {
     items: [
@@ -566,6 +603,25 @@ await shot('security', { hash: '#/security' })
 await shot('security-no-key', {
   hash: '#/security',
   fixtures: { 'GET /v1/me/second-factor': 404 },
+})
+// And the installation that offers the *stronger* kind and not the weaker one,
+// which is every deployment with no `NACRE_2FA_KEY` since 0.19.0 — WebAuthn
+// needs no key to seal anything. The panel has to draw one button and not two,
+// and the note about a secure context belongs here rather than on a pressed
+// control, because a browser served over http has no `navigator.credentials`
+// at all and this pass runs on one.
+await shot('security-keys-only', {
+  hash: '#/security',
+  fixtures: {
+    'GET /v1/me/second-factor': {
+      items: [
+        { id: '5d3b8e17-6c04-4a92-b7e5-1f8a0c3d6b24', kind: 'webauthn', label: 'Yubikey',
+          created_at: '2026-02-20T11:02:00.000Z', last_used_at: '2026-03-14T07:41:00.000Z' },
+      ],
+      recovery_codes_left: 10,
+      kinds: ['webauthn'],
+    },
+  },
 })
 
 await browser.close()

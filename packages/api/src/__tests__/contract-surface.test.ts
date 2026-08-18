@@ -137,6 +137,12 @@ beforeAll(async () => {
     audit: { write: async () => undefined },
     metrics: { render: async () => '# nacre\n' },
     ready: async () => ({ postgres: true, qdrant: true }),
+    // Present so `/auth/*` is mounted at all, and reaching no further than
+    // that: this suite asks where an operation lives, not what it answers.
+    // Without it every open `/auth` operation is 404 for the honest reason
+    // that the deployment has no sign-in, which would hide the one thing the
+    // GET case is here to catch.
+    login: {} as never,
     jwks: [{ kty: 'OKP', crv: 'Ed25519', x: 'x', kid: 'k' }],
     resourceMetadata: {
       resource: 'https://api.nacre.test',
@@ -212,13 +218,17 @@ describe('the contract describes the surface the server presents', () => {
     // the well-known documents and where the `WWW-Authenticate` on every 401
     // already points.
     //
-    // /auth/* is deliberately not here. It is open and it is a POST whose body
-    // this test does not construct, so its address is asserted by the
-    // authentication case above and its behaviour by login.test.ts.
-    const documents = operations().filter(
-      (op) => op.open && op.method === 'GET' && !op.path.startsWith('/auth/'),
-    )
-    expect(documents.length).toBe(5)
+    // What is excluded is an operation needing a **body** this test does not
+    // construct, which is a property of the method rather than of the path.
+    // It used to exclude `/auth/*` by prefix, on the argument that those are
+    // all POSTs — true when it was written, and it silently stopped covering
+    // `GET /auth/methods` the day that one was added. That endpoint then
+    // answered 404 for its whole life, because `handleAuth` refused anything
+    // but POST, and the console it exists for hid the recovery link on every
+    // deployment. A blanket exclusion is a check that shrinks without saying
+    // so; `op.method === 'GET'` already carries the real condition.
+    const documents = operations().filter((op) => op.open && op.method === 'GET')
+    expect(documents.length).toBe(6)
 
     const missing: string[] = []
     for (const op of documents) {

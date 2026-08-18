@@ -334,13 +334,53 @@ export interface SecondFactorRequired {
 
 export type SignIn = Tokens | SecondFactorRequired
 
-/** An enrolled authenticator. The secret is never in one of these. */
+/** Which kinds an installation can enrol. */
+export type SecondFactorKind = 'totp' | 'webauthn'
+
+/** An enrolled authenticator. No secret is ever in one of these — and for a
+ * security key there is none to be in one: it leaves a public key here and
+ * nothing a database dump could use. */
 export interface SecondFactor {
   readonly id: string
-  readonly kind: 'totp'
+  readonly kind: SecondFactorKind
   readonly label: string
   readonly createdAt: string
   readonly lastUsedAt: string | null
+}
+
+/**
+ * What `navigator.credentials.get` produced, base64url throughout.
+ *
+ * The field names are this client's, and the encoding is the browser's: an
+ * `ArrayBuffer` off a `PublicKeyCredential` becomes base64url before it
+ * reaches here, because that is what the server compares against.
+ */
+export interface WebAuthnAssertion {
+  readonly credentialId: string
+  readonly authenticatorData: string
+  readonly clientDataJSON: string
+  readonly signature: string
+  /** The challenge this ceremony was issued. */
+  readonly challenge: string
+}
+
+/** What to hand `navigator.credentials.get`. */
+export interface WebAuthnAssertionOptions {
+  readonly challenge: string
+  readonly rpId: string
+  readonly allowCredentials: readonly string[]
+  readonly timeoutMs: number
+}
+
+/** And what to hand `navigator.credentials.create`. */
+export interface WebAuthnRegistrationOptions {
+  readonly challenge: string
+  readonly rp: { readonly id: string; readonly name: string }
+  readonly user: { readonly id: string; readonly name: string; readonly displayName: string }
+  /** COSE identifiers: -7 ES256, -257 RS256, -8 EdDSA. */
+  readonly algorithms: readonly number[]
+  readonly excludeCredentials: readonly string[]
+  readonly timeoutMs: number
 }
 
 /** An enrolment in progress. The secret is here and nowhere else, once. */

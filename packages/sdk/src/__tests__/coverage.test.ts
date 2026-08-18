@@ -102,6 +102,7 @@ const COVERAGE: Record<string, string | null> = {
   'POST /auth/refresh': 'auth.refresh',
   'POST /auth/logout': 'auth.logout',
   'POST /auth/second-factor': 'auth.secondFactor',
+  'POST /auth/second-factor/webauthn': 'auth.secondFactorWebAuthn',
   'GET /auth/methods': 'auth.methods',
   'POST /auth/password-reset': 'auth.requestPasswordReset',
   'POST /auth/password-reset/confirm': 'auth.confirmPasswordReset',
@@ -111,6 +112,9 @@ const COVERAGE: Record<string, string | null> = {
   'POST /me/second-factor': 'secondFactor.begin',
   'POST /me/second-factor/{id}/confirm': 'secondFactor.confirm',
   'DELETE /me/second-factor/{id}': 'secondFactor.remove',
+  'POST /me/second-factor/webauthn': 'secondFactor.beginWebAuthn',
+  'POST /me/second-factor/webauthn/finish': 'secondFactor.finishWebAuthn',
+  'POST /me/second-factor/webauthn/assert': 'secondFactor.beginWebAuthnProof',
 
   'POST /search': 'search',
 
