@@ -158,11 +158,14 @@ when('the second factor', () => {
     const challenged = await signIn()
     expect(challenged?.kind).toBe('second-factor')
 
-    const tokens = await login.completeSecondFactor(
+    const completed = await login.completeSecondFactor(
       (challenged as { challenge: string }).challenge,
       { kind: 'code', code: signingIn },
     )
-    expect(tokens?.accessToken.length).toBeGreaterThan(20)
+    expect(completed?.kind).toBe('tokens')
+    expect(
+      (completed as { tokens: { accessToken: string } }).tokens.accessToken.length,
+    ).toBeGreaterThan(20)
 
     /*
      * The **same string**, and that is what makes this a replay rather than an

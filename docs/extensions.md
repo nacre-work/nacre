@@ -1,6 +1,6 @@
 # Extension points
 
-Normative. Five points a module outside this repository plugs into, the loader
+Normative. Six points a module outside this repository plugs into, the loader
 that gets it in, and what the core refuses.
 
 This document exists because the points did not. `nacre-enterprise` has named
@@ -53,7 +53,8 @@ and the route count:
 
 ```
 api listening port=8080 extensions={"resolver":"@nacre.work/enterprise-tenancy",
-  "providers":["@nacre.work/enterprise-sso:oidc"],"sinks":[],"routes":4}
+  "providers":["@nacre.work/enterprise-sso:oidc"],"sinks":[],"routes":4,
+  "gates":[],"signIn":["@nacre.work/enterprise-tenancy:second-factor"]}
 ```
 
 A module that imports cleanly and registers nothing is the failure worth seeing,
@@ -230,6 +231,98 @@ nothing enforced: a commercial `tenancy` gate that counts a tenant's live
 documents and refuses over the quota. With no module loaded there are no gates,
 and the open core accepts every document a caller may write, exactly as it did
 before this point existed.
+
+## `registerSignInGate(gate)`
+
+A check run before a **session** is minted, in addition to the credential the
+core has already verified.
+
+```ts
+interface SignInContext {
+  readonly orgId: string
+  readonly userId: string
+  readonly role: OrgRole
+  readonly path: 'password' | 'second-factor' | 'refresh' | 'password-change'
+  readonly secondFactor: 'totp' | 'webauthn' | undefined
+  readonly enrolled: boolean
+}
+
+type SignInVerdict =
+  | { readonly kind: 'admit' }
+  | { readonly kind: 'enrol'; readonly reason: string }
+  | { readonly kind: 'refuse'; readonly reason: string }
+
+interface SignInGate {
+  readonly name: string
+  check(context: SignInContext): Promise<SignInVerdict>
+}
+```
+
+A list, and every gate must admit. A gate decides whether *this authentication*
+is enough — never who the person is or what they may see. It runs only after a
+password has been verified or a refresh token spent, so it can subtract a
+session and can never grant one, which is why more than one is coherent.
+
+**It runs at the one point a session is minted**, which is four paths: a
+password with no factor asked for, a completed second factor, a spent refresh
+token, and a password change. A gate wired beside three of the four is a policy
+an operator turned on and a door it never closed. A **renewal** is gated
+deliberately: without that, a policy turned on while people are signed in does
+nothing for any of them for as long as they keep renewing.
+
+`secondFactor` is what was proved *on this request* and `enrolled` is what the
+account *holds*. They are two fields because a refresh proves neither and the
+account may still have a factor; collapsing them would make a renewal
+indistinguishable from a password-only sign-in.
+
+### `enrol` is what makes such a policy usable
+
+Enrolment lives under `/v1/me` and therefore needs authority. A gate that could
+only refuse would lock out everybody who had not already enrolled on the day the
+policy was turned on, with no route back that does not go through the database.
+
+So a gate may answer `enrol`, and the core hands the person an **enrolment
+challenge** instead of a session. It is a JWT whose audience is deliberately not
+the API's — so `authenticate` refuses it everywhere, and a route that forgets it
+answers `401` rather than `200`. It carries a purpose claim that a *sign-in*
+challenge does not, so neither can be spent as the other.
+
+It reaches four routes and no others: `POST /v1/me/second-factor`,
+`POST /v1/me/second-factor/webauthn`, `POST /v1/me/second-factor/webauthn/finish`
+and `POST /v1/me/second-factor/{id}/confirm`. Not the listing, because a caller
+who has proved nothing is not owed an inventory of the account; not the removal,
+because taking a factor off under a mandate to add one is what somebody holding
+a stolen password would do.
+
+Confirming a factor through that door answers with the recovery codes **and** a
+session, because it is the end of a sign-in as well as the end of an enrolment.
+The gates are asked again at that moment — a gate that wanted a particular kind
+is entitled to refuse the one just added.
+
+### Precedence, which differs from `registerIngestGate`
+
+`admitIngest` stops at the first refusal, because there is one way to say no and
+asking the rest cannot change the answer. Here there are two and one is
+stronger, so **every gate is asked** and `refuse` wins wherever it appears. A
+`refuse` does stop the scan, because nothing outranks it.
+
+`refuse` answers **403**, not `401`: the credential was correct, and every client
+here renews on a `401` and replays, so a policy refusal spelled that way would
+spend a refresh token and arrive as two failures. Not `404` either — the caller
+is looking straight at their own account. `enrol` answers **200**, like the
+second-factor challenge beside it, because nothing was refused: the client is
+being asked for something more and told where to send it.
+
+### SSO needs no gate and cannot have one
+
+An `AuthProvider` principal presents the identity provider's assertion as its
+credential on **every request** and never mints a session here. So a policy of
+the form "a second factor, or sign in through your identity provider" is
+satisfied by construction on its second half: the SSO door does not pass this
+way, and the password door is the one a gate closes.
+
+With no module loaded there are no gates, and the open core mints a session for
+every credential it verifies, exactly as it did before this point existed.
 
 ## Testing a module against these rules
 

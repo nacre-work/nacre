@@ -100,6 +100,10 @@ when('changing your own password', () => {
   it('changes the password, ends every other session, and hands back a live one', async () => {
     const outcome = await login.changePassword(orgId, userId, OLD, NEW)
     if (typeof outcome === 'string') throw new Error(`expected a change, got ${outcome}`)
+    // No gate is registered here, so the only outcome a change can have is a
+    // session. Narrowed rather than asserted away: a gate arriving later would
+    // make this a compile error rather than a silent pass on a different shape.
+    if (outcome.kind !== 'changed') throw new Error(`expected a change, got ${outcome.kind}`)
 
     // The address comes back so the caller can send the notice without a second
     // read of a row it has already got in hand.

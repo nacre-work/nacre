@@ -187,7 +187,7 @@ when('signing in', () => {
 
   it('rotates on refresh, and the old token stops working', async () => {
     const first = tokensOf(await login.login({ email: 'alice@login.test', password: PASSWORD }))
-    const second = await login.refresh(first!.refreshToken)
+    const second = tokensOf(await login.refresh(first!.refreshToken))
 
     expect(second).toBeDefined()
     expect(second!.refreshToken).not.toBe(first!.refreshToken)
@@ -196,8 +196,8 @@ when('signing in', () => {
 
   it('revokes the whole family when a used token is presented again', async () => {
     const first = tokensOf(await login.login({ email: 'alice@login.test', password: PASSWORD }))
-    const second = await login.refresh(first!.refreshToken)
-    const third = await login.refresh(second!.refreshToken)
+    const second = tokensOf(await login.refresh(first!.refreshToken))
+    const third = tokensOf(await login.refresh(second!.refreshToken))
     expect(third).toBeDefined()
 
     // Replay of the first. The legitimate holder already exchanged it, so two
@@ -223,7 +223,7 @@ when('signing in', () => {
     // And the losers are treated as reuse, so the family is gone: the one that
     // won is dead too. Eight simultaneous redemptions of one token is not a
     // client retrying, and the honest response is to end the session.
-    const winner = outcomes.find((o) => o !== undefined)
+    const winner = tokensOf(outcomes.find((o) => o !== undefined))
     expect(await login.refresh(winner!.refreshToken)).toBeUndefined()
   })
 

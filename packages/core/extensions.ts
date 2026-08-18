@@ -11,7 +11,10 @@ import { resolve as builtInResolve } from './authz/resolve.js'
  * there was a module to write. The fifth, `registerIngestGate`, is the other
  * direction: a point the core declares for a capability the schema always had
  * and nothing enforced (`max_documents`), designed so the open half is complete
- * and correct with no gate registered.
+ * and correct with no gate registered. The sixth, `registerSignInGate`, is the
+ * same direction again: both kinds of second factor are individually opt-in and
+ * an organization had no way to *require* one, so the point is declared here
+ * and the policy that uses it is a module.
  *
  * `nacre-enterprise` has named these since before there was a module to write —
  * `registerAuthProvider`, `registerAuthzResolver`, `registerAuditSink`,
@@ -214,15 +217,101 @@ export interface IngestGate {
   admit(context: IngestContext): Promise<IngestVerdict>
 }
 
+/**
+ * What is known about a session at the moment one would be minted.
+ *
+ * The principal is always a **user**, because this is the only path that mints
+ * a Nacre session and only a person walks it. A service account presents its
+ * `nacre_sk_` key on every request and a delegation carries a token issued at
+ * consent; neither reaches here, which is why there is no principal type on
+ * this object to branch on.
+ *
+ * `secondFactor` is what was *proved on this sign-in* and `enrolled` is what
+ * the account *holds*, and they are two facts rather than one. A refresh proves
+ * no factor and the account still has one; an account with a factor that was
+ * never used is the case a policy is being turned on for. Collapsing them would
+ * make a renewal indistinguishable from a password-only sign-in.
+ */
+export interface SignInContext {
+  /** From the row that authenticated, never from the request. Invariant 1. */
+  readonly orgId: string
+  readonly userId: string
+  readonly role: OrgRole
+  /** Which of the four paths is minting: a sign-in, a renewal, a password change. */
+  readonly path: 'password' | 'second-factor' | 'refresh' | 'password-change'
+  /** The kind proved on this sign-in, or `undefined` where none was asked for. */
+  readonly secondFactor: 'totp' | 'webauthn' | undefined
+  /** Whether the account holds any confirmed factor at all. */
+  readonly enrolled: boolean
+}
+
+/**
+ * A gate's answer, and three outcomes rather than a boolean with a flag.
+ *
+ * A union for the reason `LoginOutcome` is one: a caller that can ignore a
+ * field will, and ignoring this one means issuing a full session to somebody a
+ * policy says may only enrol.
+ *
+ * **`enrol` is what makes such a policy usable at all.** Enrolment lives under
+ * `/v1/me` and therefore needs authority, so a policy that only refused would
+ * lock out everybody who had not already enrolled on the day it was turned on,
+ * with no route back that does not go through the database — the shape this
+ * repository keeps closing. So a gate may say "this person may sign in, but
+ * only far enough to add a factor", and the core answers with a challenge that
+ * reaches the enrolment routes and nothing else.
+ *
+ * `refuse` is the stronger answer and is for the case where no action by the
+ * person could change it.
+ */
+export type SignInVerdict =
+  | { readonly kind: 'admit' }
+  | { readonly kind: 'enrol'; readonly reason: string }
+  | { readonly kind: 'refuse'; readonly reason: string }
+
+/**
+ * A check run before a session is minted, in addition to the credential the
+ * core has already verified.
+ *
+ * A list, and every gate must admit. Gates decide whether *this* authentication
+ * is enough, never who the person is or what they may see: one runs only after
+ * a password has been verified or a refresh token spent, so it can subtract a
+ * session and can never grant one. That is why more than one is coherent and
+ * why the default — no gates — is the open core issuing a session for every
+ * credential it verifies, exactly as it did before this point existed.
+ *
+ * An organization policy requiring a second factor is the first user: a
+ * commercial gate that reads the policy and answers `enrol` for an account that
+ * has none.
+ *
+ * **SSO needs no gate and cannot have one.** An `AuthProvider` principal
+ * presents the identity provider's assertion as its credential on every
+ * request and never mints a session here, so a policy of the form "a second
+ * factor, or sign in through your identity provider" is satisfied by
+ * construction on its second half: the SSO door does not pass this way, and the
+ * password door is the one a gate closes.
+ */
+export interface SignInGate {
+  readonly name: string
+  check(context: SignInContext): Promise<SignInVerdict>
+}
+
 interface Registry {
   resolver: { readonly module: string; readonly value: AuthzResolver } | undefined
   readonly providers: { module: string; value: AuthProvider }[]
   readonly sinks: { module: string; value: AuditSink }[]
   readonly routes: { module: string; value: AdminRoute }[]
   readonly gates: { module: string; value: IngestGate }[]
+  readonly signIn: { module: string; value: SignInGate }[]
 }
 
-const registry: Registry = { resolver: undefined, providers: [], sinks: [], routes: [], gates: [] }
+const registry: Registry = {
+  resolver: undefined,
+  providers: [],
+  sinks: [],
+  routes: [],
+  gates: [],
+  signIn: [],
+}
 
 /** Which module is registering, or `undefined` when registration is closed. */
 let loading: string | undefined
@@ -270,6 +359,10 @@ export function registerAuditSink(sink: AuditSink): void {
 
 export function registerIngestGate(gate: IngestGate): void {
   registry.gates.push({ module: mustBeLoading('an ingest gate'), value: gate })
+}
+
+export function registerSignInGate(gate: SignInGate): void {
+  registry.signIn.push({ module: mustBeLoading('a sign-in gate'), value: gate })
 }
 
 export const ADMIN_PREFIX = '/v1/admin/'
@@ -423,6 +516,44 @@ export async function admitIngest(context: IngestContext): Promise<IngestRefusal
   return undefined
 }
 
+/** A gate's non-admission, as `admitSignIn` reports it. */
+export interface SignInRefusal {
+  readonly module: string
+  readonly kind: 'enrol' | 'refuse'
+  readonly reason: string
+}
+
+/**
+ * Run every gate and report the strongest non-admission.
+ *
+ * `undefined` is admission: no gates registered, or every one admitted, which
+ * is why the open core mints a session for every credential it verifies.
+ *
+ * **This does not short-circuit on the first non-admission, and `admitIngest`
+ * beside it does.** That is a real difference rather than an inconsistency. An
+ * ingest verdict is admit or refuse, so the first refusal is the answer and
+ * asking the rest is work whose result cannot change it. Here there are two
+ * ways to say no and one is stronger: `refuse` is "nothing you can do gets you
+ * a session" and `enrol` is "a session, but only far enough to add a factor".
+ * A gate answering `enrol` while a later one would refuse must not hand out the
+ * weaker outcome, so every gate is asked and `refuse` wins.
+ *
+ * A `refuse` does stop the scan, because nothing outranks it.
+ */
+export async function admitSignIn(context: SignInContext): Promise<SignInRefusal | undefined> {
+  let weakest: SignInRefusal | undefined
+  for (const gate of registry.signIn) {
+    const verdict = await gate.value.check(context)
+    if (verdict.kind === 'refuse') {
+      return { module: gate.value.name, kind: 'refuse', reason: verdict.reason }
+    }
+    if (verdict.kind === 'enrol' && weakest === undefined) {
+      weakest = { module: gate.value.name, kind: 'enrol', reason: verdict.reason }
+    }
+  }
+  return weakest
+}
+
 /** Anything that records an event. Structurally the API's `audit` port. */
 export interface AuditWriter {
   write(event: AuditEvent): Promise<void>
@@ -477,6 +608,7 @@ export function loadedExtensions(): {
   sinks: string[]
   routes: number
   gates: string[]
+  signIn: string[]
 } {
   return {
     resolver: registry.resolver?.module ?? null,
@@ -484,6 +616,7 @@ export function loadedExtensions(): {
     sinks: registry.sinks.map((s) => `${s.module}:${s.value.name}`),
     routes: registry.routes.length,
     gates: registry.gates.map((g) => `${g.module}:${g.value.name}`),
+    signIn: registry.signIn.map((g) => `${g.module}:${g.value.name}`),
   }
 }
 
@@ -501,6 +634,7 @@ export function resetExtensionsForTests(): void {
   registry.sinks.length = 0
   registry.routes.length = 0
   registry.gates.length = 0
+  registry.signIn.length = 0
   loading = undefined
 }
 
