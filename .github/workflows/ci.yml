@@ -141,6 +141,12 @@ jobs:
       # the endpoint an administrator onboards a colleague with — and a comment
       # claiming 70. Nothing compared them.
       - run: pnpm lint:password
+      # Every /v1/me route that touches a credential asks whether this principal
+      # holds its own. A shared account — a published demo login — must not be
+      # able to enrol a second factor: the first holder to do so locks out every
+      # other one, and an administrator deliberately cannot undo it. That was
+      # live on the public stand.
+      - run: pnpm lint:me-credentials
       # Every Dockerfile is published and every published image is checked for
       # both architectures. The embedding adapter's Dockerfile was written,
       # built by this job on both, and named by no release step — so the service

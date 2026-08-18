@@ -1611,6 +1611,43 @@ function handledTooBusy(
 }
 
 /**
+ * Whether this principal holds its own credentials, and may therefore change
+ * them.
+ *
+ * One predicate for the whole `/v1/me` credential surface — the password and
+ * both kinds of second factor — because the question each of those routes asks
+ * is the same one, and a route that asked it in its own words is a route the
+ * next one is written without.
+ *
+ * Three classes answer no, and the third is the one this exists for.
+ *
+ * A **service account** is a key and has nobody to carry an authenticator. A
+ * **delegation** is a third party acting for somebody, and changing how that
+ * somebody signs in is not what was approved. And a **shared account** is a
+ * credential more than one person holds — a published demo login is the case —
+ * so there is no "the person" to hold a factor, and the first holder to enrol
+ * one locks out every other one with no administrative route back, because an
+ * administrator deliberately cannot remove a second factor.
+ *
+ * `404` rather than `403` on a refusal, which is what the two existing classes
+ * already answered: this is a surface that is not there for this principal
+ * rather than one it is being kept out of.
+ *
+ * The `shared` read is per request rather than a token claim. A claim is fixed
+ * when the session is minted, so marking an account shared would leave its
+ * holder fifteen minutes in which the surface is still open — which is the
+ * argument a delegation's `disabled` check already makes, and this is the same
+ * kind of fact.
+ */
+async function holdsOwnCredentials(auth: AuthContext, options: ApiOptions): Promise<boolean> {
+  if (auth.principal.type !== 'user' || auth.delegation !== undefined) return false
+  // Unset in a harness that does not mount the principals surface, and there
+  // an account cannot have been marked shared in the first place.
+  if (options.users === undefined) return true
+  return !(await options.users.isShared(auth.orgId, auth.principal.id))
+}
+
+/**
  * Which routes a door offers, and what a completed enrolment answers with.
  *
  * There are two doors onto this surface and they are deliberately not the same
@@ -3087,7 +3124,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       const bearer =
         presented?.startsWith('Bearer ') === true ? presented.slice(7) : undefined
       const who = bearer === undefined ? undefined : await options.login.readEnrolmentChallenge(bearer)
-      if (who !== undefined) {
+      // A shared account cannot enrol through this door either. It could only
+      // get here by a gate demanding a factor of an account that must not hold
+      // one, and the database refuses the row regardless — so without this the
+      // symptom is a 500 rather than the 404 the wide door answers.
+      const enrolling =
+        who === undefined || options.users === undefined
+          ? who
+          : (await options.users.isShared(who.orgId, who.userId))
+            ? undefined
+            : who
+      if (enrolling !== undefined) {
+        const who = enrolling
         const login = options.login
         const factors = options.secondFactors
         let enrolmentBody: unknown
@@ -3829,10 +3877,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
-      // Composed from the token and nothing else — no query, so this cannot
-      // grow a way to name somebody else. `organization` is included because a
-      // UI showing "you are an administrator" has to say of what, and it is the
-      // same value invariant 1 already took from the token.
+      /*
+       * Composed from the token, plus one read.
+       *
+       * It was from the token and nothing else, on the argument that no query
+       * means no way to grow into naming somebody else — which still holds,
+       * because the read takes the id the token already carries and asks one
+       * boolean about it.
+       *
+       * `holds_own_credentials` is here so a screen can leave the password and
+       * second-factor controls **off** rather than drawing controls that answer
+       * 404. That is the same rule `GET /v1/auth/methods` exists for, applied
+       * to the account instead of to the installation: ask, do not assume.
+       */
       send(
         res,
         200,
@@ -3841,6 +3898,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           principal_type: auth.principal.type,
           principal_id: auth.principal.id,
           role: auth.role,
+          holds_own_credentials: await holdsOwnCredentials(auth, options),
         },
         requestId,
       )
@@ -3868,7 +3926,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
-      if (auth.principal.type !== 'user' || auth.delegation !== undefined) {
+      if (!(await holdsOwnCredentials(auth, options))) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -4043,7 +4101,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
-      if (auth.principal.type !== 'user' || auth.delegation !== undefined) {
+      if (!(await holdsOwnCredentials(auth, options))) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -5455,7 +5513,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           return
         }
 
-        const created = await options.users.create(auth, email, role)
+        /*
+         * `shared` is a credential more than one person will hold, and it is
+         * refused rather than coerced when it is not a boolean: a caller that
+         * sent a string got the account they asked for either way, and only one
+         * of the two answers is the one they meant.
+         *
+         * It cannot be changed afterwards, deliberately. Clearing it on an
+         * account whose password is already published would reopen the surface
+         * for whoever holds that password; setting it on somebody's real
+         * account would take their second factor's meaning away without
+         * removing the factor. Both are new accounts, which is cheap.
+         */
+        if (fields.shared !== undefined && typeof fields.shared !== 'boolean') {
+          const problem = badRequest(instance, requestId, "'shared' must be a boolean.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        const created = await options.users.create(auth, email, role, fields.shared === true)
 
         if (created === undefined) {
           await options.audit.write({

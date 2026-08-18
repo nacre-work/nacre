@@ -216,6 +216,17 @@ a way past the factor it exists to demand. The role and the account's state are
 re-read when the session is issued rather than trusted from it: five minutes is
 long enough to be disabled.
 
+**An account more than one person holds has none of this.** `POST /v1/users`
+takes `shared`, and such an account has no `/v1/me` credential surface at all:
+no second factor, no password change, no reset link — every one answers `404`,
+the same as a service account and a delegation there. There is no "the person"
+for a factor to belong to, and the first holder to enrol one would lock out
+every other holder permanently, since an administrator deliberately cannot
+remove somebody's second factor. An administrator still sets its password
+through `POST /v1/users/{id}/password`, which is how a published credential is
+rotated. `GET /v1/me` reports it as `holds_own_credentials`, so a screen can
+leave the controls off rather than drawing ones that fail.
+
 **A module may require one, and the core answers a third way when it does.**
 `registerSignInGate` is the extension point — see
 [extensions.md](./extensions.md) — and the open core registers none, so nothing

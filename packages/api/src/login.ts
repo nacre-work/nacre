@@ -251,6 +251,12 @@ export type LoginOutcome =
  */
 export type ChangePasswordOutcome =
   | { readonly kind: 'changed'; readonly tokens: Tokens; readonly email: string }
+  /**
+   * A shared account: a credential more than one person holds, so none of them
+   * may change it for the rest. Distinct from `wrong-password` because the two
+   * are different facts and only one of them is fixed by retyping.
+   */
+  | 'shared'
   /*
    * A gate can interrupt this too, so the two non-token session outcomes are
    * members here rather than being flattened into a failure. Somebody who has
@@ -532,8 +538,8 @@ export class Login {
       this.deps.pool,
       orgId,
       async (client) => {
-        const { rows } = await client.query<UserRow & { email: string }>(
-          `SELECT id, org_id, role, email, password_hash, disabled_at
+        const { rows } = await client.query<UserRow & { email: string; shared: boolean }>(
+          `SELECT id, org_id, role, email, password_hash, disabled_at, shared
              FROM users WHERE org_id = $1 AND id = $2`,
           [orgId, userId],
         )
@@ -547,6 +553,22 @@ export class Login {
     // they hold a token this row issued — so this is a guard rather than a
     // branch anybody sees.
     if (row === undefined || row.disabled_at !== null || row.password_hash === null) return 'no-user'
+
+    /*
+     * A credential more than one person holds is not one of them may change.
+     *
+     * Refused **before** the current password is verified, which is the one
+     * ordering decision here: checking it first would make this endpoint say
+     * whether the published password is still current, and the whole point is
+     * that the password is public. It costs nothing either, since a shared
+     * account can never pass.
+     *
+     * Here as well as at the route, and that is not a second copy of one check.
+     * The route is what answers `404` to a caller; this is what holds when a
+     * second route is written — the same argument the trigger on
+     * `user_second_factors` makes for the other half of this surface.
+     */
+    if (row.shared) return 'shared'
 
     // Outside the transaction on purpose: scrypt at OWASP's minimum takes long
     // enough that holding a row lock across it is a lock held on arithmetic.

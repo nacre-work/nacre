@@ -577,6 +577,12 @@ export class NacreClient {
       principalType: body.principal_type === 'service_account' ? 'service_account' : 'user',
       principalId: String(body.principal_id),
       role: String(body.role) as Self['role'],
+      // Defaulted to true for an older API that does not answer it, which is
+      // the right way round: a screen that hides its password control against a
+      // server that would have accepted the change has taken a working feature
+      // away, and a screen that shows one against a server that refuses gets a
+      // 404 the person can read.
+      holdsOwnCredentials: body.holds_own_credentials !== false,
     }
   }
 
@@ -1087,11 +1093,23 @@ export class NacreClient {
     },
 
     /** The response carries the password. It is not recoverable afterwards. */
-    create: async (email: string, role: 'member' | 'org_admin' = 'member'): Promise<CreatedUser> => {
+    /**
+     * `shared` is a credential more than one person will hold, such as a
+     * published demo login. It has no `/v1/me` credential surface — no second
+     * factor, no password change, no recovery link — because there is no "the
+     * person" to hold one, and the first holder to enrol a factor would lock
+     * out every other one. An administrator still resets its password, which is
+     * how whoever published it rotates one. It cannot be changed afterwards.
+     */
+    create: async (
+      email: string,
+      role: 'member' | 'org_admin' = 'member',
+      options: { shared?: boolean } = {},
+    ): Promise<CreatedUser> => {
       const body = (await this.#request({
         method: 'POST',
         path: '/v1/users',
-        body: { email, role },
+        body: { email, role, ...(options.shared === true ? { shared: true } : {}) },
       })) as Record<string, unknown>
 
       return { ...userFrom(body), password: String(body.password) }

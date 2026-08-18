@@ -67,6 +67,9 @@ const users: Users = {
         : id === USER
           ? 'updated'
           : 'no-user',
+  // A stub with no shared accounts, which is what an installation that has
+  // never minted one has.
+  isShared: async () => false,
   resetPassword: async (_a, id) =>
     id === PLATFORM_ADMIN
       ? 'platform-admin'

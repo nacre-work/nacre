@@ -44,7 +44,27 @@ export async function securityView(root: HTMLElement): Promise<void> {
   const factors = h('section', { class: 'panel' }, h('p', { class: 'muted' }, 'Loading…'))
   root.append(passwords, factors)
 
-  await Promise.all([renderPassword(passwords), renderFactors(factors, root)])
+  /*
+   * Asked once, and both panels are told.
+   *
+   * `holdsOwnCredentials` is false for a service account, for a delegation, and
+   * for a **shared** account — a credential more than one person holds. The
+   * server answers 404 on both surfaces for all three, so this is the "ask, do
+   * not assume" rule: draw what works rather than what would produce an error
+   * the person cannot act on.
+   *
+   * Defaulted to true when the call fails, matching the SDK: showing a control
+   * the server refuses costs a readable message, and hiding one it would have
+   * accepted takes a working feature away with nothing said.
+   */
+  let mine = true
+  try {
+    mine = (await client().me()).holdsOwnCredentials
+  } catch {
+    // An older API with no such field, or one that could not be reached.
+  }
+
+  await Promise.all([renderPassword(passwords, mine), renderFactors(factors, root, mine)])
 }
 
 /**
@@ -54,17 +74,13 @@ export async function securityView(root: HTMLElement): Promise<void> {
  * password at all, and is rotated by minting another — so the API answers 404,
  * and a form that produced one would be a control that cannot work.
  */
-async function renderPassword(panel: HTMLElement): Promise<void> {
+async function renderPassword(panel: HTMLElement, mine: boolean): Promise<void> {
   clear(panel)
 
-  let isPerson = false
-  try {
-    isPerson = (await client().me()).principalType === 'user'
-  } catch {
-    // An older API with no /v1/me. Showing less than it could is a better
-    // failure than offering a form that answers 404.
-  }
-  if (!isPerson) return
+  // One question rather than `principalType === 'user'`, which this asked
+  // before and which is now the narrower half of it: a service account is not a
+  // person, and a shared account is not *a* person either.
+  if (!mine) return
 
   const current = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', 'aria-label': 'Current password' }) as HTMLInputElement
   const next = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', 'aria-label': 'New password' }) as HTMLInputElement
@@ -145,7 +161,31 @@ interface Factors {
   readonly kinds: readonly SecondFactorKind[]
 }
 
-async function renderFactors(panel: HTMLElement, root: HTMLElement): Promise<void> {
+async function renderFactors(panel: HTMLElement, root: HTMLElement, mine: boolean): Promise<void> {
+  /*
+   * A shared account is told what it is, and never that the installation lacks
+   * something.
+   *
+   * Both cases answer 404, so without this the message below would blame the
+   * deployment for a property of the account — which sends whoever reads it to
+   * check a key that is set. Naming the right one is the whole of the
+   * difference.
+   */
+  if (!mine) {
+    clear(panel)
+    panel.append(
+      h('h2', {}, 'Second factor'),
+      h('div', { class: 'empty' },
+        h('h2', {}, 'Not for this account'),
+        h('p', {},
+          'This credential is held by more than one person, so there is nobody for a second factor to belong to — and the first to enrol one would lock out the rest.'),
+        h('p', { class: 'muted' },
+          'An administrator sets its password. An account of your own can have both.'),
+      ),
+    )
+    return
+  }
+
   let state: Factors
   try {
     state = await client().secondFactor.list()

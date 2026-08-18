@@ -479,6 +479,21 @@ export interface Self {
   readonly principalType: 'user' | 'service_account'
   readonly principalId: string
   readonly role: UserRole
+  /**
+   * Whether this principal may change its own password and second factor.
+   *
+   * False for a service account, for a delegation, and for a **shared** account
+   * — a credential more than one person holds, such as a published demo login,
+   * where there is no "the person" to hold a factor and the first holder to
+   * enrol one would lock out every other.
+   *
+   * It is here so a screen can leave those controls off rather than drawing
+   * ones that answer `404`. `true` against an older API that does not report
+   * it, which is the safe direction: showing a control the server refuses costs
+   * a readable error, and hiding one it would have accepted takes a working
+   * feature away.
+   */
+  readonly holdsOwnCredentials: boolean
 }
 
 /**

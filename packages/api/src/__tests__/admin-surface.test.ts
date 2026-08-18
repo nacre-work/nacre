@@ -232,8 +232,23 @@ describe('the administrative surface', () => {
       expect(body.organization, who).toBe(ORG_A)
       expect(body.principal_type, who).toBe('user')
       expect(typeof body.principal_id, who).toBe('string')
-      // Nothing about anybody else, and nothing that is not in the token.
-      expect(Object.keys(body).sort()).toEqual(['organization', 'principal_id', 'principal_type', 'role'])
+      /*
+       * Nothing about anybody else. Compared exactly rather than by presence,
+       * which is what makes it a guard: a field added here is a field somebody
+       * had to come and write down.
+       *
+       * Four of these come from the token. `holds_own_credentials` is a read,
+       * and it takes the id the token already carries and answers one boolean
+       * about it — so the property this case is really about, that this
+       * endpoint cannot grow a way to name somebody else, is unchanged.
+       */
+      expect(Object.keys(body).sort()).toEqual([
+        'holds_own_credentials',
+        'organization',
+        'principal_id',
+        'principal_type',
+        'role',
+      ])
     }
   })
 

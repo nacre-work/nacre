@@ -72,7 +72,7 @@ export async function users(context: Context): Promise<string> {
 }
 
 async function createUser(context: Context, client: NacreClient, email?: string): Promise<string> {
-  if (email === undefined) throw new UsageError('nacre users create <email> [--admin]')
+  if (email === undefined) throw new UsageError('nacre users create <email> [--admin] [--shared]')
 
   // Deliberately no `--password`. The endpoint generates one and refuses to
   // accept one, on two arguments: an argument ends up in a shell history, and a
@@ -84,7 +84,14 @@ async function createUser(context: Context, client: NacreClient, email?: string)
     )
   }
 
-  const created = await client.users.create(email, context.parsed.options.has('admin') ? 'org_admin' : 'member')
+  const created = await client.users.create(
+    email,
+    context.parsed.options.has('admin') ? 'org_admin' : 'member',
+    // A credential meant to be published. The demo seed is the caller this
+    // exists for, and it is a flag rather than a default because every other
+    // account this command makes belongs to somebody.
+    { shared: context.parsed.options.has('shared') },
+  )
 
   return render(context, created, () =>
     `Created ${created.email} (${created.role})\nid: ${created.id}\n\n${once('Password', created.password)}`,

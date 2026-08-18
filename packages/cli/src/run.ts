@@ -21,7 +21,11 @@ export const HELP = `nacre — the command line client for a Nacre installation
 Administering an organization, all of it org_admin:
 
   nacre users                               everyone, with role and state
-  nacre users create <email> [--admin]      the password is generated, shown once
+  nacre users create <email> [--admin] [--shared]
+                                           the password is generated, shown once;
+                                           --shared for a credential several
+                                           people hold, which has no second
+                                           factor and no password change
   nacre users password <id>                 issue a new one, shown once
   nacre users role <id> <member|org_admin>
   nacre users disable <id>                  the row is kept; the log names it
