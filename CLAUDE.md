@@ -1954,6 +1954,19 @@ The Security screen's "not available on this installation" message would
 otherwise have blamed the deployment for a property of the account, sending
 whoever read it to check a key that is set.
 
+**And the console could not make one**, which is the same hole one surface
+along: the column, the endpoint, the SDK and `nacre users create` all carried
+`shared`, and the New user dialog sent three fields that did not include it —
+so an administrator's route to a published credential was a command line or
+`curl`. The box is on that dialog now, and what it says is written in terms of
+what goes wrong without it rather than in terms of the column.
+
+`shared` is in the **listing** too, beside `sso` and `disabled`, and that is
+not decoration: it is fixed at creation, so an administrator who ticked it has
+no other way to see it again — and it decides whether the person on the other
+end can hold a second factor at all, which is exactly the kind of thing a
+screen has to be able to say.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

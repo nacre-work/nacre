@@ -225,7 +225,9 @@ every other holder permanently, since an administrator deliberately cannot
 remove somebody's second factor. An administrator still sets its password
 through `POST /v1/users/{id}/password`, which is how a published credential is
 rotated. `GET /v1/me` reports it as `holds_own_credentials`, so a screen can
-leave the controls off rather than drawing ones that fail.
+leave the controls off rather than drawing ones that fail, and `GET /v1/users`
+carries `shared` on every row — it cannot be changed after creation, so an
+administrator who set it has no other way to see it again.
 
 **A module may require one, and the core answers a third way when it does.**
 `registerSignInGate` is the extension point — see

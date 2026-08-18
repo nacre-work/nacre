@@ -82,7 +82,10 @@ factor to belong to, and the first holder to enrol one would lock out every
 other with no route back: an administrator deliberately cannot remove somebody's
 second factor. Its password is still reset by an administrator, which is how a
 published credential is rotated. If you publish a login of your own, create it
-with `nacre users create you@example.com --shared`.
+with `nacre users create you@example.com --shared`, or tick *Several people
+will hold this password* in the console's New user dialog. Either way the
+choice is fixed at creation: clearing it on an account whose password is
+already out would reopen that surface to whoever holds it.
 
 Reset it with `docker compose --profile demo down -v`. The model is
 English-only and the corpus is fiction; a real installation picks its own
