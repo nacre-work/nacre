@@ -603,6 +603,31 @@ await shot('delete-layer', {
 })
 await shot('accounts', { hash: '#/accounts' })
 await shot('security', { hash: '#/security' })
+// The enrolment dialog, which had no picture and was the one screen a defect
+// was reported from: the secret sat in a box with nothing to press, and the
+// setup link was truncated to 48 characters with the rest in a `title` — a
+// tooltip a phone does not have, on the one string somebody opens *on their
+// phone*. Both are controls now, so both belong in a shot.
+await shot('add-authenticator', {
+  hash: '#/security',
+  fixtures: {
+    'POST /v1/me/second-factor': {
+      id: '2f6a1c94-7b30-4d85-a1e2-9c4f0b7d3a68',
+      secret: 'UVGOBGZUXKFMVIMNET65LHE3ERGYVCYP',
+      otpauth_url:
+        'otpauth://totp/https%3A%2F%2Fplayground.nacre.work:dana%40example.com' +
+        '?secret=UVGOBGZUXKFMVIMNET65LHE3ERGYVCYP&issuer=https%3A%2F%2Fplayground.nacre.work',
+    },
+  },
+  prepare: async (page) => {
+    await page.getByRole('button', { name: 'Add an authenticator app' }).click()
+    // Continue, because the secret is on the *second* step and the first
+    // version of this shot photographed a name field — the screen it was added
+    // to show was one press away and not in the picture.
+    await page.getByRole('button', { name: 'Continue' }).click()
+    await page.waitForTimeout(300)
+  },
+})
 // The installation with no key, which is the default and what most self-hosters
 // see. The password panel has to survive it: the whole view used to return
 // early here, so a message about TOTP would have hidden a control that works.

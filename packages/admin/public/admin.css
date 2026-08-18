@@ -395,6 +395,25 @@ a { color: var(--n-accent); }
   border-radius: 6px; padding: 12px; margin: 0 0 12px;
   overflow-wrap: anywhere; white-space: pre-wrap; user-select: all;
 }
+/* A value and the control that takes it.
+   `align-items: start` rather than centre: the value wraps to several lines on
+   a phone and a button centred against three lines of base32 sits nowhere in
+   particular. `> *` carries the margin reset `lint:admin-layout` requires of an
+   edge-aligned container, so the button does not hang below the box by the
+   `.secret` bottom margin — which is the defect that rule was written for. */
+.secretrow {
+  display: flex; align-items: start; gap: 8px;
+}
+.secretrow > * { margin-bottom: 0; }
+.secretrow .secret, .secretrow .otpauth { flex: 1 1 0; min-width: 0; }
+/* Shown whole. It was truncated to 48 characters with the rest in a `title`,
+   which is a tooltip a phone does not have — and this is a link somebody opens
+   on the device holding the authenticator. */
+.otpauth {
+  display: block; overflow-wrap: anywhere; white-space: pre-wrap;
+  background: var(--n-surface-sunk); border: 1px solid var(--n-line);
+  border-radius: 6px; padding: 12px; user-select: all;
+}
 .warn {
   font-size: 14px; color: var(--n-text);
   border-left: 3px solid var(--n-deny); padding-left: 12px; margin: 0 0 16px;

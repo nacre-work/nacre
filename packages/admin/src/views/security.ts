@@ -1,7 +1,7 @@
 import type { SecondFactor, SecondFactorKind } from '@nacre.work/sdk'
 
 import { changeOwnPassword, client, explain } from '../api.js'
-import { clear, h } from '../dom.js'
+import { clear, copyControl, h } from '../dom.js'
 import * as webauthn from '../webauthn.js'
 
 /**
@@ -443,11 +443,31 @@ function second(
     'aria-label': 'Code',
   }) as HTMLInputElement
 
+  // Named for what they are rather than shown in full on failure: an accessible
+  // name reading a thirty-two character base32 string is noise, and the value is
+  // on the page beside the button either way.
+  const secretCopy = copyControl(begun.secret, begun.secret, 'Copy the secret')
+  const urlCopy = copyControl(begun.otpauthUrl, begun.otpauthUrl, 'Copy the setup link')
+
   return h('div', {},
     h('p', {}, 'Add this secret to your authenticator, then type the code it shows.'),
-    h('pre', { class: 'secret' }, begun.secret),
-    h('p', { class: 'hint' }, 'Or open the setup link on the device that holds the authenticator: '),
-    h('code', { class: 'id', title: begun.otpauthUrl }, begun.otpauthUrl.slice(0, 48) + '…'),
+    // The value and a way to take it. Reported as a gap: the secret sat in a
+    // box with nothing to press, and `user-select: all` is a selection rather
+    // than a copy — it still needs a keystroke somebody on a phone does not
+    // have. Every id in this console has had a copy control since it was
+    // rendered at 390; the one string here that is *only* ever retyped had
+    // none.
+    h('div', { class: 'secretrow' },
+      h('pre', { class: 'secret' }, begun.secret),
+      secretCopy.button,
+    ),
+    secretCopy.note,
+    h('p', { class: 'hint' }, 'Or open the setup link on the device that holds the authenticator:'),
+    h('div', { class: 'secretrow' },
+      h('code', { class: 'id otpauth', title: begun.otpauthUrl }, begun.otpauthUrl),
+      urlCopy.button,
+    ),
+    urlCopy.note,
     h('label', { class: 'field' }, h('span', {}, 'Code'), code),
     h('div', { class: 'dialog-actions' },
       h('button', {
@@ -472,17 +492,73 @@ function second(
 }
 
 /**
+ * Hand the recovery codes over as a file.
+ *
+ * **Web Share first, and that is not a nicety.** The public stand learned this
+ * one from a phone: Safari does not save an `<a download>`, it *navigates* to
+ * the blob — so the press takes the document away and every control on the page
+ * stops answering until a reload. Here that page is the only time these codes
+ * exist outside a hash, and a reload does not bring them back. So on a device
+ * whose browser can share a file, the press shares one; the anchor stays for the
+ * desktop browsers it was always right for.
+ *
+ * The object URL is revoked a minute later rather than on the next turn of the
+ * event loop, because revoking while the browser is still handing the download
+ * off cancels it — the same finding, from the same page.
+ */
+function saveCodes(codes: readonly string[]): void {
+  const name = 'nacre-recovery-codes.txt'
+  // A header, because a bare column of words in a downloads folder is a file
+  // nobody can identify in six months. `location.host` rather than a canonical
+  // URL: this is what the person is actually looking at.
+  const body = [
+    `Nacre recovery codes — ${location.host}`,
+    'Each works once, instead of a code from your authenticator.',
+    'Shown once; this installation keeps only their hashes.',
+    '',
+    ...codes,
+    '',
+  ].join('\n')
+
+  const file = new File([body], name, { type: 'text/plain' })
+  const shareable = navigator.canShare?.({ files: [file] }) === true
+  if (shareable) {
+    // Rejection is the ordinary outcome — a share sheet dismissed is an
+    // `AbortError` — and it is not a failure worth reporting.
+    void navigator.share({ files: [file], title: name }).catch(() => undefined)
+    return
+  }
+
+  const url = URL.createObjectURL(file)
+  const link = h('a', { href: url, download: name }) as HTMLAnchorElement
+  document.body.append(link)
+  link.click()
+  link.remove()
+  setTimeout(() => { URL.revokeObjectURL(url) }, 60_000)
+}
+
+/**
  * The recovery codes, once.
  *
  * No "remind me later": this dialog is the only time they exist outside a hash,
  * so it closes on an acknowledgement rather than on a click anywhere.
  */
 function showRecoveryCodes(codes: readonly string[], root: HTMLElement): void {
+  const codesCopy = copyControl(codes.join('\n'), 'the recovery codes', 'Copy all ten')
   const dialog = h('dialog', { class: 'dialog' },
     h('div', {},
       h('h2', {}, 'Save these recovery codes'),
       h('p', {}, 'Each one works instead of a code from your authenticator, once. They are shown now and never again — this installation keeps only their hashes.'),
       h('pre', { class: 'secret' }, codes.join('\n')),
+      // Two ways out of this dialog with the codes, because it is the only one
+      // there will ever be. Copying puts them somewhere a password manager can
+      // take them; the file is for the person who prints it or drops it in a
+      // safe, which is what "keep these somewhere else" actually means.
+      h('div', { class: 'row' },
+        codesCopy.button,
+        h('button', { type: 'button', class: 'btn', onclick: () => { saveCodes(codes) } }, 'Download'),
+      ),
+      codesCopy.note,
       h('p', { class: 'hint' }, 'If you lose the phone and these, an administrator cannot get you back in: they can reset a password and deliberately cannot touch a second factor.'),
       h('div', { class: 'dialog-actions' },
         h('button', {
