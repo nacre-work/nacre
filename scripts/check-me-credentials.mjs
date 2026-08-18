@@ -25,6 +25,14 @@
  * It **discovers** the routes rather than listing them, so the next one is
  * covered on the day it is written, and refuses outright if it finds none —
  * a check with nothing to hold must not report green.
+ *
+ * ## And the other half: whatever publishes a credential marks it
+ *
+ * The routes being right is worth nothing if the account was never marked. The
+ * `demo` profile is this repository's own publisher — `docker/demo/seed.sh`
+ * prints logins for anybody to use — so every account it creates has to carry
+ * `--shared`. One written today and a third one added next year are the same
+ * requirement, and only a check knows that.
  */
 import { readFileSync } from 'node:fs'
 
@@ -90,6 +98,36 @@ if (problems.length > 0) {
   process.exit(1)
 }
 
+/*
+ * Every account the demo seed creates is published, so every one is shared.
+ *
+ * Matched on the command rather than on a count: a third identity added to that
+ * loop, or beside it, is the case this exists for, and a check that knew there
+ * were two would pass the day there are three.
+ */
+const SEED = 'docker/demo/seed.sh'
+const seed = readFileSync(SEED, 'utf8')
+const creates = [...seed.matchAll(/\$CLI users create[^\n]*/g)].map((m) => m[0])
+
+if (creates.length === 0) {
+  console.error(
+    `::error::${SEED} creates no user. This half of the check has nothing to hold — either the ` +
+      'seed stopped publishing logins, in which case say so here, or the command it uses changed.',
+  )
+  process.exit(1)
+}
+
+const unmarked = creates.filter((line) => !line.includes('--shared'))
+if (unmarked.length > 0) {
+  console.error(
+    `::error::${SEED} creates an account without --shared: ${unmarked.join(' | ')}. Its password ` +
+      'is printed for anybody to use, so the first visitor to enrol a second factor on it locks ' +
+      'out every other one — and no administrator can undo that.',
+  )
+  process.exit(1)
+}
+
 console.log(
-  `${paths.length} /v1/me credential route(s) — ${paths.join(', ')} — each ask ${PREDICATE}().`,
+  `${paths.length} /v1/me credential route(s) — ${paths.join(', ')} — each ask ${PREDICATE}(), ` +
+    `and all ${creates.length} account(s) ${SEED} publishes are --shared.`,
 )
