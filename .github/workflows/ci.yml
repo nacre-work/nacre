@@ -276,7 +276,11 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @nacre.work/admin build
+      # The whole workspace, not `--filter admin`: the console's `tsc -b` needs
+      # the SDK's declarations, and a filtered build leaves it with fifteen
+      # `Cannot find module '@nacre.work/sdk'` errors. Found by this job failing
+      # in fifteen seconds, before it ever reached a browser.
+      - run: pnpm build
       - name: every screen in a browser
         run: |
           set -euo pipefail
