@@ -241,10 +241,35 @@ export async function provisionInPostgres(
       // A data-modifying CTE is not visible to the rest of its own statement,
       // so exactly one branch ever produces rows: `ins` when there was no
       // default, the table when there was.
+      //
+      // **`ON CONFLICT` is not belt and braces; without it two provisionings at
+      // once take the installation down.** `WHERE NOT EXISTS` is a read, and two
+      // transactions that both take their snapshot before either has committed
+      // both see no default and both insert one. That used to produce a silent
+      // duplicate — which is exactly what migration 0028's `NULLS NOT DISTINCT`
+      // index was added to forbid, and forbidding it turned the race from a
+      // quiet wrong answer into `duplicate key value violates unique constraint
+      // "embedding_providers_org_name"`, out of `init`, with no organization
+      // created.
+      //
+      // It is not a rare window. An installation provisions two organizations
+      // at once the ordinary way: a bootstrap creating the operator's tenant
+      // and a seed creating a demonstration one, both starting the moment the
+      // API reports ready. That is how it was found — on a public stand, where
+      // the second `init` failed and the demo never seeded.
+      //
+      // `DO UPDATE SET name = embedding_providers.name` rather than `DO
+      // NOTHING`: the point is to come away with the row, and `DO NOTHING`
+      // returns none, which would leave the loser to fall through to the UNION
+      // branch — where its own snapshot still cannot see the winner's row. A
+      // no-op update returns it. Reproduced both ways against a real
+      // PostgreSQL: without this, one of two concurrent statements raises;
+      // with it, both return the same id and the table holds one row.
       `WITH ins AS (
          INSERT INTO embedding_providers (org_id, name, endpoint, model, dimensions)
          SELECT NULL,'default',$1,$2,$3
          WHERE NOT EXISTS (SELECT 1 FROM embedding_providers WHERE org_id IS NULL)
+         ON CONFLICT (org_id, name) DO UPDATE SET name = embedding_providers.name
          RETURNING id, endpoint, model, dimensions, created_at
        )
        SELECT id, endpoint, model, dimensions FROM (

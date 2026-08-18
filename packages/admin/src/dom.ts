@@ -228,39 +228,67 @@ export const copyText = (text: string): Promise<CopyResult> =>
  * checkmark for a moment so the press has an answer.
  */
 export const copyableId = (id: string): HTMLElement => {
+  const { button, note } = copyControl(id, id)
+  return h('span', { class: 'idcopy' }, shortId(id), button, note)
+}
+
+/**
+ * The button on its own, for a value that is not an id.
+ *
+ * Split out of `copyableId` because a second caller appeared and the button was
+ * welded to a *truncated* id: `shortId` is right beside a uuid in a table and
+ * wrong beside a TOTP secret, which has to be shown whole. Copying the two out
+ * would have been two controls with the same job and one of them getting the
+ * clipboard fallback, the checkmark timing or the accessible name wrong.
+ *
+ * `shown` is what a failure puts on the page and what the accessible name says.
+ * It is separate from the copied value because they differ where the value is
+ * long: a secret is worth naming as "the secret" in a label and worth printing
+ * in full when the clipboard is refused.
+ */
+export function copyControl(
+  value: string,
+  shown: string,
+  label = `Copy ${shown}`,
+): { button: HTMLButtonElement; note: HTMLElement } {
   const note = h('span', { class: 'copied' })
-  const button = h('button', { type: 'button', class: 'btn btn-quiet btn-icon', title: `Copy ${id}`, 'aria-label': `Copy ${id}` })
+  const button = h('button', {
+    type: 'button',
+    class: 'btn btn-quiet btn-icon',
+    title: label,
+    'aria-label': label,
+  }) as HTMLButtonElement
   button.append(icon(...COPY_GLYPH))
 
   let timer: ReturnType<typeof setTimeout> | undefined
   button.addEventListener('click', () => {
     void (async () => {
-      const ok = (await copyText(id)) === 'copied'
+      const ok = (await copyText(value)) === 'copied'
       button.replaceChildren(icon(...(ok ? DONE_GLYPH : COPY_GLYPH)))
       button.classList.toggle('is-copied', ok)
       // The glyph is the whole answer for somebody looking at it and no answer
       // at all for somebody who is not, so the accessible name carries the same
-      // state. Without this a screen reader announces `Copy <id>` before the
-      // press and `Copy <id>` after it.
-      const said = ok ? 'Copied' : `Copy failed — ${id} is on the page`
+      // state. Without this a screen reader announces `Copy …` before the press
+      // and `Copy …` after it.
+      const said = ok ? 'Copied' : `Copy failed — ${shown} is on the page`
       button.setAttribute('aria-label', said)
       button.title = said
-      // On failure the whole id is put on the page rather than into the
-      // clipboard: it is the one thing this control exists to hand over, and
-      // a selectable line of text is a worse answer than a copy and a much
-      // better one than nothing.
-      note.textContent = ok ? '' : id
+      // On failure the value is put on the page rather than into the clipboard:
+      // it is the one thing this control exists to hand over, and a selectable
+      // line of text is a worse answer than a copy and a much better one than
+      // nothing.
+      note.textContent = ok ? '' : shown
       clearTimeout(timer)
       timer = setTimeout(() => {
         button.replaceChildren(icon(...COPY_GLYPH))
         button.classList.remove('is-copied')
-        button.setAttribute('aria-label', `Copy ${id}`)
-        button.title = `Copy ${id}`
+        button.setAttribute('aria-label', label)
+        button.title = label
       }, 2000)
     })()
   })
 
-  return h('span', { class: 'idcopy' }, shortId(id), button, note)
+  return { button, note }
 }
 
 /**
