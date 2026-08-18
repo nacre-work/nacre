@@ -31,6 +31,7 @@ export type { AuthorizationServerMetadata } from './authserver.js'
 export {
   activeResolver,
   admitIngest,
+  admitSignIn,
   ADMIN_PREFIX,
   adminRoutes,
   auditSinks,
@@ -42,6 +43,7 @@ export {
   registerAuthProvider,
   registerAuthzResolver,
   registerIngestGate,
+  registerSignInGate,
   resetExtensionsForTests,
   withAuditSinks,
   withLoadingModuleForTests,
@@ -60,6 +62,10 @@ export type {
   IngestRefusal,
   IngestVerdict,
   ResolvedPrincipal,
+  SignInContext,
+  SignInGate,
+  SignInRefusal,
+  SignInVerdict,
 } from './extensions.js'
 export type { ProtectedResourceMetadata } from './oauth.js'
 export type { JwtKeys, JwtVerification } from './config.js'

@@ -1791,6 +1791,75 @@ the repository — arriving a second time, and it was one report away from being
 written down as a finding. Twenty-five runs on a clean tree: no case failed in
 any of them.
 
+**An organization can require a second factor, and the core's half of that is a
+sixth extension point.** Both kinds are individually opt-in — a person enrols
+one because they decided to — and an `org_admin` had no way to require one at
+all. The model-offers-it-and-the-product-gives-no-route shape, on the surface
+that decides whether a stolen password is an account.
+
+`registerSignInGate` is that point and the policy is a module, on the boundary's
+own test: a single developer on a laptop does not need to force themselves to
+use a second factor, and an organization mandating one is what a security team
+buys.
+
+**It is consulted inside `issue`, which is the one place a session is minted.**
+There are four paths from a verified credential to a session — a password with
+no factor asked for, a completed second factor, a spent refresh token, and a
+password change — and a check placed beside them is a check the fifth forgets.
+That is this file's most repeated defect, so the gate goes where all four
+already arrive and `issue` returns a union, which turned every call site into a
+compile error until it said what it does with a refusal. A **renewal** is gated
+deliberately: without it a policy turned on while people are signed in does
+nothing for any of them for as long as they keep renewing, which is the same
+case a delegation's `disabled` check exists for.
+
+**`enrol` is the verdict that makes such a policy usable, and it is most of the
+work.** Enrolment lives under `/v1/me` and needs authority, so a gate that could
+only refuse would lock out everybody who had not enrolled on the day it was
+turned on, with `psql` as the route back. So the core answers with an
+**enrolment challenge**: audience-separated from an access token exactly as the
+sign-in challenge is, carrying a purpose claim neither can spend as the other,
+and reaching four routes rather than the seven a session reaches. Not the
+listing, because a caller who has proved nothing is not owed an inventory of the
+account; not the removal, because taking a factor off under a mandate to add one
+is what somebody holding a stolen password would do. Confirming through it hands
+back the recovery codes **and** a session, because being made to enrol and then
+asked to sign in again is the moment a person gives up.
+
+The door sits **behind** `authenticate` rather than in front of it, and both
+reasons are worth keeping. Running it in front made every ordinary request to
+that path pay a JWT verification for a token it was not carrying — found by
+running the suite, not by reading. And behind it the door can only ever be
+reached by a credential the API has already refused, so a route that forgets it
+answers `401` and never `200`. A design that instead minted a real access token
+and asked every other route to refuse it would fail the other way, and on an
+authorization boundary that is the dangerous direction.
+
+`admitSignIn` deliberately does **not** short-circuit the way `admitIngest`
+does. There, one refusal is the answer and asking the rest cannot change it;
+here `refuse` outranks `enrol`, so a gate answering the weaker verdict while a
+later one would refuse must not be what the caller acts on. Every gate is asked,
+and a `refuse` stops the scan because nothing outranks one.
+
+**And the half about SSO needed no code, which is the finding rather than the
+feature.** "Require a second factor **or** SSO" reads like two things to build.
+An `AuthProvider` principal presents the identity provider's assertion as its
+credential on every request and never mints a session here — checked by reading
+`auth.ts`, where providers are consulted on the *request* path — so a gate on
+`issue` cannot see them and does not need to. The second half holds by
+construction, and the honest response was to write that down rather than build a
+branch for it.
+
+**A case written to prove the purpose separation could not fail.** It asserted
+that an enrolment challenge is refused by `completeSecondFactor`, on a `Login`
+constructed with no second-factor store — so the method returned on its
+`gate === undefined` guard one line before it read the challenge at all, and the
+case stayed green with the purpose comparison deleted. The projection was narrow
+enough that it could only ever pass, which is the transport-parity defect and
+the `location.hash` defect arriving in a case written this same day. It is asked
+of a `Login` that has a store now, in both directions, and both restorations
+were measured: the old version green, the new one red.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

@@ -13,6 +13,8 @@ import {
   registerAuthProvider,
   registerAuthzResolver,
   registerIngestGate,
+  admitSignIn,
+  registerSignInGate,
   resetExtensionsForTests,
   withLoadingModuleForTests,
   type AdminRoute,
@@ -20,6 +22,7 @@ import {
   type IngestContext,
   type IngestGate,
 } from '../extensions.js'
+import type { SignInContext, SignInGate, SignInVerdict } from '../extensions.js'
 import type { AccessPlan, ResolveInput } from '../authz/resolve.js'
 import { MemoryScopeTree } from '../authz/scope-tree.js'
 import type { Permission } from '../types.js'
@@ -82,7 +85,14 @@ describe('the default registry', () => {
     expect(authProviders()).toEqual([])
     expect(auditSinks()).toEqual([])
     expect(adminRoutes()).toEqual([])
-    expect(loadedExtensions()).toEqual({ resolver: null, providers: [], sinks: [], routes: 0, gates: [] })
+    expect(loadedExtensions()).toEqual({
+      resolver: null,
+      providers: [],
+      sinks: [],
+      routes: 0,
+      gates: [],
+      signIn: [],
+    })
   })
 
   it('admits every ingest, so the open core accepts what a caller may write', async () => {
@@ -286,7 +296,14 @@ describe('loadModules', () => {
     await loadModules([], async () => {
       throw new Error('should not be called')
     })
-    expect(loadedExtensions()).toEqual({ resolver: null, providers: [], sinks: [], routes: 0, gates: [] })
+    expect(loadedExtensions()).toEqual({
+      resolver: null,
+      providers: [],
+      sinks: [],
+      routes: 0,
+      gates: [],
+      signIn: [],
+    })
   })
 
   it('imports each name in order', async () => {
@@ -323,6 +340,7 @@ describe('loadModules', () => {
       if (name === 'tenancy') {
         registerAuthzResolver(denyAll)
         registerIngestGate(admitGate('quota'))
+        registerSignInGate({ name: 'policy', check: async () => ({ kind: 'admit' }) })
       }
       if (name === 'sso') registerAuthProvider({ name: 'oidc', authenticate: async () => undefined })
       if (name === 'audit') registerAuditSink({ name: 'siem', write: async () => {} })
@@ -333,6 +351,7 @@ describe('loadModules', () => {
       sinks: ['audit:siem'],
       routes: 0,
       gates: ['tenancy:quota'],
+      signIn: ['tenancy:policy'],
     })
   })
 })
@@ -383,5 +402,127 @@ describe('ingest gates', () => {
   it('reports its gates on the startup line', () => {
     withLoadingModuleForTests('tenancy', () => registerIngestGate(admitGate('quota')))
     expect(loadedExtensions().gates).toEqual(['tenancy:quota'])
+  })
+})
+
+describe('sign-in gates', () => {
+  const signInContext = (over: Partial<SignInContext> = {}): SignInContext => ({
+    orgId: '11111111-1111-1111-1111-111111111111',
+    userId: '22222222-2222-2222-2222-222222222222',
+    role: 'member',
+    path: 'password',
+    secondFactor: undefined,
+    enrolled: false,
+    ...over,
+  })
+
+  const gate = (name: string, verdict: SignInVerdict): SignInGate => ({
+    name,
+    check: async () => verdict,
+  })
+
+  it('refuses a gate registered outside loading, like every other point', () => {
+    expect(() => registerSignInGate(gate('late', { kind: 'admit' }))).toThrow(
+      'registered outside module loading',
+    )
+  })
+
+  it('admits when nothing is registered, which is the open core', async () => {
+    expect(await admitSignIn(signInContext())).toBeUndefined()
+  })
+
+  it('admits when every gate admits', async () => {
+    withLoadingModuleForTests('m', () => {
+      registerSignInGate(gate('a', { kind: 'admit' }))
+      registerSignInGate(gate('b', { kind: 'admit' }))
+    })
+    expect(await admitSignIn(signInContext())).toBeUndefined()
+  })
+
+  it('reports an enrolment demand with the gate’s own reason', async () => {
+    withLoadingModuleForTests('policy', () =>
+      registerSignInGate(gate('second-factor', { kind: 'enrol', reason: 'Acme requires a second factor.' })),
+    )
+    expect(await admitSignIn(signInContext())).toEqual({
+      module: 'second-factor',
+      kind: 'enrol',
+      reason: 'Acme requires a second factor.',
+    })
+  })
+
+  /*
+   * The property `admitIngest` does not have, and the reason this one asks
+   * every gate instead of stopping at the first.
+   *
+   * `enrol` is the weaker answer: it still hands out a challenge that reaches
+   * the enrolment routes. A gate answering it while a later gate would refuse
+   * outright must not be what the caller acts on — so the scan continues past
+   * an `enrol` and `refuse` wins wherever it appears, before or after.
+   */
+  it('lets a later refusal beat an earlier enrolment demand', async () => {
+    withLoadingModuleForTests('m', () => {
+      registerSignInGate(gate('policy', { kind: 'enrol', reason: 'enrol first' }))
+      registerSignInGate(gate('suspension', { kind: 'refuse', reason: 'this organization is suspended' }))
+    })
+    expect(await admitSignIn(signInContext())).toEqual({
+      module: 'suspension',
+      kind: 'refuse',
+      reason: 'this organization is suspended',
+    })
+  })
+
+  it('takes the first enrolment demand when no gate refuses', async () => {
+    withLoadingModuleForTests('m', () => {
+      registerSignInGate(gate('first', { kind: 'enrol', reason: 'first' }))
+      registerSignInGate(gate('second', { kind: 'enrol', reason: 'second' }))
+    })
+    expect((await admitSignIn(signInContext()))?.reason).toBe('first')
+  })
+
+  it('stops at a refusal, because nothing outranks one', async () => {
+    const asked: string[] = []
+    const watch = (name: string, verdict: SignInVerdict): SignInGate => ({
+      name,
+      check: async () => {
+        asked.push(name)
+        return verdict
+      },
+    })
+    withLoadingModuleForTests('m', () => {
+      registerSignInGate(watch('first', { kind: 'admit' }))
+      registerSignInGate(watch('second', { kind: 'refuse', reason: 'no' }))
+      registerSignInGate(watch('third', { kind: 'admit' }))
+    })
+    expect((await admitSignIn(signInContext()))?.module).toBe('second')
+    expect(asked).toEqual(['first', 'second'])
+  })
+
+  /*
+   * What was proved *on this request* and what the account *holds* are two
+   * inputs, and a gate that could not tell them apart would treat a renewal as
+   * a password-only sign-in.
+   */
+  it('carries the path, the kind proved and whether the account holds one', async () => {
+    const seen: SignInContext[] = []
+    withLoadingModuleForTests('m', () =>
+      registerSignInGate({
+        name: 'watch',
+        check: async (context) => {
+          seen.push(context)
+          return { kind: 'admit' }
+        },
+      }),
+    )
+    await admitSignIn(signInContext({ path: 'refresh', enrolled: true }))
+    await admitSignIn(signInContext({ path: 'second-factor', secondFactor: 'webauthn', enrolled: true }))
+    expect(seen.map((c) => [c.path, c.secondFactor, c.enrolled])).toEqual([
+      ['refresh', undefined, true],
+      ['second-factor', 'webauthn', true],
+    ])
+  })
+
+  it('reports its gates on the startup line', () => {
+    withLoadingModuleForTests('policy', () => registerSignInGate(gate('second-factor', { kind: 'admit' })))
+    expect(loadedExtensions().signIn).toEqual(['policy:second-factor'])
   })
 })

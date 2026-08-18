@@ -100,13 +100,19 @@ const login = {
     sawProof = proof
     if (challenge !== 'a-good-sign-in-challenge') return undefined
     return {
-      accessToken: 'an-access-token',
-      refreshToken: 'a-refresh-token',
-      expiresIn: 900,
-      orgId: ORG,
-      userId: USER,
+      kind: 'tokens',
+      tokens: {
+        accessToken: 'an-access-token',
+        refreshToken: 'a-refresh-token',
+        expiresIn: 900,
+        orgId: ORG,
+        userId: USER,
+      },
     }
   },
+  // The enrolment door asks this of every credential the API refused, so a stub
+  // that omitted it would make an ordinary 401 on this path a 500.
+  readEnrolmentChallenge: async () => undefined,
 } as unknown as Login
 
 let server: Server

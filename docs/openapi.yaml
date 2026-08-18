@@ -523,6 +523,53 @@ components:
             be presented as a bearer token would be a way past the factor it
             exists to demand. Present it to `POST /auth/second-factor`.
         expires_in: { type: integer, description: Seconds. }
+    EnrolmentChallenge:
+      type: object
+      description: |
+        A sign-in gate admitted this person only as far as **enrolling** a
+        second factor.
+
+        Produced by a commercial module registered on `registerSignInGate`; the
+        open core registers none and never answers this. The alternative to it
+        is a policy that locks out everybody who had not already enrolled on the
+        day it was turned on, with no route back that does not go through the
+        database.
+      required: [second_factor_enrolment_required, challenge, expires_in, reason]
+      properties:
+        second_factor_enrolment_required:
+          type: boolean
+          enum: [true]
+        challenge:
+          type: string
+          description: |
+            Not a session, and not a sign-in challenge either. Its audience is
+            not the API's — so it is refused everywhere an access token is
+            accepted — and it carries a purpose a sign-in challenge does not, so
+            neither can be spent as the other.
+
+            It reaches exactly four routes: `POST /me/second-factor`,
+            `POST /me/second-factor/webauthn`,
+            `POST /me/second-factor/webauthn/finish` and
+            `POST /me/second-factor/{id}/confirm`. Not the listing, because a
+            caller who has proved nothing is not owed an inventory of the
+            account, and not the removal, because taking a factor off under a
+            mandate to add one is what somebody holding a stolen password would
+            do.
+
+            Present it as `Authorization: Bearer`. Confirming a factor through
+            it answers with the recovery codes **and** a session, because that
+            is the end of a sign-in as well as the end of an enrolment.
+        expires_in:
+          type: integer
+          description: >
+            Seconds, and longer than a sign-in challenge's. That one is "read
+            six digits off a screen you are already holding"; this is "install
+            an authenticator, scan a code, and write down ten recovery codes".
+        reason:
+          type: string
+          description: >
+            The gate's own words, shown to the person. A demand somebody cannot
+            read is indistinguishable from the product being broken.
     SecondFactor:
       type: object
       required: [id, kind, label, created_at, last_used_at]
@@ -972,6 +1019,21 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/TokenPair'
                   - $ref: '#/components/schemas/SecondFactorChallenge'
+                  - $ref: '#/components/schemas/EnrolmentChallenge'
+        '403':
+          description: |
+            A registered sign-in gate refused, in its own words.
+
+            The credential was correct — this is a policy decision — so it is
+            not a `401`: every client here renews on one and replays, and a
+            refusal spelled that way would spend a refresh token and arrive as
+            two failures with a renewal between them. Not `404` either, since
+            the caller is looking straight at their own account.
+
+            The open core registers no gates and never answers this.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401':
           description: >
             One response for every failure, in the same time: unknown address,
@@ -1185,10 +1247,30 @@ paths:
                     /auth/second-factor/webauthn` first.
       responses:
         '200':
-          description: Signed in
+          description: >
+            Signed in — or, where a gate answered, an enrolment challenge. A
+            gate runs after the proof rather than instead of it, so one that
+            wanted a particular kind can still refuse the one just produced.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/TokenPair' }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/TokenPair'
+                  - $ref: '#/components/schemas/EnrolmentChallenge'
+        '403':
+          description: |
+            A registered sign-in gate refused, in its own words.
+
+            The credential was correct — this is a policy decision — so it is
+            not a `401`: every client here renews on one and replays, and a
+            refusal spelled that way would spend a refresh token and arrive as
+            two failures with a renewal between them. Not `404` either, since
+            the caller is looking straight at their own account.
+
+            The open core registers no gates and never answers this.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401':
           description: >
             One response for an expired challenge, a forged one, a wrong code
@@ -1230,10 +1312,32 @@ paths:
                 refresh_token: { type: string }
       responses:
         '200':
-          description: A new pair. The presented token is now spent.
+          description: >
+            A new pair. The presented token is now spent — which is true of the
+            enrolment challenge below as well: a renewal is gated like a
+            sign-in, so a policy turned on while people are signed in reaches
+            them rather than waiting for every session to expire, and the spent
+            token is not redeemable afterwards.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/TokenPair' }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/TokenPair'
+                  - $ref: '#/components/schemas/EnrolmentChallenge'
+        '403':
+          description: |
+            A registered sign-in gate refused, in its own words.
+
+            The credential was correct — this is a policy decision — so it is
+            not a `401`: every client here renews on one and replays, and a
+            refusal spelled that way would spend a refresh token and arrive as
+            two failures with a renewal between them. Not `404` either, since
+            the caller is looking straight at their own account.
+
+            The open core registers no gates and never answers this.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401':
           description: Expired, revoked, already used, unknown, or the account has since been disabled.
           content:
@@ -1578,10 +1682,16 @@ paths:
         '200':
           description: >
             Changed. The pair that replaces every session this just ended,
-            including the caller's own.
+            including the caller's own — or, where a gate answered, an enrolment
+            challenge. **The password is changed either way**: the statement
+            commits before the session is minted, so this is a person with a new
+            password and no session rather than a change that failed.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/TokenPair' }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/TokenPair'
+                  - $ref: '#/components/schemas/EnrolmentChallenge'
         '400':
           description: >
             A field is missing, or the new password is too short. The one thing

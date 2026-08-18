@@ -272,6 +272,37 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.20.0 — a module can require a second factor
+
+**No migration, no new variables, and nothing changes on a deployment running
+no commercial module.** `registerSignInGate` is a sixth extension point; the
+open core registers none, so every credential it verifies still mints a session
+exactly as before.
+
+What it asks of an operator is nothing. What it asks of anybody **writing a
+client** is one thing, and it applies whether or not you run a module today:
+`POST /v1/auth/login`, `POST /v1/auth/second-factor`, `POST /v1/auth/refresh`
+and `POST /v1/me/password` can now answer `200` with
+`{second_factor_enrolment_required: true, challenge, expires_in, reason}`
+instead of tokens, and `403` where a gate refuses outright. A client that reads
+a `200` from those endpoints as "tokens are in the body" will read `undefined`
+for an access token the first time a customer turns a policy on.
+
+The four are four because a gate runs where a session is minted, and there are
+four such paths. A **renewal** is one of them deliberately: without that, a
+policy turned on while people are signed in would do nothing for any of them for
+as long as they kept renewing.
+
+On `POST /v1/me/password` the password **is** changed when this is answered.
+The statement commits before the session is minted, so it is a person with a new
+password and no session rather than a change that failed — report it that way or
+they will go on trying the old one.
+
+The enrolment challenge is not a session and is refused everywhere an access
+token is accepted. It reaches four routes, listed in
+[extensions.md](./extensions.md), and confirming a factor through it answers
+with the recovery codes **and** a session.
+
 ### 0.19.0 — a second factor you cannot be phished out of
 
 **One migration, no new variables, and nothing to configure.** WebAuthn needs

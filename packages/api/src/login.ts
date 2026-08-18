@@ -1,6 +1,7 @@
 import { createHash, createPublicKey, randomBytes, timingSafeEqual } from 'node:crypto'
 
 import {
+  admitSignIn,
   hashPassword,
   needsRehash,
   spendVerificationTime,
@@ -16,6 +17,7 @@ import type { Pool, PoolClient } from 'pg'
 // A type only, and therefore no cycle: the store imports nothing from here.
 // Restating its shape would be a second answer about what a ceremony needs.
 import type { WebAuthnAssertionOptions } from './second-factor.js'
+import type { SignInContext } from '@nacre.work/core'
 
 /**
  * Email and password sign-in.
@@ -60,6 +62,17 @@ const ACCESS_MIN_SECONDS = 60
 const CHALLENGE_SECONDS = 300
 
 /**
+ * The enrolment challenge's lifetime, and deliberately longer than the one
+ * above.
+ *
+ * That one is "read six digits off a screen you are already holding". This one
+ * is "install an authenticator, scan a code, and write down ten recovery codes"
+ * — or find a security key in a drawer. Five minutes is a person being told to
+ * start over halfway through the one flow they were sent to complete.
+ */
+const ENROL_SECONDS = 900
+
+/**
  * The challenge's audience, which is deliberately not the API's.
  *
  * An access token and a challenge are both JWTs signed by the same key, so the
@@ -67,6 +80,20 @@ const CHALLENGE_SECONDS = 300
  * to be for.
  */
 const challengeAudience = (audience: string): string => `${audience}/second-factor`
+
+/**
+ * What a challenge is for, carried as a claim inside it.
+ *
+ * Both purposes share the audience above, because both are "not an access
+ * token" and that is what the audience separates. What separates *them* is this
+ * claim, checked in the `WHERE`-clause sense: `readChallenge` takes the purpose
+ * it expects and refuses anything else, so a challenge minted to let somebody
+ * enrol cannot be spent to complete a sign-in, and one minted to complete a
+ * sign-in cannot reach the enrolment routes. One pool of tokens with two
+ * purposes and no check between them would let the weaker ceremony mint the
+ * input to the stronger one.
+ */
+type ChallengePurpose = 'second-factor' | 'enrol'
 
 export interface LoginRequest {
   readonly email: string
@@ -167,8 +194,46 @@ export type SecondFactorProof =
  * a caller can ignore, and ignoring it here means issuing a session to somebody
  * who has not produced their second factor.
  */
-export type LoginOutcome =
+export type SessionOutcome =
   | { readonly kind: 'tokens'; readonly tokens: Tokens }
+  | {
+      /**
+       * A gate admitted this person only as far as enrolling a second factor.
+       *
+       * The challenge reaches the enrolment routes and nothing else, and
+       * confirming a factor is what turns it into a session. Without this
+       * outcome a policy requiring a factor would lock out everybody who had
+       * not already enrolled on the day it was turned on, and the route back
+       * would be the database.
+       */
+      readonly kind: 'enrol-second-factor'
+      readonly challenge: string
+      readonly expiresIn: number
+      /** The gate's own words, shown to the person. Never an internal detail. */
+      readonly reason: string
+    }
+  | {
+      /** A gate refused, and no action by this person changes that. */
+      readonly kind: 'refused'
+      readonly reason: string
+    }
+
+/**
+ * Sign-in's outcomes, which are the ones above plus the second-factor
+ * challenge.
+ *
+ * Split so that every path minting a session shares the first three: the union
+ * came from `issue`, which is the one place a session is made, and a caller
+ * that can reach `issue` can reach all of its answers. Only `login` can ask for
+ * a factor that already exists, so only `login` carries that member.
+ *
+ * A union rather than a nullable pair for the reason it always was: it turns
+ * every call site into a compile error until it says which outcome it means,
+ * and the alternative is an optional field a caller can ignore — where ignoring
+ * it means issuing a session to somebody a policy says may not have one.
+ */
+export type LoginOutcome =
+  | SessionOutcome
   | {
       readonly kind: 'second-factor'
       /** Short-lived, single-purpose, and useless as an access token. */
@@ -186,6 +251,15 @@ export type LoginOutcome =
  */
 export type ChangePasswordOutcome =
   | { readonly kind: 'changed'; readonly tokens: Tokens; readonly email: string }
+  /*
+   * A gate can interrupt this too, so the two non-token session outcomes are
+   * members here rather than being flattened into a failure. Somebody who has
+   * just proved their current password and is being told their organization
+   * now requires a second factor needs the challenge that lets them add one —
+   * the alternative is a password that was changed and a person who cannot use
+   * it.
+   */
+  | Exclude<SessionOutcome, { readonly kind: 'tokens' }>
   | 'wrong-password'
   | 'no-user'
 
@@ -259,10 +333,14 @@ export class Login {
      * for this.
      */
     if (this.deps.secondFactors !== undefined && (await this.deps.secondFactors.required(candidate.org_id, candidate.id))) {
-      return { kind: 'second-factor', challenge: await this.challenge(candidate), expiresIn: CHALLENGE_SECONDS }
+      return {
+        kind: 'second-factor',
+        challenge: await this.challenge(candidate, 'second-factor', CHALLENGE_SECONDS),
+        expiresIn: CHALLENGE_SECONDS,
+      }
     }
 
-    return { kind: 'tokens', tokens: await this.issue(candidate, undefined) }
+    return this.issue(candidate, undefined, 'password')
   }
 
   /**
@@ -277,9 +355,9 @@ export class Login {
    * well, the code is single-use through `last_step`, and a person holding both
    * has finished signing in anyway.
    */
-  private async challenge(user: UserRow): Promise<string> {
+  private async challenge(user: UserRow, purpose: ChallengePurpose, seconds: number): Promise<string> {
     const now = this.clock
-    return new SignJWT({ org: user.org_id, purpose: 'second-factor' })
+    return new SignJWT({ org: user.org_id, purpose })
       .setProtectedHeader({
         alg: this.deps.algorithm ?? 'HS256',
         ...(this.deps.keyId === undefined ? {} : { kid: this.deps.keyId }),
@@ -288,7 +366,7 @@ export class Login {
       .setIssuer(this.deps.issuer)
       .setAudience(challengeAudience(this.deps.audience))
       .setIssuedAt(Math.floor(now.getTime() / 1000))
-      .setExpirationTime(Math.floor(now.getTime() / 1000) + CHALLENGE_SECONDS)
+      .setExpirationTime(Math.floor(now.getTime() / 1000) + seconds)
       .sign(this.deps.key)
   }
 
@@ -300,11 +378,14 @@ export class Login {
    * all of them into one refusal. Which of the four it was is not something a
    * client needs and is something an attacker would use.
    */
-  async completeSecondFactor(challenge: string, proof: SecondFactorProof): Promise<Tokens | undefined> {
+  async completeSecondFactor(
+    challenge: string,
+    proof: SecondFactorProof,
+  ): Promise<SessionOutcome | undefined> {
     const gate = this.deps.secondFactors
     if (gate === undefined) return undefined
 
-    const who = await this.readChallenge(challenge)
+    const who = await this.readChallenge(challenge, 'second-factor')
     if (who === undefined) return undefined
     const { orgId, userId } = who
 
@@ -320,7 +401,10 @@ export class Login {
     const user = await this.userById(orgId, userId)
     if (user === undefined || user.disabled_at !== null) return undefined
 
-    return this.issue(user, undefined)
+    // The kind that was proved goes to the gates, because "a second factor" and
+    // "a factor whose signature covers the origin" are not the same claim and a
+    // policy may want the second.
+    return this.issue(user, undefined, 'second-factor', undefined, proof.kind === 'code' ? 'totp' : 'webauthn')
   }
 
   /**
@@ -339,7 +423,7 @@ export class Login {
   async beginSecondFactorWebAuthn(challenge: string): Promise<WebAuthnAssertionOptions | undefined> {
     const gate = this.deps.secondFactors
     if (gate === undefined) return undefined
-    const who = await this.readChallenge(challenge)
+    const who = await this.readChallenge(challenge, 'second-factor')
     if (who === undefined) return undefined
     return gate.beginWebAuthnAssertion(who.orgId, who.userId)
   }
@@ -354,6 +438,7 @@ export class Login {
    */
   private async readChallenge(
     challenge: string,
+    purpose: ChallengePurpose,
   ): Promise<{ readonly orgId: string; readonly userId: string } | undefined> {
     try {
       const { payload } = await jwtVerify(challenge, this.verificationKey, {
@@ -362,13 +447,45 @@ export class Login {
         algorithms: [this.deps.algorithm ?? 'HS256'],
         currentDate: this.clock,
       })
-      if (payload.purpose !== 'second-factor' || typeof payload.sub !== 'string' || typeof payload.org !== 'string') {
+      // The purpose is a required argument rather than a default, so a second
+      // reader written later has to say which kind of challenge it takes.
+      if (payload.purpose !== purpose || typeof payload.sub !== 'string' || typeof payload.org !== 'string') {
         return undefined
       }
       return { orgId: payload.org, userId: payload.sub }
     } catch {
       return undefined
     }
+  }
+
+  /**
+   * Read an enrolment challenge, for the routes that accept one.
+   *
+   * Public because the enrolment surface is in `server.ts` and this is the only
+   * thing that may turn that token into a person. It answers the org and the
+   * user and nothing else — no role, no permissions — because the only thing
+   * such a token is allowed to do is add a factor to the account it names.
+   */
+  async readEnrolmentChallenge(
+    challenge: string,
+  ): Promise<{ readonly orgId: string; readonly userId: string } | undefined> {
+    return this.readChallenge(challenge, 'enrol')
+  }
+
+  /**
+   * A confirmed factor turns an enrolment challenge into a session.
+   *
+   * Called by the enrolment route once a factor is confirmed, so the person who
+   * was sent to enrol is not then asked to sign in again — which is the moment
+   * they would give up. It re-reads the account and runs the gates again rather
+   * than trusting that enrolling was enough: a gate that wanted a *particular*
+   * kind is entitled to refuse the one that was just added, and assuming
+   * otherwise would be this file deciding what a policy means.
+   */
+  async sessionAfterEnrolment(orgId: string, userId: string): Promise<SessionOutcome | undefined> {
+    const user = await this.userById(orgId, userId)
+    if (user === undefined || user.disabled_at !== null) return undefined
+    return this.issue(user, undefined, 'second-factor')
   }
 
   /**
@@ -454,12 +571,17 @@ export class Login {
         // A new family. Carrying the old one would put the session that
         // replaces every other one in the same chain as the tokens just
         // revoked.
-        return this.issue(row, undefined, client)
+        return this.issue(row, undefined, 'password-change', client)
       },
       this.scope,
     )
 
-    return { kind: 'changed', tokens, email: row.email }
+    // A gate may interrupt a password change as readily as a sign-in, and the
+    // outcome is carried out rather than flattened: a person who has just
+    // proved their current password and is being told to enrol needs the
+    // challenge, not a failure with no next step.
+    if (tokens.kind !== 'tokens') return tokens
+    return { kind: 'changed', tokens: tokens.tokens, email: row.email }
   }
 
   private async userById(orgId: string, userId: string): Promise<UserRow | undefined> {
@@ -572,7 +694,7 @@ export class Login {
    * took it. Which one is unknowable from here, so the whole family is revoked
    * and both sign in again.
    */
-  async refresh(token: string): Promise<Tokens | undefined> {
+  async refresh(token: string): Promise<SessionOutcome | undefined> {
     const row = await whileAuthenticating(
       this.deps.pool,
       async (client) => {
@@ -625,7 +747,7 @@ export class Login {
     const outcome = await withOrg(
       this.deps.pool,
       row.org_id,
-      async (client): Promise<Tokens | 'lost' | 'gone'> => {
+      async (client): Promise<SessionOutcome | 'lost' | 'gone'> => {
         await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [row.family_id])
 
         const claimed = await client.query<{ id: string }>(
@@ -644,7 +766,7 @@ export class Login {
         const user = rows[0]
         if (user === undefined || user.disabled_at !== null) return 'gone'
 
-        return this.issue(user, row.family_id, client)
+        return this.issue(user, row.family_id, 'refresh', client)
       },
       this.scope,
     )
@@ -720,11 +842,58 @@ export class Login {
    * revoked together; a fresh login starts a new one, so signing out of one
    * device does not sign out of the others.
    */
+  /**
+   * Mint a session, unless a gate says this authentication is not enough.
+   *
+   * **The gates are consulted here rather than beside each caller, and that is
+   * the whole of why this returns a union.** There are four paths from a
+   * verified credential to a session — a password with no factor asked for, a
+   * completed second factor, a spent refresh token, and a password change — and
+   * a check placed beside them is a check the fifth one forgets. That is this
+   * repository's most repeated defect, so the gate goes at the single point all
+   * four already reach, and every caller becomes a compile error until it says
+   * what it does with a refusal.
+   *
+   * A **refresh** is gated too, deliberately. A policy turned on while people
+   * are signed in would otherwise do nothing for any of them for as long as
+   * they kept renewing — authority renewed without the person present is the
+   * same case a delegation's `disabled` check exists for.
+   *
+   * `path` is what the caller is doing, passed rather than inferred: a gate
+   * that wants to demand a factor on sign-in and not interrupt a password
+   * change can only tell those apart if it is told.
+   */
   private async issue(
     user: UserRow,
     family: string | undefined,
+    path: SignInContext['path'],
     client?: PoolClient,
-  ): Promise<Tokens> {
+    proved?: 'totp' | 'webauthn',
+  ): Promise<SessionOutcome> {
+    const refusal = await admitSignIn({
+      orgId: user.org_id,
+      userId: user.id,
+      role: user.role as SignInContext['role'],
+      path,
+      secondFactor: proved,
+      // Asked rather than assumed. `required` answers whether the account holds
+      // a confirmed factor, which is a different question from whether one was
+      // proved on this request — a refresh proves none and the account may
+      // still have one.
+      enrolled: this.deps.secondFactors === undefined
+        ? false
+        : await this.deps.secondFactors.required(user.org_id, user.id),
+    })
+    if (refusal !== undefined) {
+      if (refusal.kind === 'refuse') return { kind: 'refused', reason: refusal.reason }
+      return {
+        kind: 'enrol-second-factor',
+        challenge: await this.challenge(user, 'enrol', ENROL_SECONDS),
+        expiresIn: ENROL_SECONDS,
+        reason: refusal.reason,
+      }
+    }
+
     const ttl = Math.max(ACCESS_MIN_SECONDS, this.deps.accessTokenTtl)
     const now = this.clock
 
@@ -770,6 +939,9 @@ export class Login {
       this.scope,
     )
 
-    return { accessToken, refreshToken, expiresIn: ttl, orgId: user.org_id, userId: user.id }
+    return {
+      kind: 'tokens',
+      tokens: { accessToken, refreshToken, expiresIn: ttl, orgId: user.org_id, userId: user.id },
+    }
   }
 }

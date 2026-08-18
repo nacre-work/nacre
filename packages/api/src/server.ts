@@ -54,7 +54,7 @@ import {
 import { badRequest, internal, notAdministeredHere, notFound, Problem, tooBusy } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
-import type { Login, SecondFactorProof, Tokens, WebAuthnProof } from './login.js'
+import type { Login, SecondFactorProof, SessionOutcome, Tokens, WebAuthnProof } from './login.js'
 import { MIN_PASSWORD_LENGTH, type PasswordRecovery } from './recovery.js'
 import type { Mailer } from '@nacre.work/core'
 import type {
@@ -1610,6 +1610,356 @@ function handledTooBusy(
   return true
 }
 
+/**
+ * Which routes a door offers, and what a completed enrolment answers with.
+ *
+ * There are two doors onto this surface and they are deliberately not the same
+ * width. A signed-in person reaches all of it. Somebody holding an **enrolment
+ * challenge** — sent here by a gate that would not give them a session until
+ * they have a factor — reaches only the four routes that add one: they have not
+ * proved a second factor and must not be able to *remove* one, which is the
+ * exact move somebody who has taken an account would make, and listing the
+ * factors on the account is not something a half-authenticated caller is owed.
+ *
+ * `onEnrolled` is why the routes are shared rather than copied. Through the
+ * enrolment door, confirming a factor is also the end of a sign-in, so the
+ * response carries the session — the alternative is a person who has just been
+ * made to enrol being asked to sign in again, at exactly the moment they would
+ * give up.
+ */
+interface SecondFactorDoor {
+  readonly orgId: string
+  readonly userId: string
+  readonly offers: (rest: string, method: string) => boolean
+  readonly onEnrolled: () => Promise<Record<string, unknown>>
+}
+
+/**
+ * The `/v1/me/second-factor` routes, reachable through either door.
+ *
+ * One implementation with the door as a parameter, rather than a second copy
+ * behind the enrolment challenge. Four of these seven routes would have been
+ * duplicated, and a fix applied to one copy and not its sibling is the defect
+ * this repository names most often.
+ */
+async function handleSecondFactorRoutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  instance: string,
+  requestId: string,
+  body: unknown,
+  options: ApiOptions,
+  factors: SecondFactors,
+  door: SecondFactorDoor,
+): Promise<void> {
+  const { orgId, userId } = door
+  const rest = instance.slice('/v1/me/second-factor'.length)
+
+  // Default-deny, and the door says what it offers rather than the routes
+  // saying who may reach them. A route added later is unreachable through the
+  // narrow door until somebody widens it deliberately, which is the direction
+  // to be wrong in.
+  if (!door.offers(rest, req.method ?? 'GET')) {
+    const problem = notFound(instance, requestId)
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+      if (rest === '' && req.method === 'GET') {
+        const [items, left] = await Promise.all([
+          factors.list(orgId, userId),
+          factors.recoveryCodesLeft(orgId, userId),
+        ])
+        send(
+          res,
+          200,
+          {
+            items: items.map((f) => ({
+              id: f.id,
+              kind: f.kind,
+              label: f.label,
+              created_at: f.createdAt.toISOString(),
+              last_used_at: f.lastUsedAt?.toISOString() ?? null,
+            })),
+            recovery_codes_left: left,
+            // What this installation can enrol, so the screen draws the
+            // controls that work rather than one that answers 404. The same
+            // "ask, do not assume" rule `GET /v1/auth/methods` exists for: a
+            // deployment with no `NACRE_2FA_KEY` offers `webauthn` alone.
+            kinds: factors.kinds,
+          },
+          requestId,
+        )
+        return
+      }
+
+      if (rest === '' && req.method === 'POST') {
+        const label = (body as { label?: unknown } | undefined)?.label
+        const named = typeof label === 'string' && label.trim() !== '' ? label.trim().slice(0, 60) : 'Authenticator'
+        const begun = await factors.begin(orgId, userId, named)
+        if (begun === undefined) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        // The secret in the response and nowhere else: this is the one moment
+        // it exists outside the sealed column, exactly as a generated password
+        // is.
+        send(
+          res,
+          201,
+          { id: begun.id, secret: begun.secret, otpauth_url: begun.otpauthUrl, label: named },
+          requestId,
+        )
+        return
+      }
+
+      /*
+       * Enrolling a key, which is two calls because a ceremony is.
+       *
+       * The first hands out a challenge and what the authenticator needs to
+       * see; the second brings back what it signed. They are separate because
+       * the challenge has to exist in the database before the browser is asked
+       * for anything — a server that made one up when the answer arrived would
+       * be verifying a signature over a number the client chose.
+       */
+      if (rest === '/webauthn' && req.method === 'POST') {
+        const begun = await factors.beginWebAuthnRegistration(orgId, userId)
+        if (begun === undefined) {
+          // This installation offers TOTP only. 404 rather than a message
+          // about configuration, for the reason the whole block is behind one.
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        send(res, 201, registrationOptionsJson(begun), requestId)
+        return
+      }
+
+      if (rest === '/webauthn/finish' && req.method === 'POST') {
+        const it = (body ?? {}) as Record<string, unknown>
+        const label = typeof it.label === 'string' && it.label.trim() !== '' ? it.label.trim().slice(0, 60) : 'Security key'
+        const fields = ['challenge', 'attestation_object', 'client_data_json']
+        if (fields.some((f) => typeof it[f] !== 'string' || it[f] === '')) {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "'challenge', 'attestation_object' and 'client_data_json' are required.",
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        const codes = await factors.finishWebAuthnRegistration(orgId, userId, label, {
+          attestationObject: new Uint8Array(Buffer.from(it.attestation_object as string, 'base64url')),
+          clientDataJSON: new Uint8Array(Buffer.from(it.client_data_json as string, 'base64url')),
+          challenge: it.challenge as string,
+        })
+        if (codes === undefined) {
+          // One refusal for a spent challenge, a wrong origin, an unsupported
+          // algorithm and a signature that does not verify. Telling them apart
+          // would describe this server's checks to whoever is probing them.
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        await options.audit.write({
+          orgId: orgId,
+          actor: `user:${userId}`,
+          action: 'second_factor.enrol',
+          result: 'allow',
+          target: { user_id: userId },
+          detail: { kind: 'webauthn' },
+          requestId,
+        })
+        void notifySecurityChange(options, orgId, userId, 'enrolled', requestId)
+        send(res, 200, { recovery_codes: codes, ...(await door.onEnrolled()) }, requestId)
+        return
+      }
+
+      /*
+       * A challenge for proving possession to *this* surface, which exists
+       * because taking a factor off takes a current proof and an assertion
+       * cannot be produced without one.
+       *
+       * `purpose = 'authenticate'` is the same pool a sign-in spends from, and
+       * that is deliberate rather than an oversight: this caller has a session,
+       * so a challenge they can spend on a sign-in buys them nothing they do
+       * not already hold. What must not share a pool is *enrolment*, since
+       * that one is asked for by somebody already signed in and would let a
+       * session mint the input to a ceremony it is not in.
+       */
+      if (rest === '/webauthn/assert' && req.method === 'POST') {
+        const begun = await factors.beginWebAuthnAssertion(orgId, userId)
+        if (begun === undefined) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        send(res, 200, assertionOptionsJson(begun), requestId)
+        return
+      }
+
+      if (rest.endsWith('/confirm') && req.method === 'POST') {
+        const id = rest.slice(1, -'/confirm'.length)
+        const code = (body as { code?: unknown } | undefined)?.code
+        if (!UUID_SHAPE.test(id) || typeof code !== 'string') {
+          const problem = badRequest(instance, requestId, "'code' is required.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        const codes = await factors.confirm(orgId, userId, id, code)
+        if (codes === undefined) {
+          // One refusal for a wrong code and for an enrolment that is not
+          // there. Telling them apart would say whether a given id exists.
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        await options.audit.write({
+          orgId: orgId,
+          actor: `user:${userId}`,
+          action: 'second_factor.enrol',
+          result: 'allow',
+          target: { user_id: userId },
+          detail: {},
+          requestId,
+        })
+        // A notice, where the deployment can send one. The person who did not
+        // do this is the one who needs to know, and a second factor appearing
+        // on an account is exactly what somebody taking it over would do.
+        // Dropped rather than raised: the enrolment happened.
+        void notifySecurityChange(options, orgId, userId, 'enrolled', requestId)
+        // Printed once. A second call returns an empty list rather than new
+        // codes, because reissuing them here would invalidate the set somebody
+        // has already written down.
+        send(res, 200, { recovery_codes: codes, ...(await door.onEnrolled()) }, requestId)
+        return
+      }
+
+      /*
+       * Taking a factor off, and the condition is what it is because the one
+       * it replaced could never be true. `rest` is `/{id}` for this route, so
+       * `!rest.includes('/')` asked whether a string beginning with a slash
+       * contains one — false for every id, always. `DELETE
+       * /v1/me/second-factor/{id}` answered 404 from the day it was written
+       * and shipped that way in 0.18.0: a second factor could be enrolled and
+       * never removed, on the one surface an administrator deliberately
+       * cannot reach on somebody's behalf.
+       *
+       * No suite could see it. `second-factor-live.test.ts` calls
+       * `factors.remove` directly and passes, because the store was never the
+       * broken half — nothing had asked the *server* for this path.
+       */
+      if (rest.startsWith('/') && !rest.slice(1).includes('/') && req.method === 'DELETE') {
+        const id = rest.slice(1)
+        const { code, assertion } = (body ?? {}) as { code?: unknown; assertion?: unknown }
+        const proof = readProof(code, assertion)
+        if (!UUID_SHAPE.test(id) || proof === undefined) {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "Either 'code' or 'assertion' is required to remove a second factor.",
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        /*
+         * A current proof to take one off, and that is the whole reason this
+         * endpoint takes a body at all. Removing the second factor is the first
+         * thing somebody with a stolen session does, and a session is exactly
+         * what the factor exists to be more than.
+         *
+         * Either kind, because an account can hold either kind — an
+         * installation with no `NACRE_2FA_KEY` has no code to ask for, and
+         * demanding one there would make every WebAuthn factor permanent.
+         */
+        const proved =
+          proof.kind === 'code'
+            ? await factors.verify(orgId, userId, proof.code)
+            : await factors.verifyWebAuthnAssertion(orgId, userId, proof.response)
+        if (!proved) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        const removed = await factors.remove(orgId, userId, id)
+        if (!removed) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        await options.audit.write({
+          orgId: orgId,
+          actor: `user:${userId}`,
+          action: 'second_factor.remove',
+          result: 'allow',
+          target: { user_id: userId },
+          detail: {},
+          requestId,
+        })
+        void notifySecurityChange(options, orgId, userId, 'removed', requestId)
+        send(res, 204, null, requestId)
+        return
+      }
+
+      const problem = notFound(instance, requestId)
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+}
+
+/**
+ * The two session outcomes that are not a session, rendered in one place.
+ *
+ * Four handlers can reach them — sign-in, the second half of a sign-in, a
+ * refresh, and a password change — because the gates are consulted where a
+ * session is minted and all four mint one. Four copies of this rendering is
+ * four chances to answer one of them with a `200` and no tokens, which a client
+ * reads as a successful sign-in that produced nothing.
+ *
+ * `enrol` is a **200**, on the same argument the second-factor challenge is:
+ * nothing was refused. The client is being asked for something more, and told
+ * where to send it. `second_factor_enrolment_required` rather than reusing
+ * `second_factor_required`, because the two ask for different things — one for
+ * a code from an authenticator that exists, one for an authenticator.
+ *
+ * `refuse` is a **403**. Not `401`: the credential was correct, and every
+ * client here renews on a `401` and replays, so a policy refusal spelled that
+ * way would spend a refresh token and arrive as two failures. Not `404` either
+ * — the caller is looking straight at their own account. The reason is the
+ * gate's own words, because a refusal a person cannot act on and cannot read is
+ * indistinguishable from the product being broken.
+ */
+function sendSessionOutcome(
+  res: ServerResponse,
+  outcome: Exclude<SessionOutcome, { readonly kind: 'tokens' }>,
+  instance: string,
+  requestId: string,
+): void {
+  if (outcome.kind === 'enrol-second-factor') {
+    send(
+      res,
+      200,
+      {
+        second_factor_enrolment_required: true,
+        challenge: outcome.challenge,
+        expires_in: outcome.expiresIn,
+        reason: outcome.reason,
+      },
+      requestId,
+    )
+    return
+  }
+  const problem = new Problem({
+    type: 'https://nacre.work/errors/sign-in-refused',
+    title: 'Sign-in refused',
+    status: 403,
+    detail: outcome.reason,
+    instance,
+    requestId,
+  })
+  send(res, problem.status, problem.toJSON(), requestId)
+}
+
 async function handleAuth(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1755,6 +2105,14 @@ async function handleAuth(
         },
         requestId,
       )
+      return
+    }
+
+    if (outcome.kind !== 'tokens') {
+      // A gate answered. Not an audit event either way: `enrol` is half an
+      // authentication, like the challenge above, and `refused` never became a
+      // session — the `login allow` event is written where one is issued.
+      sendSessionOutcome(res, outcome, instance, requestId)
       return
     }
 
@@ -1958,8 +2316,8 @@ async function handleAuth(
       }
     }
 
-    const tokens = await options.login.completeSecondFactor(challenge, proof)
-    if (tokens === undefined) {
+    const outcome = await options.login.completeSecondFactor(challenge, proof)
+    if (outcome === undefined) {
       // One refusal for an expired challenge, a forged one, a wrong code and a
       // disabled account alike. Which of the four it was is nothing a client
       // needs and something an attacker would use.
@@ -1967,6 +2325,15 @@ async function handleAuth(
       refuse()
       return
     }
+
+    if (outcome.kind !== 'tokens') {
+      // A gate that wanted a *particular* kind can still refuse the one that
+      // was just produced, which is why the gates run after the proof rather
+      // than instead of it.
+      sendSessionOutcome(res, outcome, instance, requestId)
+      return
+    }
+    const tokens = outcome.tokens
 
     await options.audit.write({
       orgId: tokens.orgId,
@@ -1994,12 +2361,21 @@ async function handleAuth(
   }
 
   if (instance === '/v1/auth/refresh') {
-    const tokens = await options.login.refresh(token)
-    if (tokens === undefined) {
+    const outcome = await options.login.refresh(token)
+    if (outcome === undefined) {
       refuse()
       return
     }
-    send(res, 200, tokenJson(tokens), requestId)
+    if (outcome.kind !== 'tokens') {
+      // A renewal is gated like a sign-in, so a policy turned on while people
+      // are signed in reaches them rather than waiting for every session to
+      // expire. The refresh token is spent either way — the claim commits
+      // before the gates are asked — so this is the end of that session and the
+      // challenge is the way on.
+      sendSessionOutcome(res, outcome, instance, requestId)
+      return
+    }
+    send(res, 200, tokenJson(outcome.tokens), requestId)
     return
   }
 
@@ -2680,6 +3056,80 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         : presented.slice(7).startsWith('nacre_sk_')
           ? 'service_key'
           : 'jwt'
+    /*
+     * The narrow door, and it is reached only by a credential this API has
+     * already refused as an access token — which is exactly what an enrolment
+     * challenge is, since its audience is deliberately not the API's.
+     *
+     * Placed here rather than ahead of `authenticate` for two reasons, and the
+     * first was found by running the suite: ahead of it, every ordinary request
+     * to this path paid a JWT verification for a token it was never carrying.
+     * The second is the better one — down here the door cannot widen anything,
+     * because the only requests that reach it are ones already on their way to
+     * a 401.
+     *
+     * That is also what makes it safe to be wrong about. A route that forgets
+     * this door answers 401, never 200. A design that instead minted a real
+     * access token and asked every other route to refuse it would fail the
+     * other way, and on an authorization boundary that is the dangerous
+     * direction.
+     *
+     * Keyed on the instance, so nothing else in the API is reachable with one
+     * of these however this branch is edited. The door then narrows further, to
+     * the four routes that add a factor.
+     */
+    if (
+      (instance === '/v1/me/second-factor' || instance.startsWith('/v1/me/second-factor/')) &&
+      options.login !== undefined &&
+      options.secondFactors !== undefined &&
+      options.secondFactors.available
+    ) {
+      const bearer =
+        presented?.startsWith('Bearer ') === true ? presented.slice(7) : undefined
+      const who = bearer === undefined ? undefined : await options.login.readEnrolmentChallenge(bearer)
+      if (who !== undefined) {
+        const login = options.login
+        const factors = options.secondFactors
+        let enrolmentBody: unknown
+        try {
+          enrolmentBody = await readBody(req, options.maxBodyBytes ?? MAX_BODY_BYTES)
+        } catch {
+          const problem = badRequest(instance, requestId, 'The request body could not be read.')
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        await handleSecondFactorRoutes(req, res, instance, requestId, enrolmentBody, options, factors, {
+          orgId: who.orgId,
+          userId: who.userId,
+          // Adding a factor, and nothing else. Not the listing, because a
+          // half-authenticated caller is not owed an inventory of the account;
+          // not the removal, because taking a factor off under a mandate to add
+          // one is the move somebody who has stolen a password would make; and
+          // not the sign-in assertion, which belongs to the other ceremony.
+          offers: (rest, method) =>
+            method === 'POST' &&
+            (rest === '' ||
+              rest === '/webauthn' ||
+              rest === '/webauthn/finish' ||
+              (rest.startsWith('/') && rest.endsWith('/confirm'))),
+          // The end of a sign-in as well as the end of an enrolment. The gates
+          // run again inside `sessionAfterEnrolment`, because a gate that
+          // wanted a particular kind is entitled to refuse the one just added.
+          onEnrolled: async () => {
+            const outcome = await login.sessionAfterEnrolment(who.orgId, who.userId)
+            if (outcome === undefined || outcome.kind !== 'tokens') return {}
+            return {
+              access_token: outcome.tokens.accessToken,
+              token_type: 'Bearer',
+              expires_in: outcome.tokens.expiresIn,
+              refresh_token: outcome.tokens.refreshToken,
+            }
+          },
+        })
+        return
+      }
+    }
+
     options.observe?.authFailures.inc({ kind })
     send(res, auth.status, auth.toJSON(), requestId)
     return
@@ -3495,6 +3945,32 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
+      if (outcome.kind !== 'changed') {
+        /*
+         * A gate answered, and the password **is** already changed — the
+         * statement committed before the session was minted. So this is not a
+         * failure to report: it is a person who now has a new password and no
+         * session, and the challenge is what gets them one.
+         *
+         * The audit event is written first for that reason. `password.change`
+         * records what happened to the row, and it happened whatever the gate
+         * then said about the session; writing it only on the way to a token
+         * would leave the one action an investigator most wants out of the
+         * journal precisely when a policy is being enforced.
+         */
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `user:${auth.principal.id}`,
+          action: 'password.change',
+          result: 'allow',
+          target: { user_id: auth.principal.id },
+          detail: {},
+          requestId,
+        })
+        sendSessionOutcome(res, outcome, instance, requestId)
+        return
+      }
+
       await options.audit.write({
         orgId: auth.orgId,
         actor: `user:${auth.principal.id}`,
@@ -3573,249 +4049,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
-      const factors = options.secondFactors
-      const userId = auth.principal.id
-      const rest = instance.slice('/v1/me/second-factor'.length)
-
-      if (rest === '' && req.method === 'GET') {
-        const [items, left] = await Promise.all([
-          factors.list(auth.orgId, userId),
-          factors.recoveryCodesLeft(auth.orgId, userId),
-        ])
-        send(
-          res,
-          200,
-          {
-            items: items.map((f) => ({
-              id: f.id,
-              kind: f.kind,
-              label: f.label,
-              created_at: f.createdAt.toISOString(),
-              last_used_at: f.lastUsedAt?.toISOString() ?? null,
-            })),
-            recovery_codes_left: left,
-            // What this installation can enrol, so the screen draws the
-            // controls that work rather than one that answers 404. The same
-            // "ask, do not assume" rule `GET /v1/auth/methods` exists for: a
-            // deployment with no `NACRE_2FA_KEY` offers `webauthn` alone.
-            kinds: factors.kinds,
-          },
-          requestId,
-        )
-        return
-      }
-
-      if (rest === '' && req.method === 'POST') {
-        const label = (body as { label?: unknown } | undefined)?.label
-        const named = typeof label === 'string' && label.trim() !== '' ? label.trim().slice(0, 60) : 'Authenticator'
-        const begun = await factors.begin(auth.orgId, userId, named)
-        if (begun === undefined) {
-          const problem = notFound(instance, requestId)
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-        // The secret in the response and nowhere else: this is the one moment
-        // it exists outside the sealed column, exactly as a generated password
-        // is.
-        send(
-          res,
-          201,
-          { id: begun.id, secret: begun.secret, otpauth_url: begun.otpauthUrl, label: named },
-          requestId,
-        )
-        return
-      }
-
-      /*
-       * Enrolling a key, which is two calls because a ceremony is.
-       *
-       * The first hands out a challenge and what the authenticator needs to
-       * see; the second brings back what it signed. They are separate because
-       * the challenge has to exist in the database before the browser is asked
-       * for anything — a server that made one up when the answer arrived would
-       * be verifying a signature over a number the client chose.
-       */
-      if (rest === '/webauthn' && req.method === 'POST') {
-        const begun = await factors.beginWebAuthnRegistration(auth.orgId, userId)
-        if (begun === undefined) {
-          // This installation offers TOTP only. 404 rather than a message
-          // about configuration, for the reason the whole block is behind one.
-          const problem = notFound(instance, requestId)
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-        send(res, 201, registrationOptionsJson(begun), requestId)
-        return
-      }
-
-      if (rest === '/webauthn/finish' && req.method === 'POST') {
-        const it = (body ?? {}) as Record<string, unknown>
-        const label = typeof it.label === 'string' && it.label.trim() !== '' ? it.label.trim().slice(0, 60) : 'Security key'
-        const fields = ['challenge', 'attestation_object', 'client_data_json']
-        if (fields.some((f) => typeof it[f] !== 'string' || it[f] === '')) {
-          const problem = badRequest(
-            instance,
-            requestId,
-            "'challenge', 'attestation_object' and 'client_data_json' are required.",
-          )
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-        const codes = await factors.finishWebAuthnRegistration(auth.orgId, userId, label, {
-          attestationObject: new Uint8Array(Buffer.from(it.attestation_object as string, 'base64url')),
-          clientDataJSON: new Uint8Array(Buffer.from(it.client_data_json as string, 'base64url')),
-          challenge: it.challenge as string,
-        })
-        if (codes === undefined) {
-          // One refusal for a spent challenge, a wrong origin, an unsupported
-          // algorithm and a signature that does not verify. Telling them apart
-          // would describe this server's checks to whoever is probing them.
-          const problem = notFound(instance, requestId)
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-        await options.audit.write({
-          orgId: auth.orgId,
-          actor: `user:${userId}`,
-          action: 'second_factor.enrol',
-          result: 'allow',
-          target: { user_id: userId },
-          detail: { kind: 'webauthn' },
-          requestId,
-        })
-        void notifySecurityChange(options, auth.orgId, userId, 'enrolled', requestId)
-        send(res, 200, { recovery_codes: codes }, requestId)
-        return
-      }
-
-      /*
-       * A challenge for proving possession to *this* surface, which exists
-       * because taking a factor off takes a current proof and an assertion
-       * cannot be produced without one.
-       *
-       * `purpose = 'authenticate'` is the same pool a sign-in spends from, and
-       * that is deliberate rather than an oversight: this caller has a session,
-       * so a challenge they can spend on a sign-in buys them nothing they do
-       * not already hold. What must not share a pool is *enrolment*, since
-       * that one is asked for by somebody already signed in and would let a
-       * session mint the input to a ceremony it is not in.
-       */
-      if (rest === '/webauthn/assert' && req.method === 'POST') {
-        const begun = await factors.beginWebAuthnAssertion(auth.orgId, userId)
-        if (begun === undefined) {
-          const problem = notFound(instance, requestId)
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-        send(res, 200, assertionOptionsJson(begun), requestId)
-        return
-      }
-
-      if (rest.endsWith('/confirm') && req.method === 'POST') {
-        const id = rest.slice(1, -'/confirm'.length)
-        const code = (body as { code?: unknown } | undefined)?.code
-        if (!UUID_SHAPE.test(id) || typeof code !== 'string') {
-          const problem = badRequest(instance, requestId, "'code' is required.")
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-        const codes = await factors.confirm(auth.orgId, userId, id, code)
-        if (codes === undefined) {
-          // One refusal for a wrong code and for an enrolment that is not
-          // there. Telling them apart would say whether a given id exists.
-          const problem = notFound(instance, requestId)
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-        await options.audit.write({
-          orgId: auth.orgId,
-          actor: `user:${userId}`,
-          action: 'second_factor.enrol',
-          result: 'allow',
-          target: { user_id: userId },
-          detail: {},
-          requestId,
-        })
-        // A notice, where the deployment can send one. The person who did not
-        // do this is the one who needs to know, and a second factor appearing
-        // on an account is exactly what somebody taking it over would do.
-        // Dropped rather than raised: the enrolment happened.
-        void notifySecurityChange(options, auth.orgId, userId, 'enrolled', requestId)
-        // Printed once. A second call returns an empty list rather than new
-        // codes, because reissuing them here would invalidate the set somebody
-        // has already written down.
-        send(res, 200, { recovery_codes: codes }, requestId)
-        return
-      }
-
-      /*
-       * Taking a factor off, and the condition is what it is because the one
-       * it replaced could never be true. `rest` is `/{id}` for this route, so
-       * `!rest.includes('/')` asked whether a string beginning with a slash
-       * contains one — false for every id, always. `DELETE
-       * /v1/me/second-factor/{id}` answered 404 from the day it was written
-       * and shipped that way in 0.18.0: a second factor could be enrolled and
-       * never removed, on the one surface an administrator deliberately
-       * cannot reach on somebody's behalf.
-       *
-       * No suite could see it. `second-factor-live.test.ts` calls
-       * `factors.remove` directly and passes, because the store was never the
-       * broken half — nothing had asked the *server* for this path.
-       */
-      if (rest.startsWith('/') && !rest.slice(1).includes('/') && req.method === 'DELETE') {
-        const id = rest.slice(1)
-        const { code, assertion } = (body ?? {}) as { code?: unknown; assertion?: unknown }
-        const proof = readProof(code, assertion)
-        if (!UUID_SHAPE.test(id) || proof === undefined) {
-          const problem = badRequest(
-            instance,
-            requestId,
-            "Either 'code' or 'assertion' is required to remove a second factor.",
-          )
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-        /*
-         * A current proof to take one off, and that is the whole reason this
-         * endpoint takes a body at all. Removing the second factor is the first
-         * thing somebody with a stolen session does, and a session is exactly
-         * what the factor exists to be more than.
-         *
-         * Either kind, because an account can hold either kind — an
-         * installation with no `NACRE_2FA_KEY` has no code to ask for, and
-         * demanding one there would make every WebAuthn factor permanent.
-         */
-        const proved =
-          proof.kind === 'code'
-            ? await factors.verify(auth.orgId, userId, proof.code)
-            : await factors.verifyWebAuthnAssertion(auth.orgId, userId, proof.response)
-        if (!proved) {
-          const problem = notFound(instance, requestId)
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-        const removed = await factors.remove(auth.orgId, userId, id)
-        if (!removed) {
-          const problem = notFound(instance, requestId)
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-        await options.audit.write({
-          orgId: auth.orgId,
-          actor: `user:${userId}`,
-          action: 'second_factor.remove',
-          result: 'allow',
-          target: { user_id: userId },
-          detail: {},
-          requestId,
-        })
-        void notifySecurityChange(options, auth.orgId, userId, 'removed', requestId)
-        send(res, 204, null, requestId)
-        return
-      }
-
-      const problem = notFound(instance, requestId)
-      send(res, problem.status, problem.toJSON(), requestId)
+      // The wide door: a signed-in person reaches all seven routes, and a
+      // completed enrolment adds nothing to the response because they already
+      // hold a session.
+      await handleSecondFactorRoutes(req, res, instance, requestId, body, options, options.secondFactors, {
+        orgId: auth.orgId,
+        userId: auth.principal.id,
+        offers: () => true,
+        onEnrolled: async () => ({}),
+      })
       return
     }
 

@@ -216,6 +216,34 @@ a way past the factor it exists to demand. The role and the account's state are
 re-read when the session is issued rather than trusted from it: five minutes is
 long enough to be disabled.
 
+**A module may require one, and the core answers a third way when it does.**
+`registerSignInGate` is the extension point — see
+[extensions.md](./extensions.md) — and the open core registers none, so nothing
+below happens on a deployment running no commercial module.
+
+Where a gate demands enrolment, every endpoint that mints a session answers
+`200` with `{second_factor_enrolment_required: true, challenge, expires_in,
+reason}`: `POST /v1/auth/login`, `POST /v1/auth/second-factor`,
+`POST /v1/auth/refresh` and `POST /v1/me/password`. That is four endpoints
+because a gate runs where a session is minted, and a renewal is gated
+deliberately — otherwise a policy turned on while people are signed in does
+nothing for any of them for as long as they keep renewing. On the password
+change the password **is** changed regardless; the statement commits before the
+session is minted.
+
+That challenge is a third kind of token and reaches exactly four routes:
+`POST /v1/me/second-factor`, `POST /v1/me/second-factor/webauthn`,
+`POST /v1/me/second-factor/webauthn/finish` and
+`POST /v1/me/second-factor/{id}/confirm`. Not the listing and not the removal —
+taking a factor off under a mandate to add one is what somebody holding a stolen
+password would do. Confirming through it answers with the recovery codes **and**
+a session, since it is the end of a sign-in as well as of an enrolment.
+
+Where a gate refuses outright the answer is `403` with its reason. Not `401`:
+the credential was correct, and every client here renews on a `401` and replays,
+so a policy refusal spelled that way would spend a refresh token and arrive as
+two failures.
+
 **A challenge is single-use, in both ceremonies**, spent by the statement that
 finds it. An assertion captured on the wire is otherwise replayable for as long
 as its challenge is, and nothing else in the ceremony stops that. A challenge
