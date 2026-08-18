@@ -275,6 +275,17 @@ interface UserRow {
   readonly role: string
   readonly password_hash: string | null
   readonly disabled_at: Date | null
+  /**
+   * A credential several people hold, and therefore one that cannot carry a
+   * second factor at all.
+   *
+   * On the row rather than read where it is needed, because it reaches a
+   * **sign-in gate** — and a gate that answered `enrol` for such an account
+   * would be telling somebody to do a thing every route for doing it answers
+   * `404` to. That is a lockout with no route back, produced by a policy whose
+   * whole purpose is to be recoverable.
+   */
+  readonly shared: boolean
 }
 
 const digest = (token: string): string => createHash('sha256').update(token).digest('hex')
@@ -538,7 +549,7 @@ export class Login {
       this.deps.pool,
       orgId,
       async (client) => {
-        const { rows } = await client.query<UserRow & { email: string; shared: boolean }>(
+        const { rows } = await client.query<UserRow & { email: string }>(
           `SELECT id, org_id, role, email, password_hash, disabled_at, shared
              FROM users WHERE org_id = $1 AND id = $2`,
           [orgId, userId],
@@ -612,7 +623,7 @@ export class Login {
       orgId,
       async (client) => {
         const { rows } = await client.query<UserRow>(
-          `SELECT id, org_id, role, password_hash, disabled_at
+          `SELECT id, org_id, role, password_hash, disabled_at, shared
              FROM users WHERE org_id = $1 AND id = $2`,
           [orgId, userId],
         )
@@ -697,7 +708,7 @@ export class Login {
       orgId,
       async (client) => {
         const { rows } = await client.query<UserRow>(
-          `SELECT id, org_id, role, password_hash, disabled_at
+          `SELECT id, org_id, role, password_hash, disabled_at, shared
              FROM users WHERE org_id = $1 AND email = $2`,
           [orgId, email],
         )
@@ -781,7 +792,7 @@ export class Login {
         if (claimed.rows[0] === undefined) return 'lost'
 
         const { rows } = await client.query<UserRow>(
-          `SELECT id, org_id, role, password_hash, disabled_at
+          `SELECT id, org_id, role, password_hash, disabled_at, shared
              FROM users WHERE id = $1 AND org_id = $2`,
           [row.user_id, row.org_id],
         )
@@ -905,6 +916,9 @@ export class Login {
       enrolled: this.deps.secondFactors === undefined
         ? false
         : await this.deps.secondFactors.required(user.org_id, user.id),
+      // From the row, not asked again. A shared account cannot enrol, so a gate
+      // reading this is what stops it demanding one.
+      holdsOwnCredentials: !user.shared,
     })
     if (refusal !== undefined) {
       if (refusal.kind === 'refuse') return { kind: 'refused', reason: refusal.reason }

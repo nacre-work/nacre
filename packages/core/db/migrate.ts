@@ -67,13 +67,36 @@ export function loadMigrations(dir: string = MIGRATIONS_DIR): readonly Migration
   return migrationNames(dir).map((name) => ({ name, sql: readFileSync(join(dir, name), 'utf8') }))
 }
 
-const LEDGER = `
-  CREATE TABLE IF NOT EXISTS schema_migrations (
+/**
+ * The ledger this runner writes, when a caller does not name another.
+ *
+ * `schema_migrations` is the **core's** history and only the core's. A commercial
+ * module writing rows into it would make the open half's migration state depend
+ * on which modules a deployment bought, and `migrate` here would report a set it
+ * did not produce — so a module names its own table instead. That is the whole
+ * of why `ledgerTable` is an option: the runner is generic, the ledger is not.
+ */
+const DEFAULT_LEDGER = 'schema_migrations'
+
+/**
+ * A ledger name is interpolated into DDL, so it is checked rather than trusted.
+ *
+ * There is no parameter form for an identifier, and quoting is not a substitute
+ * for a rule — `"a"; DROP …` is a legal quoted identifier. Lowercase letters,
+ * digits and underscores, starting with a letter, is every name this product
+ * will ever want and nothing that needs escaping.
+ */
+const LEDGER_NAME = /^[a-z][a-z0-9_]{0,62}$/
+
+function ledgerDdl(table: string): string {
+  return `
+  CREATE TABLE IF NOT EXISTS ${table} (
     name       text PRIMARY KEY,
     checksum   text NOT NULL,
     applied_at timestamptz NOT NULL DEFAULT now()
   )
 `
+}
 
 async function checksum(sql: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sql))
@@ -173,10 +196,54 @@ export async function requireMigrationPrivileges(client: RoleReader): Promise<vo
  * text, so the two silently diverge. Migrations are forward-only; fixing one
  * means adding another.
  */
+/**
+ * What a caller other than this package's own migrator needs to say.
+ *
+ * Both fields exist because a **commercial module** applies migrations through
+ * this runner too, and it is neither the core's schema nor run by the core's
+ * role. Before they existed the alternative was a second copy of this file
+ * beside the module — a checksum comparison, a ledger backfill and a
+ * transaction-per-migration that had to stay in step with this one, with
+ * nothing that knew there were two. That is the shape this repository keeps
+ * deleting, so the runner took a parameter instead.
+ */
+export interface MigrateOptions {
+  /**
+   * The ledger to record in. Defaults to the core's `schema_migrations`.
+   *
+   * Checked against `LEDGER_NAME` rather than quoted, and a name that fails is
+   * an error before anything is applied.
+   */
+  readonly ledgerTable?: string
+  /**
+   * Whether to refuse up front unless the connected role can finish.
+   *
+   * Default `true`, which is right for the core: several of its migrations read
+   * a tenant table, every tenant table is `FORCE`d, and a plain owner fails
+   * five migrations in with a message naming a GUC.
+   *
+   * A module whose migrations touch **only its own** table needs no `BYPASSRLS`
+   * — nothing it runs evaluates `app.current_org` — so demanding it would
+   * refuse a correctly-provisioned owner that would have succeeded. A caller
+   * passing `false` is stating that about its own SQL, and is wrong about it
+   * the moment one of its migrations reads a core table.
+   */
+  readonly requirePrivileges?: boolean
+}
+
 export async function migrate(
   connectionString: string,
   migrations: readonly Migration[] = loadMigrations(),
+  options: MigrateOptions = {},
 ): Promise<MigrateResult> {
+  const table = options.ledgerTable ?? DEFAULT_LEDGER
+  if (!LEDGER_NAME.test(table)) {
+    throw new Error(
+      `"${table}" is not a usable ledger table name. It is interpolated into DDL, so it must be ` +
+        'lowercase letters, digits and underscores, starting with a letter.',
+    )
+  }
+
   const client = new Client({ connectionString })
   await client.connect()
 
@@ -184,16 +251,22 @@ export async function migrate(
   const skipped: string[] = []
 
   try {
-    await client.query(LEDGER)
+    await client.query(ledgerDdl(table))
+    // A ledger created by an older runner may predate the checksum column, or
+    // carry it nullable. Both are the same statement — there is nothing to
+    // compare those rows against — so the column is ensured and the rows are
+    // filled in below rather than being read as a mismatch and refused. On a
+    // ledger this runner created it is a no-op.
+    await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS checksum text`)
 
-    const { rows } = await client.query<{ name: string; checksum: string }>(
-      'SELECT name, checksum FROM schema_migrations',
+    const { rows } = await client.query<{ name: string; checksum: string | null }>(
+      `SELECT name, checksum FROM ${table}`,
     )
     const ledger = new Map(rows.map((r) => [r.name, r.checksum]))
 
     // Only when there is work to do. A re-run against an up-to-date database
     // applies nothing, so the privileges it would need are not needed.
-    if (migrations.some((m) => !ledger.has(m.name))) {
+    if ((options.requirePrivileges ?? true) && migrations.some((m) => !ledger.has(m.name))) {
       await requireMigrationPrivileges(client)
     }
 
@@ -202,6 +275,19 @@ export async function migrate(
       const recorded = ledger.get(migration.name)
 
       if (recorded !== undefined) {
+        if (recorded === null) {
+          // Applied by a runner that had no checksum column. The file is
+          // unchanged by definition — there is nothing recorded to disagree
+          // with it — so the digest is written now and every later run
+          // verifies it, rather than refusing a database whose only fault is
+          // that it is older than the check.
+          await client.query(`UPDATE ${table} SET checksum = $2 WHERE name = $1`, [
+            migration.name,
+            sum,
+          ])
+          skipped.push(migration.name)
+          continue
+        }
         if (recorded !== sum) {
           throw new Error(
             `migration ${migration.name} was modified after it was applied ` +
@@ -241,7 +327,7 @@ export async function migrate(
         // problem, instead of hanging until someone kills it and has to guess.
         await client.query(`SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'`)
         await client.query(migration.sql)
-        await client.query('INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)', [
+        await client.query(`INSERT INTO ${table} (name, checksum) VALUES ($1, $2)`, [
           migration.name,
           sum,
         ])

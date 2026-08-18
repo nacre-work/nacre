@@ -246,4 +246,40 @@ when('a registered sign-in gate', () => {
     // every renewal as a password-only sign-in.
     expect(seen[0]).toMatchObject({ orgId, userId, enrolled: false, secondFactor: undefined })
   })
+
+  /**
+   * The field that stops a policy locking somebody out for good.
+   *
+   * A **shared** account — a login several people hold — has no `/v1/me`
+   * credential surface at all: enrolment, password change and the reset link
+   * each answer `404`. So a gate answering `enrol` for one would be sending
+   * somebody to routes that refuse them, with no route back, produced by the
+   * one verdict that exists so a policy *has* a route back.
+   *
+   * The gate cannot learn that from `enrolled` — a shared account and a person
+   * who simply has not enrolled both read `false`. It is a separate fact, and
+   * it comes off the row the core already has rather than a second read of
+   * `users` on every sign-in.
+   */
+  it('says whether the account can hold a credential of its own', async () => {
+    install({ kind: 'admit' })
+
+    await login.login({ email: 'gil@gate.test', password: PASSWORD })
+    expect(seen[0]).toMatchObject({ holdsOwnCredentials: true })
+
+    const client = await pool.connect()
+    try {
+      await client.query(
+        `INSERT INTO users (org_id, email, role, password_hash, shared)
+         VALUES ($1,'kiosk@gate.test','member',$2,true)`,
+        [orgId, await hashPassword(PASSWORD)],
+      )
+    } finally {
+      client.release()
+    }
+
+    seen = []
+    await login.login({ email: 'kiosk@gate.test', password: PASSWORD })
+    expect(seen[0]).toMatchObject({ holdsOwnCredentials: false, enrolled: false })
+  })
 })

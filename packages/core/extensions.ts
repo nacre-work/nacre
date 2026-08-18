@@ -243,6 +243,23 @@ export interface SignInContext {
   readonly secondFactor: 'totp' | 'webauthn' | undefined
   /** Whether the account holds any confirmed factor at all. */
   readonly enrolled: boolean
+  /**
+   * Whether this account can hold a credential of its own at all.
+   *
+   * `false` is a **shared** account — a login several people hold, published or
+   * handed round — and its whole `/v1/me` credential surface answers `404`: no
+   * second factor, no password change, no reset link. The same fact `GET
+   * /v1/me` reports as `holds_own_credentials`, under the same name, because a
+   * second spelling of one question is two answers waiting to disagree.
+   *
+   * A gate that answers `enrol` without reading it tells somebody to add a
+   * factor through routes that refuse them, which is a lockout with no route
+   * back — produced by the one verdict that exists so a policy *has* a route
+   * back. It is here rather than left to the gate because the core has the row
+   * in hand and a gate would have to read `users` again on every sign-in to
+   * learn it.
+   */
+  readonly holdsOwnCredentials: boolean
 }
 
 /**
