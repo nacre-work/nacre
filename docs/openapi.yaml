@@ -867,6 +867,31 @@ components:
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
+    PasswordGateFull:
+      description: >
+        Shed under load, and deliberately not a 401. The number of passwords
+        being verified at once is bounded inside the process, because scrypt runs
+        on libuv's thread pool and that pool is shared with DNS and file I/O —
+        unbounded, a flood of password work stops the rest of the API on a name
+        lookup. Past the bound nothing was decided about the credential, so
+        saying "not valid" would be a lie the client acts on, and a 500 would
+        send an operator looking for a defect at the moment the process is merely
+        loaded. Carries Retry-After.
+
+
+        Not an oracle: it depends on how loaded the process is and not at all on
+        whether the account exists.
+
+
+        One response for all four operations that hash — signing in, creating a
+        user, an administrator resetting a password, and redeeming a recovery
+        link — because a wording is what a client matches on, and four of them
+        would be four.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
     IdempotencyConflict:
       description: >
         The Idempotency-Key is in use for a different request, or the first
@@ -940,19 +965,7 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
-        '503':
-          description: >
-            Shed under load, and deliberately not a 401. The number of passwords
-            being verified at once is bounded inside the process, because scrypt
-            runs on libuv's thread pool and that pool is shared with DNS and file
-            I/O — unbounded, a login flood stops the rest of the API on a name
-            lookup. Past the bound nothing was decided about the credentials
-            presented, so saying "not valid" would be a lie the client acts on.
-            Carries Retry-After. Not an oracle: it depends on how loaded the
-            process is and not at all on whether the account exists.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
+        '503': { $ref: '#/components/responses/PasswordGateFull' }
   /auth/methods:
     get:
       operationId: signInMethods
@@ -1055,6 +1068,7 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+        '503': { $ref: '#/components/responses/PasswordGateFull' }
   /auth/second-factor:
     post:
       summary: Finish a sign-in with a second factor
@@ -2398,6 +2412,7 @@ paths:
             this is a fact about the resource rather than about what they can
             see.
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+        '503': { $ref: '#/components/responses/PasswordGateFull' }
   /users/{id}:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -2520,6 +2535,7 @@ paths:
             last-administrator refusal beside it goes away once there is a
             second administrator, and this one never does.
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+        '503': { $ref: '#/components/responses/PasswordGateFull' }
   /groups:
     get:
       summary: Groups in the organization. Requires org_admin.

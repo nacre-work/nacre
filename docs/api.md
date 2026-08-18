@@ -68,7 +68,7 @@ is drawn there.
 | 413 | document over the size limit |
 | 422 | document could not be parsed |
 | 429 | rate limited |
-| 503 | indexing unavailable; or sign-in shed under load, see below |
+| 503 | indexing unavailable; or a password operation shed under load, see below |
 
 The 403/404 split is the whole point: 403 says "this exists and you may not
 touch it", so it may only be used where the caller can already see the object.
@@ -116,6 +116,13 @@ Past the bound nothing was decided about the credentials presented, and
 answering "not valid" to a request that was never checked is a lie the client
 will act on. It is not an oracle: it depends on how loaded the process is and
 not at all on whether the account exists.
+
+**So can every other operation that hashes**, and the list is short and worth
+having: `POST /v1/users`, which generates a password;
+`POST /v1/users/{id}/password`; and `POST /v1/auth/password-reset/confirm`.
+Each answers `503` with `Retry-After` rather than `500` — a client reports a
+`500` as a broken server and an operator investigates it as a bug, at the moment
+the process is merely loaded. There is one wording for all four.
 
 ### A second factor
 

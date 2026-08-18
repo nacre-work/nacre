@@ -359,6 +359,17 @@ One thing to expect on the day you enrol: **the code that confirms an enrolment
 is spent by confirming it**, so signing in immediately afterwards waits for the
 next one. That is the replay bound working, not a fault.
 
+**Three operations that used to answer `500` under load now answer `503`.**
+`POST /v1/users`, `POST /v1/users/{id}/password` and the new
+`POST /v1/auth/password-reset/confirm` each hash a password, and the number of
+scrypt calls running at once is bounded inside the process — past the bound the
+call is refused rather than queued further. Only sign-in translated that into a
+`503` with `Retry-After`; the others surfaced it as an internal error, which is
+what a client reports as a broken server and an operator investigates as a bug.
+Nothing about the bound changed, only the answer. If you alert on `5xx` by
+class you will see the same volume; if you alert on `500` specifically, some of
+it moves.
+
 ### 0.17.5 — a browser MCP client can read this installation's metadata
 
 **Take the `nacre` image**, and nothing else. No migration, no new variable, and

@@ -132,6 +132,35 @@ export function badRequest(instance: string, requestId: string, detail: string):
   })
 }
 
+/**
+ * The password gate is full.
+ *
+ * `core/passwords.ts` bounds how many scrypt calls run at once — the pool is
+ * libuv's and is shared with DNS and file I/O, so an unbounded one stops the
+ * rest of the API on a name lookup — and past its queue bound it raises rather
+ * than queueing further. Its own header says the caller answers 503, "the
+ * honest response to 'this process cannot verify a password right now'".
+ *
+ * **503 and never 401.** Nothing was decided about the credential, and
+ * answering "not valid" to a request that was never checked is a lie the client
+ * will act on — a person told their password is wrong changes it. It is not an
+ * oracle either: it depends on how loaded the process is and not at all on
+ * whether the account exists.
+ *
+ * One builder because four routes hash and each would otherwise have its own
+ * wording, and the wording is what a client matches on.
+ */
+export function tooBusy(instance: string, requestId: string): Problem {
+  return new Problem({
+    type: uri('unavailable'),
+    title: 'Service unavailable',
+    status: 503,
+    detail: 'Too many passwords are being verified at once. Try again shortly.',
+    instance,
+    requestId,
+  })
+}
+
 export function internal(instance: string, requestId: string): Problem {
   return new Problem({
     type: uri('internal'),
