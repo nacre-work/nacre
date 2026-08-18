@@ -29,7 +29,7 @@ import type { Pool } from 'pg'
  *
  * ## Unconfigured is a supported state
  *
- * With no `NACRE_2FA_KEY_REF` there is no key to seal a secret with, so
+ * With no `NACRE_2FA_KEY` there is no key to seal a secret with, so
  * enrolment is refused and every read answers "no factor". Not a degraded mode
  * that stores secrets in the clear until somebody notices: a product that
  * half-does a second factor is worse than one that does none, because the

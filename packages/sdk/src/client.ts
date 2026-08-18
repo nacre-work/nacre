@@ -1360,7 +1360,7 @@ export class NacreClient {
    * administrator holds instead.
    *
    * Every method here answers `404` on an installation with no
-   * `NACRE_2FA_KEY_REF`, for a service account, and for a delegation.
+   * `NACRE_2FA_KEY`, for a service account, and for a delegation.
    */
   /**
    * Change the password of the account this token belongs to.

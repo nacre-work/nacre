@@ -563,29 +563,33 @@ export function loadMailConfig(env: NodeJS.ProcessEnv = process.env): MailConfig
 }
 
 /**
- * The key as a value rather than as a file.
+ * The key that seals a second factor's secret, as a value and only as a value.
  *
- * `NACRE_JWT_SECRET` is already a plain environment variable, so key material
- * arriving that way is how this product ships by default and refusing it only
- * here would be the codebase disagreeing with itself. Every orchestrator injects
- * a secret as an environment variable, and a deployment that has to mount a file
- * for one 32-byte value is a deployment that will find a way not to.
+ * **One variable, and there was deliberately never a second.** This started as a
+ * pair — a value and a `NACRE_2FA_KEY_REF` naming a file — with a paragraph
+ * about how a file is the better one where a platform offers it. That is true
+ * and is not worth a second variable: an operator who wants the file has one
+ * line of shell (`NACRE_2FA_KEY=$(cat /run/secrets/nacre_2fa.key)`), while the
+ * product would have carried two ways to say the same thing forever, plus the
+ * refusal for setting both, plus two spellings in every document and in the
+ * message the console shows an operator who has set neither. Deleted before
+ * 0.18.0 shipped, so nothing was ever configured with it and there is no
+ * compatibility to keep — which is the only cheap moment to make this decision
+ * and the reason it was made now.
+ *
+ * `NACRE_JWT_PRIVATE_KEY_REF` beside it is file-only for a different reason and
+ * is not the same shape: a private signing key must not be in the environment at
+ * all, so there is one form there too. The rule both follow is one form per
+ * thing, not one form for everything.
  *
  * **Base64 or hex, and exactly 32 bytes.** Not an arbitrary string: a passphrase
  * somebody typed would be accepted, stretched by nothing, and every sealed
  * secret in the installation would be worth whatever that passphrase was. The
  * refusal names the command that produces a correct one.
- *
- * The file is still the better one where a platform offers it — an environment
- * variable is readable through `docker inspect` and `/proc/<pid>/environ`, and a
- * file can be mounted read-only from a secret store. That is a recommendation
- * and not a rule, which is what the two variables express.
  */
 function decodeSecondFactorKey(value: string): Buffer {
   const text = value.trim()
-  const advice =
-    'It takes 32 bytes as base64 or hex: `openssl rand -base64 32`, or point ' +
-    'NACRE_2FA_KEY_REF at a file instead.'
+  const advice = 'It takes 32 bytes as base64 or hex: `openssl rand -base64 32`.'
 
   if (/^[0-9a-f]{64}$/iu.test(text)) return Buffer.from(text, 'hex')
 
@@ -601,55 +605,9 @@ function decodeSecondFactorKey(value: string): Buffer {
 }
 
 export function loadSecondFactorKey(env: NodeJS.ProcessEnv = process.env): Buffer | undefined {
-  const ref = env.NACRE_2FA_KEY_REF
   const inline = env.NACRE_2FA_KEY
-
-  if (ref !== undefined && ref !== '' && inline !== undefined && inline !== '') {
-    // Refused rather than resolved by precedence, exactly as the two token-key
-    // variables are: whichever this picked, the other would be set, apparently
-    // in use, and ignored — and the operator finds out when the authenticators
-    // they enrolled stop opening.
-    throw new ConfigError([
-      'NACRE_2FA_KEY and NACRE_2FA_KEY_REF are both set. They are two answers to ' +
-        '"what seals a second factor" and there is no order of precedence worth ' +
-        'inventing. Set one.',
-    ])
-  }
-
-  if (inline !== undefined && inline !== '') return decodeSecondFactorKey(inline)
-  if (ref === undefined || ref === '') return undefined
-
-  let path: string
-  try {
-    const url = new URL(ref)
-    if (url.protocol !== 'file:') throw new Error(`scheme ${url.protocol} is not supported`)
-    path = fileURLToPath(url)
-  } catch (cause) {
-    throw new ConfigError([
-      `NACRE_2FA_KEY_REF is not a file:// URL: ${String(cause)}. It names a file ` +
-        'holding at least 32 bytes of key material, for example ' +
-        'file:///run/secrets/nacre_2fa.key.',
-    ])
-  }
-
-  let bytes: Buffer
-  try {
-    bytes = readFileSync(path)
-  } catch (cause) {
-    throw new ConfigError([`NACRE_2FA_KEY_REF names ${path}, which cannot be read: ${String(cause)}.`])
-  }
-
-  if (bytes.length < 32) {
-    // Refused rather than stretched. A KDF over a short file would accept a
-    // password somebody typed into a file and report nothing, and the strength
-    // of every sealed secret would be whatever that was.
-    throw new ConfigError([
-      `NACRE_2FA_KEY_REF names ${path}, which holds ${String(bytes.length)} bytes. At least 32 are ` +
-        'required: `openssl rand -out nacre_2fa.key 32`.',
-    ])
-  }
-
-  return bytes.subarray(0, 32)
+  if (inline === undefined || inline === '') return undefined
+  return decodeSecondFactorKey(inline)
 }
 
 export function loadJwtKeys(env: NodeJS.ProcessEnv = process.env): JwtKeys {

@@ -1541,7 +1541,7 @@ paths:
         thing the *person* holds, and an administrator who could manage it would
         make it a thing the account's administrator holds.
 
-        `404` where the installation configured no `NACRE_2FA_KEY_REF`, for a
+        `404` where the installation configured no `NACRE_2FA_KEY`, for a
         service account, and for a delegation. A key is not a person and has
         nobody to carry an authenticator; a delegation is a third party acting
         for somebody, and letting it change how that somebody signs in would be

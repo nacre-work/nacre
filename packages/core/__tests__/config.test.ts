@@ -625,14 +625,21 @@ describe('the second factor key', () => {
     expect(() => loadSecondFactorKey({ NACRE_2FA_KEY: randomBytes(64).toString('hex') })).toThrow()
   })
 
-  it('refuses both variables at once rather than picking one', () => {
-    expect(() =>
-      loadSecondFactorKey({ NACRE_2FA_KEY: KEY.toString('base64'), NACRE_2FA_KEY_REF: 'file:///x' }),
-    ).toThrow(/two answers/)
+  /*
+   * There is one variable and there was deliberately never a second. A
+   * `NACRE_2FA_KEY_REF` naming a file existed for a day and was deleted before
+   * 0.18.0 shipped: an operator who wants the file has one line of shell, and
+   * the product would otherwise have carried two ways to say the same thing
+   * forever. So a value it does not know about is simply not read — pinned
+   * here, because "unset" and "set under a name nobody reads" are the same
+   * answer and only one of them is what an operator meant.
+   */
+  it('reads no other name', () => {
+    expect(loadSecondFactorKey({ NACRE_2FA_KEY_REF: 'file:///x' })).toBeUndefined()
   })
 
-  it('is absent when neither is set, which is a supported deployment', () => {
+  it('is absent when it is not set, which is a supported deployment', () => {
     expect(loadSecondFactorKey({})).toBeUndefined()
-    expect(loadSecondFactorKey({ NACRE_2FA_KEY: '', NACRE_2FA_KEY_REF: '' })).toBeUndefined()
+    expect(loadSecondFactorKey({ NACRE_2FA_KEY: '' })).toBeUndefined()
   })
 })

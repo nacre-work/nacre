@@ -312,22 +312,22 @@ To offer a second factor, generate a key and name it:
 NACRE_2FA_KEY=$(openssl rand -base64 32)
 ```
 
-or, as a file:
+Base64 or hex and **exactly 32 bytes**. An arbitrary string is refused rather
+than stretched, or every sealed secret would be worth whatever somebody typed.
+
+**One variable, and there is no file form.** A file is the better place for key
+material — an environment variable is readable through `docker inspect` and
+`/proc/<pid>/environ` — and where your platform mounts one, that is a line of
+shell in whatever sets the variable:
 
 ```
-openssl rand -out nacre_2fa.key 32
-NACRE_2FA_KEY_REF=file:///run/secrets/nacre_2fa.key
+NACRE_2FA_KEY=$(cat /run/secrets/nacre_2fa.key)
 ```
 
-Set one, not both — both is refused rather than resolved by precedence, the same
-as the two token-key variables. As a value it is base64 or hex and **exactly 32
-bytes**; an arbitrary string is refused rather than stretched, or every sealed
-secret would be worth whatever somebody typed.
-
-The file is the better one where your platform offers it: an environment
-variable is readable through `docker inspect` and `/proc/<pid>/environ`, while a
-file can be mounted read-only from a secret store. It is a recommendation and
-not a rule — `NACRE_JWT_SECRET` beside it is a plain value too.
+rather than a second variable this product carries for good. `NACRE_JWT_SECRET`
+beside it is a plain value too; `NACRE_JWT_PRIVATE_KEY_REF` is file-only for the
+opposite reason and is likewise one form, because a private signing key must not
+be in the environment at all.
 
 The API is the only process that needs it: the MCP transport verifies tokens and
 never issues one.

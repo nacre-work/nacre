@@ -1431,8 +1431,34 @@ type-checked, and it would have passed against a mock. The same mistake appeared
 again in the test's own fixture an hour later, which is what made it worth a
 comment rather than a fix.
 
+**One variable seals it, and the file form was deleted before it shipped.**
+`NACRE_2FA_KEY_REF` existed for a day beside `NACRE_2FA_KEY`, with a paragraph
+arguing that a file is the better place for key material and a refusal for
+setting both. The argument is true and is not worth a second variable: an
+operator who wants the file writes `NACRE_2FA_KEY=$(cat /run/secrets/…)`, one
+line, where the value is set — while the product would have carried two
+spellings in `loadSecondFactorKey`, in `docs/config.md`, in `.env.example`, in
+`docs/upgrading.md`, in the OpenAPI document and in the sentence the console
+shows an operator who has configured neither, for as long as the product exists.
+
+It was removed at the only moment removing it is free: 0.18.0 had not been
+published, so nothing was ever configured with it and there is no compatibility
+to keep. A compatibility shim is cheap to add on the day and permanent
+afterwards, which is the asymmetry worth acting on before a release rather than
+after one.
+
+`NACRE_JWT_PRIVATE_KEY_REF` beside it is file-only and is not the same shape:
+there is one form there too, and it is the file because a private signing key
+must not be in the environment at all. The rule both follow is one form per
+thing, not one form for everything. `lint:config` is what keeps the deletion
+honest — it holds every variable in both directions, so a resurrected reader
+with no documentation and a documented variable nothing reads each fail — and a
+case asks `loadSecondFactorKey` directly that the old name is not read, because
+"unset" and "set under a name nobody reads" are the same answer and only one of
+them is what an operator meant.
+
 **Unconfigured is a supported state and the feature is simply absent.** With no
-`NACRE_2FA_KEY_REF` there is no key to seal a secret with, so enrolment is
+`NACRE_2FA_KEY` there is no key to seal a secret with, so enrolment is
 refused, the console says why, and nothing stores a secret in the clear in the
 meantime. A product that half-does a second factor is worse than one that does
 none, because the operator believes something.

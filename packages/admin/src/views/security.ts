@@ -13,7 +13,7 @@ import { clear, h } from '../dom.js'
  * and takes no id — everything it calls is under `/v1/me`.
  *
  * The whole section is absent where the installation configured no
- * `NACRE_2FA_KEY_REF`: the API answers 404 and this says so plainly rather than
+ * `NACRE_2FA_KEY`: the API answers 404 and this says so plainly rather than
  * offering a control that cannot work. A page that offers what the server
  * refuses is the defect this console already shipped once, when it drew
  * administrative screens for a platform administrator the API answers 404 to.
@@ -133,7 +133,7 @@ async function renderFactors(panel: HTMLElement, root: HTMLElement): Promise<voi
       h('div', { class: 'empty' },
         h('h2', {}, 'Not available on this installation'),
         h('p', {},
-          'A second factor needs a key to seal its secret with. Until an operator sets NACRE_2FA_KEY or NACRE_2FA_KEY_REF there is nowhere to keep one, and nothing here stores a secret in the clear in the meantime.'),
+          'A second factor needs a key to seal its secret with. Until an operator sets NACRE_2FA_KEY there is nowhere to keep one, and nothing here stores a secret in the clear in the meantime.'),
         h('p', { class: 'muted' }, explain(error)),
       ),
     )

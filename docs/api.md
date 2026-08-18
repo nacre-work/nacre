@@ -173,7 +173,7 @@ DELETE /v1/me/second-factor/{id}     {code}              → 204
 ```
 
 TOTP — the six digits an authenticator shows. Offered only where the
-installation set `NACRE_2FA_KEY_REF`; without a key to seal a secret with, the
+installation set `NACRE_2FA_KEY`; without a key to seal a secret with, the
 whole surface answers `404` and sign-in is unchanged. There is deliberately no
 mode that stores a secret in the clear, because a product that half-does a
 second factor is worse than one that does none.

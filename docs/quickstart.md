@@ -512,7 +512,7 @@ the other browser somebody left signed in — while this one carries on with a
 fresh token. It needs nothing configured and is the recovery path every
 installation has; a link by email needs `NACRE_SMTP_URL`.
 
-A second factor needs `NACRE_2FA_KEY` (or `NACRE_2FA_KEY_REF`). Without one the
+A second factor needs `NACRE_2FA_KEY`. Without one the
 panel says so and the password form is still there — the two are independent,
 which is what an installation that has configured neither is looking at:
 
