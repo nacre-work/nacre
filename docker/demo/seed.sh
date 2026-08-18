@@ -48,8 +48,33 @@ SAVED="${STATE}/credentials.txt"
 # The admin password on its own, so a later run can prove the saved block still
 # describes a live organization rather than print it and hope.
 PROOF="${STATE}/admin-password"
+# Written last, after the corpus is in. `$SAVED` says the accounts exist and
+# this says the demonstration works, and they are two files because they became
+# true at two different times — see the note above `ingest` below.
+INDEXED="${STATE}/corpus-indexed"
 
 say() { printf '%s\n' "$*"; }
+
+# The corpus, and **one** definition of it because two paths load it: a fresh
+# seed, and a re-run resuming after an interrupted one. Two copies of this loop
+# would be two answers about which layers the demonstration has.
+#
+# Idempotent by the product's own rule — ingest upserts on
+# `(layer, external_id)` — so a document that made it the first time is updated
+# rather than embedded again.
+load_corpus() {
+  say "indexing the corpus"
+  for layer in handbook engineering contracts; do
+    $CLI ingest "${CORPUS}/${layer}" --layer "$layer"
+  done
+  # Last, and only on success: `$SAVED` says the accounts exist, this says the
+  # demonstration works. `set -e` means a failed ingest never reaches it.
+  #
+  # Not fatal when the write is refused, for the same reason `$PROOF` is not —
+  # a volume older than the image that owns it belongs to root. The cost is a
+  # re-run that loads the corpus again, which is idempotent.
+  : > "$INDEXED" 2>/dev/null || true
+}
 
 # The corpus ships in the image. If it is not here, the image predates the demo
 # profile — `latest` on a stack pulled before this shipped — and every message
@@ -109,19 +134,73 @@ if [ -r "$PROOF" ]; then
       }),
     }).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))
   " 2>/dev/null; then
-    if [ -r "$SAVED" ]; then
+    if [ -r "$SAVED" ] && [ -r "$INDEXED" ]; then
       say "organization ${ORG} is already seeded, and these still work:"
       say ""
       cat "$SAVED"
       exit 0
     fi
-    # The organization exists and the summary does not, so a previous run died
-    # between creating it and finishing. Seeding again would fail on a duplicate
-    # layer slug; saying so beats that.
-    say "organization ${ORG} exists but the seed did not finish."
-    say ""
-    say "Start over: docker compose --profile demo down -v"
-    exit 1
+
+    # The accounts exist and the corpus does not. That is the state a failed or
+    # interrupted `ingest` leaves — a slow embedder on a cold volume is the
+    # ordinary way to reach it — and it used to be terminal: this branch said
+    # "start over", which meant a wipe, which meant three new passwords and, on
+    # a public stand, a front page that had to be re-read.
+    #
+    # It is resumable instead, because ingest is idempotent on
+    # `(layer, external_id)`: re-sending a document the organization already has
+    # updates a row rather than adding one. So the loop below can simply run
+    # again, and a document that made it the first time is not embedded twice.
+    #
+    # Nothing here re-creates the organization, the layers or the people. That
+    # is why `$SAVED` has to be written *before* the ingest rather than after —
+    # without it this branch has nothing to resume with, since the passwords it
+    # would need exist nowhere else.
+    if [ -r "$SAVED" ]; then
+      say "organization ${ORG} exists and its corpus does not; loading it."
+      say ""
+      # A token by signing in, not by re-running `init`. `init` is idempotent
+      # and would answer, but it would also print a password it did not set —
+      # the defect this repository fixed once already — and everything after it
+      # here creates layers and people that already exist.
+      NACRE_TOKEN="$(node -e "
+        const fs = require('node:fs')
+        fetch('${API}/v1/auth/login', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            email: 'admin@${DEMO_EMAIL_DOMAIN}',
+            password: fs.readFileSync('${PROOF}', 'utf8').trim(),
+            organization: '${ORG}',
+          }),
+        })
+          .then((r) => r.json())
+          .then((b) => process.stdout.write(b.access_token || ''))
+          .catch(() => {})
+      ")"
+      if [ -z "$NACRE_TOKEN" ]; then
+        say "could not sign in to resume, though the probe above just did."
+        exit 1
+      fi
+      export NACRE_TOKEN
+      export NACRE_API_URL="$API"
+
+      load_corpus
+
+      say ""
+      say "the corpus is in. These still work:"
+      say ""
+      cat "$SAVED"
+      exit 0
+    else
+      # No summary at all: a previous run died before the accounts were
+      # recorded, which after this change means before they were created.
+      # Seeding again would fail on a duplicate layer slug; saying so beats it.
+      say "organization ${ORG} exists but the seed did not finish."
+      say ""
+      say "Start over: docker compose --profile demo down -v"
+      exit 1
+    fi
   fi
 
   say "there is saved state for ${ORG} and its administrator cannot sign in."
@@ -215,15 +294,24 @@ for person in engineer contractor; do
   say "created ${person}"
 done
 
-say "indexing the corpus"
-for layer in handbook engineering contracts; do
-  $CLI ingest "${CORPUS}/${layer}" --layer "$layer"
-done
-
-# Written before it is printed. A crash between the two would otherwise lose
-# the only copy of three passwords that exist nowhere else — except where the
-# volume is not writable, in which case this goes to a temporary file and the
-# warning above already said so.
+# Written **before the corpus is loaded**, and that ordering is the whole of a
+# defect this file shipped with.
+#
+# The old order was: create three accounts with generated passwords, load the
+# corpus, then record the passwords. Under `set -e` a failed `ingest` — a cold
+# embedder still pulling its model is the ordinary way to get one — killed the
+# script between the two. The accounts existed, their passwords existed nowhere,
+# and the only recovery was `down -v`: three new credentials, and on a public
+# stand a front page that had to be re-read.
+#
+# The comment that used to sit here shows the shape. It says the write is before
+# the print "because a crash between the two would lose the only copy of three
+# passwords" — the small gap, reasoned about and closed, while the much larger
+# one beside it, the entire corpus ingest, was left open.
+#
+# So the summary is written as soon as the accounts exist, and `$INDEXED` marks
+# the corpus separately. A run interrupted after this line is resumable; the
+# branch at the top of this file is what resumes it.
 SUMMARY="$SAVED"
 if [ "$STATEFUL" = no ]; then SUMMARY="$(mktemp)"; fi
 {
@@ -250,6 +338,8 @@ if [ "$STATEFUL" = no ]; then SUMMARY="$(mktemp)"; fi
   printf '%s\n' " on \`down -v\` — which is also when the organization goes."
   printf '%s\n' "────────────────────────────────────────────────────────────────"
 } > "$SUMMARY"
+
+load_corpus
 
 say ""
 cat "$SUMMARY"
