@@ -272,6 +272,57 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.18.0 — a second factor, if you give it a key
+
+**One migration and one optional variable**, and doing nothing is a supported
+answer: without the variable the whole surface answers `404` and sign-in is
+exactly what it was.
+
+Migration `0029` adds `user_second_factors` and `user_recovery_codes`. It
+creates two tables and grants the application role on them; it reads nothing
+and rewrites nothing, so it applies to a live database in the ordinary way and
+an older replica serving beside it is unaffected.
+
+To offer a second factor, generate a key and name it:
+
+```
+openssl rand -out nacre_2fa.key 32
+NACRE_2FA_KEY_REF=file:///run/secrets/nacre_2fa.key
+```
+
+`file://` only and at least 32 bytes, on the same argument as the token signing
+key: every platform with a secret store presents one as a file, and a scheme
+that fetched over the network would put a client on the startup path. The API is
+the only process that needs it — the MCP transport verifies tokens and never
+issues one.
+
+**There is no mode that stores a TOTP secret in the clear.** Unset the variable
+and enrolment is refused rather than degraded; a product that half-does a second
+factor is worse than one that does none, because the operator believes
+something.
+
+**Back the key up where you back up the signing key.** Losing it makes every
+enrolled authenticator useless — the secrets are sealed with it and nothing else
+can open them. That is what recovery codes are for: ten per person, minted at
+enrolment and printed once, and they work while a factor is locked. Somebody who
+has lost their phone cannot ask for them afterwards, which is why they are
+issued at the one moment the product has their attention.
+
+**Removing the variable later** leaves the rows in place and stops offering the
+feature: enrolled people sign in with a password alone, and putting the same key
+back makes their authenticators work again. Putting a *different* key back does
+not, and the failure is a refusal rather than a message about keys — treat it as
+losing the key.
+
+Nothing about permissions changed. A second factor decides whether a session
+starts and grants nothing; the permitted set is still computed per request from
+`grants`, and a token minted after a correct code reaches exactly what the same
+token reaches without one.
+
+One thing to expect on the day you enrol: **the code that confirms an enrolment
+is spent by confirming it**, so signing in immediately afterwards waits for the
+next one. That is the replay bound working, not a fault.
+
 ### 0.17.5 — a browser MCP client can read this installation's metadata
 
 **Take the `nacre` image**, and nothing else. No migration, no new variable, and

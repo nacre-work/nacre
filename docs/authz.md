@@ -19,6 +19,55 @@
   delegation, and `grants.principal_type` does not admit one. See
   "Delegated authority".
 
+## Authentication is not authorization, and this document is about the second
+
+Everything below decides what a principal may reach. **How they proved they are
+that principal is a separate question**, and the two must not be allowed to
+blur: a stronger proof of identity never widens what is reachable, and a weaker
+one never narrows it.
+
+So, precisely:
+
+- A password, an ID token from a trusted issuer, a service account key and an
+  ID-JAG are four ways to *become* a principal. Each ends with the same object —
+  an `org_id`, a principal, and a role — and `resolve` is given that object and
+  nothing about how it was obtained.
+- **A second factor decides whether a session starts. It grants nothing.** A
+  token minted after a correct TOTP code reaches exactly what the same token
+  reaches without one, because the permitted set is computed per request from
+  `grants`. Nothing in `packages/core/authz` reads a factor, and a factor that
+  could widen access would be a second answer to the question this document
+  exists to answer once.
+- The one place the two meet is the **delegation**, and it meets them the other
+  way round: a delegation carries a *ceiling*, which can only ever narrow. See
+  "The permission ceiling".
+
+### What a second factor is, in this installation
+
+TOTP — RFC 6238, six digits, thirty seconds — enrolled per person and never on
+their behalf. Two rules follow from that and are worth stating here rather than
+only in `docs/api.md`, because both are about authority:
+
+**An administrator cannot enrol, read or remove somebody's second factor.** They
+can reset a password: that is what administering an account means. A factor an
+administrator could manage would be a thing the account's administrator holds,
+and it would then bound nothing an administrator can already do. The whole
+surface is under `/v1/me`.
+
+**A service account and a delegation are refused.** A key is not a person and
+has nobody to carry an authenticator; a delegation is a third party acting for
+somebody, and letting it change how that somebody signs in would be an
+escalation out of what was approved at consent.
+
+**Recovery codes are the way past a factor, so they are held to a factor's
+rules.** Ten, printed once at enrolment, spent one at a time, and deleted with
+the last factor — a set of long-lived credentials behind an account with no
+second factor is nobody's intention.
+
+A deployment that has configured no key for sealing secrets offers none of this
+and refuses enrolment. There is deliberately no mode in which a secret is stored
+in the clear.
+
 ## Resolution rules
 
 Applied in this order.
