@@ -8,7 +8,7 @@ Plaintext values are acceptable in the development profile and nowhere else.
 ```ini
 # ─── base ───
 NACRE_ENV=production                   # development | production
-NACRE_CANONICAL_URL=https://nacre.work # OAuth issuer, well-known base, links in configs
+NACRE_CANONICAL_URL=https://nacre.work # OAuth issuer, well-known base, WebAuthn relying party, links
 NACRE_MCP_CANONICAL_URL=               # only when MCP is on a different origin
 NACRE_MCP_ALLOWED_ORIGINS=             # browser origins MCP answers; empty refuses all
 NACRE_LOG_LEVEL=info
@@ -85,10 +85,16 @@ NACRE_OAUTH_AUTHORIZATION_SERVER=      # optional; the IdP in front of this inst
 NACRE_EMA_ENABLED=false                # ID-JAG, commercial module
 NACRE_EMA_TRUSTED_ISSUERS=
 
-# A second factor is offered only where there is a key to seal its secret with.
-# Unset, the whole surface answers 404 and sign-in is exactly what it was: there
-# is deliberately no mode that stores a TOTP secret in the clear, because a
-# product that half-does a second factor is worse than one that does none.
+# What this key configures is **TOTP**, and only TOTP. A shared secret has to be
+# kept, so it has to be sealed; a WebAuthn credential leaves a public key here
+# and nothing a dump could use, so it needs no key at all and is offered on
+# every deployment that sets NACRE_CANONICAL_URL — which is every deployment.
+#
+# Unset, the authenticator-app half answers 404 and the security-key half is
+# unaffected: there is deliberately no mode that stores a TOTP secret in the
+# clear, because a product that half-does a second factor is worse than one that
+# does none. `GET /v1/auth/methods` reports which kinds are offered, so a screen
+# draws the controls that work rather than one that answers 404.
 #
 # Base64 or hex, exactly 32 bytes. Not an arbitrary string: a passphrase would be
 # accepted, stretched by nothing, and every sealed secret in the installation

@@ -272,6 +272,49 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.19.0 — a second factor you cannot be phished out of
+
+**One migration, no new variables, and nothing to configure.** WebAuthn needs
+only `NACRE_CANONICAL_URL`, which every deployment already sets: its hostname is
+the relying party id and its origin is what an assertion is checked against,
+plus whatever `NACRE_API_ALLOWED_ORIGINS` already admits. A second variable
+would have been a second answer to a question the deployment has answered twice.
+
+Migration 0031 widens `user_second_factors` and adds `webauthn_challenges`. Run
+the migrator as usual; existing TOTP rows are untouched and every one of them
+goes on working.
+
+**What changes without you doing anything** is that installations with no
+`NACRE_2FA_KEY` — which is most of them — now offer a second factor where they
+offered none. That is deliberate: a security key stores a public key here and no
+secret, so there is nothing to seal and nothing a database dump could use.
+Nobody is required to enrol one; the Security screen simply has a control it did
+not have.
+
+**If you want no second factor at all**, that is now a deployment with no
+canonical URL, which is not a deployment this product supports. There is no flag
+to turn it off, and adding one would be a switch whose only effect is to make
+accounts easier to take over.
+
+#### Two defects fixed here that shipped in 0.18.0
+
+`DELETE /v1/me/second-factor/{id}` answered `404` for every id, so **a second
+factor could be enrolled and never removed**. If somebody on 0.18.0 is stuck
+with a factor they cannot take off, upgrading is the fix; there is nothing to
+run.
+
+`GET /v1/auth/methods` answered `404` as well, because the sign-in surface
+accepted only `POST`. The console reads that endpoint to decide whether to show
+the "forgotten your password" link, so **the link was hidden on every
+deployment**, including the ones with `NACRE_SMTP_URL` configured. If password
+recovery looked like it was not working, it was working and unreachable from
+the console; `POST /v1/auth/password-reset` was correct throughout.
+
+And on an installation with no `NACRE_2FA_KEY`, a **recovery code could not be
+spent**. That path could not be reached before this release, since there was no
+factor to enrol without a key — it is listed because the fix is in the same
+place and an operator reading the code will see it.
+
 ### 0.18.0 — three ways to hold an account, and two of them are optional
 
 **Two migrations and two optional groups of variables**, and doing nothing is a

@@ -10,8 +10,10 @@ import {
   signInWithToken,
   signOut,
   whenSessionEnds,
+  signInWithKey,
   type SecondFactorPending,
 } from './api.js'
+import * as webauthn from './webauthn.js'
 import { clear, h } from './dom.js'
 import { accountsView } from './views/accounts.js'
 import { connectionsView } from './views/connections.js'
@@ -298,6 +300,32 @@ function signInView(): void {
         'aria-label': 'Code',
       }) as HTMLInputElement
 
+      /*
+       * Whether to offer a key is `pending.kinds`, which came off
+       * `/v1/auth/methods` before anybody typed anything — and never off what
+       * this account holds, which the server deliberately will not say to
+       * somebody who has produced only a password. So the control is offered
+       * where the installation can challenge with one, and pressing it on an
+       * account with no key enrolled is the same refusal a wrong code is.
+       *
+       * `usable()` beside it because a browser outside a secure context has no
+       * `navigator.credentials` at all, and a button that throws that reads as
+       * a broken sign-in rather than as a deployment served over http.
+       */
+      const offersKey = pending.kinds.includes('webauthn') && webauthn.usable()
+      const offersCode = pending.kinds.includes('totp') || !offersKey
+
+      const withKey = async (): Promise<void> => {
+        say('Waiting for the authenticator…')
+        try {
+          const ok = await signInWithKey({ challenge: pending.challenge, baseUrl: pending.baseUrl })
+          if (!ok) return say('That key is not one this account holds.', true)
+          start()
+        } catch (error) {
+          say(webauthn.describe(error), true)
+        }
+      }
+
       clear(forms)
       forms.append(
         h('form', { onsubmit: async (event: Event) => {
@@ -318,17 +346,30 @@ function signInView(): void {
           }
         } },
           h('h2', {}, 'Two-factor'),
-          h('label', { class: 'field' }, h('span', {}, 'Code'), code),
-          h('p', { class: 'hint' },
-            'From your authenticator, or one of the recovery codes you saved when you enrolled.'),
+          ...(offersCode
+            ? [
+                h('label', { class: 'field' }, h('span', {}, 'Code'), code),
+                h('p', { class: 'hint' },
+                  'From your authenticator, or one of the recovery codes you saved when you enrolled.'),
+              ]
+            : []),
           // The same element `say` writes into. It lives inside the form that is
           // being replaced, so leaving it out here would detach it and every
           // message after this point would go to nothing.
           message,
-          h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Continue'),
+          ...(offersCode
+            ? [h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Continue')]
+            : []),
+          ...(offersKey
+            ? [h('button', {
+                type: 'button',
+                class: offersCode ? 'btn btn-block' : 'btn btn-primary btn-block',
+                onclick: () => void withKey(),
+              }, 'Use a security key')]
+            : []),
         ),
       )
-      code.focus()
+      if (offersCode) code.focus()
     }
     askWhetherRecoveryExists()
     base.addEventListener('change', askWhetherRecoveryExists)

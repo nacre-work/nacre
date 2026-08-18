@@ -1,4 +1,6 @@
-import { NacreClient, NacreError, type ClientOptions } from '@nacre.work/sdk'
+import { NacreClient, NacreError, type ClientOptions, type SecondFactorKind, type WebAuthnAssertion } from '@nacre.work/sdk'
+
+import * as webauthn from './webauthn.js'
 
 /**
  * The client, and where the session lives.
@@ -107,6 +109,16 @@ export async function confirmPasswordReset(
 export interface SecondFactorPending {
   readonly challenge: string
   readonly baseUrl: string
+  /**
+   * What the *installation* can challenge with, from `/v1/auth/methods`.
+   *
+   * Deliberately not what this account holds: the server will not say that to
+   * somebody who has produced only a password, and a screen that could show it
+   * would be an oracle for which authenticators an address has. So the control
+   * is offered where a challenge of that kind is possible at all, and pressing
+   * it on an account with no key is the same refusal a wrong code is.
+   */
+  readonly kinds: readonly SecondFactorKind[]
 }
 
 export async function signInWithPassword(input: {
@@ -136,7 +148,14 @@ export async function signInWithPassword(input: {
    * sign-in view is what owns the second field.
    */
   if ('secondFactorRequired' in tokens) {
-    return { challenge: tokens.challenge, baseUrl: input.baseUrl }
+    // Asked rather than assumed, and swallowed rather than raised: an older API
+    // has no such field, and a sign-in that failed because a *hint* could not
+    // be fetched would be worse than one offering only the code box.
+    const kinds = await bare.auth
+      .methods()
+      .then((m) => m.secondFactorKinds)
+      .catch(() => [] as readonly SecondFactorKind[])
+    return { challenge: tokens.challenge, baseUrl: input.baseUrl, kinds }
   }
 
   keep(tokens, input.baseUrl)
@@ -149,16 +168,32 @@ export async function signInWithPassword(input: {
  * The challenge is what carries identity across the two calls, so nothing about
  * the password is kept in the browser between them.
  */
-export async function signInSecondFactor(input: {
-  challenge: string
-  code: string
-  baseUrl: string
-}): Promise<boolean> {
+export async function signInSecondFactor(
+  input: { challenge: string; baseUrl: string } & ({ code: string } | { assertion: WebAuthnAssertion }),
+): Promise<boolean> {
   const bare = new NacreClient({ baseUrl: input.baseUrl, token: 'unauthenticated' })
-  const tokens = await bare.auth.secondFactor({ challenge: input.challenge, code: input.code })
+  const tokens = await bare.auth.secondFactor(
+    'code' in input
+      ? { challenge: input.challenge, code: input.code }
+      : { challenge: input.challenge, assertion: input.assertion },
+  )
   if (tokens === undefined) return false
   keep(tokens, input.baseUrl)
   return true
+}
+
+/**
+ * Run the assertion half of a sign-in, from a challenge to a session.
+ *
+ * Here rather than in the view because it is three calls that have to happen in
+ * one order — options, the browser's prompt, the exchange — and a view holding
+ * the middle one is a view that can be written to skip the first.
+ */
+export async function signInWithKey(input: { challenge: string; baseUrl: string }): Promise<boolean> {
+  const bare = new NacreClient({ baseUrl: input.baseUrl, token: 'unauthenticated' })
+  const options = await bare.auth.secondFactorWebAuthn(input.challenge)
+  if (options === undefined) return false
+  return signInSecondFactor({ ...input, assertion: await webauthn.get(options) })
 }
 
 /**

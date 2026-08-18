@@ -184,6 +184,12 @@ a { color: var(--n-accent); }
    itself, which reads as a glitch rather than as a wrapped word. Written by
    `agoCell` rather than by each of the five call sites — see dom.ts. */
 .table td.ago { white-space: nowrap; }
+/* And the general case the two above are instances of: a cell whose value is
+   **one thing** written in more than one word — "Security key", "Authenticator
+   app". The rule is deliberately not applied to content of unbounded length: a
+   service account name or a sentence wraps, and nowrapping those buys a row
+   height with a horizontal scroll. See the note in CLAUDE.md. */
+.table td.nowrap { white-space: nowrap; }
 .table tr.revoked td { opacity: 0.55; }
 
 .slug {

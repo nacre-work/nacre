@@ -18,16 +18,34 @@ import type { WebAuthnAssertion, WebAuthnAssertionOptions, WebAuthnRegistrationO
  * application, and "this needs HTTPS" is a deployment fact somebody can act on.
  */
 
-const un64 = (s: string): Uint8Array => {
+/**
+ * base64url to bytes, over an `ArrayBuffer` this function owns.
+ *
+ * The buffer is allocated rather than inferred because `BufferSource` excludes
+ * a `SharedArrayBuffer` and `Uint8Array.from` promises only `ArrayBufferLike` —
+ * so the obvious spelling type-checks everywhere except against the DOM's own
+ * signatures, which is where it has to hold.
+ */
+const un64 = (s: string): Uint8Array<ArrayBuffer> => {
   const padded = s.replace(/-/g, '+').replace(/_/g, '/')
   const binary = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4))
-  return Uint8Array.from(binary, (c) => c.charCodeAt(0))
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length))
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+  return bytes
 }
 
 const b64 = (buffer: ArrayBuffer): string => {
   let binary = ''
   for (const byte of new Uint8Array(buffer)) binary += String.fromCharCode(byte)
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+/** The same allocation, for a string the specification wants as bytes. */
+const un8 = (s: string): Uint8Array<ArrayBuffer> => {
+  const encoded = new TextEncoder().encode(s)
+  const bytes = new Uint8Array(new ArrayBuffer(encoded.length))
+  bytes.set(encoded)
+  return bytes
 }
 
 /** Whether this page can run a ceremony at all. */
@@ -47,7 +65,7 @@ export async function create(
         // A uuid, as its own bytes. The specification wants an opaque handle
         // and this is one — an authenticator shows `name` and `displayName`,
         // never this.
-        id: new TextEncoder().encode(options.user.id),
+        id: un8(options.user.id),
         name: options.user.name,
         displayName: options.user.displayName,
       },

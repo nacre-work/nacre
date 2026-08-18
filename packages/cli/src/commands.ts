@@ -83,12 +83,21 @@ export async function login(context: Context): Promise<string> {
    * prompt hides what is typed for the same reason the password one does: a
    * code is short-lived but a recovery code is not, and this prompt takes
    * either.
+   *
+   * **A security key is deliberately not offered here, and cannot be.** A
+   * WebAuthn ceremony needs `navigator.credentials`, which is a browser API;
+   * there is no terminal equivalent to fall back to. Somebody whose only second
+   * factor is a key signs in here with a recovery code — which is what those
+   * are for, and is why the prompt says so rather than asking for "the code"
+   * and meeting a person who has no such thing.
    */
   const session =
     'secondFactorRequired' in tokens
       ? await bare.auth.secondFactor({
           challenge: tokens.challenge,
-          code: (await context.prompt('Code: ', true)).trim(),
+          code: (
+            await context.prompt('Code from your authenticator, or a recovery code: ', true)
+          ).trim(),
         })
       : tokens
   if (session === undefined) throw new Error('Sign-in refused.')
