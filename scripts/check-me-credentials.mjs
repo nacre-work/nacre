@@ -127,7 +127,14 @@ if (unmarked.length > 0) {
   process.exit(1)
 }
 
+/*
+ * "call site" and not "account": that loop runs once per identity, so counting
+ * the lines and calling them accounts is a number that reads as a fact and is
+ * not one. The check is right either way — every call site carries the flag, so
+ * every account it makes does — but a summary somebody reads has to say what it
+ * counted.
+ */
 console.log(
   `${paths.length} /v1/me credential route(s) — ${paths.join(', ')} — each ask ${PREDICATE}(), ` +
-    `and all ${creates.length} account(s) ${SEED} publishes are --shared.`,
+    `and all ${creates.length} \`users create\` call site(s) in ${SEED} pass --shared.`,
 )
