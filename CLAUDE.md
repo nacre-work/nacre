@@ -1506,6 +1506,28 @@ platform administrator there would leave the account that administers the
 installation as the one account whose only recovery is `psql`, which is the hole
 this endpoint closes.
 
+**And three of the four routes that hash answered `500` under load.**
+`core/passwords.ts` bounds how many scrypt calls run at once — the pool is
+libuv's and is shared with DNS, so an unbounded one stops the rest of the API on
+a name lookup — and its own header says "the caller answers 503, which is the
+honest response to 'this process cannot verify a password right now'". Sign-in
+caught it beside the call. Creating a user, an administrator resetting a
+password, and redeeming a recovery link each turned a loaded process into an
+internal error, which a client reports as a broken server and an operator
+investigates as a bug.
+
+A rule stated in a comment and held in one of four places, which is the shape
+this file names twice already — and the count moved on the way in: the fourth
+route is the one this branch added. The repair is one problem builder and one
+`handledTooBusy`, called from the **two** error boundaries there are. Two rather
+than one because authentication splits the request path: sign-in and recovery
+are reached without a credential and run before the section that has one, so a
+single `catch` cannot cover both, and saying so beside them is what puts the
+next hashing route in one of the two.
+
+The check is the four routes driven end to end. Each half of the defect was
+restored and each named exactly its two.
+
 **The second exemption is what made the mechanism matter.** Exemptions are keyed
 by file, so a second method in the same file writing the same statement text was
 waved through by an argument written about the first one — a write nobody argued

@@ -92,6 +92,14 @@ const MAX_MEM = 256 * 1024 * 1024
  * Refusing is not an oracle. It depends on how loaded the process is and not at
  * all on whether the account exists, and it is returned identically to the
  * caller whether the address matched a user or not.
+ *
+ * The 503 is `errors.ts`'s `tooBusy`, sent from the two error boundaries in
+ * `server.ts` — sign-in is reached without a credential and everything else
+ * with one, so a single catch cannot cover both. That is worth naming here
+ * because this paragraph claimed "the caller answers 503" while exactly one of
+ * the four routes that reach this gate did: the other three — creating a user,
+ * an administrator resetting a password, and redeeming a recovery link — turned
+ * a loaded process into a 500.
  */
 
 const poolSize = Number(process.env.UV_THREADPOOL_SIZE ?? 4)

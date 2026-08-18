@@ -51,10 +51,10 @@ import {
   type AuthContext,
   type VerifyOptions,
 } from './auth.js'
-import { badRequest, internal, notAdministeredHere, notFound, Problem } from './errors.js'
+import { badRequest, internal, notAdministeredHere, notFound, Problem, tooBusy } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
-import type { Login, LoginOutcome, Tokens } from './login.js'
+import type { Login, Tokens } from './login.js'
 import { MIN_PASSWORD_LENGTH, type PasswordRecovery } from './recovery.js'
 import type { Mailer } from '@nacre.work/core'
 import type { SecondFactors } from './second-factor.js'
@@ -1567,6 +1567,41 @@ async function notifySecurityChange(
   }
 }
 
+/**
+ * The one answer to a full password gate, at whichever boundary caught it.
+ *
+ * There are two, and the split is authentication: sign-in and password recovery
+ * are reached without a credential and run before the request path that has
+ * one, so a single `catch` cannot cover both. Both call this, so there is one
+ * status, one wording and one header however a hashing route was reached.
+ *
+ * It used to be caught beside `login()` alone, which made the claim in
+ * `core/passwords.ts` — "the caller answers 503" — true of sign-in and false of
+ * the three other routes that hash: creating a user, an administrator resetting
+ * somebody's password, and redeeming a recovery link each turned a loaded
+ * process into a `500`, which a client reports as a broken server and an
+ * operator investigates as a bug. A rule stated in a comment and held in one of
+ * four places is the shape this repository keeps closing.
+ *
+ * Logged as load rather than as a failure, and deliberately not written to the
+ * journal: an audit row saying a request failed is read as a defect, and
+ * shedding load is the design working.
+ *
+ * @returns whether it answered, so a caller reads as `if (handled) return`.
+ */
+function handledTooBusy(
+  res: ServerResponse,
+  error: unknown,
+  instance: string,
+  requestId: string,
+): boolean {
+  if (!(error instanceof TooBusy)) return false
+  logger.warn('password gate full', { request_id: requestId, instance })
+  const problem = tooBusy(instance, requestId)
+  send(res, problem.status, problem.toJSON(), requestId, { 'retry-after': '2' })
+  return true
+}
+
 async function handleAuth(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1659,39 +1694,11 @@ async function handleAuth(
       }
     }
 
-    let outcome: LoginOutcome | undefined
-    try {
-      outcome = await options.login.login({
-        email,
-        password,
-        ...(typeof organization === 'string' ? { organization } : {}),
-      })
-    } catch (error) {
-      // The process is already verifying as many passwords as it will. scrypt
-      // runs on libuv's thread pool, which is shared with DNS and file I/O, so
-      // an unbounded login endpoint stops the *rest* of the API on a name
-      // lookup — see the gate in core/passwords.ts.
-      //
-      // 503 and not 401: nothing was decided about these credentials, and
-      // answering "not valid" to a request that was never checked is a lie the
-      // client will act on. 503 with Retry-After is the honest one.
-      //
-      // Not an oracle either. It depends on how loaded the process is and not
-      // at all on whether the account exists.
-      if (error instanceof TooBusy) {
-        const problem = new Problem({
-          type: 'https://nacre.work/errors/unavailable',
-          title: 'Service unavailable',
-          status: 503,
-          detail: 'Too many sign-in attempts are being processed. Try again shortly.',
-          instance,
-          requestId,
-        })
-        send(res, problem.status, problem.toJSON(), requestId, { 'retry-after': '2' })
-        return
-      }
-      throw error
-    }
+    const outcome = await options.login.login({
+      email,
+      password,
+      ...(typeof organization === 'string' ? { organization } : {}),
+    })
 
     if (outcome === undefined) {
       // Logged rather than audited, and the difference is not laziness. The
@@ -2164,7 +2171,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   // different way — see login.ts. The organization in the issued token comes
   // from the row that authenticated, never from the request.
   if (instance.startsWith('/v1/auth/')) {
-    await handleAuth(req, res, instance, requestId, options)
+    try {
+      await handleAuth(req, res, instance, requestId, options)
+    } catch (error) {
+      // The second of this file's two error boundaries, and the split is
+      // authentication: everything below this line has a credential and is
+      // covered by the catch at the bottom of this function, while sign-in and
+      // password recovery are reached without one and cannot be.
+      //
+      // Both defer to `handledTooBusy` rather than answering, so there is one
+      // 503 and one wording however a hashing route was reached. Anything else
+      // is rethrown to the handler `createApi` installs.
+      if (handledTooBusy(res, error, instance, requestId)) return
+      throw error
+    }
     return
   }
 
@@ -5215,6 +5235,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     const problem = notFound(instance, requestId)
     send(res, problem.status, problem.toJSON(), requestId)
   } catch (error) {
+    // Load, not a failure — and deliberately before the log and the journal
+    // below, because an audit row saying a request failed is read as a defect
+    // and shedding load is the design working.
+    if (handledTooBusy(res, error, instance, requestId)) return
+
     // The 500 body says "whatever went wrong is in the journal under this
     // request_id", and until this line nothing wrote it there: the error was
     // discarded by a bare `catch`, and the audit row carried an empty detail.
