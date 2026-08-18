@@ -10,7 +10,7 @@ export {
   MAX_METADATA_VALUE_LENGTH,
 } from './metadata.js'
 export type { Metadata } from './metadata.js'
-export { loadConfig, loadJwtKeys, loadJwtVerification, loadSecondFactorKey, keyFingerprint, ConfigError } from './config.js'
+export { loadConfig, loadJwtKeys, loadJwtVerification, loadMailConfig, loadSecondFactorKey, keyFingerprint, ConfigError } from './config.js'
 export { protectedResourceMetadata, PROTECTED_RESOURCE_PATH, JWKS_PATH } from './oauth.js'
 export { allowedRequestHeaders, corsHeaders, isPreflight, mcpWalkHeaders, preflightHeaders } from './cors.js'
 export {
@@ -96,6 +96,7 @@ export {
   endpointUrl,
   modelEndpointRefused,
 } from './endpoint.js'
+export { consoleUrl, createMailer, type Mailer, type MailConfig, type Message } from './mail.js'
 export { documentKey, S3, S3Error } from './s3.js'
 export type { S3Options } from './s3.js'
 export type { Hit, SearchRequest, VectorStoreOptions } from './vector/search.js'

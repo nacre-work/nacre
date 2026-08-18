@@ -57,6 +57,20 @@ const EXEMPT = [
       'no target — there is nobody to guard against, and refusing a platform administrator here ' +
       'would leave that one account pinned at whatever cost its password was first hashed at.',
   },
+  {
+    file: 'packages/api/src/recovery.ts',
+    // The whole quoted statement, for the reason above.
+    match: /'UPDATE users SET password_hash = \$2 WHERE id = \$1'/,
+    why:
+      'redeeming a password reset link. The actor is the person themselves: the only way to reach ' +
+      'this statement is to hold a single-use secret that was emailed to the address on that very ' +
+      'row, so there is no caller separate from the target and nobody to escalate over. Refusing ' +
+      'a platform administrator here would recreate the hole this whole endpoint closes — the ' +
+      "account that administers the installation would be the one account that cannot recover " +
+      'its own password except through `psql`. The row is addressed by the id the token resolved ' +
+      'to and never by one a request named, which is what makes "its own" true rather than ' +
+      'claimed.',
+  },
 ]
 
 const files = []
@@ -146,15 +160,39 @@ if (writes === 0) {
   failed = true
 }
 
-/** Every exemption still applies. One that has gone stale is a hole. */
+/**
+ * Every exemption still applies, and each covers **exactly one** write.
+ *
+ * Both halves are holes, in opposite directions. A rule that matches nothing
+ * has gone stale, and an exemption nobody can see the subject of reads as a
+ * decision rather than as the leftover it is — the same rule the SDK's coverage
+ * test applies to its two written reasons.
+ *
+ * A rule matching *two* is the one this grew a second exemption to close. The
+ * exemptions are keyed by file, so a second method in the same file writing the
+ * same statement text is waved through by an argument written about the first
+ * one — and the argument is the whole of what an exemption is. Two writes with
+ * one reason between them is a write nobody argued for.
+ */
 for (const rule of EXEMPT) {
   const source = files.includes(rule.file) ? readFileSync(rule.file, 'utf8') : ''
-  if (rule.match.test(source)) continue
-  console.error(
-    `::error file=${rule.file}::the written exemption in this check no longer matches anything. ` +
-      `It said: ${rule.why} Delete it, or point it at what replaced the statement — an exemption ` +
-      'nobody can see the subject of reads as a decision and is a hole.',
-  )
+  const matched = split(source).filter((piece) => rule.match.test(piece.join('\n'))).length
+
+  if (matched === 1) continue
+  if (matched === 0) {
+    console.error(
+      `::error file=${rule.file}::the written exemption in this check no longer matches anything. ` +
+        `It said: ${rule.why} Delete it, or point it at what replaced the statement — an exemption ` +
+        'nobody can see the subject of reads as a decision and is a hole.',
+    )
+  } else {
+    console.error(
+      `::error file=${rule.file}::this written exemption covers ${String(matched)} writes and was ` +
+        `argued for one. It said: ${rule.why} Give the new one its own entry and its own reason, ` +
+        'or route it through the guard — an argument about one statement is not an argument about ' +
+        'the next one that happens to be spelled the same.',
+    )
+  }
   failed = true
 }
 

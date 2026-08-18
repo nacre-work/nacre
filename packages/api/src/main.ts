@@ -8,6 +8,8 @@ import {
   loadModules,
   logger,
   loadJwtKeys,
+  createMailer,
+  loadMailConfig,
   loadSecondFactorKey,
   keyFingerprint,
   protectedResourceMetadata,
@@ -43,6 +45,7 @@ import { SignJWT } from 'jose'
 
 import { Idempotency } from './idempotency.js'
 import { Login } from './login.js'
+import { PasswordRecovery } from './recovery.js'
 import { SecondFactors } from './second-factor.js'
 import {
   PostgresOAuthAuthorizations,
@@ -172,6 +175,27 @@ async function main(): Promise<void> {
           // tokens is what this installation already calls itself, so a person
           // with two Nacre deployments sees two distinguishable entries.
           issuer: config.jwtIssuer,
+          role: APP_ROLE,
+        })
+
+  /*
+   * The sender, when the deployment configured one.
+   *
+   * `undefined` otherwise, and every route that would send is then not mounted
+   * — `/v1/auth/methods` reports it, so the console leaves the recovery link
+   * off the screen rather than showing one that answers 404.
+   */
+  const mailer = createMailer(loadMailConfig())
+  const recovery =
+    mailer === undefined
+      ? undefined
+      : new PasswordRecovery({
+          pool,
+          mailer,
+          // From configuration and never from a `Host` header: a recovery link
+          // built from a request header is a recovery link pointing wherever
+          // the requester said.
+          consoleBase: config.canonicalUrl,
           role: APP_ROLE,
         })
 
@@ -353,6 +377,8 @@ async function main(): Promise<void> {
     workspaces: new PostgresWorkspaces(pool, APP_ROLE, principalsCache),
     embeddingProviders: new PostgresEmbeddingProviders(pool, APP_ROLE),
     ...(secondFactors === undefined ? {} : { secondFactors }),
+    ...(recovery === undefined ? {} : { recovery }),
+    ...(mailer === undefined ? {} : { mailer }),
     grants: new PostgresGrants(pool, APP_ROLE, principalsCache),
     serviceAccounts: new PostgresServiceAccounts(pool, APP_ROLE),
     users: new PostgresUsers(pool, APP_ROLE),

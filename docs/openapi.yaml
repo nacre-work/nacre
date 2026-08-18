@@ -953,6 +953,108 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+  /auth/methods:
+    get:
+      operationId: signInMethods
+      summary: What this installation offers before anybody has signed in
+      description: >
+        One boolean, so a sign-in screen can leave the recovery link **off**
+        where no sender is configured rather than showing a control that answers
+        404. A screen offering what the server refuses reads as a broken
+        application rather than as a deployment choice.
+
+
+        It says this installation can send email, which is what a caller would
+        learn by pressing the link anyway. It says nothing about any address.
+      security: []
+      responses:
+        '200':
+          description: What is available
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [password_reset]
+                properties:
+                  password_reset: { type: boolean }
+  /auth/password-reset:
+    post:
+      operationId: requestPasswordReset
+      summary: Ask for a recovery link
+      description: >
+        **`204` whatever happened**: an address with no account, an address in
+        two organizations, a disabled account, a rate limit already met, and a
+        relay that refused all answer the same. Anything else would make this the
+        account-enumeration oracle the sign-in path is careful not to be — and
+        this one needs no credential at all.
+
+
+        The link works once and expires in an hour, and asking again invalidates
+        the previous one: two live links is two things to steal for one account.
+
+
+        **A reset does not touch a second factor.** If it did, an email account
+        would be a way around one, which is the thing a second factor exists to
+        not be.
+
+
+        Absent entirely where the installation configured no sender — see
+        `GET /auth/methods`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '204': { description: 'Accepted, whether or not anything was sent.' }
+  /auth/password-reset/confirm:
+    post:
+      operationId: confirmPasswordReset
+      summary: Spend a recovery link and set a password
+      description: >
+        The link is spent by the statement that finds it, so two requests cannot
+        both succeed. Setting the password ends **every other session**: a reset
+        is what somebody does when they think their password is known, and
+        leaving the refresh tokens alive would leave whoever knows it signed in.
+
+
+        A password is at least 12 characters and there is no other rule. A
+        requirement for a digit and a symbol produces `Password1!` and a person
+        who writes it down; length is the only one that reliably buys entropy.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:    { type: string }
+                password: { type: string, format: password, minLength: 12 }
+      responses:
+        '204': { description: The password is set and other sessions are ended. }
+        '400':
+          description: >
+            The password is too short. The one thing this endpoint explains,
+            because it is about what the caller sent rather than about what
+            exists — a bare refusal here is a person retyping something that
+            will never be accepted.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '401':
+          description: >
+            One answer for a link that never existed, one already spent, one
+            that expired, and an account disabled since it was sent.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
   /auth/second-factor:
     post:
       summary: Finish a sign-in with a second factor

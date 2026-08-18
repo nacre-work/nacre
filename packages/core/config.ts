@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { DEFAULT_EMBED_BATCH } from './endpoint.js'
+import type { MailConfig } from './mail.js'
 import { DEFAULT_EMBED_MAX_TOKENS } from './text/tokens.js'
 
 export interface Config {
@@ -508,6 +509,59 @@ function loadEd25519(ref: string, variable: string): { private: KeyObject; publi
  * what recovery codes are for, and why they are minted at enrolment rather than
  * on demand.
  */
+/**
+ * The installation's sender, or none.
+ *
+ * All or nothing, validated as a group the way `NACRE_S3_*` is: a URL with no
+ * `From:` parses and then fails on the first message, at which point the
+ * failure is a log line nobody is reading rather than a refusal at startup.
+ *
+ * **Unset is a supported deployment and the feature is absent**, not degraded.
+ * No sender means no recovery route mounted and no link on the sign-in screen,
+ * because a control that answers "email is not configured" is a control that
+ * tells an unauthenticated stranger about the deployment.
+ */
+export function loadMailConfig(env: NodeJS.ProcessEnv = process.env): MailConfig | undefined {
+  const url = env.NACRE_SMTP_URL
+  const from = env.NACRE_MAIL_FROM
+
+  const set = [
+    ['NACRE_SMTP_URL', url],
+    ['NACRE_MAIL_FROM', from],
+  ].filter(([, value]) => value !== undefined && value !== '')
+
+  if (set.length === 0) return undefined
+  if (set.length !== 2) {
+    throw new ConfigError([
+      'NACRE_SMTP_URL and NACRE_MAIL_FROM are set as a group or not at all. ' +
+        `Only ${set.map(([name]) => String(name)).join(', ')} is set; a relay with no sender ` +
+        'address parses and then fails on the first message, which is a log line rather than ' +
+        'a refusal you would notice.',
+    ])
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(url as string)
+  } catch (cause) {
+    throw new ConfigError([`NACRE_SMTP_URL is not a URL: ${String(cause)}.`])
+  }
+  if (parsed.protocol !== 'smtp:' && parsed.protocol !== 'smtps:') {
+    // By name, because `NACRE_S3_ENDPOINT=minio:9000` was accepted by `new URL`
+    // as the scheme `minio:` with an empty host, and this is the same mistake
+    // waiting in a different variable.
+    throw new ConfigError([
+      `NACRE_SMTP_URL has the scheme ${parsed.protocol} — it takes smtp:// or smtps://, ` +
+        'for example smtps://nacre%40example.com:secret@smtp.example.com:465.',
+    ])
+  }
+  if (parsed.hostname === '') {
+    throw new ConfigError([`NACRE_SMTP_URL names no host: ${String(url)}.`])
+  }
+
+  return { url: url as string, from: from as string }
+}
+
 /**
  * The key as a value rather than as a file.
  *

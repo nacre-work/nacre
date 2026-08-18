@@ -382,6 +382,28 @@ export class SecondFactors {
     )
   }
 
+  /**
+   * The address, for a notice about this account's factors.
+   *
+   * Here rather than on a users port because this class already reads that
+   * column for the authenticator label, and a second reader of one column is a
+   * second thing to keep scoped correctly.
+   */
+  async emailOf(orgId: string, userId: string): Promise<string | undefined> {
+    return withOrg(
+      this.deps.pool,
+      orgId,
+      async (client) => {
+        const { rows } = await client.query<{ email: string }>(
+          'SELECT email FROM users WHERE org_id = $1 AND id = $2',
+          [orgId, userId],
+        )
+        return rows[0]?.email
+      },
+      this.scope,
+    )
+  }
+
   /** How many unspent recovery codes are left, for the screen that says so. */
   async recoveryCodesLeft(orgId: string, userId: string): Promise<number> {
     return withOrg(
