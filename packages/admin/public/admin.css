@@ -368,6 +368,17 @@ a { color: var(--n-accent); }
 .picked { margin: 0; font-size: 14px; }
 
 .hint { font-size: 13px; color: var(--n-text-muted); margin: 0 0 12px; max-width: 60ch; }
+/* A value shown once and copied by hand: a TOTP secret, or the recovery codes.
+   Selectable and wrapping, because this console is reached over plain HTTP on a
+   private network as often as not — a person with a desktop authenticator has
+   nothing to scan with and retypes what is here. `user-select: all` makes one
+   click take the whole block rather than a word of it. */
+.secret {
+  font-family: var(--n-font-mono); font-size: 14px; line-height: 1.6;
+  background: var(--n-surface-sunk); border: 1px solid var(--n-line);
+  border-radius: 6px; padding: 12px; margin: 0 0 12px;
+  overflow-wrap: anywhere; white-space: pre-wrap; user-select: all;
+}
 .warn {
   font-size: 14px; color: var(--n-text);
   border-left: 3px solid var(--n-deny); padding-left: 12px; margin: 0 0 16px;
