@@ -98,7 +98,20 @@ NACRE_EMA_TRUSTED_ISSUERS=
 #
 # Losing it locks every enrolled person out of their authenticator, which is
 # what recovery codes are for — they are minted at enrolment for exactly this.
-NACRE_2FA_KEY_REF=                     # file:// to >=32 bytes; enables the second factor
+#
+# Two ways to give it, and setting both is refused. As a **value**, base64 or hex
+# and exactly 32 bytes — an arbitrary string is refused rather than stretched, or
+# every sealed secret would be worth whatever somebody typed:
+#
+#   openssl rand -base64 32
+#
+# Or as a **file**, which is the better one where a platform offers it: an
+# environment variable is readable through `docker inspect` and
+# `/proc/<pid>/environ`, and a file can be mounted read-only from a secret store.
+# That is a recommendation, not a rule — `NACRE_JWT_SECRET` beside it is a plain
+# value too.
+NACRE_2FA_KEY=                         # base64 or hex, exactly 32 bytes
+NACRE_2FA_KEY_REF=                     # or file:// to >=32 bytes; set one, not both
 
 # ─── permissions ───
 NACRE_ACL_CACHE_TTL=60

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { generateKeyPairSync, type KeyObject } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,8 +12,7 @@ import {
   loadConfig,
   loadJwtKeys,
   loadJwtVerification,
-  keyFingerprint,
-} from '../config.js'
+  keyFingerprint, loadSecondFactorKey } from '../config.js'
 
 const COMPLETE = {
   NACRE_CANONICAL_URL: 'https://api.nacre.test',
@@ -600,5 +600,39 @@ describe('verification-only keys', () => {
     expect(() => loadJwtVerification({ NACRE_JWT_PUBLIC_KEY_REF: ref })).toThrow(
       /rsa public key/,
     )
+  })
+})
+
+describe('the second factor key', () => {
+  const KEY = randomBytes(32)
+
+  it('takes base64 and hex, and nothing else', () => {
+    expect(loadSecondFactorKey({ NACRE_2FA_KEY: KEY.toString('base64') })?.equals(KEY)).toBe(true)
+    expect(loadSecondFactorKey({ NACRE_2FA_KEY: KEY.toString('base64url') })?.equals(KEY)).toBe(true)
+    expect(loadSecondFactorKey({ NACRE_2FA_KEY: KEY.toString('hex') })?.equals(KEY)).toBe(true)
+    // Whitespace is what a copied value arrives with.
+    expect(loadSecondFactorKey({ NACRE_2FA_KEY: ` ${KEY.toString('base64')}\n` })?.equals(KEY)).toBe(true)
+  })
+
+  /*
+   * The one that matters. An arbitrary string would be accepted, stretched by
+   * nothing, and every sealed secret in the installation would be worth
+   * whatever somebody typed.
+   */
+  it('refuses a passphrase, and a value of the wrong length', () => {
+    expect(() => loadSecondFactorKey({ NACRE_2FA_KEY: 'correct horse battery staple' })).toThrow(/base64 or hex/)
+    expect(() => loadSecondFactorKey({ NACRE_2FA_KEY: randomBytes(16).toString('base64') })).toThrow(/16 bytes rather than 32/)
+    expect(() => loadSecondFactorKey({ NACRE_2FA_KEY: randomBytes(64).toString('hex') })).toThrow()
+  })
+
+  it('refuses both variables at once rather than picking one', () => {
+    expect(() =>
+      loadSecondFactorKey({ NACRE_2FA_KEY: KEY.toString('base64'), NACRE_2FA_KEY_REF: 'file:///x' }),
+    ).toThrow(/two answers/)
+  })
+
+  it('is absent when neither is set, which is a supported deployment', () => {
+    expect(loadSecondFactorKey({})).toBeUndefined()
+    expect(loadSecondFactorKey({ NACRE_2FA_KEY: '', NACRE_2FA_KEY_REF: '' })).toBeUndefined()
   })
 })
