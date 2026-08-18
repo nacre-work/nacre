@@ -272,6 +272,48 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.22.0 — the console hands its secret over, and the mail is in the brand
+
+**No migration, no new variables, and nothing to do.** Everything here is what a
+person sees; nothing changes what a deployment has to be given.
+
+**The enrolment dialog can hand its values over.** A TOTP secret is thirty-two
+base32 characters and had to be retyped by hand: there is a **QR code** on that
+screen now, the secret has a copy control beside it, and the `otpauth://` link
+is shown in full rather than truncated into a tooltip a phone has no pointer
+for. The recovery codes can be copied and saved as a file from the one dialog
+they will ever appear in.
+
+The QR code is encoded in the console and needs nothing from the deployment: no
+image is fetched, no service is called, and the page's `script-src 'self'` is
+unchanged. It is drawn black on white whatever theme the browser asks for,
+because that is a scanning requirement rather than a palette choice.
+
+**The messages this installation sends are now `multipart/alternative`.** The
+same words in plain text, plus an HTML part in the product's own palette. Both
+parts are rendered from one description, so a client that refuses HTML — or a
+person who has turned it off — reads exactly what the other reads.
+
+There is nothing to configure. `NACRE_SMTP_URL` and `NACRE_MAIL_FROM` are what
+they were, an installation with neither still sends nothing and still hides the
+recovery link, and no message fetches an image or carries a tracking pixel.
+Anything that filtered or archived on the text part goes on working, because the
+text part is still there and still first.
+
+A message that asks for an action now shows the link **as its own URL** beside
+the button, so a reader taught to check a link before pressing it can. If your
+relay rewrites links for click tracking, that rewriting will be visible to the
+recipient — which is the correct outcome and worth knowing before somebody asks.
+
+**A provisioning race is fixed**, and it is worth reading if you script tenant
+creation. Two organizations provisioned *at the same moment* on an installation
+with no default embedding provider row could both try to insert one, and since
+0.8.0's `NULLS NOT DISTINCT` constraint (migration 0028) the loser failed outright with
+`duplicate key value violates unique constraint "embedding_providers_org_name"`
+— no organization created, and the error naming a constraint rather than a race.
+It is an `ON CONFLICT` now. Nothing to do on an existing installation: a
+deployment that already has a default provider row was never reachable by it.
+
 ### 0.21.0 — two additions for module authors, and nothing for an operator
 
 **No migration, no new variables, and nothing to do.** Both changes are to
