@@ -272,6 +272,28 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.21.0 — two additions for module authors, and nothing for an operator
+
+**No migration, no new variables, and nothing to do.** Both changes are to
+interfaces a commercial module implements; an installation running none is
+unaffected, and one running a module upgrades the module the way it always does.
+
+`SignInContext` gains **`holdsOwnCredentials`**, which is `false` for a shared
+account — the property 0.20.0 added. A gate that answers `enrol` without reading
+it would send somebody to enrolment routes that answer `404` to them, which is a
+lockout with no route back, produced by the one verdict that exists so a policy
+*has* a route back. It cannot be inferred from `enrolled`: that reads `false`
+for a shared account and for a person who has simply not enrolled yet.
+
+`migrate()` takes an options object, so a module can apply its own schema with
+the core's runner instead of shipping a second copy of it. `ledgerTable` names
+the module's own history — never `schema_migrations`, which `/v1/ready` reads to
+decide whether the schema matches the image — and `requirePrivileges: false`
+says the module's SQL touches only its own table and therefore needs no
+`BYPASSRLS`. See [extensions.md](./extensions.md).
+
+Both are additive. Existing calls compile and behave identically.
+
 ### 0.20.0 — a module can require a second factor, and a shared account cannot
 
 **One migration, no new variables.** `0032` adds `users.shared` — `false` for

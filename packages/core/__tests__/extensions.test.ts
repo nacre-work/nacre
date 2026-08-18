@@ -413,6 +413,7 @@ describe('sign-in gates', () => {
     path: 'password',
     secondFactor: undefined,
     enrolled: false,
+    holdsOwnCredentials: true,
     ...over,
   })
 

@@ -245,6 +245,7 @@ interface SignInContext {
   readonly path: 'password' | 'second-factor' | 'refresh' | 'password-change'
   readonly secondFactor: 'totp' | 'webauthn' | undefined
   readonly enrolled: boolean
+  readonly holdsOwnCredentials: boolean
 }
 
 type SignInVerdict =
@@ -274,6 +275,20 @@ nothing for any of them for as long as they keep renewing.
 account *holds*. They are two fields because a refresh proves neither and the
 account may still have a factor; collapsing them would make a renewal
 indistinguishable from a password-only sign-in.
+
+`holdsOwnCredentials` is a third fact and the one a gate is most likely to
+forget. `false` is a **shared** account — a login several people hold, published
+or handed round a team — whose whole `/v1/me` credential surface answers `404`:
+no second factor, no password change, no reset link. A gate that answers `enrol`
+for one is sending somebody to routes that refuse them, with no route back,
+produced by the one verdict that exists so a policy *has* a route back. It
+cannot be inferred from `enrolled`, which reads `false` for a shared account and
+for a person who simply has not enrolled yet.
+
+It is the same fact `GET /v1/me` reports as `holds_own_credentials`, under the
+same name. What a gate does with it is the gate's decision — admitting is the
+usual answer, since such an account's credentials are administered rather than
+held — but it must be a decision rather than an oversight.
 
 ### `enrol` is what makes such a policy usable
 
@@ -323,6 +338,53 @@ way, and the password door is the one a gate closes.
 
 With no module loaded there are no gates, and the open core mints a session for
 every credential it verifies, exactly as it did before this point existed.
+
+## A module's own schema
+
+A module that needs a table applies it with the core's runner, pointed at the
+module's own ledger:
+
+```ts
+import { loadMigrations, migrate } from '@nacre.work/core'
+
+await migrate(process.env.NACRE_PG_URL, loadMigrations(here('../migrations')), {
+  ledgerTable: 'enterprise_migrations',
+  // Only if none of this module's SQL reads a core table. See below.
+  requirePrivileges: false,
+})
+```
+
+**Not `schema_migrations`.** That is the core's history and only the core's: a
+module writing rows into it would make the open half's migration state depend on
+which modules a deployment bought, and `/v1/ready` reads that table to decide
+whether the schema matches the image.
+
+**Not at load, either.** DDL on a process start races every other replica
+starting beside it, and `CREATE TABLE IF NOT EXISTS` does not make that safe —
+it can still raise a unique violation on the catalog. A module ships a command
+and **refuses to load without its table**, because "no table" and "no rows" are
+the same empty set to every line after it and only one of them is a working
+deployment.
+
+`requirePrivileges` decides whether the runner refuses up front unless the
+connected role can finish. It defaults to `true`, which is right for the core:
+several of its migrations read a tenant table, every tenant table is `FORCE`d,
+and a plain owner fails five migrations in with a message naming a GUC. A module
+touching only its own table needs no `BYPASSRLS` and passing `false` says so —
+and is wrong the moment one of its migrations reads a core table.
+
+The option exists because the alternative was a **second copy of the runner**
+beside the module: a checksum comparison, a ledger backfill and a
+transaction-per-migration that had to stay in step with this one, with nothing
+that knew there were two.
+
+Two things it does that a hand-written runner tends not to. An applied file is
+checksummed and re-checked, so editing one that has already run is refused
+rather than silently diverging from every database that ran the old text — and
+that includes comments, since the digest is over the whole file. And a ledger
+from an older runner whose `checksum` column is nullable is **backfilled**
+rather than read as a mismatch, so switching an existing module onto this does
+not refuse every installation older than the check.
 
 ## Testing a module against these rules
 
