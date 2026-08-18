@@ -75,11 +75,29 @@ export async function login(context: Context): Promise<string> {
   // give.
   if (tokens === undefined) throw new Error('Sign-in refused.')
 
+  /*
+   * A correct password and a second factor still to produce.
+   *
+   * Asked for here rather than left to a flag, because the alternative is a
+   * command that succeeds at signing in and fails at everything afterwards. The
+   * prompt hides what is typed for the same reason the password one does: a
+   * code is short-lived but a recovery code is not, and this prompt takes
+   * either.
+   */
+  const session =
+    'secondFactorRequired' in tokens
+      ? await bare.auth.secondFactor({
+          challenge: tokens.challenge,
+          code: (await context.prompt('Code: ', true)).trim(),
+        })
+      : tokens
+  if (session === undefined) throw new Error('Sign-in refused.')
+
   const path = saveSession(
-    { baseUrl: url, token: tokens.accessToken, refreshToken: tokens.refreshToken },
+    { baseUrl: url, token: session.accessToken, refreshToken: session.refreshToken },
     context.env,
   )
-  const who = await context.clientFor({ baseUrl: url, token: tokens.accessToken }).me()
+  const who = await context.clientFor({ baseUrl: url, token: session.accessToken }).me()
 
   return `Signed in to ${url} as ${who.principalId} (${who.role}) in ${who.organization}.\nSession written to ${path}, readable only by you.`
 }

@@ -8,6 +8,7 @@ import {
   loadModules,
   logger,
   loadJwtKeys,
+  loadSecondFactorKey,
   keyFingerprint,
   protectedResourceMetadata,
   Redis,
@@ -42,6 +43,7 @@ import { SignJWT } from 'jose'
 
 import { Idempotency } from './idempotency.js'
 import { Login } from './login.js'
+import { SecondFactors } from './second-factor.js'
 import {
   PostgresOAuthAuthorizations,
   PostgresOAuthClients,
@@ -152,6 +154,27 @@ async function main(): Promise<void> {
     },
   })
 
+  /*
+   * The second factor, when a key was configured.
+   *
+   * `undefined` otherwise, and that is a supported deployment: the surface
+   * answers 404 and sign-in issues tokens exactly as it always did. There is no
+   * mode where a secret is stored unsealed.
+   */
+  const secondFactorKey = loadSecondFactorKey()
+  const secondFactors =
+    secondFactorKey === undefined
+      ? undefined
+      : new SecondFactors({
+          pool,
+          key: secondFactorKey,
+          // What an authenticator prints above the account. The issuer of the
+          // tokens is what this installation already calls itself, so a person
+          // with two Nacre deployments sees two distinguishable entries.
+          issuer: config.jwtIssuer,
+          role: APP_ROLE,
+        })
+
   const login = new Login({
     pool,
     // The signing key, which for Ed25519 is the private half — the only place
@@ -165,6 +188,7 @@ async function main(): Promise<void> {
     accessTokenTtl: config.accessTokenTtl,
     refreshTokenTtl: config.refreshTokenTtl,
     role: APP_ROLE,
+    ...(secondFactors === undefined ? {} : { secondFactors }),
   })
 
   // What this process cannot serve a request without.
@@ -328,6 +352,7 @@ async function main(): Promise<void> {
     layers: new PostgresLayers(pool, vectors, APP_ROLE, principalsCache),
     workspaces: new PostgresWorkspaces(pool, APP_ROLE, principalsCache),
     embeddingProviders: new PostgresEmbeddingProviders(pool, APP_ROLE),
+    ...(secondFactors === undefined ? {} : { secondFactors }),
     grants: new PostgresGrants(pool, APP_ROLE, principalsCache),
     serviceAccounts: new PostgresServiceAccounts(pool, APP_ROLE),
     users: new PostgresUsers(pool, APP_ROLE),

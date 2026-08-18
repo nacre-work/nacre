@@ -21,6 +21,9 @@ import type {
   ReferenceQuery,
   ReferenceQueryInput,
   ReindexStatus,
+  BegunSecondFactor,
+  SecondFactor,
+  SignIn,
   Tokens,
   Workspace,
   SearchHit,
@@ -1222,7 +1225,7 @@ export class NacreClient {
        * single-organization installation.
        */
       organization?: string
-    }): Promise<Tokens | undefined> => {
+    }): Promise<SignIn | undefined> => {
       const body = await this.#unauthorized<Record<string, unknown>>({
         method: 'POST',
         path: '/v1/auth/login',
@@ -1232,6 +1235,39 @@ export class NacreClient {
           password: input.password,
           ...(input.organization === undefined ? {} : { organization: input.organization }),
         },
+      })
+      if (body === undefined) return undefined
+      /*
+       * Two shapes on one 200, and the union is the point.
+       *
+       * Where the account has a second factor the server answers with a
+       * challenge instead of tokens — nothing was refused, the caller is being
+       * asked for the rest. A client that read `access_token` and found nothing
+       * would report a broken sign-in for a working one, so the type makes the
+       * second case impossible to ignore.
+       */
+      if (body.second_factor_required === true) {
+        return {
+          secondFactorRequired: true,
+          challenge: String(body.challenge ?? ''),
+          expiresIn: Number(body.expires_in ?? 0),
+        }
+      }
+      return tokensFrom(body)
+    },
+
+    /**
+     * Finish a sign-in with a code from an authenticator, or a recovery code.
+     *
+     * Both go here. From outside they answer the same question, and a separate
+     * method would say which one a person is using.
+     */
+    secondFactor: async (input: { challenge: string; code: string }): Promise<Tokens | undefined> => {
+      const body = await this.#unauthorized<Record<string, unknown>>({
+        method: 'POST',
+        path: '/v1/auth/second-factor',
+        noAuthRefresh: true,
+        body: { challenge: input.challenge, code: input.code },
       })
       return body === undefined ? undefined : tokensFrom(body)
     },
@@ -1262,6 +1298,75 @@ export class NacreClient {
         path: '/v1/auth/logout',
         noAuthRefresh: true,
         body: { refresh_token: refreshToken },
+      })
+    },
+  }
+
+  /**
+   * The caller's **own** second factor, and never anybody else's.
+   *
+   * There is no administrative counterpart to this on purpose. An administrator
+   * resets a password; a second factor is a thing the person holds, and one an
+   * administrator could enrol or remove would be a thing the account's
+   * administrator holds instead.
+   *
+   * Every method here answers `404` on an installation with no
+   * `NACRE_2FA_KEY_REF`, for a service account, and for a delegation.
+   */
+  readonly secondFactor = {
+    /** What is enrolled, and how many recovery codes are left. */
+    list: async (): Promise<{ items: readonly SecondFactor[]; recoveryCodesLeft: number }> => {
+      const body = (await this.#request({ method: 'GET', path: '/v1/me/second-factor' })) as {
+        items?: readonly Record<string, unknown>[]
+        recovery_codes_left?: number
+      }
+      return {
+        items: (body.items ?? []).map(secondFactorFrom),
+        recoveryCodesLeft: body.recovery_codes_left ?? 0,
+      }
+    },
+
+    /**
+     * Begin enrolling one. The secret comes back **once**.
+     *
+     * Nothing counts it until `confirm`: a secret that has never produced a
+     * correct code is one that did not reach an authenticator.
+     */
+    begin: async (input: { label?: string } = {}): Promise<BegunSecondFactor> => {
+      const body = (await this.#request({
+        method: 'POST',
+        path: '/v1/me/second-factor',
+        body: input.label === undefined ? {} : { label: input.label },
+      })) as Record<string, unknown>
+      return {
+        id: String(body.id ?? ''),
+        secret: String(body.secret ?? ''),
+        otpauthUrl: String(body.otpauth_url ?? ''),
+        label: String(body.label ?? ''),
+      }
+    },
+
+    /** Confirm it, and take the recovery codes — they are printed once. */
+    confirm: async (id: string, code: string): Promise<readonly string[]> => {
+      const body = (await this.#request({
+        method: 'POST',
+        path: `/v1/me/second-factor/${encodeURIComponent(id)}/confirm`,
+        body: { code },
+      })) as { recovery_codes?: readonly string[] }
+      return body.recovery_codes ?? []
+    },
+
+    /**
+     * Remove one, proving a current code.
+     *
+     * The code is not ceremony: taking the factor off is the first thing
+     * somebody with a stolen session does.
+     */
+    remove: async (id: string, code: string): Promise<void> => {
+      await this.#request({
+        method: 'DELETE',
+        path: `/v1/me/second-factor/${encodeURIComponent(id)}`,
+        body: { code },
       })
     },
   }
@@ -1346,6 +1451,16 @@ function providerFrom(p: Record<string, unknown>): EmbeddingProvider {
     model: String(p.model ?? ''),
     dimensions: Number(p.dimensions ?? 0),
     isDefault: p.is_default === true,
+  }
+}
+
+function secondFactorFrom(f: Record<string, unknown>): SecondFactor {
+  return {
+    id: String(f.id),
+    kind: 'totp',
+    label: String(f.label ?? ''),
+    createdAt: String(f.created_at ?? ''),
+    lastUsedAt: f.last_used_at === null || f.last_used_at === undefined ? null : String(f.last_used_at),
   }
 }
 

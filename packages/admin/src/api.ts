@@ -66,12 +66,18 @@ export function signInWithToken(token: string, baseUrl: string): void {
  * — in the same time. A screen that distinguished them would hand back the
  * information the API is careful not to give.
  */
+/** A challenge to answer, when the password alone was not the whole sign-in. */
+export interface SecondFactorPending {
+  readonly challenge: string
+  readonly baseUrl: string
+}
+
 export async function signInWithPassword(input: {
   email: string
   password: string
   organization?: string
   baseUrl: string
-}): Promise<boolean> {
+}): Promise<boolean | SecondFactorPending> {
   // A bare client on the plain `fetch`: there is nothing to renew with yet, and
   // pointing the renewing one at the sign-in call is a loop waiting to happen.
   const bare = new NacreClient({ baseUrl: input.baseUrl, token: 'unauthenticated' })
@@ -84,10 +90,44 @@ export async function signInWithPassword(input: {
   })
   if (tokens === undefined) return false
 
+  /*
+   * A correct password is not always a session.
+   *
+   * Where the account has a second factor the server answers with a challenge,
+   * and the caller is being asked for the rest rather than refused. Returned
+   * rather than handled here: this function has no screen to ask on, and the
+   * sign-in view is what owns the second field.
+   */
+  if ('secondFactorRequired' in tokens) {
+    return { challenge: tokens.challenge, baseUrl: input.baseUrl }
+  }
+
+  keep(tokens, input.baseUrl)
+  return true
+}
+
+/**
+ * The second half, once a person has typed what their authenticator shows.
+ *
+ * The challenge is what carries identity across the two calls, so nothing about
+ * the password is kept in the browser between them.
+ */
+export async function signInSecondFactor(input: {
+  challenge: string
+  code: string
+  baseUrl: string
+}): Promise<boolean> {
+  const bare = new NacreClient({ baseUrl: input.baseUrl, token: 'unauthenticated' })
+  const tokens = await bare.auth.secondFactor({ challenge: input.challenge, code: input.code })
+  if (tokens === undefined) return false
+  keep(tokens, input.baseUrl)
+  return true
+}
+
+function keep(tokens: { accessToken: string; refreshToken: string }, baseUrl: string): void {
   sessionStorage.setItem(TOKEN_KEY, tokens.accessToken)
   sessionStorage.setItem(REFRESH_KEY, tokens.refreshToken)
-  sessionStorage.setItem(BASE_KEY, input.baseUrl)
-  return true
+  sessionStorage.setItem(BASE_KEY, baseUrl)
 }
 
 /** Forget the session in this browser. Reaches nothing; see `signOut`. */

@@ -313,6 +313,44 @@ export interface Tokens {
   readonly refreshToken: string
 }
 
+/**
+ * What a sign-in returns when the account has a second factor.
+ *
+ * A union with `Tokens` rather than a nullable field on it: a client that read
+ * `accessToken` and found nothing would report a broken sign-in for a working
+ * one. Nothing was refused here — the caller is being asked for the rest of
+ * what it needs.
+ */
+export interface SecondFactorRequired {
+  readonly secondFactorRequired: true
+  /**
+   * Present it to `auth.secondFactor`. Bound to an audience that is not the
+   * API's, so it is refused everywhere an access token is accepted.
+   */
+  readonly challenge: string
+  /** Seconds. */
+  readonly expiresIn: number
+}
+
+export type SignIn = Tokens | SecondFactorRequired
+
+/** An enrolled authenticator. The secret is never in one of these. */
+export interface SecondFactor {
+  readonly id: string
+  readonly kind: 'totp'
+  readonly label: string
+  readonly createdAt: string
+  readonly lastUsedAt: string | null
+}
+
+/** An enrolment in progress. The secret is here and nowhere else, once. */
+export interface BegunSecondFactor {
+  readonly id: string
+  readonly secret: string
+  readonly otpauthUrl: string
+  readonly label: string
+}
+
 // ─── the access log ────────────────────────────────────────────────────────
 
 export interface AuditRecord {

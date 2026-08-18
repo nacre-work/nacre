@@ -508,6 +508,30 @@ components:
         created_at:    { type: string, format: date-time }
         last_used_at:  { type: [string, 'null'], format: date-time }
         revoked_at:    { type: [string, 'null'], format: date-time }
+    SecondFactorChallenge:
+      type: object
+      required: [second_factor_required, challenge, expires_in]
+      properties:
+        second_factor_required:
+          type: boolean
+          enum: [true]
+        challenge:
+          type: string
+          description: |
+            Short-lived and single-purpose. Its audience is not the API's, so it
+            is refused everywhere an access token is accepted — one that could
+            be presented as a bearer token would be a way past the factor it
+            exists to demand. Present it to `POST /auth/second-factor`.
+        expires_in: { type: integer, description: Seconds. }
+    SecondFactor:
+      type: object
+      required: [id, kind, label, created_at, last_used_at]
+      properties:
+        id:    { type: string, format: uuid }
+        kind:  { type: string, enum: [totp] }
+        label: { type: string }
+        created_at:   { type: string, format: date-time }
+        last_used_at: { type: [string, 'null'], format: date-time }
     Self:
       type: object
       required: [organization, principal_type, principal_id, role]
@@ -879,10 +903,20 @@ paths:
                 organization: { type: string, description: Organization slug. Optional on a single-organization installation. }
       responses:
         '200':
-          description: Signed in
+          description: >
+            A session, or a demand for the second half of one. Where the account
+            has a confirmed second factor the body carries a challenge instead
+            of tokens — 200 and not 401 because nothing was refused: the caller
+            is being asked for the rest of what it needs. No audit event is
+            written for that half; a "login allow" recorded here would put a
+            successful sign-in in the journal for somebody who never produced a
+            code.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/TokenPair' }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/TokenPair'
+                  - $ref: '#/components/schemas/SecondFactorChallenge'
         '401':
           description: >
             One response for every failure, in the same time: unknown address,
@@ -916,6 +950,61 @@ paths:
             presented, so saying "not valid" would be a lie the client acts on.
             Carries Retry-After. Not an oracle: it depends on how loaded the
             process is and not at all on whether the account exists.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /auth/second-factor:
+    post:
+      summary: Finish a sign-in with a second factor
+      description: >
+        The second half of `POST /auth/login`, for an account that has a
+        confirmed factor. Takes the challenge that call returned and a code — a
+        six-digit one from an authenticator, or a recovery code. Both are
+        accepted here rather than on two paths, because from outside they answer
+        the same question and a separate route would say which one a person is
+        using.
+
+
+        The challenge is a short-lived token bound to an audience that is not
+        the API's, so it is refused everywhere an access token is accepted: one
+        that could be presented as a bearer token would be a way past the factor
+        it exists to demand. The role and the account's state are re-read when
+        the session is issued rather than trusted from it — five minutes is long
+        enough to be disabled.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge, code]
+              properties:
+                challenge: { type: string, description: 'From the login response.' }
+                code:      { type: string, description: 'Six digits from an authenticator, or a recovery code.' }
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401':
+          description: >
+            One response for an expired challenge, a forged one, a wrong code
+            and an account disabled since the password was checked. Which of the
+            four it was is nothing a client needs and something an attacker
+            would use.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429':
+          description: >
+            The same per-client bucket as sign-in. Without it the limit is a
+            limit on passwords rather than on sessions: an attacker holding a
+            password spends one login and then guesses six digits here without
+            ever meeting a bucket again. The bound that survives a Redis restart
+            is per factor and in Postgres, because a rate limiter that fails
+            open is not an authorization control and this is.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -1238,6 +1327,164 @@ paths:
               schema: { $ref: '#/components/schemas/Self' }
         '401':
           description: No token, or one this deployment cannot verify.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /me/second-factor:
+    get:
+      operationId: listSecondFactors
+      summary: The caller's own second factors
+      description: |
+        Enrolled authenticators, and how many recovery codes are left.
+
+        Under `/me` and never `/users/{id}`, which is the security property and
+        not a URL preference: an administrator resets a password and must not be
+        able to enrol, read or remove somebody's second factor. The factor is a
+        thing the *person* holds, and an administrator who could manage it would
+        make it a thing the account's administrator holds.
+
+        `404` where the installation configured no `NACRE_2FA_KEY_REF`, for a
+        service account, and for a delegation. A key is not a person and has
+        nobody to carry an authenticator; a delegation is a third party acting
+        for somebody, and letting it change how that somebody signs in would be
+        an escalation out of what was approved.
+      tags: [auth]
+      responses:
+        '200':
+          description: What this account holds
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, recovery_codes_left]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/SecondFactor' }
+                  recovery_codes_left: { type: integer }
+        '404':
+          description: No second factor on this installation, or the caller is not a person.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+    post:
+      operationId: beginSecondFactorEnrolment
+      summary: Start enrolling an authenticator
+      description: |
+        Generates a secret, stores it sealed and **unconfirmed**, and returns it
+        once — this is the only moment it exists outside the sealed column, the
+        same as a generated password.
+
+        Nothing counts an unconfirmed factor. A secret that has never produced a
+        correct code is a secret that did not reach an authenticator, and
+        treating it as live is how somebody locks themselves out at the moment
+        they turn this on. `POST /me/second-factor/{id}/confirm` is the second
+        step.
+
+        Repeating this with a label that already has an unconfirmed enrolment
+        replaces it: somebody who closed the page before scanning has no way to
+        name what they abandoned.
+      tags: [auth]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string, description: "What to call it; two phones need telling apart. Defaults to \"Authenticator\"." }
+      responses:
+        '201':
+          description: Enrolment begun
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, secret, otpauth_url, label]
+                properties:
+                  id:          { type: string, format: uuid }
+                  secret:      { type: string, description: 'Base32, for an app that will not scan. Returned once.' }
+                  otpauth_url: { type: string, description: What a QR code carries. }
+                  label:       { type: string }
+        '404':
+          description: No second factor on this installation, or the caller is not a person.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /me/second-factor/{id}/confirm:
+    post:
+      operationId: confirmSecondFactor
+      summary: Prove the secret arrived, and take the recovery codes
+      description: |
+        Confirms the enrolment and returns the recovery codes, once.
+
+        They are minted here rather than on demand for two reasons: somebody who
+        has lost their phone cannot ask for them, and this is the one moment the
+        product has their attention about it. A second enrolment does not
+        reissue them — new codes would invalidate the set already written down —
+        and answers an empty list.
+      tags: [auth]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          description: Confirmed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recovery_codes]
+                properties:
+                  recovery_codes:
+                    type: array
+                    items: { type: string }
+                    description: Empty where a set already exists and is unspent.
+        '404':
+          description: >
+            A wrong code and an enrolment that is not there, in one answer.
+            Telling them apart would say whether a given id exists.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /me/second-factor/{id}:
+    delete:
+      operationId: removeSecondFactor
+      summary: Remove an authenticator
+      description: |
+        Takes a **current code** in the body, and that is the whole reason this
+        method has one: removing the second factor is the first thing somebody
+        with a stolen session does, and a session is exactly what the factor
+        exists to be more than.
+
+        Removing the last factor deletes the recovery codes with it. They are
+        the way past a second factor, so leaving them behind an account that no
+        longer has one is a set of long-lived credentials nobody remembers
+        holding.
+      tags: [auth]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, description: 'Six digits, or a recovery code.' }
+      responses:
+        '204': { description: Removed }
+        '404':
+          description: No such factor, or the code was wrong.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }

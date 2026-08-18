@@ -1410,6 +1410,49 @@ scaling the worker out — the documented response to a climbing propagation ale
 no cache and no authentication, so a scrape loop was a denial of service that
 looked like monitoring.
 
+**A second factor is in, and it is TOTP.** Everything that authenticated a
+person here was one secret: a password, or an ID token from an issuer the
+operator trusts. A password that leaks is an account, and on this product an
+account is a set of documents somebody decided who may read.
+
+The arithmetic is `packages/core/totp.ts` and is held against **RFC 6238's own
+vectors** rather than against itself — a code generator tested on its own output
+agrees with itself and with no authenticator anybody owns. SHA-1 deliberately:
+the weakness it is retired for is collision resistance, which HMAC does not rest
+on, and choosing SHA-256 would buy nothing measurable while meeting a person
+whose app shows six digits that never work.
+
+Everything else is what a database decides, so it was driven against a real
+PostgreSQL: the replay bound, a recovery code spent by the UPDATE that finds it,
+and the lock after five wrong codes. That run found the failure counter reading
+one parameter twice — `SET failed_attempts = $2 … WHEN $2 >= $3` — which
+Postgres refuses with `text versus integer` at run time and at no other time. It
+type-checked, and it would have passed against a mock. The same mistake appeared
+again in the test's own fixture an hour later, which is what made it worth a
+comment rather than a fix.
+
+**Unconfigured is a supported state and the feature is simply absent.** With no
+`NACRE_2FA_KEY_REF` there is no key to seal a secret with, so enrolment is
+refused, the console says why, and nothing stores a secret in the clear in the
+meantime. A product that half-does a second factor is worse than one that does
+none, because the operator believes something.
+
+Three properties are worth naming because each is a way to get this wrong. A
+**code is single-use** — the step it belonged to is stored, so a code read over
+a shoulder is not worth a second use, and the visible cost is that enrolling and
+immediately signing in means waiting for the next one. The **brute-force bound
+is in Postgres**, against the grain of the rate limiter beside it: that one
+fails open because it is not an authorization control, and this one is. And the
+whole surface is **under `/v1/me`** — an administrator resets a password and
+deliberately cannot touch a second factor, or it would stop being a thing the
+person holds.
+
+`login()` returns a union now rather than a nullable pair, which turned every
+call site into a compile error until it said which outcome it meant. That is how
+the CLI and the console got their second field: neither would have been noticed
+by a type that let the challenge be ignored, and ignoring it means issuing a
+session to somebody who never produced a code.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

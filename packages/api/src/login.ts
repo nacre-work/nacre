@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, createPublicKey, randomBytes, timingSafeEqual } from 'node:crypto'
 
 import {
   hashPassword,
@@ -10,7 +10,7 @@ import {
 } from '@nacre.work/core'
 import type { KeyObject } from 'node:crypto'
 
-import { SignJWT } from 'jose'
+import { jwtVerify, SignJWT } from 'jose'
 import type { Pool, PoolClient } from 'pg'
 
 /**
@@ -51,6 +51,18 @@ import type { Pool, PoolClient } from 'pg'
  */
 
 const ACCESS_MIN_SECONDS = 60
+
+/** Long enough to read a phone, short enough not to survive walking away. */
+const CHALLENGE_SECONDS = 300
+
+/**
+ * The challenge's audience, which is deliberately not the API's.
+ *
+ * An access token and a challenge are both JWTs signed by the same key, so the
+ * only thing keeping one from being presented as the other is what they claim
+ * to be for.
+ */
+const challengeAudience = (audience: string): string => `${audience}/second-factor`
 
 export interface LoginRequest {
   readonly email: string
@@ -95,9 +107,46 @@ export interface LoginDeps {
   readonly accessTokenTtl: number
   readonly refreshTokenTtl: number
   readonly role?: string
+  /**
+   * The second factor, when the deployment has a key to seal one with.
+   *
+   * Absent, `login` issues tokens as it always did — which is what every
+   * existing installation gets, and why this is optional rather than a
+   * constructor argument every caller had to learn about.
+   */
+  readonly secondFactors?: SecondFactorGate
   /** Injected so tests are not asked to wait for wall-clock expiry. */
   readonly now?: () => Date
 }
+
+/**
+ * What `login` needs from the second factor, and no more.
+ *
+ * A narrow port rather than the class: this file is the sign-in path and has no
+ * business being able to enrol anything. It also keeps the cycle out — the
+ * store imports nothing from here.
+ */
+export interface SecondFactorGate {
+  required(orgId: string, userId: string): Promise<boolean>
+  verify(orgId: string, userId: string, code: string): Promise<boolean>
+}
+
+/**
+ * Sign-in has three outcomes now, and a union rather than a nullable pair.
+ *
+ * Making it a union turns every existing call site into a compile error until
+ * it says which one it means — the alternative is a second optional field that
+ * a caller can ignore, and ignoring it here means issuing a session to somebody
+ * who has not produced their second factor.
+ */
+export type LoginOutcome =
+  | { readonly kind: 'tokens'; readonly tokens: Tokens }
+  | {
+      readonly kind: 'second-factor'
+      /** Short-lived, single-purpose, and useless as an access token. */
+      readonly challenge: string
+      readonly expiresIn: number
+    }
 
 interface UserRow {
   readonly id: string
@@ -129,7 +178,7 @@ export class Login {
    * `undefined` for every reason it can fail. The caller turns it into one
    * `401` with one message.
    */
-  async login(request: LoginRequest): Promise<Tokens | undefined> {
+  async login(request: LoginRequest): Promise<LoginOutcome | undefined> {
     const email = request.email.trim().toLowerCase()
     if (email === '' || request.password === '') {
       // Still spend the time. A short-circuit on an empty field is a free probe
@@ -159,7 +208,116 @@ export class Login {
       ).catch(() => undefined)
     }
 
-    return this.issue(candidate, undefined)
+    /*
+     * The password was right. Whether that is a session depends on the factor.
+     *
+     * The check is here rather than in the handler because there is exactly one
+     * path from a correct password to a token, and a check beside it is a check
+     * the next path forgets. `required` answers false for an installation with
+     * no key configured, so nothing changes for a deployment that has not asked
+     * for this.
+     */
+    if (this.deps.secondFactors !== undefined && (await this.deps.secondFactors.required(candidate.org_id, candidate.id))) {
+      return { kind: 'second-factor', challenge: await this.challenge(candidate), expiresIn: CHALLENGE_SECONDS }
+    }
+
+    return { kind: 'tokens', tokens: await this.issue(candidate, undefined) }
+  }
+
+  /**
+   * The token that says "this password was correct", and nothing else.
+   *
+   * Its audience is not the API's, so it is refused everywhere an access token
+   * is accepted — a challenge that could be presented as a bearer token would
+   * be a way past the factor it exists to demand. Five minutes, which is longer
+   * than reading a phone and shorter than walking away from one.
+   *
+   * Not stored, and it does not need to be: replaying it needs the *code* as
+   * well, the code is single-use through `last_step`, and a person holding both
+   * has finished signing in anyway.
+   */
+  private async challenge(user: UserRow): Promise<string> {
+    const now = this.clock
+    return new SignJWT({ org: user.org_id, purpose: 'second-factor' })
+      .setProtectedHeader({
+        alg: this.deps.algorithm ?? 'HS256',
+        ...(this.deps.keyId === undefined ? {} : { kid: this.deps.keyId }),
+      })
+      .setSubject(user.id)
+      .setIssuer(this.deps.issuer)
+      .setAudience(challengeAudience(this.deps.audience))
+      .setIssuedAt(Math.floor(now.getTime() / 1000))
+      .setExpirationTime(Math.floor(now.getTime() / 1000) + CHALLENGE_SECONDS)
+      .sign(this.deps.key)
+  }
+
+  /**
+   * The second half of a sign-in: a challenge and a code, for a session.
+   *
+   * `undefined` for every reason it can fail — an expired challenge, one signed
+   * for something else, a wrong code, a disabled account — and the caller turns
+   * all of them into one refusal. Which of the four it was is not something a
+   * client needs and is something an attacker would use.
+   */
+  async completeSecondFactor(challenge: string, code: string): Promise<Tokens | undefined> {
+    const gate = this.deps.secondFactors
+    if (gate === undefined) return undefined
+
+    let userId: string
+    let orgId: string
+    try {
+      const { payload } = await jwtVerify(challenge, this.verificationKey, {
+        issuer: this.deps.issuer,
+        audience: challengeAudience(this.deps.audience),
+        algorithms: [this.deps.algorithm ?? 'HS256'],
+        currentDate: this.clock,
+      })
+      if (payload.purpose !== 'second-factor' || typeof payload.sub !== 'string' || typeof payload.org !== 'string') {
+        return undefined
+      }
+      userId = payload.sub
+      orgId = payload.org
+    } catch {
+      return undefined
+    }
+
+    if (!(await gate.verify(orgId, userId, code))) return undefined
+
+    // Re-read the row rather than trusting the challenge for anything but
+    // identity: five minutes is long enough to be disabled, and the role in the
+    // token has to be the one the database holds now.
+    const user = await this.userById(orgId, userId)
+    if (user === undefined || user.disabled_at !== null) return undefined
+
+    return this.issue(user, undefined)
+  }
+
+  private async userById(orgId: string, userId: string): Promise<UserRow | undefined> {
+    return withOrg(
+      this.deps.pool,
+      orgId,
+      async (client) => {
+        const { rows } = await client.query<UserRow>(
+          `SELECT id, org_id, role, password_hash, disabled_at
+             FROM users WHERE org_id = $1 AND id = $2`,
+          [orgId, userId],
+        )
+        return rows[0]
+      },
+      this.scope,
+    )
+  }
+
+  /**
+   * What verifies the challenge this same object signed.
+   *
+   * With a shared secret the key is its own verifier; with Ed25519 the public
+   * half comes out of the private one, so nothing new has to be configured for
+   * a round trip that never leaves this process.
+   */
+  private get verificationKey(): KeyObject | Uint8Array {
+    if (this.deps.key instanceof Uint8Array) return this.deps.key
+    return createPublicKey(this.deps.key)
   }
 
   /**

@@ -10,7 +10,7 @@ export {
   MAX_METADATA_VALUE_LENGTH,
 } from './metadata.js'
 export type { Metadata } from './metadata.js'
-export { loadConfig, loadJwtKeys, loadJwtVerification, keyFingerprint, ConfigError } from './config.js'
+export { loadConfig, loadJwtKeys, loadJwtVerification, loadSecondFactorKey, keyFingerprint, ConfigError } from './config.js'
 export { protectedResourceMetadata, PROTECTED_RESOURCE_PATH, JWKS_PATH } from './oauth.js'
 export { allowedRequestHeaders, corsHeaders, isPreflight, mcpWalkHeaders, preflightHeaders } from './cors.js'
 export {
@@ -102,6 +102,24 @@ export type { Hit, SearchRequest, VectorStoreOptions } from './vector/search.js'
 export { buildHybridQuery, collectionConfig, collectionName, PAYLOAD_INDEXES, vectorName } from './vector/query.js'
 export type { Branch, CollectionShape, HybridQuery } from './vector/query.js'
 export { encodeDocument, encodeQuery, isEmpty, SPARSE_VECTOR_NAME, tokenize } from './text/bm25.js'
+export {
+  base32Decode,
+  base32Encode,
+  generateRecoveryCode,
+  generateTotpSecret,
+  hashRecoveryCode,
+  normalizeRecoveryCode,
+  openTotpSecret,
+  otpauthUrl,
+  RECOVERY_CODE_COUNT,
+  sealTotpSecret,
+  TOTP_DIGITS,
+  TOTP_PERIOD_SECONDS,
+  TOTP_SKEW_STEPS,
+  totpCode,
+  totpStep,
+  verifyTotp,
+} from './totp.js'
 export type { SparseVector } from './text/bm25.js'
 export { classifyIngestFailure, withoutHosts } from './ingest-failure.js'
 export type { IngestFailure, IngestFailureReason } from './ingest-failure.js'
