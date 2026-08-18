@@ -317,8 +317,12 @@ jobs:
           NACRE_PG_URL: postgres://nacre:nacre@127.0.0.1:5432/nacre
         run: |
           set -euo pipefail
-          node node_modules/@nacre.work/core/dist/migrate-main.js || \
-            node packages/core/dist/migrate-main.js
+          # The workspace's own build, named directly. The first version tried
+          # the installed package first and fell back, which worked and printed
+          # a full MODULE_NOT_FOUND stack on the way — a step that succeeds
+          # while its log reads like a failure is one somebody debugs instead
+          # of reads.
+          node packages/core/dist/migrate-main.js
           NACRE_PLAYWRIGHT="$(cat /tmp/nacre-playwright-dir)/node_modules/playwright/index.mjs" \
             node scripts/webauthn-e2e.mjs
       # The images this wrote are thrown away with the runner. Regenerating them
