@@ -58,6 +58,20 @@ const EXEMPT = [
       'would leave that one account pinned at whatever cost its password was first hashed at.',
   },
   {
+    file: 'packages/api/src/login.ts',
+    // The whole quoted statement, for the reason above. It is deliberately not
+    // spelled the same as the rehash a few lines up: two writes matching one
+    // exemption is a write nobody argued for, and this check refuses that.
+    match: /'UPDATE users SET password_hash = \$3 WHERE org_id = \$1 AND id = \$2'/,
+    why:
+      'a person changing their own password, having just produced the current one. The row is the ' +
+      "caller's own — `userId` comes from the verified token's subject and never from the request " +
+      '— so the actor and the target are one principal and there is nobody to escalate over. ' +
+      'Refusing a platform administrator here would mean the account that administers the ' +
+      'installation is the one account that cannot change its own password, which is the opposite ' +
+      'of what this guard is for.',
+  },
+  {
     file: 'packages/api/src/recovery.ts',
     // The whole quoted statement, for the reason above.
     match: /'UPDATE users SET password_hash = \$2 WHERE id = \$1'/,

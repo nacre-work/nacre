@@ -1,6 +1,6 @@
 import type { SecondFactor } from '@nacre.work/sdk'
 
-import { client, explain } from '../api.js'
+import { changeOwnPassword, client, explain } from '../api.js'
 import { clear, h } from '../dom.js'
 
 /**
@@ -25,34 +25,128 @@ export async function securityView(root: HTMLElement): Promise<void> {
       h('div', {},
         h('h1', {}, 'Security'),
         h('p', { class: 'lede' },
-          'A second factor decides whether a session starts. It grants nothing — what you may reach is computed from your grants on every request, with or without one.'),
+          'How this account is signed into. Neither of these grants anything — what you may reach is computed from your grants on every request.'),
       ),
     ),
   )
 
-  const body = h('div', {}, h('p', { class: 'muted' }, 'Loading…'))
-  root.append(body)
+  /*
+   * Two panels, and the password one is rendered first and independently.
+   *
+   * The whole view used to return early when the second factor was unavailable,
+   * so on an installation with no key the *password* control would have been
+   * hidden by a message about TOTP — a screen refusing something that works,
+   * which is the mirror of the defect the message beside it exists against.
+   */
+  const passwords = h('section', { class: 'panel' })
+  const factors = h('section', { class: 'panel' }, h('p', { class: 'muted' }, 'Loading…'))
+  root.append(passwords, factors)
 
+  await Promise.all([renderPassword(passwords), renderFactors(factors, root)])
+}
+
+/**
+ * Changing your own password.
+ *
+ * Offered only to a person. A service account signs in with a key, has no
+ * password at all, and is rotated by minting another — so the API answers 404,
+ * and a form that produced one would be a control that cannot work.
+ */
+async function renderPassword(panel: HTMLElement): Promise<void> {
+  clear(panel)
+
+  let isPerson = false
+  try {
+    isPerson = (await client().me()).principalType === 'user'
+  } catch {
+    // An older API with no /v1/me. Showing less than it could is a better
+    // failure than offering a form that answers 404.
+  }
+  if (!isPerson) return
+
+  const current = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', 'aria-label': 'Current password' }) as HTMLInputElement
+  const next = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', 'aria-label': 'New password' }) as HTMLInputElement
+  const again = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', 'aria-label': 'Repeat the new password' }) as HTMLInputElement
+  const message = h('p', { class: 'form-message' })
+
+  const submit = async (event: Event): Promise<void> => {
+    const button = event.currentTarget as HTMLButtonElement
+    message.className = 'form-message'
+
+    // Compared here because only this screen has both fields. The server never
+    // sees the second one — a typo is not something to spend a request on, and
+    // the answer would be identical either way.
+    if (next.value !== again.value) {
+      message.className = 'form-message error'
+      message.textContent = 'The two new passwords are not the same.'
+      return
+    }
+
+    button.disabled = true
+    message.textContent = 'Changing…'
+    try {
+      const changed = await changeOwnPassword(current.value, next.value)
+      if (!changed) {
+        message.className = 'form-message error'
+        message.textContent = 'That is not your current password.'
+        return
+      }
+      current.value = ''
+      next.value = ''
+      again.value = ''
+      message.className = 'form-message'
+      message.textContent =
+        'Changed. Every other session was signed out; this one carried on with a new token. Any second factor is untouched.'
+    } catch (error) {
+      message.className = 'form-message error'
+      message.textContent = explain(error)
+    } finally {
+      button.disabled = false
+    }
+  }
+
+  panel.append(
+    h('h2', {}, 'Password'),
+    h('p', { class: 'muted' },
+      'Changing it signs out every other session, which is the point: the reason to change a password is usually that somebody else knows it. This browser stays signed in.'),
+    h('label', { class: 'field' }, h('span', {}, 'Current password'), current),
+    h('label', { class: 'field' }, h('span', {}, 'New password'), next),
+    h('p', { class: 'hint' }, 'At least 12 characters. Length is the whole rule — no requirement about digits or symbols.'),
+    h('label', { class: 'field' }, h('span', {}, 'Repeat the new password'), again),
+    message,
+    h('div', { class: 'row' },
+      h('button', { class: 'btn btn-primary', onclick: (event: Event) => void submit(event) }, 'Change password'),
+    ),
+  )
+}
+
+async function renderFactors(panel: HTMLElement, root: HTMLElement): Promise<void> {
   let state: { items: readonly SecondFactor[]; recoveryCodesLeft: number }
   try {
     state = await client().secondFactor.list()
   } catch (error) {
-    clear(body)
+    clear(panel)
     // 404 here is the installation, not the caller: no key configured, so there
     // is nothing to offer and saying why is better than an empty panel.
-    body.append(
+    panel.append(
+      h('h2', {}, 'Second factor'),
       h('div', { class: 'empty' },
         h('h2', {}, 'Not available on this installation'),
         h('p', {},
-          'A second factor needs a key to seal its secret with. Until an operator sets NACRE_2FA_KEY_REF there is nowhere to keep one, and nothing here stores a secret in the clear in the meantime.'),
+          'A second factor needs a key to seal its secret with. Until an operator sets NACRE_2FA_KEY or NACRE_2FA_KEY_REF there is nowhere to keep one, and nothing here stores a secret in the clear in the meantime.'),
         h('p', { class: 'muted' }, explain(error)),
       ),
     )
     return
   }
 
-  clear(body)
-  body.append(state.items.length === 0 ? none(root) : enrolled(state, root))
+  clear(panel)
+  panel.append(
+    h('h2', {}, 'Second factor'),
+    h('p', { class: 'muted' },
+      'A code that changes every thirty seconds, from an authenticator app. It decides whether a session starts and grants nothing.'),
+    state.items.length === 0 ? none(root) : enrolled(state, root),
+  )
 }
 
 const none = (root: HTMLElement): HTMLElement =>

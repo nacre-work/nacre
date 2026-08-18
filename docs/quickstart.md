@@ -504,6 +504,25 @@ cannot be read back from the API, the database or a backup — losing one means
 minting another, which is the trade for a key that a leaked backup does not
 carry.
 
+![The Security screen: a password form, and one enrolled authenticator with its recovery-code count](./assets/admin/security.png)
+
+**Security** is the caller's own account and never anybody else's. Changing a
+password takes the current one and signs out every other session — including
+the other browser somebody left signed in — while this one carries on with a
+fresh token. It needs nothing configured and is the recovery path every
+installation has; a link by email needs `NACRE_SMTP_URL`.
+
+A second factor needs `NACRE_2FA_KEY` (or `NACRE_2FA_KEY_REF`). Without one the
+panel says so and the password form is still there — the two are independent,
+which is what an installation that has configured neither is looking at:
+
+![The same screen with no second-factor key: the password form, and a panel explaining why enrolment is not offered](./assets/admin/security-no-key.png)
+
+There is deliberately no administrative counterpart. An administrator resets a
+password and cannot touch anybody's second factor — one they could enrol or
+remove would be a thing the account's administrator holds rather than a thing
+the person holds.
+
 The screen is `packages/admin`, a static bundle the `web` service serves on its
 own origin while proxying `/v1` to the API — so the browser makes same-origin
 requests and there is no CORS to configure, which is the point rather than a

@@ -368,6 +368,16 @@ a { color: var(--n-accent); }
 .picked { margin: 0; font-size: 14px; }
 
 .hint { font-size: 13px; color: var(--n-text-muted); margin: 0 0 12px; max-width: 60ch; }
+/* A control directly under another control needs room between them, and `.hint`
+   carries no top margin — so the recovery link sat flush against the Sign in
+   button it follows, where a mis-tap signs you out of the flow you came for.
+   Eight pixels is what the platforms ask for between targets; ten is what looks
+   right under a full-width button.
+
+   This is the instance and not the rule. What would find the next one is a
+   geometry pass in `screenshots.mjs`, which already opens every screen in a
+   browser — see the note in CLAUDE.md. */
+.under-action { margin-top: 10px; }
 /* A value shown once and copied by hand: a TOTP secret, or the recovery codes.
    Selectable and wrapping, because this console is reached over plain HTTP on a
    private network as often as not — a person with a desktop authenticator has

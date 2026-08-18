@@ -1506,6 +1506,58 @@ platform administrator there would leave the account that administers the
 installation as the one account whose only recovery is `psql`, which is the hole
 this endpoint closes.
 
+**A person can change their own password.** Everything that set one belonged to
+somebody else: `POST /v1/users/{id}/password` is an administrator issuing a
+generated one, and recovery is for a password that has been *forgotten*. The
+ordinary case — you know your password and want a different one, because
+somebody else knows it too — had no route at all, and on an installation with
+no relay configured recovery is not there either, so the answer was `psql`.
+
+It takes the current password and nothing else. A session is not enough, on the
+same argument that makes removing a second factor take a current code: changing
+the password is the first thing somebody holding a stolen session does. And a
+second factor is deliberately **not** asked for, because it bounds sign-in —
+demanding a code would mean somebody whose phone is lost cannot change a
+password they know is compromised.
+
+A wrong current password is **`403`**, and that choice is about clients rather
+than about semantics. `401` is the obvious status and is the wrong one: on an
+authenticated route it means "your session is over", and every client here
+renews on it and replays — so a typo would spend a refresh token, fail again,
+and arrive as two failures with a renewal between them. Not `404` either; the
+caller is looking straight at their own account.
+
+Every other session ends and this one is replaced, in that order inside one
+transaction — the pair is inserted **after** the revocation, or the endpoint
+answers `200` with a refresh token it has just revoked and the person is signed
+out fifteen minutes after a change that worked. That ordering is what the live
+case measures, by counting live tokens rather than asserting on each: swapping
+the two statements leaves zero.
+
+The console's Security screen grew the form, and writing it found that the whole
+view **returned early** when no `NACRE_2FA_KEY` was configured — so on an
+installation with no second factor, a message about TOTP would have hidden a
+password control that works. Two panels rendered independently now, which is
+the same "a screen must not refuse what the server allows" rule the message
+beside it exists for, arriving from the other side.
+
+Two more things came off running the console rather than testing it, which is
+the rule this file keeps re-learning. `scripts/screenshots.mjs` had **no
+`/v1/auth/methods` fixture**, so the call that decides whether a recovery link
+exists got the 500 an unstubbed call gets and `sign-in.png` was a picture of a
+screen with no link on it — the missing-`/v1/me` defect from the same script,
+one release later and on the one screen rendered signed out. And every
+committed image predated the Security view, so all twelve show a nav that is
+missing an item; regenerating them is part of this rather than noise.
+
+The link itself sat at **zero pixels** under the Sign in button — `.hint`
+carries no top margin and `.btn-block` only a small one — so a mis-tap on a
+full-width button lands on "forgotten your password". That is fixed as an
+instance and is deliberately *not* claimed as a repair: `lint:admin-layout`
+reads the stylesheet and this is geometry, which needs a browser. The check
+that would find the next one belongs in `screenshots.mjs`, which already opens
+every screen in one, and is written down as work rather than as a comment.
+
 **And three of the four routes that hash answered `500` under load.**
 `core/passwords.ts` bounds how many scrypt calls run at once — the pool is
 libuv's and is shared with DNS, so an unbounded one stops the rest of the API on
@@ -1517,8 +1569,8 @@ internal error, which a client reports as a broken server and an operator
 investigates as a bug.
 
 A rule stated in a comment and held in one of four places, which is the shape
-this file names twice already — and the count moved on the way in: the fourth
-route is the one this branch added. The repair is one problem builder and one
+this file names twice already — and the count moved twice on the way in: the
+fourth route was password recovery and the fifth is the change above. The repair is one problem builder and one
 `handledTooBusy`, called from the **two** error boundaries there are. Two rather
 than one because authentication splits the request path: sign-in and recovery
 are reached without a credential and run before the section that has one, so a

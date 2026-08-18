@@ -3267,6 +3267,153 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     }
 
     /*
+     * The caller's own password.
+     *
+     * Under `/v1/me` for the same reason the second factor is: this is a person
+     * acting on themselves, and there is no id in the path for anybody to put
+     * somebody else's in. `POST /v1/users/{id}/password` beside it is the other
+     * thing — an administrator issuing a generated password to a colleague who
+     * lost theirs — and the two are deliberately not one endpoint with a
+     * branch.
+     *
+     * A service account is refused: a key has no password, and `nacre_sk_` is
+     * rotated by minting another. A delegation is refused because changing how
+     * somebody signs in is not something a third party acting for them was
+     * approved to do — the same line the second factor draws.
+     */
+    if (instance === '/v1/me/password') {
+      if (req.method !== 'POST' || options.login === undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      if (auth.principal.type !== 'user' || auth.delegation !== undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const { current_password: currentPassword, new_password: newPassword } = (body ?? {}) as {
+        current_password?: unknown
+        new_password?: unknown
+      }
+      if (typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
+        const problem = badRequest(
+          instance,
+          requestId,
+          "'current_password' and 'new_password' are required.",
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      if (newPassword.length < MIN_PASSWORD_LENGTH) {
+        const problem = badRequest(
+          instance,
+          requestId,
+          `A password is at least ${String(MIN_PASSWORD_LENGTH)} characters. Length is the whole rule — there is no requirement about digits or symbols.`,
+        )
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const outcome = await options.login.changePassword(
+        auth.orgId,
+        auth.principal.id,
+        currentPassword,
+        newPassword,
+      )
+
+      if (typeof outcome === 'string') {
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `user:${auth.principal.id}`,
+          action: 'password.change',
+          result: 'deny',
+          target: { user_id: auth.principal.id },
+          detail: { reason: outcome },
+          requestId,
+        })
+        /*
+         * `403`, and the choice is about clients rather than about semantics.
+         *
+         * `401` is the obvious status for a credential that did not check out,
+         * and it is the wrong one here: on an authenticated route `401` means
+         * "your session is over", and every client in this repository renews on
+         * it and replays. A wrong current password would therefore spend a
+         * refresh token, replay, fail again, and reach the person as two
+         * failures with a renewal between them — for something they can fix by
+         * retyping.
+         *
+         * Not `404` either. The caller is looking straight at their own
+         * account, so there is nothing invisible for invariant 4 to protect —
+         * the same reasoning as the `platform_admin` refusal on `/v1/users`.
+         *
+         * One wording for a wrong password and for the guard cases beside it,
+         * because the guard cases are unreachable by anyone holding a token
+         * this row issued and telling them apart would say nothing true.
+         */
+        const problem = new Problem({
+          type: 'https://nacre.work/errors/forbidden',
+          title: 'Forbidden',
+          status: 403,
+          detail: 'The current password is not correct.',
+          instance,
+          requestId,
+        })
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `user:${auth.principal.id}`,
+        action: 'password.change',
+        result: 'allow',
+        target: { user_id: auth.principal.id },
+        detail: {},
+        requestId,
+      })
+
+      // A notice, not a confirmation. Somebody who has taken an account changes
+      // the password to keep it, so the person who did not do this is the one
+      // who needs to know. Dropped rather than raised: the password *is*
+      // changed, and refusing the request over a notice would be worse than a
+      // notice that did not arrive.
+      void options.mailer
+        ?.send({
+          to: outcome.email,
+          subject: 'Your Nacre password was changed',
+          text: [
+            'The password for this account was just changed from a signed-in session.',
+            '',
+            'Every other session was signed out. Any second factor on the account is',
+            'untouched and is still required.',
+            '',
+            'If this was not you, somebody knew your password — reset it from the',
+            'sign-in screen and tell your administrator.',
+          ].join('\n'),
+        })
+        .catch(() => undefined)
+
+      // The pair that replaces the sessions this just ended. Answering 204 and
+      // leaving the caller holding a revoked refresh token would sign a person
+      // out of the browser they changed their password in, which reads as a
+      // failure.
+      send(
+        res,
+        200,
+        {
+          access_token: outcome.tokens.accessToken,
+          token_type: 'Bearer',
+          expires_in: outcome.tokens.expiresIn,
+          refresh_token: outcome.tokens.refreshToken,
+        },
+        requestId,
+      )
+      return
+    }
+
+    /*
      * The caller's own second factor.
      *
      * Under `/v1/me` and never `/v1/users/{id}`, which is the security property

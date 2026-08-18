@@ -359,13 +359,21 @@ One thing to expect on the day you enrol: **the code that confirms an enrolment
 is spent by confirming it**, so signing in immediately afterwards waits for the
 next one. That is the replay bound working, not a fault.
 
-**Three operations that used to answer `500` under load now answer `503`.**
-`POST /v1/users`, `POST /v1/users/{id}/password` and the new
-`POST /v1/auth/password-reset/confirm` each hash a password, and the number of
-scrypt calls running at once is bounded inside the process — past the bound the
-call is refused rather than queued further. Only sign-in translated that into a
-`503` with `Retry-After`; the others surfaced it as an internal error, which is
-what a client reports as a broken server and an operator investigates as a bug.
+**A person can change their own password**, at `POST /v1/me/password`, and the
+console's Security screen has the form. No migration and no variable — it needs
+nothing configured, and it works on an installation with no relay and no
+second-factor key, which is what makes it the one recovery path every deployment
+has. Changing a password ends every other session for that account and returns
+the pair that replaces the caller's own, so a client written against this must
+adopt what comes back; the SDK's `changePassword` and the console do.
+
+**Two operations that used to answer `500` under load now answer `503`**, and
+the two new ones join them. `POST /v1/users` generates a password and
+`POST /v1/users/{id}/password` sets one; the number of scrypt calls running at
+once is bounded inside the process, and past the bound the call is refused
+rather than queued further. Only sign-in translated that into a `503` with
+`Retry-After` — the others surfaced it as an internal error, which is what a
+client reports as a broken server and an operator investigates as a bug.
 Nothing about the bound changed, only the answer. If you alert on `5xx` by
 class you will see the same volume; if you alert on `500` specifically, some of
 it moves.

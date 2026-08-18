@@ -146,6 +146,21 @@ const FIXTURES = {
     ],
     next_cursor: null,
   },
+  // What the sign-in screen asks before anybody has signed in: whether this
+  // installation can send a recovery link. Unstubbed it got the 500 an
+  // unstubbed call gets, and the link was left off the picture — the same shape
+  // as the missing `/v1/me` fixture that once photographed the wrong screen,
+  // arriving on the one screen that is rendered signed out.
+  'GET /v1/auth/methods': { password_reset: true },
+  // The Security screen. Two panels — a password form and what is enrolled —
+  // and the second is the only one an installation can be without.
+  'GET /v1/me/second-factor': {
+    items: [
+      { id: 'f0a51c73-9b28-4e64-8d17-2a6c4f0b9e35', kind: 'totp', label: 'Phone',
+        created_at: '2026-02-14T09:20:00.000Z', last_used_at: '2026-03-12T08:05:00.000Z' },
+    ],
+    recovery_codes_left: 8,
+  },
   'GET /v1/groups': {
     items: [
       { id: '8e1a7c34-2b09-4d56-af73-6c0e5b9d2a41', name: 'legal',
@@ -269,6 +284,17 @@ async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} }
       await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
       return
     }
+    // A number is a status, for the screens whose subject is a capability the
+    // installation does not have. `404` is what every absent surface answers
+    // here, so it is the one a picture of "not configured" needs.
+    if (typeof body === 'number') {
+      await route.fulfill({
+        status: body,
+        contentType: 'application/problem+json',
+        body: JSON.stringify({ title: 'Not found', status: body, detail: 'Not found.' }),
+      })
+      return
+    }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
   })
 
@@ -380,6 +406,14 @@ await shot('delete-layer', {
   },
 })
 await shot('accounts', { hash: '#/accounts' })
+await shot('security', { hash: '#/security' })
+// The installation with no key, which is the default and what most self-hosters
+// see. The password panel has to survive it: the whole view used to return
+// early here, so a message about TOTP would have hidden a control that works.
+await shot('security-no-key', {
+  hash: '#/security',
+  fixtures: { 'GET /v1/me/second-factor': 404 },
+})
 
 await browser.close()
 server.close()

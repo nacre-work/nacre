@@ -119,10 +119,48 @@ not at all on whether the account exists.
 
 **So can every other operation that hashes**, and the list is short and worth
 having: `POST /v1/users`, which generates a password;
-`POST /v1/users/{id}/password`; and `POST /v1/auth/password-reset/confirm`.
-Each answers `503` with `Retry-After` rather than `500` — a client reports a
-`500` as a broken server and an operator investigates it as a bug, at the moment
-the process is merely loaded. There is one wording for all four.
+`POST /v1/users/{id}/password`; `POST /v1/auth/password-reset/confirm`; and
+`POST /v1/me/password`. Each answers `503` with `Retry-After` rather than `500`
+— a client reports a `500` as a broken server and an operator investigates it as
+a bug, at the moment the process is merely loaded. There is one wording for all
+five.
+
+### Changing your own password
+
+```
+POST /v1/me/password  {current_password, new_password}  → the token pair
+```
+
+The person themselves, having produced the current one.
+`POST /v1/users/{id}/password` beside it is the other thing — an administrator
+issuing a *generated* password to a colleague who lost theirs — and this needs
+no administrator at all, which on a single-administrator installation is the
+point. Recovery closed the case where a password is forgotten; this closes the
+ordinary one, where it is merely known to somebody else.
+
+**The current password is the only proof this takes.** A session is not enough:
+changing the password is the first thing somebody with a stolen session does,
+and it is what locks the owner out. A second factor is deliberately *not* asked
+for — it bounds sign-in, and demanding a code would mean somebody whose phone is
+lost cannot change a password they know is compromised.
+
+**Every other session ends, and this one is replaced.** All refresh tokens for
+the account are revoked, including the caller's — an access token does not say
+which refresh token issued it — so the new pair comes back in the response and
+the client must adopt it. A `204` would sign a person out of the browser they
+changed their password in, fifteen minutes later, which reads as the change
+having broken something.
+
+A wrong current password is **`403`**, not `401`. On an authenticated route a
+`401` means "your session is over" and every client here renews on it and
+replays, so a `401` would spend a refresh token and reach the person as two
+failures for something retyping fixes. Not `404` either: they are looking
+straight at their own account, so there is nothing invisible for invariant 4 to
+protect.
+
+`404` for a service account, which has no password and is rotated by minting
+another, and for a delegation, which was not approved to change how somebody
+signs in.
 
 ### A second factor
 

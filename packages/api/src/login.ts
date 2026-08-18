@@ -148,6 +148,19 @@ export type LoginOutcome =
       readonly expiresIn: number
     }
 
+/**
+ * What `changePassword` answers.
+ *
+ * A union rather than a boolean for the same reason `LoginOutcome` is one: a
+ * caller that cannot tell "the current password was wrong" from "there is no
+ * such account" answers both the same way, and only one of those is something
+ * a person can act on.
+ */
+export type ChangePasswordOutcome =
+  | { readonly kind: 'changed'; readonly tokens: Tokens; readonly email: string }
+  | 'wrong-password'
+  | 'no-user'
+
 interface UserRow {
   readonly id: string
   readonly org_id: string
@@ -290,6 +303,97 @@ export class Login {
     if (user === undefined || user.disabled_at !== null) return undefined
 
     return this.issue(user, undefined)
+  }
+
+  /**
+   * A person changes their own password, having proved the current one.
+   *
+   * ## Why this is not `POST /v1/users/{id}/password`
+   *
+   * That one is an **administrator** setting somebody else's, and it returns
+   * the plaintext because a generated password has to be shown once. This is
+   * the person themselves choosing one, so nothing is returned and nothing is
+   * generated — and it needs no administrator at all, which on a
+   * single-administrator installation is the whole point. Recovery closed the
+   * case where the password is *forgotten*; this closes the ordinary one, where
+   * it is merely known to somebody else.
+   *
+   * ## What it costs to get in
+   *
+   * The current password, always, and that is the only proof this takes. A
+   * session is not enough: changing the password is the first thing somebody
+   * with a stolen session does, and it is what locks the owner out. It is the
+   * same reasoning that makes removing a second factor take a current code.
+   *
+   * A second factor is deliberately *not* asked for here. It bounds sign-in,
+   * and this caller has already signed in and just produced the password
+   * besides; demanding a code would mean somebody whose phone is lost cannot
+   * change a password they know is compromised.
+   *
+   * ## Every other session ends, and this one is replaced
+   *
+   * The reason to change a password is usually that somebody else knows it, and
+   * leaving their refresh token alive would leave them signed in. So all of them
+   * are revoked — including this caller's, since there is no way to tell one
+   * refresh token from another with only an access token in hand — and a fresh
+   * pair comes back with the answer. Signing the person out of the browser they
+   * did it in would read as a failure.
+   */
+  async changePassword(
+    orgId: string,
+    userId: string,
+    current: string,
+    next: string,
+  ): Promise<ChangePasswordOutcome> {
+    const row = await withOrg(
+      this.deps.pool,
+      orgId,
+      async (client) => {
+        const { rows } = await client.query<UserRow & { email: string }>(
+          `SELECT id, org_id, role, email, password_hash, disabled_at
+             FROM users WHERE org_id = $1 AND id = $2`,
+          [orgId, userId],
+        )
+        return rows[0]
+      },
+      this.scope,
+    )
+
+    // A disabled account and one with no password set are the same answer as an
+    // account that is not there. Nobody reaching here is any of the three —
+    // they hold a token this row issued — so this is a guard rather than a
+    // branch anybody sees.
+    if (row === undefined || row.disabled_at !== null || row.password_hash === null) return 'no-user'
+
+    // Outside the transaction on purpose: scrypt at OWASP's minimum takes long
+    // enough that holding a row lock across it is a lock held on arithmetic.
+    if (!(await verifyPassword(current, row.password_hash))) return 'wrong-password'
+    const hash = await hashPassword(next)
+
+    const tokens = await withOrg(
+      this.deps.pool,
+      orgId,
+      async (client) => {
+        await client.query(
+          'UPDATE users SET password_hash = $3 WHERE org_id = $1 AND id = $2',
+          [orgId, userId, hash],
+        )
+        // Every one, and before the new pair is inserted so the pair this
+        // returns is not revoked by the statement that ends the old sessions.
+        await client.query(
+          `UPDATE refresh_tokens SET revoked_at = now()
+            WHERE org_id = $1 AND user_id = $2 AND revoked_at IS NULL`,
+          [orgId, userId],
+        )
+        // A new family. Carrying the old one would put the session that
+        // replaces every other one in the same chain as the tokens just
+        // revoked.
+        return this.issue(row, undefined, client)
+      },
+      this.scope,
+    )
+
+    return { kind: 'changed', tokens, email: row.email }
   }
 
   private async userById(orgId: string, userId: string): Promise<UserRow | undefined> {

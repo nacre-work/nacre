@@ -23,7 +23,7 @@ import type { PasswordRecovery } from '../recovery.js'
  * bug. A rule stated in a comment and held in one of four places is the shape
  * this repository keeps closing with a check.
  *
- * The four are driven here rather than the translation being unit-tested,
+ * The five are driven here rather than the translation being unit-tested,
  * because what was wrong was never the translation — it was which routes
  * reached one. Storage raises `TooBusy` the way the gate does; nothing here
  * hashes, since how the gate fills is `passwords.ts`'s business and is bounded
@@ -51,7 +51,7 @@ const users: Users = {
   resetPassword: async () => busy(),
 }
 
-const login = { login: async () => busy() } as unknown as Login
+const login = { login: async () => busy(), changePassword: async () => busy() } as unknown as Login
 const recovery = { request: async () => undefined, redeem: async () => busy() } as unknown as PasswordRecovery
 
 let server: Server
@@ -114,6 +114,18 @@ describe('a full password gate', () => {
       name: 'redeeming a recovery link',
       path: '/v1/auth/password-reset/confirm',
       body: { token: `${ORG}.not-a-real-secret`, password: 'a-password-that-is-long-enough' },
+    },
+    {
+      // The fifth, added after this check was. That is the point of the table:
+      // a route that hashes lands in one of the two boundaries by construction,
+      // and gets a line here rather than a translation of its own.
+      name: 'changing your own password',
+      path: '/v1/me/password',
+      body: {
+        current_password: 'whatever it is',
+        new_password: 'a-password-that-is-long-enough',
+      },
+      headers: admin,
     },
   ]
 

@@ -243,7 +243,7 @@ function signInView(): void {
      * deployment being signed in to and somebody pointing the console at a
      * different one is asking a different question.
      */
-    const recoveryLink = h('p', { class: 'hint' })
+    const recoveryLink = h('p', { class: 'hint under-action' })
     const askWhetherRecoveryExists = (): void => {
       clear(recoveryLink)
       void signInMethods(base.value.trim().replace(/\/+$/, '')).then((methods) => {
