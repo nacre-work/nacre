@@ -57,6 +57,20 @@ const EXEMPT = [
       'no target — there is nobody to guard against, and refusing a platform administrator here ' +
       'would leave that one account pinned at whatever cost its password was first hashed at.',
   },
+  {
+    file: 'packages/api/src/recovery.ts',
+    // The whole quoted statement, for the reason above.
+    match: /'UPDATE users SET password_hash = \$2 WHERE id = \$1'/,
+    why:
+      'redeeming a password reset link. The actor is the person themselves: the only way to reach ' +
+      'this statement is to hold a single-use secret that was emailed to the address on that very ' +
+      'row, so there is no caller separate from the target and nobody to escalate over. Refusing ' +
+      'a platform administrator here would recreate the hole this whole endpoint closes — the ' +
+      "account that administers the installation would be the one account that cannot recover " +
+      'its own password except through `psql`. The row is addressed by the id the token resolved ' +
+      'to and never by one a request named, which is what makes "its own" true rather than ' +
+      'claimed.',
+  },
 ]
 
 const files = []
