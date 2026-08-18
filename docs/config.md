@@ -90,11 +90,19 @@ NACRE_EMA_TRUSTED_ISSUERS=
 # is deliberately no mode that stores a TOTP secret in the clear, because a
 # product that half-does a second factor is worse than one that does none.
 #
-# 32 bytes or more, `file://` only, on the same argument as the token key: every
-# platform with a secret store presents one as a file, and a scheme that fetched
-# over the network would put a client on the startup path.
+# Base64 or hex, exactly 32 bytes. Not an arbitrary string: a passphrase would be
+# accepted, stretched by nothing, and every sealed secret in the installation
+# would be worth whatever somebody typed.
 #
-#   openssl rand -out nacre_2fa.key 32
+#   openssl rand -base64 32
+#
+# One variable, and there is deliberately no file form. A file is the better
+# place for key material — an environment variable is readable through `docker
+# inspect` and /proc/<pid>/environ — and that is one line of shell where the
+# value is set, `NACRE_2FA_KEY=$(cat /run/secrets/nacre_2fa.key)`, rather than a
+# second variable this product carries forever. `NACRE_JWT_PRIVATE_KEY_REF`
+# below is file-only for the opposite reason and is likewise one form: a private
+# signing key must not be in the environment at all.
 #
 # Losing it locks every enrolled person out of their authenticator, which is
 # what recovery codes are for — they are minted at enrolment for exactly this.
@@ -124,7 +132,6 @@ NACRE_SMTP_URL=                        # smtp:// or smtps://user:pass@host:port
 NACRE_MAIL_FROM=                       # the From: address; a relay refuses one it does not own
 
 NACRE_2FA_KEY=                         # base64 or hex, exactly 32 bytes
-NACRE_2FA_KEY_REF=                     # or file:// to >=32 bytes; set one, not both
 
 # ─── permissions ───
 NACRE_ACL_CACHE_TTL=60

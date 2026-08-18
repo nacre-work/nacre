@@ -942,7 +942,7 @@ export interface ApiOptions {
    * The second factor, when the deployment has a key to seal one with.
    *
    * Optional and absent by default: every installation that has not configured
-   * `NACRE_2FA_KEY_REF` answers 404 on this surface and signs in exactly as it
+   * `NACRE_2FA_KEY` answers 404 on this surface and signs in exactly as it
    * did before.
    */
   readonly secondFactors?: SecondFactors
