@@ -41,6 +41,29 @@ let factors: SecondFactors
 let login: Login
 let userId: string
 
+/**
+ * One instant for the whole suite, and the reason is a release that failed.
+ *
+ * `totpStep()` reads the wall clock, and this file called it six times across
+ * one case: once to confirm, once to sign in, once to replay. A step is thirty
+ * seconds and the case takes about two — so roughly one run in fifteen crosses
+ * a boundary between the second call and the third, computes a code for a step
+ * that was never spent, and watches the server correctly accept it. The
+ * assertion says "a spent code is refused" and what it actually asked was
+ * "these three wall-clock reads landed in the same window".
+ *
+ * It was green on the pull request and red on the merge that was already the
+ * release: nothing published, nothing tagged. That is the worst place for a
+ * flake to surface, and it is the same shape as the hybrid ranking case one
+ * release earlier — a test whose claim depends on something it does not
+ * control.
+ *
+ * Captured rather than written down, because every other case here compares a
+ * database value against this clock: a lock fifteen minutes into the future is
+ * only in the future relative to something near now.
+ */
+let at: Date
+
 const when = url ? describe : describe.skip
 
 when('the second factor', () => {
@@ -68,9 +91,11 @@ when('the second factor', () => {
       client.release()
     }
 
+    at = new Date()
     factors = new SecondFactors({
       pool,
       key: randomBytes(32),
+      now: () => at,
       issuer: 'https://api.example.test',
       // `localhost`, because that is what the WebAuthn fixtures were made
       // against — a virtual authenticator refuses an address outright.
@@ -115,44 +140,59 @@ when('the second factor', () => {
     // treating it as live is how somebody locks themselves out while enrolling.
     expect((await signIn())?.kind).toBe('tokens')
 
-    const codes = await factors.confirm(ORG, userId, begun!.id, totpCode(begun!.secret, totpStep()))
+    /*
+     * Two codes, computed once from the pinned instant and then reused.
+     *
+     * The *next* step for the sign-in, and that is not a detail of the test:
+     * confirming spent the code that confirmed it, so the same six digits are
+     * refused afterwards — correctly. A person who enrols and immediately signs
+     * in waits for the next code, which is the cost of a code being single-use.
+     */
+    const step = totpStep(at)
+    const confirming = totpCode(begun!.secret, step)
+    const signingIn = totpCode(begun!.secret, step + 1)
+
+    const codes = await factors.confirm(ORG, userId, begun!.id, confirming)
     expect(codes).toHaveLength(10)
 
     const challenged = await signIn()
     expect(challenged?.kind).toBe('second-factor')
 
-    /*
-     * The *next* step, and that is not a detail of the test.
-     *
-     * Confirming spent the code that confirmed it, so the same six digits are
-     * refused for the sign-in — correctly. A person who enrols and immediately
-     * signs in waits for the next code, which is the cost of a code being
-     * single-use and is the right side of that trade.
-     */
     const tokens = await login.completeSecondFactor(
       (challenged as { challenge: string }).challenge,
-      { kind: 'code', code: totpCode(begun!.secret, totpStep() + 1) },
+      { kind: 'code', code: signingIn },
     )
     expect(tokens?.accessToken.length).toBeGreaterThan(20)
 
-    const again = await signIn()
+    /*
+     * The **same string**, and that is what makes this a replay rather than an
+     * arithmetic exercise. Recomputing it is how the case became a coin flip:
+     * two `totpStep()` reads either side of a scrypt verify are the same number
+     * most of the time, and the run where they are not asks a question nobody
+     * wrote — whether an *unspent* code is accepted, which of course it is.
+     */
+    const replayed = await signIn()
     expect(
       await login.completeSecondFactor(
-        (again as { challenge: string }).challenge,
-        { kind: 'code', code: totpCode(begun!.secret, totpStep() + 1) },
+        (replayed as { challenge: string }).challenge,
+        { kind: 'code', code: signingIn },
       ),
     ).toBeUndefined()
   })
 
   it('locks after five wrong codes, and a recovery code still gets you in — once', async () => {
+    // From the pinned instant, for the reason at the top of this file: the
+    // verifier reads `at` and a code computed from `new Date()` is a code for a
+    // different step every time the two drift apart.
+    const step = totpStep(at)
     const begun = await factors.begin(ORG, userId, 'Second phone')
-    const codes = (await factors.confirm(ORG, userId, begun!.id, totpCode(begun!.secret, totpStep())))!
+    const codes = (await factors.confirm(ORG, userId, begun!.id, totpCode(begun!.secret, step)))!
     // A set already exists from the first enrolment, so this one issues none —
     // reissuing would invalidate what somebody already wrote down.
     expect(codes).toEqual([])
 
     const fresh = await factors.begin(ORG, userId, 'Third')
-    await factors.confirm(ORG, userId, fresh!.id, totpCode(fresh!.secret, totpStep()))
+    await factors.confirm(ORG, userId, fresh!.id, totpCode(fresh!.secret, step))
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       expect(await factors.verify(ORG, userId, '000000')).toBe(false)
@@ -165,7 +205,7 @@ when('the second factor', () => {
     expect(rows[0]?.locked_until).not.toBeNull()
 
     // Correct, and refused, because the factor is locked.
-    expect(await factors.verify(ORG, userId, totpCode(fresh!.secret, totpStep() + 1))).toBe(false)
+    expect(await factors.verify(ORG, userId, totpCode(fresh!.secret, step + 1))).toBe(false)
 
     const recovery = await pool.query<{ code_hash: string }>(
       'SELECT code_hash FROM user_recovery_codes WHERE org_id = $1 AND user_id = $2 AND used_at IS NULL',
