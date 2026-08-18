@@ -85,6 +85,21 @@ NACRE_OAUTH_AUTHORIZATION_SERVER=      # optional; the IdP in front of this inst
 NACRE_EMA_ENABLED=false                # ID-JAG, commercial module
 NACRE_EMA_TRUSTED_ISSUERS=
 
+# A second factor is offered only where there is a key to seal its secret with.
+# Unset, the whole surface answers 404 and sign-in is exactly what it was: there
+# is deliberately no mode that stores a TOTP secret in the clear, because a
+# product that half-does a second factor is worse than one that does none.
+#
+# 32 bytes or more, `file://` only, on the same argument as the token key: every
+# platform with a secret store presents one as a file, and a scheme that fetched
+# over the network would put a client on the startup path.
+#
+#   openssl rand -out nacre_2fa.key 32
+#
+# Losing it locks every enrolled person out of their authenticator, which is
+# what recovery codes are for — they are minted at enrolment for exactly this.
+NACRE_2FA_KEY_REF=                     # file:// to >=32 bytes; enables the second factor
+
 # ─── permissions ───
 NACRE_ACL_CACHE_TTL=60
 

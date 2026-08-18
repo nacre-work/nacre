@@ -101,6 +101,12 @@ const COVERAGE: Record<string, string | null> = {
   'POST /auth/login': 'auth.login',
   'POST /auth/refresh': 'auth.refresh',
   'POST /auth/logout': 'auth.logout',
+  'POST /auth/second-factor': 'auth.secondFactor',
+
+  'GET /me/second-factor': 'secondFactor.list',
+  'POST /me/second-factor': 'secondFactor.begin',
+  'POST /me/second-factor/{id}/confirm': 'secondFactor.confirm',
+  'DELETE /me/second-factor/{id}': 'secondFactor.remove',
 
   'POST /search': 'search',
 

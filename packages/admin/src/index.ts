@@ -3,10 +3,12 @@ import {
   explain,
   readBase,
   readToken,
+  signInSecondFactor,
   signInWithPassword,
   signInWithToken,
   signOut,
   whenSessionEnds,
+  type SecondFactorPending,
 } from './api.js'
 import { clear, h } from './dom.js'
 import { accountsView } from './views/accounts.js'
@@ -16,6 +18,7 @@ import { grantsView } from './views/grants.js'
 import { layersView } from './views/layers.js'
 import { peopleView } from './views/people.js'
 import { searchView } from './views/search.js'
+import { securityView } from './views/security.js'
 
 /**
  * The community admin UI.
@@ -64,6 +67,10 @@ const ROUTES = [
   // anything — so ending one must not be either. The listing shows a member
   // their own and an administrator the organization's; the API decides that,
   // not this table.
+  // Not adminOnly, and it cannot be: everybody who signs in has one of these,
+  // and an administrator has no more business in this screen than anybody else
+  // — the API answers only for the caller.
+  { hash: '#/security', label: 'Security', render: (root: HTMLElement) => void securityView(root), adminOnly: false },
   {
     hash: '#/connections',
     label: 'Connections',
@@ -223,7 +230,16 @@ function signInView(): void {
         })
         // One refusal with one message, deliberately. The server does not say
         // which of five things was wrong and neither does this.
-        if (!ok) return say('Those credentials are not valid.', true)
+        if (ok === false) return say('Those credentials are not valid.', true)
+        /*
+         * A correct password and a second factor still to produce.
+         *
+         * Compared against `false` rather than tested for truthiness, because
+         * the pending case is an object: `if (!ok)` would take it for a success
+         * and start a console with no token, which is a working sign-in
+         * reported as a broken application.
+         */
+        if (ok !== true) return askForCode(ok, say, start)
         start()
       } catch (error) {
         say(explain(error), true)
@@ -240,6 +256,60 @@ function signInView(): void {
       message,
       h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Sign in'),
     )
+  }
+
+  /**
+   * The second field, once the password has been accepted.
+   *
+   * It replaces the form rather than appearing under it: the password is
+   * already spent, and a screen still showing it invites somebody to retype and
+   * resubmit, which starts a second sign-in and invalidates the challenge they
+   * are holding.
+   */
+  const askForCode = (
+    pending: SecondFactorPending,
+    say: (text: string, bad?: boolean) => void,
+    start: () => void,
+  ): void => {
+    const code = h('input', {
+      class: 'input',
+      inputmode: 'numeric',
+      autocomplete: 'one-time-code',
+      placeholder: '000000',
+      'aria-label': 'Code',
+    }) as HTMLInputElement
+
+    clear(forms)
+    forms.append(
+      h('form', { onsubmit: async (event: Event) => {
+        event.preventDefault()
+        say('Checking…')
+        try {
+          const ok = await signInSecondFactor({
+            challenge: pending.challenge,
+            code: code.value.trim(),
+            baseUrl: pending.baseUrl,
+          })
+          // One refusal again: a wrong code, an expired challenge and an
+          // account disabled in the last five minutes are one answer.
+          if (!ok) return say('That code is not valid.', true)
+          start()
+        } catch (error) {
+          say(explain(error), true)
+        }
+      } },
+        h('h2', {}, 'Two-factor'),
+        h('label', { class: 'field' }, h('span', {}, 'Code'), code),
+        h('p', { class: 'hint' },
+          'From your authenticator, or one of the recovery codes you saved when you enrolled.'),
+        // The same element `say` writes into. It lives inside the form that is
+        // being replaced, so leaving it out here would detach it and every
+        // message after this point would go to nothing.
+        message,
+        h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, 'Continue'),
+      ),
+    )
+    code.focus()
   }
 
   const tokenForm = (): HTMLElement => {

@@ -117,6 +117,66 @@ answering "not valid" to a request that was never checked is a lie the client
 will act on. It is not an oracle: it depends on how loaded the process is and
 not at all on whether the account exists.
 
+### A second factor
+
+```
+POST   /v1/auth/second-factor        {challenge, code}   → the token pair
+GET    /v1/me/second-factor                              → what is enrolled
+POST   /v1/me/second-factor          {label?}            → a secret, once
+POST   /v1/me/second-factor/{id}/confirm  {code}         → recovery codes, once
+DELETE /v1/me/second-factor/{id}     {code}              → 204
+```
+
+TOTP — the six digits an authenticator shows. Offered only where the
+installation set `NACRE_2FA_KEY_REF`; without a key to seal a secret with, the
+whole surface answers `404` and sign-in is unchanged. There is deliberately no
+mode that stores a secret in the clear, because a product that half-does a
+second factor is worse than one that does none.
+
+**A second factor decides whether a session starts. It grants nothing.** The
+permitted set is still computed per request from `grants`, and a token minted
+after a correct code reaches exactly what the same token reaches without one.
+
+Where an account has one, `POST /v1/auth/login` answers `200` with
+`{second_factor_required: true, challenge, expires_in}` instead of tokens —
+nothing was refused, the caller is being asked for the rest. The challenge is
+signed for an audience that is **not** the API's, so it is refused everywhere an
+access token is accepted; one that could be presented as a bearer token would be
+a way past the factor it exists to demand. The role and the account's state are
+re-read when the session is issued rather than trusted from it: five minutes is
+long enough to be disabled.
+
+**A code is single-use.** The step it belonged to is stored, and a code at or
+before it is refused however correct it is — otherwise a code is good for the
+whole window it was shown in, which is a second use for anybody who reads it
+over a shoulder or relays it through a phishing page. The visible consequence is
+that somebody who enrols and immediately signs in waits for the next code.
+
+**The brute-force bound is in Postgres, not in Redis.** The rate limiter fails
+*open* by design — it is not an authorization control and a cache restart must
+not be an outage — and this one is: six digits is a million, and a limiter that
+forgets is a limiter an attacker waits out. Five wrong codes lock the factor for
+fifteen minutes. `/v1/auth/second-factor` also meets the per-client sign-in
+bucket, because otherwise the limit is a limit on passwords rather than on
+sessions.
+
+**Recovery codes are minted at enrolment and printed once.** Ten of them, spent
+one at a time, and they work while a factor is locked — somebody who has lost
+their phone cannot ask for them later, so they are issued at the one moment the
+product has their attention. A second enrolment does not reissue them; new codes
+would invalidate the set already written down. Removing the last factor deletes
+them, because a set of long-lived credentials behind an account with no second
+factor is nobody's intention.
+
+**Under `/v1/me` and never `/v1/users/{id}`.** An administrator resets a
+password; a second factor is a thing the *person* holds, and one an
+administrator could enrol or remove would be a thing the account's administrator
+holds instead. Removing one takes a current code in the body for the same
+reason: taking the factor off is the first thing somebody with a stolen session
+does. A service account and a delegation are refused — a key has nobody to carry
+an authenticator, and a third party acting for somebody must not be able to
+change how that somebody signs in.
+
 ### The access log is readable
 
 `GET /v1/audit`, newest first, cursor-paged, as JSON, JSONL or CSV by content

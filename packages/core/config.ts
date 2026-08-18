@@ -490,6 +490,61 @@ function loadEd25519(ref: string, variable: string): { private: KeyObject; publi
   return { private: key, public: createPublicKey(key) }
 }
 
+/**
+ * The key a second factor's secret is sealed with, if a deployment has one.
+ *
+ * **Absent is a supported state and the whole feature is simply not offered.**
+ * Not a degraded one: enrolment is refused, the console shows no control, and
+ * nothing stores a TOTP secret in the clear "for now". A product that half-does
+ * a second factor is worse than one that does none, because the operator
+ * believes something.
+ *
+ * `file://` only and 32 bytes, on the same two arguments the token key makes: a
+ * platform with a secret store presents one as a file, and a scheme that
+ * fetched over the network would put a client on the startup path. Generate one
+ * with `openssl rand -out nacre_2fa.key 32`.
+ *
+ * Losing it locks every enrolled person out of their second factor — which is
+ * what recovery codes are for, and why they are minted at enrolment rather than
+ * on demand.
+ */
+export function loadSecondFactorKey(env: NodeJS.ProcessEnv = process.env): Buffer | undefined {
+  const ref = env.NACRE_2FA_KEY_REF
+  if (ref === undefined || ref === '') return undefined
+
+  let path: string
+  try {
+    const url = new URL(ref)
+    if (url.protocol !== 'file:') throw new Error(`scheme ${url.protocol} is not supported`)
+    path = fileURLToPath(url)
+  } catch (cause) {
+    throw new ConfigError([
+      `NACRE_2FA_KEY_REF is not a file:// URL: ${String(cause)}. It names a file ` +
+        'holding at least 32 bytes of key material, for example ' +
+        'file:///run/secrets/nacre_2fa.key.',
+    ])
+  }
+
+  let bytes: Buffer
+  try {
+    bytes = readFileSync(path)
+  } catch (cause) {
+    throw new ConfigError([`NACRE_2FA_KEY_REF names ${path}, which cannot be read: ${String(cause)}.`])
+  }
+
+  if (bytes.length < 32) {
+    // Refused rather than stretched. A KDF over a short file would accept a
+    // password somebody typed into a file and report nothing, and the strength
+    // of every sealed secret would be whatever that was.
+    throw new ConfigError([
+      `NACRE_2FA_KEY_REF names ${path}, which holds ${String(bytes.length)} bytes. At least 32 are ` +
+        'required: `openssl rand -out nacre_2fa.key 32`.',
+    ])
+  }
+
+  return bytes.subarray(0, 32)
+}
+
 export function loadJwtKeys(env: NodeJS.ProcessEnv = process.env): JwtKeys {
   const secret = env.NACRE_JWT_SECRET
   const ref = env.NACRE_JWT_PRIVATE_KEY_REF

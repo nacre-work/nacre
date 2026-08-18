@@ -54,7 +54,8 @@ import {
 import { badRequest, internal, notAdministeredHere, notFound, Problem } from './errors.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
-import type { Login, Tokens } from './login.js'
+import type { Login, LoginOutcome, Tokens } from './login.js'
+import type { SecondFactors } from './second-factor.js'
 import type {
   ConsentSubject,
   LayerNarrowing,
@@ -935,6 +936,14 @@ export interface ApiOptions {
   readonly oauth?: OAuthServer
   readonly workspaces?: Workspaces
   readonly embeddingProviders?: EmbeddingProviders
+  /**
+   * The second factor, when the deployment has a key to seal one with.
+   *
+   * Optional and absent by default: every installation that has not configured
+   * `NACRE_2FA_KEY_REF` answers 404 on this surface and signs in exactly as it
+   * did before.
+   */
+  readonly secondFactors?: SecondFactors
   /** Layer reindex. Absent means the reindex paths answer 404. */
   readonly reindex?: Reindex
   /** The reindex recall gate's query set. Absent means those paths answer 404. */
@@ -1588,9 +1597,9 @@ async function handleAuth(
       }
     }
 
-    let tokens: Tokens | undefined
+    let outcome: LoginOutcome | undefined
     try {
-      tokens = await options.login.login({
+      outcome = await options.login.login({
         email,
         password,
         ...(typeof organization === 'string' ? { organization } : {}),
@@ -1622,7 +1631,7 @@ async function handleAuth(
       throw error
     }
 
-    if (tokens === undefined) {
+    if (outcome === undefined) {
       // Logged rather than audited, and the difference is not laziness. The
       // audit log is per-organization; an address that matches no user belongs
       // to no tenant, and giving that row an owner would put one
@@ -1638,6 +1647,34 @@ async function handleAuth(
       return
     }
 
+    /*
+     * A correct password and a second factor to produce.
+     *
+     * Not an audit event yet, and not a `login` one whatever happens next: this
+     * is half of an authentication, and writing "login allow" here would put a
+     * successful sign-in in the journal for somebody who never produced their
+     * code. The event is written where the session is issued.
+     *
+     * 200 rather than 401, because nothing was refused — the client is being
+     * asked for the rest of what it needs, which is what `second_factor_required`
+     * says.
+     */
+    if (outcome.kind === 'second-factor') {
+      send(
+        res,
+        200,
+        {
+          second_factor_required: true,
+          challenge: outcome.challenge,
+          expires_in: outcome.expiresIn,
+        },
+        requestId,
+      )
+      return
+    }
+
+    const tokens = outcome.tokens
+
     // The successful one does have an organization to belong to, and it is the
     // event that answers "who has been in here". Awaited: a lost audit event is
     // worse than a slow response.
@@ -1648,6 +1685,69 @@ async function handleAuth(
       result: 'allow',
       target: { user_id: tokens.userId },
       detail: {},
+      requestId,
+    })
+
+    send(res, 200, tokenJson(tokens), requestId)
+    return
+  }
+
+  /*
+   * The second half of a sign-in.
+   *
+   * Rate limited on the same buckets as `/v1/auth/login`, because otherwise the
+   * limit is a limit on passwords and not on sessions: an attacker holding a
+   * password spends one login and then guesses six digits here without ever
+   * meeting a bucket again. The per-factor lock in Postgres is the bound that
+   * survives a Redis restart; this one is the bound that costs an attacker
+   * their source.
+   */
+  if (instance === '/v1/auth/second-factor') {
+    const { challenge, code } = (body ?? {}) as { challenge?: unknown; code?: unknown }
+    if (typeof challenge !== 'string' || typeof code !== 'string') {
+      const problem = badRequest(instance, requestId, "'challenge' and 'code' are required.")
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+
+    if (options.limits !== undefined && options.limitPolicies?.login !== undefined) {
+      const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 })
+      if (source !== undefined && options.limitPolicies.login_source !== undefined) {
+        const decision = await options.limits.check(`src:${source}`, 'login_source')
+        if (!decision.allowed) {
+          const problem = new Problem({
+            type: 'https://nacre.work/errors/rate-limited',
+            title: 'Too many requests',
+            status: 429,
+            detail: `Too many sign-in attempts. Try again in ${decision.reset} seconds.`,
+            instance,
+            requestId,
+          })
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+      }
+    }
+
+    const tokens = await options.login.completeSecondFactor(challenge, code)
+    if (tokens === undefined) {
+      // One refusal for an expired challenge, a forged one, a wrong code and a
+      // disabled account alike. Which of the four it was is nothing a client
+      // needs and something an attacker would use.
+      logger.warn('second factor refused', { request_id: requestId })
+      refuse()
+      return
+    }
+
+    await options.audit.write({
+      orgId: tokens.orgId,
+      actor: `user:${tokens.userId}`,
+      action: 'login',
+      result: 'allow',
+      target: { user_id: tokens.userId },
+      // The journal says which door, because "signed in with a second factor"
+      // and "signed in with a password" are different facts to an investigator.
+      detail: { second_factor: true },
       requestId,
     })
 
@@ -2985,6 +3085,158 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         },
         requestId,
       )
+      return
+    }
+
+    /*
+     * The caller's own second factor.
+     *
+     * Under `/v1/me` and never `/v1/users/{id}`, which is the security property
+     * rather than a URL preference: an administrator resets somebody's password
+     * and must not be able to enrol, read or remove their second factor —
+     * doing so would make the factor a thing the account's administrator holds,
+     * and the whole point is that it is a thing the *person* holds.
+     *
+     * A service account and a delegation are refused. A key is not a person and
+     * has nobody to carry an authenticator; a delegation is a third party
+     * acting for somebody, and letting it change how that somebody signs in
+     * would be an escalation out of what was approved.
+     */
+    if (instance === '/v1/me/second-factor' || instance.startsWith('/v1/me/second-factor/')) {
+      if (options.secondFactors === undefined || !options.secondFactors.available) {
+        // No key configured, so the feature is absent rather than broken. 404
+        // and not 501: from outside, a route this installation does not serve
+        // and one it has not been given a key for are the same thing.
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      if (auth.principal.type !== 'user' || auth.delegation !== undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const factors = options.secondFactors
+      const userId = auth.principal.id
+      const rest = instance.slice('/v1/me/second-factor'.length)
+
+      if (rest === '' && req.method === 'GET') {
+        const [items, left] = await Promise.all([
+          factors.list(auth.orgId, userId),
+          factors.recoveryCodesLeft(auth.orgId, userId),
+        ])
+        send(
+          res,
+          200,
+          {
+            items: items.map((f) => ({
+              id: f.id,
+              kind: f.kind,
+              label: f.label,
+              created_at: f.createdAt.toISOString(),
+              last_used_at: f.lastUsedAt?.toISOString() ?? null,
+            })),
+            recovery_codes_left: left,
+          },
+          requestId,
+        )
+        return
+      }
+
+      if (rest === '' && req.method === 'POST') {
+        const label = (body as { label?: unknown } | undefined)?.label
+        const named = typeof label === 'string' && label.trim() !== '' ? label.trim().slice(0, 60) : 'Authenticator'
+        const begun = await factors.begin(auth.orgId, userId, named)
+        if (begun === undefined) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        // The secret in the response and nowhere else: this is the one moment
+        // it exists outside the sealed column, exactly as a generated password
+        // is.
+        send(
+          res,
+          201,
+          { id: begun.id, secret: begun.secret, otpauth_url: begun.otpauthUrl, label: named },
+          requestId,
+        )
+        return
+      }
+
+      if (rest.endsWith('/confirm') && req.method === 'POST') {
+        const id = rest.slice(1, -'/confirm'.length)
+        const code = (body as { code?: unknown } | undefined)?.code
+        if (!UUID_SHAPE.test(id) || typeof code !== 'string') {
+          const problem = badRequest(instance, requestId, "'code' is required.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        const codes = await factors.confirm(auth.orgId, userId, id, code)
+        if (codes === undefined) {
+          // One refusal for a wrong code and for an enrolment that is not
+          // there. Telling them apart would say whether a given id exists.
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `user:${userId}`,
+          action: 'second_factor.enrol',
+          result: 'allow',
+          target: { user_id: userId },
+          detail: {},
+          requestId,
+        })
+        // Printed once. A second call returns an empty list rather than new
+        // codes, because reissuing them here would invalidate the set somebody
+        // has already written down.
+        send(res, 200, { recovery_codes: codes }, requestId)
+        return
+      }
+
+      if (rest !== '' && !rest.includes('/') && req.method === 'DELETE') {
+        const id = rest.slice(1)
+        const code = (body as { code?: unknown } | undefined)?.code
+        if (!UUID_SHAPE.test(id) || typeof code !== 'string') {
+          const problem = badRequest(instance, requestId, "'code' is required to remove a second factor.")
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        /*
+         * A current code to take one off, and that is the whole reason this
+         * endpoint takes a body at all. Removing the second factor is the first
+         * thing somebody with a stolen session does, and a session is exactly
+         * what the factor exists to be more than.
+         */
+        if (!(await factors.verify(auth.orgId, userId, code))) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        const removed = await factors.remove(auth.orgId, userId, id)
+        if (!removed) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `user:${userId}`,
+          action: 'second_factor.remove',
+          result: 'allow',
+          target: { user_id: userId },
+          detail: {},
+          requestId,
+        })
+        send(res, 204, null, requestId)
+        return
+      }
+
+      const problem = notFound(instance, requestId)
+      send(res, problem.status, problem.toJSON(), requestId)
       return
     }
 
