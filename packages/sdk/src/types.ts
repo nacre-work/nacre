@@ -217,6 +217,16 @@ export interface User {
   readonly disabledAt: string | null
   /** Whether a local password is set at all. False is an SSO-only account. */
   readonly hasPassword: boolean
+  /**
+   * Whether this credential is one several people hold — a published demo
+   * login, a kiosk, a read-only account handed round a team.
+   *
+   * Such an account has no `/v1/me` credential surface: it cannot enrol a
+   * second factor, change its own password, or be sent a reset link. An
+   * administrator still resets its password, which is how a published one is
+   * rotated. It is fixed at creation and cannot be changed afterwards.
+   */
+  readonly shared: boolean
 }
 
 export interface CreatedUser extends User {

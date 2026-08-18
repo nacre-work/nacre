@@ -193,6 +193,12 @@ const FIXTURES = {
       { id: '9d7b3f04-6c28-4a51-8e93-1b5f0a2c6d78', email: 'alex@example.com', role: 'member',
         created_at: '2026-02-20T10:11:00.000Z', disabled_at: '2026-03-08T09:00:00.000Z',
         has_password: true },
+      // A credential several people hold, so the `shared` tag is in the picture
+      // rather than being a thing only the code knows about. It is the one row
+      // here whose person cannot enrol a second factor.
+      { id: '2a6e1c58-3b90-4f27-a4d1-7c8b0e5f9a43', email: 'kiosk@example.com', role: 'member',
+        created_at: '2026-03-01T09:00:00.000Z', disabled_at: null, has_password: true,
+        shared: true },
     ],
     next_cursor: null,
   },

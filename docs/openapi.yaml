@@ -820,7 +820,7 @@ components:
           description: RFC 8707. What the resulting token is bound to.
     User:
       type: object
-      required: [id, email, role, created_at, disabled_at, has_password]
+      required: [id, email, role, created_at, disabled_at, has_password, shared]
       properties:
         id:         { type: string, format: uuid }
         email:      { type: string, format: email }
@@ -837,6 +837,20 @@ components:
           description: >
             Whether a local password is set at all — false is an SSO-only
             account. Never the hash, and never anything derived from it.
+        shared:
+          type: boolean
+          description: |
+            Whether this credential is one several people hold.
+
+            Such an account has no `/v1/me` credential surface: it cannot enrol
+            a second factor, change its own password, or be sent a reset link.
+            An administrator still resets its password, which is how a published
+            credential is rotated.
+
+            Fixed at creation and not changeable afterwards, so it is in the
+            listing rather than only in the creation response: an administrator
+            who set it has no other way to see it again, and it decides whether
+            the person on the other end can hold a second factor at all.
         password:
           type: string
           description: >

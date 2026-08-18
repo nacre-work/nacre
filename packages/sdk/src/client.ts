@@ -1894,6 +1894,7 @@ function userFrom(u: Record<string, unknown>): User {
     createdAt: String(u.created_at ?? ''),
     disabledAt: (u.disabled_at as string | null) ?? null,
     hasPassword: u.has_password === true,
+    shared: u.shared === true,
   }
 }
 

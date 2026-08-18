@@ -42,6 +42,7 @@ const users: Users = {
         createdAt: '2026-01-01T00:00:00.000Z',
         disabledAt: null,
         hasPassword: true,
+        shared: false,
       },
     ],
   }),
@@ -57,6 +58,7 @@ const users: Users = {
             createdAt: '2026-01-01T00:00:00.000Z',
             disabledAt: null,
             hasPassword: true,
+            shared: false,
           },
         },
   update: async (_a, id) =>

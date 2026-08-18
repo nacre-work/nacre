@@ -51,6 +51,15 @@ export interface UserView {
    * has no local credential to steal.
    */
   readonly hasPassword: boolean
+  /**
+   * Whether this credential is one several people hold.
+   *
+   * In the listing because an administrator who ticked that box when creating
+   * the account has no other way to see it afterwards — and it decides whether
+   * the person on the other end can hold a second factor at all, which is
+   * exactly the kind of thing a screen must be able to say.
+   */
+  readonly shared: boolean
 }
 
 export interface Users {
@@ -198,9 +207,10 @@ export class PostgresUsers implements Users {
           created_at_text: string
           disabled_at: Date | null
           has_password: boolean
+          shared: boolean
         }>(
           `SELECT id, email, role, created_at, created_at::text AS created_at_text,
-                  disabled_at, (password_hash IS NOT NULL) AS has_password
+                  disabled_at, (password_hash IS NOT NULL) AS has_password, shared
              FROM users WHERE org_id = $1${seek} ORDER BY created_at, id${cap}`,
           after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
         )
@@ -216,6 +226,7 @@ export class PostgresUsers implements Users {
           createdAt: r.created_at.toISOString(),
           disabledAt: r.disabled_at?.toISOString() ?? null,
           hasPassword: r.has_password,
+          shared: r.shared,
         }))
 
         return pageOf(users, page, (u, i) => ({
@@ -268,6 +279,7 @@ export class PostgresUsers implements Users {
             createdAt: row.created_at.toISOString(),
             disabledAt: null,
             hasPassword: true,
+            shared: shared === true,
           },
         }
       },

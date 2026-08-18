@@ -1115,6 +1115,11 @@ function userJson(u: UserView): Record<string, unknown> {
     // account, which is a fact an administrator needs and which says nothing
     // about the credential.
     has_password: u.hasPassword,
+    // Whether several people hold this password. An administrator who ticked
+    // that box when creating the account has no other way to see it afterwards,
+    // and it decides whether the person on the other end can hold a second
+    // factor at all.
+    shared: u.shared,
   }
 }
 
