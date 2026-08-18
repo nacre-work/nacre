@@ -49,7 +49,39 @@ const ORG = '11111111-1111-1111-1111-111111111111'
 const LAYER = '22222222-2222-2222-2222-222222222222'
 const CLOSED = '33333333-3333-3333-3333-333333333333'
 const SLOT = vectorName('stub', 4)
-const DENSE = [0.5, 0.5, 0.5, 0.5]
+/**
+ * The query's dense vector, and one per chunk that is deliberately not it.
+ *
+ * Every point used to carry the identical vector, so the dense branch scored
+ * them all the same — and Reciprocal Rank Fusion over a branch whose order is
+ * arbitrary produces an arbitrary answer. `ranks the chunk holding an
+ * identifier first` was a **coin flip**: four passes and four failures over
+ * eight runs, on a gate CI runs against a real Qdrant on every pull request.
+ *
+ * The order below is chosen rather than merely made distinct, because RRF ties
+ * are the trap and one rank position is not a margin. `doc-1` leads the sparse
+ * branch by one place over `doc-2`; give it the dense place immediately behind
+ * `doc-2` and the two sums come out **equal**, which is the same coin flip one
+ * step along — measured, at 7 passes in 10. So `doc-legacy`, the point with no
+ * sparse vector at all, is the dense leader, `doc-1` is second and `doc-2`
+ * third:
+ *
+ *     doc-1        1/2 (sparse 1) + 1/3 (dense 2) = 0.833
+ *     doc-2        1/3 (sparse 2) + 1/4 (dense 3) = 0.583
+ *     doc-legacy                  + 1/2 (dense 1) = 0.500
+ *
+ * decided by a quarter rather than by nothing. It also keeps the case saying
+ * what it claims: `doc-1` is **not** the dense branch's first choice, so its
+ * coming first out of the fusion is the lexical branch's doing.
+ */
+const DENSE = [1, 0, 0, 0]
+const DENSE_FOR = new Map([
+  [1, [1, 0.1, 0, 0]],
+  [2, [1, 0.3, 0, 0]],
+  [3, [1, 0.5, 0, 0]],
+  [4, [1, 0.7, 0, 0]],
+  [5, [1, 0.9, 0, 0]],
+])
 
 const point = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
 
@@ -119,7 +151,7 @@ describe.skipIf(url === undefined)('the hybrid query against a real Qdrant', () 
         return {
           id: point(chunk.n),
           vector: {
-            [SLOT]: DENSE,
+            [SLOT]: DENSE_FOR.get(chunk.n) ?? DENSE,
             [SPARSE_VECTOR_NAME]: {
               indices: [...encoded.indices],
               values: [...encoded.values],
@@ -188,10 +220,24 @@ describe.skipIf(url === undefined)('the hybrid query against a real Qdrant', () 
     expect(info.config.params.sparse_vectors?.[SPARSE_VECTOR_NAME]?.modifier).toBe('idf')
   })
 
-  it('ranks the chunk holding an identifier first', async () => {
+  it('ranks the chunk holding an identifier first, and by a margin', async () => {
     const hits = await search([dense, lexical('SQLSTATE 23505')], 3)
 
     expect(hits[0]?.payload?.doc_id).toBe('doc-1')
+
+    /*
+     * And the margin is asserted rather than assumed, because the version of
+     * this case without it passed half the time. Two points tied on a fused
+     * score come back in whatever order the database happened to build, so
+     * "first" is only a claim where first is ahead of second — and the fixture
+     * that made them tie looked exactly like the fixture that does not.
+     *
+     * A tenth is well under the quarter the arrangement above works out to and
+     * well over anything floating point contributes, so this fails on a
+     * fixture that has drifted back into a tie and not on arithmetic.
+     */
+    const [first, second] = hits
+    expect((first?.score ?? 0) - (second?.score ?? 0)).toBeGreaterThan(0.1)
   })
 
   it('does not let the lexical branch reach a layer the plan excludes', async () => {
