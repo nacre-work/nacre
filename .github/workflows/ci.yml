@@ -166,6 +166,7 @@ jobs:
       # docs/extensions.md that tells a module author which suite to run, so
       # somebody could run two thirds of it and believe they had run it.
       - run: pnpm lint:test-plan-range
+      - run: pnpm lint:test-clock
       # Every caller of a model endpoint an operator configured reports a
       # refusal through one function. A bare status is the wrong answer on 401
       # and 403, where the cause is that this client sends no credential and has

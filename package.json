@@ -43,6 +43,7 @@
     "lint:sparse": "node scripts/check-sparse-branch.mjs",
     "lint:embed-batch": "node scripts/check-embed-batch.mjs",
     "lint:test-plan-range": "node scripts/check-test-plan-range.mjs",
+    "lint:test-clock": "node scripts/check-test-clock.mjs",
     "lint:image-packages": "node scripts/check-image-packages.mjs",
     "lint:published": "node scripts/check-published-manifests.mjs",
     "lint:audit-target": "node scripts/check-audit-target.mjs",
