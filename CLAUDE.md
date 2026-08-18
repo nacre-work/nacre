@@ -1722,6 +1722,22 @@ TOTP and wrong about the sheet of codes redeemed by the same method. The guard
 sits below the redemption now, and the select it guards asks for `kind = 'totp'`
 — which also stops a mixed account trying to open a `NULL` secret.
 
+**The whole ceremony is driven in a real browser against a real database**, by
+`scripts/webauthn-e2e.mjs`, and that is what says the wiring works rather than
+each half separately: Chrome's virtual authenticator over CDP on one end and
+Postgres on the other, with the console's encoding, the routes, the store and
+the verifier in between and nothing stubbed. Fourteen assertions — the panel
+offering one kind and not two on an installation with no key, ten recovery
+codes, the JWK and the algorithm in the row, a sign-in on the key alone, the
+counter moving, a forged challenge refused, and the factor removed on an
+assertion.
+
+That last one is the 0.18.0 `DELETE` defect by name, and restoring it turns the
+run red — which is the measurement that says this check would have caught what
+every green suite missed. It runs in the `console` job, which grew a Postgres
+service rather than becoming a job of its own: the expensive half, installing a
+browser, was already paid for there.
+
 **And the screenshot pass photographed a bundle that was two commits old and
 reported success.** A `pnpm build` had failed on a type error, leaving the
 previous `dist` in place; the run rendered every screen, found no page error and

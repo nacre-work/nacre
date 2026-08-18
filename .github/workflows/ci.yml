@@ -270,6 +270,22 @@ jobs:
   console:
     name: console
     runs-on: ubuntu-latest
+    # A database, because this job now drives more than a stubbed screen: the
+    # WebAuthn ceremony runs a real browser against a real server against this,
+    # and both 0.18.0 defects it would have caught were routes nothing had ever
+    # asked the *server* for. Here rather than in a job of its own, since the
+    # expensive half — installing a browser — is already paid for above.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nacre
+          POSTGRES_PASSWORD: nacre
+          POSTGRES_DB: nacre
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U nacre"
+          --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -295,6 +311,16 @@ jobs:
           # NODE_PATH is a CommonJS mechanism, which the script's header says
           # and the first version of this job ignored.
           NACRE_PLAYWRIGHT="$tools/node_modules/playwright/index.mjs" node scripts/screenshots.mjs
+          echo "$tools" > /tmp/nacre-playwright-dir
+      - name: the WebAuthn ceremony, end to end
+        env:
+          NACRE_PG_URL: postgres://nacre:nacre@127.0.0.1:5432/nacre
+        run: |
+          set -euo pipefail
+          node node_modules/@nacre.work/core/dist/migrate-main.js || \
+            node packages/core/dist/migrate-main.js
+          NACRE_PLAYWRIGHT="$(cat /tmp/nacre-playwright-dir)/node_modules/playwright/index.mjs" \
+            node scripts/webauthn-e2e.mjs
       # The images this wrote are thrown away with the runner. Regenerating them
       # is the author's job, and `git status` on their machine is what says the
       # committed ones are stale — not a runner whose fonts are not theirs.

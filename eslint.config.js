@@ -26,6 +26,9 @@ export default tseslint.config(
         URL: 'readonly',
         fetch: 'readonly',
         setTimeout: 'readonly',
+        // Earned its place the same way: the WebAuthn end-to-end signs a token
+        // with a secret it builds here, exactly as the suites do.
+        TextEncoder: 'readonly',
       },
     },
   },
