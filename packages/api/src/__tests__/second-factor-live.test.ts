@@ -68,7 +68,14 @@ when('the second factor', () => {
       client.release()
     }
 
-    factors = new SecondFactors({ pool, key: randomBytes(32), issuer: 'https://api.example.test' })
+    factors = new SecondFactors({
+      pool,
+      key: randomBytes(32),
+      issuer: 'https://api.example.test',
+      // `localhost`, because that is what the WebAuthn fixtures were made
+      // against — a virtual authenticator refuses an address outright.
+      relyingParty: { id: 'localhost', name: 'Nacre', origins: ['http://localhost:8099'] },
+    })
     login = new Login({
       pool,
       key: Buffer.from('a'.repeat(64)),

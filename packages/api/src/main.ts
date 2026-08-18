@@ -158,25 +158,50 @@ async function main(): Promise<void> {
   })
 
   /*
-   * The second factor, when a key was configured.
+   * The second factor, and the two kinds are configured differently.
    *
-   * `undefined` otherwise, and that is a supported deployment: the surface
-   * answers 404 and sign-in issues tokens exactly as it always did. There is no
-   * mode where a secret is stored unsealed.
+   * TOTP needs `NACRE_2FA_KEY` — its secret is shared, so it has to be kept and
+   * therefore sealed, and there is no mode where one is stored unsealed.
+   * WebAuthn needs no key at all: what is stored is a public key and a counter,
+   * and a dump of those produces no assertion. So this is constructed on every
+   * deployment, and `SecondFactors.kinds` is what decides which of the two a
+   * screen may offer.
+   *
+   * The relying party comes from `NACRE_CANONICAL_URL`, which every deployment
+   * already sets, rather than from a variable of its own. A `NACRE_WEBAUTHN_*`
+   * would be a second answer to "what is this installation's address", and a
+   * second answer to that is how a deployment ends up with credentials bound to
+   * a name it no longer serves.
    */
   const secondFactorKey = loadSecondFactorKey()
-  const secondFactors =
-    secondFactorKey === undefined
-      ? undefined
-      : new SecondFactors({
-          pool,
-          key: secondFactorKey,
-          // What an authenticator prints above the account. The issuer of the
-          // tokens is what this installation already calls itself, so a person
-          // with two Nacre deployments sees two distinguishable entries.
-          issuer: config.jwtIssuer,
-          role: APP_ROLE,
-        })
+  const canonical = new URL(config.canonicalUrl)
+  const secondFactors = new SecondFactors({
+    pool,
+    key: secondFactorKey,
+    // What an authenticator prints above the account. The issuer of the
+    // tokens is what this installation already calls itself, so a person
+    // with two Nacre deployments sees two distinguishable entries.
+    issuer: config.jwtIssuer,
+    relyingParty: {
+      // The **host** and never the origin: a relying party id is a registrable
+      // domain, so a scheme or a port in it is a credential no authenticator
+      // will make.
+      id: canonical.hostname,
+      name: canonical.hostname,
+      /*
+       * Where a page may run the ceremony from. The canonical origin, plus the
+       * browser origins this API already admits — the console is served from
+       * the API's own origin unless a deployment has said otherwise, and if it
+       * has, it has said so in `NACRE_API_ALLOWED_ORIGINS`.
+       *
+       * Compared for equality by the verifier. A suffix match would admit
+       * `evil-nacre.work`, which is the hole a phishing-resistant factor exists
+       * to close.
+       */
+      origins: [canonical.origin, ...config.apiAllowedOrigins],
+    },
+    role: APP_ROLE,
+  })
 
   /*
    * The sender, when the deployment configured one.
