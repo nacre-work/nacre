@@ -2146,6 +2146,56 @@ opens with `clear(root)`, so the screen wiped it on the same turn and the
 picture showed the corrected nav with nothing explaining it. Half a fix, caught
 by looking at the render rather than by the type checker.
 
+**The access log is on a screen**, which it had not been since the journal
+landed. `GET /v1/audit` has been readable, cursor-paged and exportable that
+whole time, and `docs/audit.md` opens on "show me which documents your agent
+read last quarter" — while the only way to ask was `curl` with an `Accept`
+header, or `psql`. The model-offers-it-and-the-product-gives-no-route shape, on
+the one surface whose subject is proving what happened.
+
+Core rather than commercial on the boundary's own test: reading your own
+organization's log is what a single developer needs the day something looks
+wrong, and forwarding it to a SIEM is what a security team buys.
+
+**The nav's `adminOnly` boolean is what the screen broke.** Every screen there
+was behind one flag meaning `administers`, which was true of all of them until
+this one — `/v1/audit` admits `administers(auth) || administersTenants(auth)`,
+two roles seeing two different logs. Under a boolean the screen is either
+hidden from a platform administrator the server would have answered, or offered
+to a member it would not, and hiding what the server allows is the same defect
+as offering what it refuses arriving from the other side. Each route carries the
+server's own rule now, as a predicate over what `GET /v1/me` said.
+
+That is also what made the platform administrator's banner wrong the moment it
+was written: it said this organization's administrative screens are not here,
+and one of them now is.
+
+`actor_id` is deliberately **not a field**, and that is `check-id-fields.mjs`
+holding a rule this console already argued. Nobody knows a uuid; a person who
+has one copied it out of the list above, which means the list had the answer.
+A log is the strongest form of that, because the list *is* the log — every actor
+worth filtering on is already on the screen. So pressing an actor narrows to
+that actor. The failure mode a field would have had is worse here than the `404`
+the rule was written against: a mistyped id returns an empty log, which reads as
+"nothing happened".
+
+The control is the **whole** actor, name and id together, and both reasons were
+measured rather than reasoned. A second control in that cell would be a 28px
+target six pixels from another one, whose grown hit areas overlap — the defect
+the sibling stand shipped and had reported from a phone. And making the id alone
+pressable put a control 2px under the name above it, which the console's own
+headroom pass named by exactly that distance.
+
+An `allow` is not a chip. Almost every row says `allow`, so fifty pills carry no
+information while making the few denials harder to find — and teal is `read` in
+the permission palette, which the brand says carries a meaning rather than a
+mood.
+
+Three shots, because two of the three states are the argument: the log, the log
+narrowed by a press, and the administrative-only log a platform administrator
+gets. The middle one is what says the interaction works, which a picture of the
+default view structurally cannot.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

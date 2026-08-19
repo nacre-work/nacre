@@ -179,6 +179,68 @@ const FIXTURES = {
     principal_id: '7c1f0a92-3d84-4b57-a610-8e2d5f47c093',
     role: 'org_admin',
   },
+  /*
+   * The access log. Two roles read two different logs and the server decides
+   * which, so these records are what an `org_admin` sees: administrative
+   * actions *and* who read what, which is the question docs/audit.md opens on.
+   *
+   * `occurred_at` is absolute, like every other fixture date here, because the
+   * clock is frozen — a relative time computed from the wall clock is how two
+   * runs eleven minutes apart produced different images with no code change.
+   */
+  'GET /v1/audit': {
+    items: [
+      {
+        id: '10492',
+        occurred_at: '2026-03-15T08:52:14.203Z',
+        actor: { type: 'user', id: '7c1f0a92-3d84-4b57-a610-8e2d5f47c093', label: 'dana@example.com' },
+        surface: 'rest',
+        client: null,
+        action: 'grant.issue',
+        target: { grant_id: '4f8b2d61-95ce-4a07-b3d2-1e6a8c05f7b4', scope: 'layer:handbook' },
+        result: 'allow',
+        detail: {},
+        request_id: 'req_7f2c9a',
+      },
+      {
+        id: '10491',
+        occurred_at: '2026-03-15T08:41:02.884Z',
+        actor: { type: 'service_account', id: 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55', label: 'support-agent' },
+        surface: 'mcp',
+        client: 'claude-desktop',
+        action: 'document.read',
+        target: { doc_id: 'e77a3c10-9d42-4b86-8f51-0a4c7e93b2d6' },
+        result: 'allow',
+        detail: {},
+        request_id: 'req_2b81de',
+      },
+      {
+        id: '10490',
+        occurred_at: '2026-03-15T08:39:47.115Z',
+        actor: { type: 'service_account', id: 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55', label: 'support-agent' },
+        surface: 'mcp',
+        client: 'claude-desktop',
+        action: 'search',
+        target: { layer: 'contracts' },
+        result: 'deny',
+        detail: {},
+        request_id: 'req_2b81dd',
+      },
+      {
+        id: '10489',
+        occurred_at: '2026-03-14T17:03:20.010Z',
+        actor: { type: 'user', id: '7c1f0a92-3d84-4b57-a610-8e2d5f47c093', label: 'dana@example.com' },
+        surface: 'rest',
+        client: null,
+        action: 'audit.read',
+        target: {},
+        result: 'allow',
+        detail: {},
+        request_id: 'req_91c0ab',
+      },
+    ],
+    next_cursor: null,
+  },
   'GET /v1/workspaces': {
     // `permissions` is what `newLayerButton` reads to decide whether the caller
     // administers a workspace, and this fixture did not carry it — so the
@@ -734,6 +796,33 @@ await shot('add-authenticator', {
     await page.waitForTimeout(300)
   },
 })
+await shot('audit', { hash: '#/audit' })
+/*
+ * The log narrowed to one actor.
+ *
+ * There is no field to type an id into — `check-id-fields.mjs` forbids one and
+ * the log is the strongest case for that rule, since every actor worth
+ * filtering on is already on the screen. So the interaction is a press, and a
+ * press is exactly the thing a static picture of the default view cannot show
+ * works. The fixture is what a filtered response actually is — the two records
+ * belonging to that actor — rather than the full list under a chip saying it
+ * was narrowed, which would photograph the filter not being applied.
+ */
+await shot('audit-actor', {
+  hash: '#/audit',
+  fixtures: {
+    'GET /v1/audit': {
+      items: FIXTURES['GET /v1/audit'].items.filter(
+        (record) => record.actor.id === 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55',
+      ),
+      next_cursor: null,
+    },
+  },
+  prepare: async (page) => {
+    await page.getByRole('button', { name: /support-agent/u }).first().click()
+    await page.waitForTimeout(150)
+  },
+})
 // A platform administrator signing into a tenant's console.
 //
 // `administers(auth)` in the API is `org_admin` and nothing else — a
@@ -755,6 +844,37 @@ await shot('platform-admin', {
       // one written to match a derivation rather than a response.
       administers: false,
       holds_own_credentials: true,
+    },
+  },
+})
+/*
+ * The other log, which is a different log rather than the same one shorter.
+ *
+ * `/v1/audit` sets `administrativeOnly` from the *role* and never from the
+ * request, so a platform administrator is not shown which documents were read —
+ * that is the access the permission model spends its whole effort denying, and
+ * the journal proving they did not have it must not be the way around it. The
+ * fixture is therefore the administrative records alone, which is what the
+ * server would send.
+ *
+ * Photographed because the screen's job here is to *say* which log is on the
+ * page: an empty document-read column looks exactly like an organization where
+ * nobody read anything, and only one of those is true.
+ */
+await shot('audit-platform-admin', {
+  hash: '#/audit',
+  fixtures: {
+    'GET /v1/me': {
+      organization: 'acme',
+      principal_type: 'user',
+      principal_id: '9b3e5c71-24af-4d08-8e16-3f7c0a5b2d94',
+      role: 'platform_admin',
+      administers: false,
+      holds_own_credentials: true,
+    },
+    'GET /v1/audit': {
+      items: FIXTURES['GET /v1/audit'].items.filter((record) => record.action !== 'document.read'),
+      next_cursor: null,
     },
   },
 })

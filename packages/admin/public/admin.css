@@ -259,6 +259,29 @@ a { color: var(--n-accent); }
   tr:hover .idcopy .btn, .idcopy .btn:focus-visible { opacity: 1; }
 }
 
+/* An actor you can filter the access log by.
+
+   The actor is already on the row, so this is that actor made pressable rather
+   than a control beside it. A second control in that cell would be a 28px
+   target six pixels from another one, and two hit areas grown to what a finger
+   needs then overlap — a press lands on the neighbour, which is a defect the
+   sibling stand shipped and had reported from a phone. It wraps both lines
+   rather than the id alone, which needs no grown hit area — two lines of text
+   is already taller than a finger asks for — and which is also what the
+   console's headroom pass required: the id alone sat 2px under the name above
+   it, and a control flush against what it follows is the thing you miss.
+
+   Deliberately not revealed on hover the way `.idcopy`'s control is. That one
+   is quiet because an id is reference material on most screens; here pressing
+   it is the only way the log narrows to one actor, so hiding it would hide the
+   screen's one interaction. */
+.filterlink {
+  font: inherit; display: block; width: 100%; text-align: left;
+  background: none; border: 0; padding: 0; color: inherit; cursor: pointer;
+}
+.filterlink:hover .named { text-decoration: underline; }
+.filterlink:hover .id { color: var(--n-text); }
+
 /* ─── Empty and error states ──────────────────────────────────────────── */
 .empty {
   border: 1px dashed var(--n-rule); border-radius: var(--n-radius);

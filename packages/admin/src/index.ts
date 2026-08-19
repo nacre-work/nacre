@@ -19,6 +19,7 @@ import {
 import * as webauthn from './webauthn.js'
 import { clear, h } from './dom.js'
 import { accountsView } from './views/accounts.js'
+import { auditView } from './views/audit.js'
 import { connectionsView } from './views/connections.js'
 import { consentView } from './views/consent.js'
 import { grantsView } from './views/grants.js'
@@ -46,44 +47,80 @@ import { securityView } from './views/security.js'
  */
 
 /**
- * `adminOnly` is what a `member` may not reach.
+ * Who a screen is offered to, as a predicate over what the server said.
  *
- * Not a second permission model — the API decides, and every one of these
- * screens is behind `org_admin` there. This is the UI declining to *offer* what
- * it knows will be refused, which is a different job: the refusal is a `404` by
- * invariant 4, and a `404` under a button reads as a broken application rather
- * than as a permission the person does not hold. That is exactly what happened
- * — a member saw "New user", pressed it, and got nothing with no explanation.
+ * Not a second permission model — the API decides. This is the UI declining to
+ * *offer* what it knows will be refused, which is a different job: the refusal
+ * is a `404` by invariant 4, and a `404` under a button reads as a broken
+ * application rather than as a permission the person does not hold. That is
+ * exactly what happened — a member saw "New user", pressed it, and got nothing
+ * with no explanation.
+ *
+ * **A boolean was too coarse, and the access log is what showed it.** Every
+ * screen here used to be behind one `adminOnly` flag meaning `administers`,
+ * which was true of all of them until `/v1/audit` — that endpoint admits
+ * `administers(auth) || administersTenants(auth)`, two roles seeing two
+ * different logs. Under one flag the screen was either hidden from a platform
+ * administrator the server would have answered, or offered to a member it would
+ * not. Hiding what the server allows is the same defect as offering what it
+ * refuses, arriving from the other side.
+ *
+ * So each route carries the server's own rule. `administers` is reported by
+ * `GET /v1/me`; `platformAdmin` is the role, which is what
+ * `administersTenants(auth)` is and has no ceiling question.
  *
  * Search and Layers stay for everybody: both answer with whatever the caller
  * has been granted, which for a member with no grants is an empty list and an
  * honest one.
  */
-const ROUTES = [
-  { hash: '#/search', label: 'Search', render: (root: HTMLElement) => searchView(root), adminOnly: false },
-  { hash: '#/layers', label: 'Layers', render: (root: HTMLElement) => void layersView(root), adminOnly: false },
-  { hash: '#/grants', label: 'Grants', render: (root: HTMLElement) => void grantsView(root), adminOnly: true },
-  { hash: '#/people', label: 'People', render: (root: HTMLElement) => void peopleView(root), adminOnly: true },
+interface Viewer {
+  /** `GET /v1/me`'s own answer — the predicate every gated handler calls. */
+  readonly administers: boolean
+  readonly platformAdmin: boolean
+}
+
+const anybody = (): boolean => true
+const administers = (v: Viewer): boolean => v.administers
+const ROUTES: readonly {
+  hash: string
+  label: string
+  render: (root: HTMLElement, viewer: Viewer) => void
+  shows: (viewer: Viewer) => boolean
+}[] = [
+  { hash: '#/search', label: 'Search', render: (root) => searchView(root), shows: anybody },
+  { hash: '#/layers', label: 'Layers', render: (root) => void layersView(root), shows: anybody },
+  { hash: '#/grants', label: 'Grants', render: (root) => void grantsView(root), shows: administers },
+  { hash: '#/people', label: 'People', render: (root) => void peopleView(root), shows: administers },
   {
     hash: '#/accounts',
     label: 'Service accounts',
-    render: (root: HTMLElement) => void accountsView(root),
-    adminOnly: true,
+    render: (root) => void accountsView(root),
+    shows: administers,
   },
-  // Not adminOnly. Approving a connection is not an administrative act — it is
-  // the same permission as issuing the grant that makes the agent worth
-  // anything — so ending one must not be either. The listing shows a member
-  // their own and an administrator the organization's; the API decides that,
-  // not this table.
-  // Not adminOnly, and it cannot be: everybody who signs in has one of these,
-  // and an administrator has no more business in this screen than anybody else
-  // — the API answers only for the caller.
-  { hash: '#/security', label: 'Security', render: (root: HTMLElement) => void securityView(root), adminOnly: false },
+  // Both roles, and the two see different logs. `/v1/audit` is the one endpoint
+  // here that admits a `platform_admin`, and the screen says which log is on
+  // the page rather than leaving somebody to wonder why there are no document
+  // reads in it.
+  {
+    hash: '#/audit',
+    label: 'Access log',
+    render: (root, viewer) => void auditView(root, viewer.platformAdmin),
+    shows: (v) => v.administers || v.platformAdmin,
+  },
+  // Approving a connection is not an administrative act — it is the same
+  // permission as issuing the grant that makes the agent worth anything — so
+  // ending one must not be either. The listing shows a member their own and an
+  // administrator the organization's; the API decides that, not this table.
+  //
+  // Security is everybody's and cannot be otherwise: everyone who signs in has
+  // one of these, and an administrator has no more business in that screen than
+  // anybody else — the API answers only for the caller.
+  { hash: '#/security', label: 'Security', render: (root) => void securityView(root), shows: anybody },
   {
     hash: '#/connections',
     label: 'Connections',
-    render: (root: HTMLElement) => void connectionsView(root),
-    adminOnly: false,
+    render: (root) => void connectionsView(root),
+    shows: anybody,
   },
 ]
 
@@ -161,7 +198,7 @@ function shell(): { main: HTMLElement; nav: HTMLElement } {
   return { main, nav }
 }
 
-function route(main: HTMLElement, nav: HTMLElement, isAdmin: boolean, elsewhere = false): void {
+function route(main: HTMLElement, nav: HTMLElement, viewer: Viewer): void {
   // Not a section and deliberately not in the nav: an application sends a
   // browser here, and it carries the request in the fragment. Available to
   // everybody who can sign in, because choosing an agent is not an
@@ -189,7 +226,7 @@ function route(main: HTMLElement, nav: HTMLElement, isAdmin: boolean, elsewhere 
     return
   }
 
-  const allowed = ROUTES.filter((r) => isAdmin || !r.adminOnly)
+  const allowed = ROUTES.filter((r) => r.shows(viewer))
   const hash = location.hash === '' ? allowed[0]!.hash : location.hash
   // A member who follows a bookmark to #/people lands on the first screen they
   // can use rather than on an empty one that keeps 404ing in the background.
@@ -207,7 +244,7 @@ function route(main: HTMLElement, nav: HTMLElement, isAdmin: boolean, elsewhere 
   }
 
   clear(main)
-  current.render(main)
+  current.render(main, viewer)
 
   // Said once, and **outside `main`**, because every view opens with
   // `clear(root)` — the first version appended it here and the screen wiped it
@@ -222,12 +259,13 @@ function route(main: HTMLElement, nav: HTMLElement, isAdmin: boolean, elsewhere 
   // property of the person signed in.
   const banner = document.getElementById('elsewhere')
   banner?.remove()
-  if (elsewhere) {
+  if (viewer.platformAdmin && !viewer.administers) {
     main.before(
       h('p', { class: 'banner', id: 'elsewhere' },
         'You are signed in as a platform administrator. That role administers the ' +
-        'installation rather than this organization, so the administrative screens are ' +
-        'not here — an org_admin of this organization reaches them.'),
+        'installation rather than this organization, so this organization\u2019s administrative ' +
+        'screens are not here — an org_admin of it reaches them. The access log is the one ' +
+        'exception, and it shows administrative actions without which documents were read.'),
     )
   }
 }
@@ -684,13 +722,12 @@ function start(): void {
   // nav that shows administrative screens and then removes them is a flicker
   // that invites a click in between, and the failure mode of guessing low is a
   // menu that grows.
-  let isAdmin = false
-  // Signed in as a platform administrator, which is a different thing from
-  // being a member here: the screens are absent because this account
-  // administers the installation, and saying so beats a nav that is simply
-  // shorter than they expected.
-  let elsewhere = false
-  const draw = (): void => route(main, nav, isAdmin, elsewhere)
+  // Drawn as a member until the answer arrives — see below. `platformAdmin` is
+  // a separate fact from `administers` and not derivable from it: `false` there
+  // covers a member and a platform administrator alike, and only one of them is
+  // owed an explanation for the screens that are missing.
+  let viewer: Viewer = { administers: false, platformAdmin: false }
+  const draw = (): void => route(main, nav, viewer)
   draw()
   window.onhashchange = draw
 
@@ -708,8 +745,12 @@ function start(): void {
       //
       // The same rule as `GET /v1/auth/methods` and `holds_own_credentials`:
       // ask what the server will do rather than re-deriving it here.
-      isAdmin = me.administers
-      elsewhere = me.role === 'platform_admin'
+      //
+      // The role is still read, for the one endpoint that admits it — the
+      // access log — and to choose which sentence to show. That is
+      // `administersTenants(auth)` in the API, which is the role and has no
+      // ceiling question, so there is nothing else to ask for.
+      viewer = { administers: me.administers, platformAdmin: me.role === 'platform_admin' }
       draw()
     })
     .catch(() => {
