@@ -490,6 +490,25 @@ export interface Self {
   readonly principalId: string
   readonly role: UserRole
   /**
+   * Whether this token administers **this organization**.
+   *
+   * The server's own predicate, reported rather than derived — and derived is
+   * what went wrong. `role === 'org_admin' || role === 'platform_admin'` reads
+   * as the obvious answer and is false: a `platform_admin` administers the
+   * *installation*, and every endpoint scoped to one organization refuses that
+   * role in both directions. A console deriving it offered three screens that
+   * all answer `404`.
+   *
+   * It also carries the delegation ceiling, which `role` cannot: a token
+   * restricted below `admin` does not administer anything even when its person
+   * does.
+   *
+   * Falls back to `role === 'org_admin'` against an older API that does not
+   * report it — the conservative half of the old derivation, never the half
+   * that offered too much.
+   */
+  readonly administers: boolean
+  /**
    * Whether this principal may change its own password and second factor.
    *
    * False for a service account, for a delegation, and for a **shared** account

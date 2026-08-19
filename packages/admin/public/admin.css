@@ -433,6 +433,21 @@ a { color: var(--n-accent); }
   border-left: 3px solid var(--n-error); padding-left: 12px; margin: 0 0 16px;
   max-width: 60ch;
 }
+/* A statement about the *session*, not about the screen — so it lives outside
+   `main`, which every view opens by clearing.
+
+   Its column is `.main`'s: same max-width and same horizontal padding, so the
+   sentence starts where the heading under it starts. Centred on `auto` alone it
+   sat against the window edge while the page began two hundred pixels in, which
+   reads as a banner belonging to the browser rather than to the console.
+
+   `--n-accent` and deliberately not `.warn`'s red: nothing is wrong here. The
+   screens are absent because of what this account is, which is information. */
+.banner {
+  max-width: 1040px; margin: 24px auto 0; padding: 0 20px 0 32px;
+  font-size: 14px; color: var(--n-text);
+  border-left: 3px solid var(--n-accent);
+}
 .form-message { min-height: 1.4em; margin: 0 0 8px; font-size: 13px; color: var(--n-text-muted); }
 .form-message.error { color: var(--n-deny); }
 

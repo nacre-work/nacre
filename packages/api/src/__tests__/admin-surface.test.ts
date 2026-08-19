@@ -243,12 +243,20 @@ describe('the administrative surface', () => {
        * endpoint cannot grow a way to name somebody else, is unchanged.
        */
       expect(Object.keys(body).sort()).toEqual([
+        'administers',
         'holds_own_credentials',
         'organization',
         'principal_id',
         'principal_type',
         'role',
       ])
+      /*
+       * And it agrees with what the administrative endpoints will actually do,
+       * which is the whole reason it is reported rather than derived. A console
+       * that worked this out from `role` offered a `platform_admin` three
+       * screens that answer `404`.
+       */
+      expect(body.administers, who).toBe(role === 'org_admin')
     }
   })
 
