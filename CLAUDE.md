@@ -1797,6 +1797,41 @@ regeneration that rewrites unrelated files is how a screenshot diff stops
 meaning anything. `page.clock.setFixedTime` pins it, checked by rendering twice
 and comparing bytes.
 
+**The four rules those runs apply are a module now, and the reason is on the
+other side of a boundary this repository cannot see.** `nacre-enterprise` ships
+four commercial screens into a console it does not own: they are drawn by
+*this* package's `dom.ts`, `pick.ts` and `admin.css`, through the extension seam
+that exists precisely so there is not a second console over there. Every layout
+defect those screens have had — six of them — was found by building the image
+and looking at it, because the rules that catch exactly those lived inside
+`screenshots.mjs` and were reachable only from here.
+
+A second copy of "a control needs eight pixels of headroom" in the other
+repository is this file's first paragraph at the largest scale it is available
+in: **a property in two places, across a boundary where no check can read both
+sides.** So they are `scripts/layout-rules.mjs`, which that repository fetches
+at the version its image is built `FROM` — its own technique for the console
+contract, pointed at one more file.
+
+Two things make that possible and both are constraints on anyone editing it.
+The failure sink is an **argument** and not a module-level array: two callers
+report differently, and a rule that closes over one of them has chosen. And
+nothing there imports playwright — a rule only ever calls `page.evaluate` — so
+the file can be fetched and imported without installing anything of ours.
+
+`RULES` is the export that matters, and `shot` iterates it rather than naming
+four functions. A caller that lists the rules is a caller that forgets the
+fifth, and the fifth would otherwise reach one console and not the other, which
+is the whole defect one paragraph up. Moving them changed no behaviour and that
+was measured rather than argued: the same twenty screens, images **byte for
+byte** identical, and the rules still fail through the new path — restoring
+`.under-action { margin-top: 0 }` names `sign-in: "Forgotten your password?"
+sits 1px under "Sign in"`, which is the instance this file already records.
+
+It paid immediately. The first run of the other repository's pass named two
+classes this stylesheet does not define, in screens that had shipped with
+them.
+
 **And three of the four routes that hash answered `500` under load.**
 `core/passwords.ts` bounds how many scrypt calls run at once — the pool is
 libuv's and is shared with DNS, so an unbounded one stops the rest of the API on
