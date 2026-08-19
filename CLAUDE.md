@@ -1148,11 +1148,19 @@ the absence invisible. `s3-live.test.ts` is six cases against a real store, and
 four workflows run the unit suite so all four now start one.
 
 `lint:workflows` is what knows there are four. It compares the `NACRE_*` every
-workflow running that suite sets, by name and computed rather than listed, and
-refuses outright if it finds no such workflow. Taking two variables out of
-`flake-hunt.yml` names both — which is the case that matters, because a nightly
+job running that suite sets, by name and computed rather than listed, and
+refuses outright if it finds no such job. Taking a variable out of
+`flake-hunt.yml` names it — which is the case that matters, because a nightly
 hunt going red at 3am for a fixture nobody changed is how a hunt stops being
 read.
+
+**Per job and not per file**, which the first version got wrong and which
+porting it to `nacre-enterprise` is what exposed: two jobs in one workflow can
+run different projects and legitimately need different services — that
+repository's `acl-invariants` runs `test:acl` and has no object-storage case at
+all — so a file-level union asks the wrong job for a fixture it has no use for.
+Both repositories carry the same text now, which is what "a check is the safe
+thing to copy" is worth only if the copies are actually the same.
 
 **The live case written to prove the re-signing could not fail, and that was
 measured rather than assumed.** Its first version said a client replaying the
