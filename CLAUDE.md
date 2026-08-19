@@ -460,6 +460,61 @@ is on relevance and changes which permitted results come back, never how many.
 See `packages/api/src/rerank.ts` — the argument is in the code because the next
 person to read the search path will see the widening and reach for the rule.
 
+**And the reranker the profiles ship refused every batch the product sends.**
+`HttpReranker` posts the whole candidate set in one call —
+`NACRE_RERANK_CANDIDATES`, 50 by default and 500 at most — and Text Embeddings
+Inference's `--max-client-batch-size` defaults to **32**. So `full` and
+`airgapped` answered `413 batch size 50 > maximum allowed batch size 32` to
+every search with more than 32 candidates, from the day reranking landed.
+
+Nothing failed, and that is the whole difficulty: reranking fails **open** by
+design, so a search whose reranker refuses degrades to fusion order with a
+counter and a log line. A deployment that configured a reranker got searches
+that answered, ranked by fusion, forever. The embedding batch defect exactly —
+declared, wired, and refused by the server at a bound nobody had asked it for —
+and found the same way, by sending the shipped default to a real one rather
+than by reading.
+
+**Splitting is the wrong repair and that is not a matter of taste.** A reranker
+is not promised to score each text independently of the others in the call, so
+two calls produce two sets of scores that cannot be compared — a wrong
+*ordering*, with no symptom at all, which is worse than the refusal. That is
+already written down for the adapter, and it is why `embedInBatches` does not
+carry over. So the server is told to accept what the product can send.
+
+Which makes it two numbers with nothing that knows there are two, and the
+repair is `lint:rerank-batch` rather than the one-line edit. **Both are
+discovered**: the ceiling out of `config.ts`'s own validator and the limit out
+of the compose service's own command, so raising the configurable maximum
+without raising the server's fails there rather than in somebody's results.
+Five refusals, each produced — including the shipped state, which names itself.
+
+`docs/config.md` carried the sentence that made this invisible: *"the limit is
+far above anything a search sends"*, true of the adapter's 512 and false of the
+TEI those profiles run. It says which is which now.
+
+**And `HttpReranker` had only ever been asked of a stubbed `fetch`.** Every case
+in `rerank.test.ts` replaces `globalThis.fetch` and answers with a `Response`
+the test wrote, so what they prove is that the client agrees with itself — the
+fixture-written-to-match-the-code shape, on the path where being wrong is
+silent. `scripts/ci/rerank-live.mjs` asks a real one, in a job of its own
+rather than in the unit suite, which is arithmetic: four workflows run that
+suite, so a live case there is four model loads on every pull request.
+
+It drives `dist` and not the source, it starts the server with **the flag the
+compose file passes** — read out of that file, since a second copy of the number
+is the defect one file over — and it uses a smaller cross-encoder than the
+profiles ship, on the e2e smoke's own argument: what is under test is the wire
+and the bound, neither of which is a property of the weights.
+
+Two things it says that no stub could. The server answers **sorted by score and
+not in input order** — measured, `[0, 2, 1]` for three texts — which is why the
+mapping is by `index` and why trusting arrival would attach the wrong score to
+the wrong chunk. And the shipped defect reproduces: run against a TEI started
+the old way, three of its five assertions fail naming the 413 while the two
+about the contract stay green, which is the signature that says the contract
+was always right and the bound never was.
+
 Email and password sign-in is in, with rotating refresh tokens: replaying a
 used one revokes the whole family, because the legitimate holder has already
 exchanged it and there is no way to tell which of the two holders is genuine.

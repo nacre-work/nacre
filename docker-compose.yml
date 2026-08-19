@@ -504,7 +504,21 @@ services:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
     platform: linux/amd64
     restart: unless-stopped
-    command: ["--model-id", "BAAI/bge-reranker-base"]
+    # `--max-client-batch-size` is not tuning. TEI's default is **32**, and the
+    # search path sends `NACRE_RERANK_CANDIDATES` texts in one call — 50 by
+    # default, up to 500 — so the combination this profile ships answered
+    # `413 batch size 50 > maximum allowed batch size 32` for every search with
+    # more than 32 candidates. Reranking fails open, so nothing broke: searches
+    # kept answering in fusion order, with a counter and a log line, and a
+    # deployment that turned reranking on got none of it.
+    #
+    # Splitting the batch is the wrong repair and `docs/config.md` says why — a
+    # reranker is not promised to score each text independently, so two calls
+    # produce two sets that cannot be compared, which is a wrong ordering with
+    # no symptom at all. So the server is told to accept what the product can
+    # send, and `lint:rerank-batch` holds the two numbers against each other.
+    command:
+      ["--model-id", "BAAI/bge-reranker-base", "--max-client-batch-size", "512"]
     volumes: ["models:/data"]
     environment:
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
