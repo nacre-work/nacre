@@ -315,7 +315,24 @@ jobs:
           tools=$(mktemp -d)
           printf '{"name":"nacre-console-check","private":true}\n' > "$tools/package.json"
           (cd "$tools" && pnpm add playwright@1 >/dev/null)
-          "$tools/node_modules/.bin/playwright" install --with-deps chromium
+          # `--with-deps` shells out to apt, and apt is the one thing in this
+          # job that can **hang** rather than fail. It did, twice in one
+          # morning, with `apt-get update` as the last line in the log and
+          # `screenshots.mjs` never reached — a job sitting until the six-hour
+          # limit with a release waiting behind it, and a cancel-and-re-run as
+          # the only way out.
+          #
+          # So it is bounded and non-interactive. This repository's rule is that
+          # a check which cannot check must not report green; the corollary a
+          # release gate needs is that it must not be able to wait forever
+          # either, because "still running" reads as "not finished yet" for as
+          # long as anybody is willing to believe it. A timeout is a failure
+          # that names its own cause.
+          export DEBIAN_FRONTEND=noninteractive
+          timeout 8m "$tools/node_modules/.bin/playwright" install --with-deps chromium || {
+            echo "::error::installing chromium did not finish in eight minutes. The step that hangs is apt, inside \`playwright install --with-deps\` — not the browser and not the screenshot script. Re-run the job."
+            exit 1
+          }
           # The module's own path, not NODE_PATH: this is an ESM import and
           # NODE_PATH is a CommonJS mechanism, which the script's header says
           # and the first version of this job ignored.
