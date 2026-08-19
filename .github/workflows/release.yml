@@ -112,8 +112,30 @@ jobs:
       NACRE_PG_URL: postgres://postgres:test@localhost:5432/nacre_test
       NACRE_REDIS_URL: redis://localhost:6379/0
       NACRE_QDRANT_URL: http://localhost:6333
+      NACRE_TEST_S3_ENDPOINT: http://localhost:9000
+      NACRE_TEST_S3_BUCKET: nacre-live
+      NACRE_TEST_S3_ACCESS_KEY: minioadmin
+      NACRE_TEST_S3_SECRET_KEY: minioadmin
     steps:
       - uses: actions/checkout@v4
+
+      # A real object store, for the reason `ci.yml` states at length: `s3.ts`
+      # says every property in it is verified against a real MinIO, and until
+      # `s3-live.test.ts` nothing in CI did. This suite refuses to skip those
+      # cases when `CI` is set, so the fixture belongs wherever the suite runs
+      # — which is four workflows, and `lint:workflows` is what knows that.
+      - name: a real object store to sign against
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://localhost:9000/minio/health/live >/dev/null
+          docker exec minio mc alias set live http://localhost:9000 minioadmin minioadmin
+          docker exec minio mc mb --ignore-existing live/nacre-live
       # The version comes from packageManager in package.json — passing it here
       # as well makes pnpm/action-setup refuse to run.
       - uses: pnpm/action-setup@v4
