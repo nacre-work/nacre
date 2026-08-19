@@ -101,7 +101,16 @@ export function picker(noun: string): Picker {
         return
       }
 
-      select.replaceChildren(h('option', { value: '' }, `pick a ${noun}…`))
+      // No article, and that is the fix rather than the wording.
+      //
+      // It read `pick a ${noun}…`, which is wrong for every noun beginning with
+      // a vowel — `pick a organization…`, seen by rendering the enterprise
+      // console's Administrators screen, which is the first caller to pass one.
+      // Computing the article from the first letter would fix that and break
+      // `user`, which this picker also takes: `an user`. English articles are
+      // not a function of spelling, and the label beside the control already
+      // names the thing, so the placeholder does not have to.
+      select.replaceChildren(h('option', { value: '' }, 'choose…'))
       for (const c of choices) select.append(h('option', { value: c.id }, c.label))
       select.value = ''
       show(select)
