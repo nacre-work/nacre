@@ -272,6 +272,15 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.23.1 — one sentence, on the screen a platform administrator lands on
+
+**Nothing to do.** The message a `platform_admin` sees in a tenant's console
+called the access log "the one exception", which is a claim about the whole
+navigation — and an image that adds screens through 0.23.0's extension file
+makes it read as a miscount. It names what that role reaches *in this
+organization* now, which is a statement nothing outside the console can
+falsify. No behaviour changed and no screen moved.
+
 ### 0.23.0 — an access log on a screen, and a console a commercial image can add to
 
 **No migration, no new variables, and nothing to do.** Both changes are surfaces;

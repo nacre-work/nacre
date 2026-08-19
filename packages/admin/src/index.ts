@@ -293,6 +293,15 @@ function route(main: HTMLElement, nav: HTMLElement, viewer: Viewer): void {
   // which is the distinction the Security screen's message had to learn too:
   // "not available on this installation" would blame a deployment for a
   // property of the person signed in.
+  //
+  // It also has to stay true on an image that adds screens. An extension's
+  // views are the *installation's* — organizations, tenancy, the default model
+  // — so "this organization's administrative screens are not here" holds either
+  // way; what did not was the sentence after it, which called the access log
+  // "the one exception" and therefore made a claim about the whole nav. Seen on
+  // `nacre-enterprise-web`, where two more items sit beside it and the count
+  // reads as wrong. So it names what this role reaches *in this organization*,
+  // which is a statement nothing outside this file can falsify.
   const banner = document.getElementById('elsewhere')
   banner?.remove()
   if (viewer.platformAdmin && !viewer.administers) {
@@ -300,8 +309,9 @@ function route(main: HTMLElement, nav: HTMLElement, viewer: Viewer): void {
       h('p', { class: 'banner', id: 'elsewhere' },
         'You are signed in as a platform administrator. That role administers the ' +
         'installation rather than this organization, so this organization\u2019s administrative ' +
-        'screens are not here — an org_admin of it reaches them. The access log is the one ' +
-        'exception, and it shows administrative actions without which documents were read.'),
+        'screens — grants, people, service accounts — are not here; an org_admin of it reaches ' +
+        'them. Of this organization you see the access log, which shows administrative actions ' +
+        'and never which documents were read.'),
     )
   }
 
