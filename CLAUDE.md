@@ -2309,7 +2309,11 @@ one edit: `otpauthUrl` throws on a colon in either half, and `SecondFactors`
 makes that call once **when it is constructed** — a deployment that reintroduces
 a URL is a container that does not start, by name, rather than a label somebody
 lives with for as long as that authenticator exists. Checked by constructing it
-both ways: refused on the URL, accepted on the hostname.
+both ways: refused on the URL, accepted on the hostname — and then by CI, which
+is where it earned itself. It named **five** call sites still carrying a URL:
+the three live suites that construct a `SecondFactors`, and both end-to-end
+scripts, every one of them written to the wiring as it was. A fixture agrees
+with whatever it was written to, and here that was a defect.
 
 The case that existed passed `issuer: 'Nacre'`, a value no deployment produces —
 a fixture written to the shape somebody imagined rather than to the one the

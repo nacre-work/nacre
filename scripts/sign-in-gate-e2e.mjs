@@ -92,10 +92,13 @@ withLoadingModuleForTests('enterprise-policy', () => {
   })
 })
 
+// The TOTP issuer is a **hostname**, which is what `main.ts` passes: the label
+// an authenticator prints is `issuer:account`, so a URL there makes the colon
+// the separator and the account name becomes the tail of the URL.
 const factors = new SecondFactors({
   pool,
   key: SEAL,
-  issuer: ORIGIN,
+  issuer: new URL(ORIGIN).hostname,
   relyingParty: { id: 'localhost', name: 'localhost', origins: [ORIGIN] },
 })
 const login = new Login({

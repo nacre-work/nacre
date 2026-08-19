@@ -152,7 +152,7 @@ when('a WebAuthn factor', () => {
       client.release()
     }
 
-    factors = new SecondFactors({ pool, key: undefined, issuer: 'https://api.example.test', relyingParty: RP })
+    factors = new SecondFactors({ pool, key: undefined, issuer: 'api.example.test', relyingParty: RP })
   })
 
   afterAll(async () => {

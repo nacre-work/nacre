@@ -96,7 +96,7 @@ when('the second factor', () => {
       pool,
       key: randomBytes(32),
       now: () => at,
-      issuer: 'https://api.example.test',
+      issuer: 'api.example.test',
       // `localhost`, because that is what the WebAuthn fixtures were made
       // against — a virtual authenticator refuses an address outright.
       relyingParty: { id: 'localhost', name: 'Nacre', origins: ['http://localhost:8099'] },

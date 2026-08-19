@@ -78,7 +78,7 @@ when('a shared account', () => {
     factors = new SecondFactors({
       pool,
       key: SEAL,
-      issuer: 'https://api.nacre.test',
+      issuer: 'api.nacre.test',
       relyingParty: { id: 'nacre.test', name: 'nacre.test', origins: ['https://nacre.test'] },
     })
     login = new Login({
