@@ -37,6 +37,7 @@
     "preview:mail": "node scripts/mail-preview.mjs",
     "lint:stored-error": "node scripts/check-stored-error.mjs",
     "lint:email-rule": "node scripts/check-email-rule.mjs",
+    "lint:console-extensions": "node scripts/check-console-extensions.mjs",
     "lint:admin-ids": "node scripts/check-id-fields.mjs",
     "lint:collection-config": "node scripts/check-collection-config.mjs",
     "lint:password": "node scripts/check-password-generator.mjs",

@@ -335,6 +335,21 @@ jobs:
           # and dropped every declaration after it.
           NACRE_PLAYWRIGHT="$(cat /tmp/nacre-playwright-dir)/node_modules/playwright/index.mjs" \
             node scripts/mail-preview.mjs
+      - name: the console's extension point, in a browser
+        run: |
+          set -euo pipefail
+          # The seam a commercial image puts a screen through. Every part of it
+          # is a browser's business — a dynamic import of a same-origin URL
+          # under `script-src 'self'`, a bundler that must *not* inline the file
+          # an enterprise image replaces, and a nav that has to gain an item —
+          # so a unit test could only ever agree with its own stub of `import`.
+          # Through the package script rather than by naming the file: it is
+          # what a developer runs, and `lint:workflows` requires every check
+          # this repository defines to be started by a workflow under the name
+          # it is defined by — a check that never runs records its own reason as
+          # handled.
+          NACRE_PLAYWRIGHT="$(cat /tmp/nacre-playwright-dir)/node_modules/playwright/index.mjs" \
+            pnpm lint:console-extensions
       - name: the WebAuthn ceremony, end to end
         env:
           NACRE_PG_URL: postgres://nacre:nacre@127.0.0.1:5432/nacre

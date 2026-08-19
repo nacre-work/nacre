@@ -2196,6 +2196,59 @@ narrowed by a press, and the administrative-only log a platform administrator
 gets. The middle one is what says the interaction works, which a picture of the
 default view structurally cannot.
 
+**The console has an extension file, and it is the sixth-and-a-half point.**
+`packages/admin` is single-organization by construction — every screen is behind
+`administers(auth)`, which is `org_admin` and nothing else — while the
+commercial modules mount routes under `/v1/admin/*`. There was no screen for any
+of them on either side of the boundary, so a customer who bought multi-tenancy
+administered it with `curl`: the model-offers-it-and-the-product-gives-no-route
+shape, arriving in the paid half.
+
+Three ways to close it and two are wrong. The core could grow those screens
+behind a probe, which puts commercial UI in the open repository and would pass
+the `boundary` job, since that job looks for a package name. The other
+repository could ship a console of its own, which is a second copy of
+`admin.css`, of `dom.ts`, of `pick.ts` and of every layout rule this console
+learned by rendering itself in a browser — with nothing that knows there are
+two, across a boundary where no check can see both sides. This file's most
+repeated defect, at the largest scale it has been available in.
+
+So the console loads **one file** and an image replaces it, which is the shape
+`NACRE_MODULES` already gives the API expressed in the only unit a static bundle
+has. The open `web` image ships `extensions.js` registering nothing;
+`nacre-enterprise-web` is built `FROM` it with that file replaced.
+
+**The contract is a function, not an import**, and that is what makes it
+possible with no package published. An extension is *handed* everything it may
+use, so nothing in its bundle resolves `@nacre.work/*` — no second copy of
+anything, no npm name to own, and no human step before a release. It also makes
+the surface countable: `ConsoleKit` is the whole of it. `kit.request` is the
+session rather than a second client, rejecting with the same `NacreError` the
+SDK does so `explain` still refuses to turn a `404` into "forbidden".
+
+A contract number an extension declares is compared and a mismatch is **said out
+loud**, because a nav that is silently shorter than the installation paid for is
+the "hiding what the server allows" defect with nothing on the screen to be
+wrong about. A hash colliding with a core route is dropped, in the other
+direction: a module must not replace Grants with a screen of its own.
+
+`check-console-extensions.mjs` drives four states in a browser, because every
+part of this is a browser's business — a dynamic import of a same-origin URL
+under `script-src 'self'`, a bundler that must not inline the file an image
+replaces, and a nav that has to gain an item. A stub of `import()` agrees with
+whatever it was written to.
+
+**Its own first version could not fail**, and the way that was found is the part
+worth keeping. It asked whether `dist/app.js` contained the stub's body spelled
+the way the source spells it — and the build minifies, so that string is never
+in the output. The run that was supposed to prove it could fail reported a
+different defect entirely, and the reason was that the build in that state had
+**failed silently** and left the previous bundle in place: a measurement taken
+against an artifact the source did not produce, which is this file's own
+stale-bundle lesson arriving inside the check written to hold a bundling
+property. It asks the browser whether `/extensions.js` was fetched now. Five
+refusals, each produced.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
