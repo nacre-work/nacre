@@ -176,7 +176,7 @@ const FIXTURES = {
   'GET /v1/me': {
     organization: 'acme',
     principal_type: 'user',
-    principal_id: '7c1f0a92-3d84-4b57-a610-8e2d5f47c093',
+    principal_id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90',
     role: 'org_admin',
   },
   /*
@@ -188,12 +188,19 @@ const FIXTURES = {
    * clock is frozen — a relative time computed from the wall clock is how two
    * runs eleven minutes apart produced different images with no code change.
    */
+  // `label` is what the server actually writes: every event builder assembles
+  // it as `${type}:${id}`, so it is never a name. This fixture said
+  // `dana@example.com` — a value no server sends — and that is what let the
+  // Actor column render a whole uuid over a shortened one on a running stand
+  // while this picture looked correct. The ids are the ones `GET /v1/users` and
+  // `GET /v1/service-accounts` below actually list, so the column resolves here
+  // the way it resolves for an operator.
   'GET /v1/audit': {
     items: [
       {
         id: '10492',
         occurred_at: '2026-03-15T08:52:14.203Z',
-        actor: { type: 'user', id: '7c1f0a92-3d84-4b57-a610-8e2d5f47c093', label: 'dana@example.com' },
+        actor: { type: 'user', id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', label: 'user:0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90' },
         surface: 'rest',
         client: null,
         action: 'grant.issue',
@@ -205,7 +212,7 @@ const FIXTURES = {
       {
         id: '10491',
         occurred_at: '2026-03-15T08:41:02.884Z',
-        actor: { type: 'service_account', id: 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55', label: 'support-agent' },
+        actor: { type: 'service_account', id: 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55', label: 'service_account:c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55' },
         surface: 'mcp',
         client: 'claude-desktop',
         action: 'document.read',
@@ -221,7 +228,7 @@ const FIXTURES = {
       {
         id: '10490b',
         occurred_at: '2026-03-15T08:40:11.402Z',
-        actor: { type: 'user', id: '7c1f0a92-3d84-4b57-a610-8e2d5f47c093', label: 'dana@example.com' },
+        actor: { type: 'user', id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', label: 'user:0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90' },
         surface: 'rest',
         client: null,
         action: 'document.ingest',
@@ -233,7 +240,7 @@ const FIXTURES = {
       {
         id: '10490',
         occurred_at: '2026-03-15T08:39:47.115Z',
-        actor: { type: 'service_account', id: 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55', label: 'support-agent' },
+        actor: { type: 'service_account', id: 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55', label: 'service_account:c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55' },
         surface: 'mcp',
         client: 'claude-desktop',
         action: 'search',
@@ -245,7 +252,7 @@ const FIXTURES = {
       {
         id: '10489',
         occurred_at: '2026-03-14T17:03:20.010Z',
-        actor: { type: 'user', id: '7c1f0a92-3d84-4b57-a610-8e2d5f47c093', label: 'dana@example.com' },
+        actor: { type: 'user', id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', label: 'user:0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90' },
         surface: 'rest',
         client: null,
         action: 'audit.read',
@@ -1034,6 +1041,14 @@ await shot('audit-platform-admin', {
       administers: false,
       holds_own_credentials: true,
     },
+    // The three listings this role is genuinely refused, so the Actor column is
+    // photographed doing what it does for a platform administrator rather than
+    // what it does for an `org_admin`. Without these the picture resolves every
+    // name — which is the shape of untruth that put a uuid on a running stand
+    // while this file's own audit shot looked correct.
+    'GET /v1/users': 404,
+    'GET /v1/groups': 404,
+    'GET /v1/service-accounts': 404,
     'GET /v1/audit': {
       items: FIXTURES['GET /v1/audit'].items.filter((record) => record.action !== 'document.read'),
       next_cursor: null,

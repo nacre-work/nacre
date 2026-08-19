@@ -2,6 +2,7 @@ import type { AuditRecord, AuditQuery } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { agoCell, clear, h, shortId } from '../dom.js'
+import { type Names, names } from '../names.js'
 
 /**
  * The access log.
@@ -72,6 +73,17 @@ import { agoCell, clear, h, shortId } from '../dom.js'
 
 /** Newest first, and one page is what a screen can hold. */
 const PAGE = 50
+
+/**
+ * An actor's kind, as a word rather than as a column value.
+ *
+ * This is what the Actor cell falls back to when the id resolves to nothing —
+ * a deleted account, or a caller the listing endpoints refuse. `service_account`
+ * is the only one whose stored spelling is not already a word, and the rest are
+ * passed through rather than being enumerated, so a principal type added later
+ * reads as itself instead of as `unknown`.
+ */
+const readableType = (type: string): string => type.replaceAll('_', ' ')
 
 /** Which fill each result gets. One control, one size, three treatments. */
 const FILL: Record<AuditRecord['result'], string> = {
@@ -185,13 +197,22 @@ export async function auditView(root: HTMLElement, isPlatformAdmin = false): Pro
  * Cursor paging rather than a page number, because that is what the endpoint
  * has — and it has it because a journal grows while you read it, so an offset
  * would skip a record between one page and the next.
+ *
+ * The names are asked for beside the page rather than after it: they are what
+ * the Actor column reads, so serialising the two would show a table of uuids
+ * that then rewrote itself. `names` refuses nothing — every list it asks for is
+ * settled separately — so a `platform_admin`, whom `GET /v1/users` does not
+ * answer, gets an empty map and every actor falls back to its kind.
  */
 async function load(body: HTMLElement, query: AuditQuery, onActor: (id: string) => void): Promise<void> {
   clear(body)
   body.append(h('p', { class: 'muted' }, 'Loading…'))
 
   try {
-    const page = await client().audit.read({ ...query, limit: PAGE })
+    const [page, resolved] = await Promise.all([
+      client().audit.read({ ...query, limit: PAGE }),
+      names(),
+    ])
     clear(body)
     if (page.items.length === 0) {
       body.append(empty(query))
@@ -212,7 +233,7 @@ async function load(body: HTMLElement, query: AuditQuery, onActor: (id: string) 
       rows,
     )
     body.append(table)
-    for (const record of page.items) rows.append(row(record, onActor))
+    for (const record of page.items) rows.append(row(record, resolved, onActor))
 
     let cursor = page.nextCursor
     if (cursor === undefined) return
@@ -223,7 +244,7 @@ async function load(body: HTMLElement, query: AuditQuery, onActor: (id: string) 
         more.textContent = 'Loading…'
         try {
           const next = await client().audit.read({ ...query, limit: PAGE, cursor: cursor as string })
-          for (const record of next.items) rows.append(row(record, onActor))
+          for (const record of next.items) rows.append(row(record, resolved, onActor))
           cursor = next.nextCursor
           if (cursor === undefined) more.remove()
           else {
@@ -259,6 +280,21 @@ const empty = (query: AuditQuery) =>
  * not help them. A uuid is shortened the way every other id on these screens
  * is; anything else is printed whole.
  *
+ * ## The actor is named, and `actor.label` is deliberately not what names it
+ *
+ * That field looks like the answer and is not: every writer of an event builds
+ * it as `` `${type}:${id}` ``, so it carries nothing the `type` and `id` beside
+ * it do not already say. Rendering it put a whole uuid above a shortened one —
+ * two spellings of the same value, and no name — which is what a running stand
+ * showed while this screen's own picture looked fine, because the fixture had
+ * been written with an email in that field and no server sends one.
+ *
+ * So the id is resolved the way the Grants screen resolves a principal, and
+ * where it cannot be — a deleted account, or a caller whom `GET /v1/users`
+ * refuses — the fallback is the actor's *kind* as a word. Never the stored
+ * label: falling back to it would put the uuid back exactly where a name was
+ * missing, which is the case this exists for.
+ *
  * The result is one control at one size, and only the fill differs. It shipped
  * as three sizes — `allow` at the table's 15px sans, `deny` at the chip's 12px
  * mono, `error` at `.tag`'s 10px uppercase — which a reader going down the
@@ -281,7 +317,7 @@ const empty = (query: AuditQuery) =>
  * edge reads as the values meaning different amounts of something, when what
  * differs is how many letters they happen to have.
  */
-function row(record: AuditRecord, onActor: (id: string) => void): HTMLElement {
+function row(record: AuditRecord, resolved: Names, onActor: (id: string) => void): HTMLElement {
   const target = Object.entries(record.target)
   // `agoCell` rather than a `<td>` built here: `lint:admin-layout` asks that of
   // every view, because "204 days ago" is three words and one value and a table
@@ -294,9 +330,9 @@ function row(record: AuditRecord, onActor: (id: string) => void): HTMLElement {
     when,
     h('td', {},
       actorId === null
-        ? h('div', { class: 'named' }, record.actor.type)
+        ? h('div', { class: 'named' }, readableType(record.actor.type))
         : h('button', { class: 'filterlink', title: 'Show only this actor', onclick: () => { onActor(actorId) } },
-            h('div', { class: 'named' }, record.actor.label ?? record.actor.type),
+            h('div', { class: 'named' }, resolved.get(actorId) ?? readableType(record.actor.type)),
             shortId(actorId),
           ),
     ),

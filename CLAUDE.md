@@ -2249,6 +2249,38 @@ nothing to disagree about — the missing-`error`-row gap again, one screen over
 and found the same way: by widening the fixture and watching the check go red
 before the rule was written.
 
+**And the Actor column showed a uuid twice and no name.** Reported from the
+running stand with the cell circled: `user:172f5522-4f4d-4782-bf03-a3b21313a805`
+on one line and `172f55…a805` on the next — the same value in two spellings,
+where a person expects an address.
+
+`actor.label` looks like the answer and is not. **Every** writer of an event
+builds it as `` `${type}:${id}` `` — checked at each call site rather than
+assumed — so that column carries nothing the `type` and `id` beside it do not
+already say, and the console was rendering it as the primary line. So the id is
+resolved to an email or a service account's name, and where it cannot be — a
+deleted account, or a `platform_admin`, whom `GET /v1/users` refuses — the
+fallback is the actor's *kind* as a word. Deliberately never the stored label:
+falling back to it puts the uuid back exactly where the name was missing, which
+is the case this exists for.
+
+**The fixture is the defect rather than a detail of it.** It said
+`label: 'dana@example.com'`, a value no server sends, and its actor ids matched
+no row in the users listing beside it — so the committed picture showed a
+resolved name while every deployment showed hex. That is the
+fixture-written-to-match-the-code shape this file names three times, and it
+survived a change whose whole subject was that column. It carries what the
+server actually writes now, and ids the listings actually contain.
+
+The same untruth was one shot over: `audit-platform-admin` answered
+`GET /v1/users` for a role the server refuses it to, so it photographed names
+that role never sees. It refuses those three listings now, which is also the
+only way the fallback is in a picture at all.
+
+`grants.ts` had the resolver privately and a second view needed it, so it is
+`packages/admin/src/names.ts` — a module rather than a copy, because two
+resolvers are two chances to disagree about what a disabled account is called.
+
 Three shots, because two of the three states are the argument: the log, the log
 narrowed by a press, and the administrative-only log a platform administrator
 gets. The middle one is what says the interaction works, which a picture of the
