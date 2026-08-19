@@ -378,6 +378,18 @@ a { color: var(--n-accent); }
   color: var(--n-pearl-000); font-weight: 600;
 }
 .btn-primary:hover { filter: brightness(1.08); }
+/* A control that cannot be operated must not look like one that can.
+   `.picked` above states that rule for a select with one option — "a control
+   that cannot be operated still invites operating it" — and nothing held it for
+   a button: there was no `:disabled` rule in this file at all, so a disabled
+   primary button rendered in full teal and a press did nothing.
+
+   Found by rendering the enterprise console's Administrators screen, where the
+   action is disabled until an organization is chosen; at 390 it is the most
+   prominent thing on the page. `lint:admin-layout` asks it of every button
+   variant now, because the next variant is where this comes back. */
+.btn:disabled,
+.btn:disabled:hover { opacity: 0.45; cursor: not-allowed; filter: none; }
 .btn-quiet { background: none; border-color: transparent; color: var(--n-text-muted); }
 .btn-quiet:hover { background: var(--n-surface-sunk); color: var(--n-text); }
 .btn-danger { color: var(--n-deny); }

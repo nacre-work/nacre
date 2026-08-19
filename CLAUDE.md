@@ -2503,6 +2503,41 @@ stale-bundle lesson arriving inside the check written to hold a bundling
 property. It asks the browser whether `/extensions.js` was fetched now. Five
 refusals, each produced.
 
+**Two things in the console were found by rendering a screen that is not in this
+repository.** The enterprise console loads the `extensions.js` this one ships,
+so its screens are drawn by this console's `dom.ts`, `pick.ts` and `admin.css` —
+and putting a new one in front of a browser is what showed both.
+
+A `<select>` asking you to choose said `pick a organization…`. The article was
+built by hand from the noun, and `organization` is the first vowel-initial noun
+any caller passed. Computing it from the first letter would fix that and break
+`user`, which the same control takes: `an user`. English articles are not a
+function of spelling, so there is no article — the label beside the control
+already names the thing.
+
+And a **disabled button looked exactly like a working one**: there was no
+`:disabled` rule in `admin.css` at all, so a disabled primary button rendered in
+full teal and a press did nothing. The rule that breaks is written three lines
+above `.picked` and is about a select with one option — *"a control that cannot
+be operated still invites operating it"* — held in one place and nowhere else,
+which is this file's first paragraph.
+
+`lint:admin-layout` gained a fourth rule for it, and it asks **every** `.btn`
+variant rather than the base class: a variant that paints its own background and
+brightens on hover needs the disabled form to win there too, so the check pairs
+each `:hover` that paints with a `:disabled:hover` that covers it. Both refusals
+were produced — the rule removed entirely, and the hover half removed alone,
+which names all three variants.
+
+**Writing it exposed that rule 2 could not fail.** The hover-reveal rule
+collected every `:hover` rule with a non-zero opacity and never asked whether
+anything was hidden — and no `:hover` rule in this stylesheet set an opacity, so
+the list was always empty. The first legitimate one, `.btn:disabled:hover`, was
+reported as a control a phone can never reveal. It requires a matching
+`opacity: 0` rule now, which is the relationship the other half of the same rule
+already used. The narrow-projection shape this file names three times, in a
+check written against it.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

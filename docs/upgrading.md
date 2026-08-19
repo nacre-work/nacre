@@ -272,6 +272,27 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.23.9 — two things in the console, seen by looking at it
+
+**Nothing to do.** No variable, no schema, no route.
+
+A `<select>` that asks you to choose said `pick a organization…`. The article was
+built by hand from the noun, which is wrong for every noun beginning with a
+vowel — and computing it from the first letter would fix that and break `user`,
+which the same control takes. There is no article now: the label beside the
+control already names the thing.
+
+And a **disabled button looked exactly like a working one**. There was no
+`:disabled` rule in the console's stylesheet at all, so a disabled primary
+button rendered in full teal and a press did nothing. The rule it breaks is
+written three lines away, about a select with one option — *"a control that
+cannot be operated still invites operating it"* — and nothing held it for a
+button.
+
+Both were found by rendering a screen and looking at it, in a console from
+another repository that loads this one's `extensions.js`, and both are held by
+`lint:admin-layout` now.
+
 ### 0.23.8 — the object-storage client tries again
 
 **Nothing to do.** No variable, no schema, no route.

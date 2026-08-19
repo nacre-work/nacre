@@ -190,8 +190,27 @@ for (const container of aligned) {
 
 // ── 2. hover-revealed controls ────────────────────────────────────────────
 const hidden = all.filter((r) => declaration(r.body, 'opacity') === '0')
+
+/**
+ * A `:hover` rule that raises opacity **on something this stylesheet hides**.
+ *
+ * The second condition was missing, and the omission could not be seen: no
+ * `:hover` rule in this file set an opacity at all, so the list was always
+ * empty and this half of the rule could not fail — the narrow-projection shape
+ * `transport-parity.test.ts` and `location.hash` are already recorded as. It
+ * surfaced the first time a legitimate one appeared: `.btn:disabled:hover`
+ * dims a button that is not hidden anywhere, and this reported it as a control
+ * a phone can never reveal.
+ *
+ * The relationship is the one the other half of this rule already uses — the
+ * defect was `.idcopy .btn { opacity: 0 }` brought back by
+ * `tr:hover .idcopy .btn`, so the hover selector *contains* the hidden one.
+ */
 const revealed = all.filter(
-  (r) => r.selector.includes(':hover') && nonZero(declaration(r.body, 'opacity')),
+  (r) =>
+    r.selector.includes(':hover') &&
+    nonZero(declaration(r.body, 'opacity')) &&
+    hidden.some((h) => r.selector.includes(h.selector.split(/[\s,]/)[0])),
 )
 
 for (const rule of revealed) {
@@ -263,6 +282,83 @@ for (const view of views) {
         'lines — five call sites had to remember before it existed.',
     )
   })
+}
+
+// ─── 4. Every button variant has a disabled state ─────────────────────────
+//
+// `.picked` states the rule this holds, one control over: "a control that
+// cannot be operated still invites operating it". That is written about a
+// select with one option, and nothing held it for a *button* — there was no
+// `:disabled` rule in this stylesheet at all, so a disabled primary button
+// rendered in full teal and a press did nothing.
+//
+// Found by rendering the enterprise console's Administrators screen, whose
+// action is disabled until an organization is chosen and which at 390 is the
+// most prominent thing on the page. That console is in another repository and
+// no check here can see it, which is exactly why the rule belongs to the
+// stylesheet both of them share.
+//
+// Asked of **every** `.btn*` variant rather than of `.btn`, because the next
+// variant is where this comes back: a rule on the base class is inherited by a
+// variant that overrides `background` and `filter`, and one that overrides them
+// on `:hover` needs the disabled form to win there too.
+const BUTTON = /^\.btn(-[\w-]+)?$/
+const variants = new Set()
+for (const rule of all) {
+  for (const selector of rule.selector.split(',').map((x) => x.trim())) {
+    if (BUTTON.test(selector)) variants.add(selector)
+  }
+}
+if (variants.size === 0) {
+  problems.push(
+    'admin.css declares no `.btn` rule. This check reads the button variants and holds a ' +
+      'disabled state against them; with none to read it is asking nothing.',
+  )
+}
+
+/** Every selector that styles a disabled button, however it is spelled. */
+const disabledFor = new Set()
+for (const rule of all) {
+  for (const selector of rule.selector.split(',').map((x) => x.trim())) {
+    const base = /^(\.btn(?:-[\w-]+)?):disabled/.exec(selector)
+    if (base !== null) disabledFor.add(base[1])
+  }
+}
+
+if (variants.size > 0 && disabledFor.size === 0) {
+  problems.push(
+    'admin.css styles buttons and has no `:disabled` rule at all. A disabled button that looks ' +
+      'exactly like a working one is the defect `.picked` already argues against for a select — ' +
+      'a control that cannot be operated still invites operating it.',
+  )
+}
+
+// A variant that overrides what the disabled state sets has to say so itself:
+// `.btn-primary` paints its own background and brightens on hover, so a rule on
+// `.btn:disabled` alone loses to `.btn-primary:hover` on a pressed-and-held
+// disabled button.
+const OVERRIDING = ['background', 'filter', 'opacity', 'color']
+for (const rule of all) {
+  const selectors = rule.selector.split(',').map((x) => x.trim())
+  const hover = selectors.find((sel) => /^\.btn(-[\w-]+)?:hover$/.test(sel))
+  if (hover === undefined) continue
+  if (!OVERRIDING.some((prop) => declaration(rule.body, prop) !== undefined)) continue
+  const base = hover.replace(':hover', '')
+  const covered =
+    [...disabledFor].some((sel) => sel === base || sel === '.btn') &&
+    all.some((r) =>
+      r.selector
+        .split(',')
+        .map((x) => x.trim())
+        .some((sel) => sel === `${base}:disabled:hover` || sel === '.btn:disabled:hover'),
+    )
+  if (!covered) {
+    problems.push(
+      `\`${hover}\` paints on hover and no \`:disabled:hover\` rule covers it, so a disabled ` +
+        `${base} still lights up under a pointer. A control that cannot be operated must not ` +
+        'answer one.',
+    )
+  }
 }
 
 if (problems.length > 0) {
