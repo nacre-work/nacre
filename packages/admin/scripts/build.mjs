@@ -12,6 +12,12 @@
  * runtime through custom properties, so anything that resolved them at build
  * time would freeze the palette into the bundle and break the point of having
  * one file downstream of the brand repository.
+ *
+ * `public/extensions.js` is copied for a stronger reason than that: it is the
+ * file `nacre-enterprise-web` replaces, so bundling it in would defeat the whole
+ * mechanism. `src/extensions.ts` imports it through a URL built at run time,
+ * which is what keeps esbuild from resolving and inlining it — see the note
+ * there.
  */
 import { cpSync, mkdirSync, rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

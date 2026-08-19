@@ -428,6 +428,29 @@ function renewingFetch(): typeof globalThis.fetch {
   }) as typeof globalThis.fetch
 }
 
+/**
+ * One authorized `fetch` against the API this console is signed in to.
+ *
+ * `client()` beside it is the SDK, and the SDK covers `docs/openapi.yaml` — the
+ * core's contract. The commercial modules mount routes that contract does not
+ * describe, under `/v1/admin/*`, so a console extension needs the *session*
+ * without this repository growing a second idea of what the API is.
+ *
+ * The renewal seam is deliberately the same one. A screen left open across an
+ * access token's fifteen minutes must not be a screen that signs somebody out,
+ * and an extension that reached for `globalThis.fetch` would be exactly that.
+ */
+export function authorizedFetch(): typeof globalThis.fetch {
+  const renewing = renewingFetch()
+  return (async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const token = readToken()
+    if (token === null) throw new Error('not signed in')
+    const headers = new Headers(init?.headers as HeadersInit | undefined)
+    headers.set('authorization', `Bearer ${token}`)
+    return renewing(url, { ...init, headers })
+  }) as typeof globalThis.fetch
+}
+
 export function client(): NacreClient {
   const token = readToken()
   if (token === null) throw new Error('not signed in')

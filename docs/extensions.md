@@ -1,7 +1,8 @@
 # Extension points
 
 Normative. Six points a module outside this repository plugs into, the loader
-that gets it in, and what the core refuses.
+that gets it in, one seam in the console that is not a registry at all, and what
+the core refuses.
 
 This document exists because the points did not. `nacre-enterprise` has named
 `registerAuthProvider`, `registerAuthzResolver`, `registerAuditSink` and
@@ -338,6 +339,73 @@ way, and the password door is the one a gate closes.
 
 With no module loaded there are no gates, and the open core mints a session for
 every credential it verifies, exactly as it did before this point existed.
+
+## The console's extension file
+
+The six points above are for the API process. This one is for the browser, and
+it is deliberately not a registry: the console is a static bundle in a different
+image, so nothing a module registers in the API process can reach it.
+
+`packages/admin` is the community console and is single-organization — every
+screen it draws is behind `administers(auth)`, which is `org_admin` and nothing
+else. The commercial modules mount routes under `/v1/admin/*`, and until this
+seam existed there was no screen for any of them on either side of the boundary:
+a customer who bought multi-tenancy administered it with `curl`. That is the
+model-offers-it-and-the-product-gives-no-route shape, arriving in the paid half.
+
+**The console loads one file and an image replaces it.** The open `web` image
+ships `extensions.js` registering nothing; `nacre-enterprise-web` is built
+`FROM` that image with the file replaced. The same shape `NACRE_MODULES` gives
+the API, expressed in the only unit a static bundle has.
+
+```js
+// extensions.js
+export default function register(kit) {
+  return {
+    contract: kit.contract,
+    views: [
+      {
+        hash: '#/organizations',
+        label: 'Organizations',
+        shows: (viewer) => viewer.platformAdmin,
+        render: (root, viewer) => { /* … */ },
+      },
+    ],
+  }
+}
+```
+
+**The contract is a function, not an import.** An extension is handed everything
+it may use — `kit` — rather than importing it. That is what makes this possible
+without publishing a package: nothing in the extension's bundle resolves
+`@nacre.work/*`, so there is no second copy of anything, no npm name to own, and
+no `admin.css` living in two repositories with nothing that knows there are two.
+It is also what makes the surface countable: `ConsoleKit` in
+`packages/admin/src/extensions.ts` is the whole of it, and a helper that is not
+on that object is not part of the contract.
+
+`kit.request` is the session, not a second client. The SDK covers
+`docs/openapi.yaml`, which is the core's contract and does not describe
+`/v1/admin/*`; `request` is one authorized, renewing call that rejects with the
+same `NacreError` the SDK does, so `kit.explain` reads it and a `404` is still
+"absent, or not yours".
+
+`viewer` is what the server said — `administers` from `GET /v1/me`, and
+`platformAdmin` for `administersTenants(auth)`, which is the role and has no
+ceiling question. An extension asks the same question a core screen asks.
+
+**A mismatch is said out loud.** `kit.contract` is a number, an extension
+declares which one it was built against, and a console that does not speak it
+draws a message naming both rather than a nav that is silently shorter than the
+installation paid for. A hash colliding with a core route is dropped for the
+same reason in the other direction: a module must not be able to replace Grants
+with a screen of its own.
+
+`scripts/check-console-extensions.mjs` drives all of that in a browser, because
+every part of it is a browser's business — a dynamic import of a same-origin URL
+under `script-src 'self'`, a bundler that must not inline the file an image
+replaces, and a nav that has to gain an item. A stub of `import()` would agree
+with whatever it was written to.
 
 ## A module's own schema
 

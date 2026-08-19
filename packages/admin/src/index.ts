@@ -18,6 +18,7 @@ import {
 } from './api.js'
 import * as webauthn from './webauthn.js'
 import { clear, h } from './dom.js'
+import { loadExtensions, type ConsoleView, type ConsoleViewer } from './extensions.js'
 import { accountsView } from './views/accounts.js'
 import { auditView } from './views/audit.js'
 import { connectionsView } from './views/connections.js'
@@ -73,20 +74,28 @@ import { securityView } from './views/security.js'
  * has been granted, which for a member with no grants is an empty list and an
  * honest one.
  */
-interface Viewer {
-  /** `GET /v1/me`'s own answer — the predicate every gated handler calls. */
-  readonly administers: boolean
-  readonly platformAdmin: boolean
-}
+/**
+ * The same shape a console extension is handed, and deliberately one type
+ * rather than two: a screen from `nacre-enterprise-web` decides who it is for
+ * by asking exactly what a screen in this file asks.
+ */
+type Viewer = ConsoleViewer
 
 const anybody = (): boolean => true
 const administers = (v: Viewer): boolean => v.administers
-const ROUTES: readonly {
-  hash: string
-  label: string
-  render: (root: HTMLElement, viewer: Viewer) => void
-  shows: (viewer: Viewer) => boolean
-}[] = [
+
+/**
+ * The organization's screens, and the extension point sits at the end of them.
+ *
+ * Two arrays rather than one because the console already draws that line in
+ * prose: everything above is about the organization and is gated on what the
+ * server says this token administers, and everything below is about the person
+ * signed in and cannot be gated at all. An extension's screens are the first
+ * kind — they administer an installation or a tenant — so they belong between
+ * the two rather than after everything, which is where an appended list would
+ * put them and where they would read as an afterthought in the nav.
+ */
+const ORGANIZATION_ROUTES: readonly ConsoleView[] = [
   { hash: '#/search', label: 'Search', render: (root) => searchView(root), shows: anybody },
   { hash: '#/layers', label: 'Layers', render: (root) => void layersView(root), shows: anybody },
   { hash: '#/grants', label: 'Grants', render: (root) => void grantsView(root), shows: administers },
@@ -107,14 +116,21 @@ const ROUTES: readonly {
     render: (root, viewer) => void auditView(root, viewer.platformAdmin),
     shows: (v) => v.administers || v.platformAdmin,
   },
-  // Approving a connection is not an administrative act — it is the same
-  // permission as issuing the grant that makes the agent worth anything — so
-  // ending one must not be either. The listing shows a member their own and an
-  // administrator the organization's; the API decides that, not this table.
-  //
-  // Security is everybody's and cannot be otherwise: everyone who signs in has
-  // one of these, and an administrator has no more business in that screen than
-  // anybody else — the API answers only for the caller.
+]
+
+/**
+ * The person's own screens.
+ *
+ * Approving a connection is not an administrative act — it is the same
+ * permission as issuing the grant that makes the agent worth anything — so
+ * ending one must not be either. The listing shows a member their own and an
+ * administrator the organization's; the API decides that, not this table.
+ *
+ * Security is everybody's and cannot be otherwise: everyone who signs in has
+ * one of these, and an administrator has no more business in that screen than
+ * anybody else — the API answers only for the caller.
+ */
+const PERSONAL_ROUTES: readonly ConsoleView[] = [
   { hash: '#/security', label: 'Security', render: (root) => void securityView(root), shows: anybody },
   {
     hash: '#/connections',
@@ -123,6 +139,26 @@ const ROUTES: readonly {
     shows: anybody,
   },
 ]
+
+/**
+ * What an extension registered, once it has been asked.
+ *
+ * Empty until then and empty on the open image, whose `extensions.js` registers
+ * nothing. A `hash` an extension shares with a core route is dropped rather than
+ * shadowing it: a module must not be able to replace Grants with a screen of
+ * its own, and the nav would show the label twice besides.
+ */
+let extraRoutes: readonly ConsoleView[] = []
+let extensionProblem: string | null = null
+
+const routes = (): readonly ConsoleView[] => {
+  const taken = new Set([...ORGANIZATION_ROUTES, ...PERSONAL_ROUTES].map((r) => r.hash))
+  return [
+    ...ORGANIZATION_ROUTES,
+    ...extraRoutes.filter((r) => !taken.has(r.hash)),
+    ...PERSONAL_ROUTES,
+  ]
+}
 
 function mark(): SVGElement {
   // The six strata, in order, as the mark draws them. Not reordered and not
@@ -226,7 +262,7 @@ function route(main: HTMLElement, nav: HTMLElement, viewer: Viewer): void {
     return
   }
 
-  const allowed = ROUTES.filter((r) => r.shows(viewer))
+  const allowed = routes().filter((r) => r.shows(viewer))
   const hash = location.hash === '' ? allowed[0]!.hash : location.hash
   // A member who follows a bookmark to #/people lands on the first screen they
   // can use rather than on an empty one that keeps 404ing in the background.
@@ -267,6 +303,27 @@ function route(main: HTMLElement, nav: HTMLElement, viewer: Viewer): void {
         'screens are not here — an org_admin of it reaches them. The access log is the one ' +
         'exception, and it shows administrative actions without which documents were read.'),
     )
+  }
+
+  /*
+   * And the other banner, for the failure that has nothing on the screen to be
+   * wrong about.
+   *
+   * An extension that could not be loaded, was built for a contract this
+   * console does not speak, or registered something that is not a view, leaves
+   * a nav that is simply shorter than the person paid for. That is the "hiding
+   * what the server allows" defect with no server involved, and the only way to
+   * notice it is to be told — so this says which of those happened, in the one
+   * place somebody looking for the missing screens will be.
+   *
+   * `.warn` rather than `.banner`: the platform administrator's message
+   * describes a correct arrangement, and this one describes an image that needs
+   * changing.
+   */
+  const broken = document.getElementById('extensions')
+  broken?.remove()
+  if (extensionProblem !== null) {
+    main.before(h('p', { class: 'warn', id: 'extensions' }, extensionProblem))
   }
 }
 
@@ -721,11 +778,10 @@ function start(): void {
   // Drawn as a member until the answer arrives, never the other way round: a
   // nav that shows administrative screens and then removes them is a flicker
   // that invites a click in between, and the failure mode of guessing low is a
-  // menu that grows.
-  // Drawn as a member until the answer arrives — see below. `platformAdmin` is
-  // a separate fact from `administers` and not derivable from it: `false` there
-  // covers a member and a platform administrator alike, and only one of them is
-  // owed an explanation for the screens that are missing.
+  // menu that grows. `platformAdmin` is a separate fact from `administers` and
+  // not derivable from it: `false` there covers a member and a platform
+  // administrator alike, and only one of them is owed an explanation for the
+  // screens that are missing.
   let viewer: Viewer = { administers: false, platformAdmin: false }
   const draw = (): void => route(main, nav, viewer)
   draw()
@@ -758,6 +814,21 @@ function start(): void {
       // console that shows less than it could is a better failure than one
       // offering controls that cannot work.
     })
+
+  /*
+   * And the screens a commercial image adds, asked for the same way and drawn
+   * the same way — after the first paint, with a redraw when the answer lands.
+   *
+   * Not awaited before the first draw. The file is same-origin and tiny, but
+   * blocking the console on it would mean an image whose extension file cannot
+   * be served shows nothing at all, which is a worse failure than one that
+   * shows the community screens and says why the rest are missing.
+   */
+  void loadExtensions().then((loaded) => {
+    if (loaded.ok) extraRoutes = loaded.views
+    else extensionProblem = loaded.reason
+    draw()
+  })
 }
 
 start()
