@@ -846,12 +846,16 @@ export class ConfigError extends Error {
   readonly problems: readonly string[]
 
   constructor(problems: readonly string[]) {
+    // Deduplicated, order kept: several readers each report the same missing
+    // variable, and "NACRE_CANONICAL_URL is not set" three times reads as
+    // three problems to fix rather than one.
+    const distinct = [...new Set(problems)]
     super(
-      `configuration is not usable:\n${problems.map((p) => `  - ${p}`).join('\n')}\n` +
+      `configuration is not usable:\n${distinct.map((p) => `  - ${p}`).join('\n')}\n` +
         'Every one of these is required at startup. See docs/config.md.',
     )
     this.name = 'ConfigError'
-    this.problems = problems
+    this.problems = distinct
   }
 }
 

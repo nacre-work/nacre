@@ -943,15 +943,6 @@ export async function forgetVector(
   )
 }
 
-export async function countRetiredCollections(pool: Pool): Promise<number> {
-  return acrossOrganizations(pool, async (client) => {
-    const { rows } = await client.query<{ n: string }>(
-      'SELECT count(*) AS n FROM retired_collections',
-    )
-    return Number(rows[0]?.n ?? 0)
-  })
-}
-
 /**
  * Documents in a reindexing layer that do not yet carry the shadow vector.
  *

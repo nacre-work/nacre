@@ -250,7 +250,7 @@ the half that has it. So the release note says so, and the remedy is always the
 same command:
 
 ```bash
-docker compose run --rm api rebuild-collection --org {slug}
+docker compose run --rm api node packages/api/dist/rebuild-collection.js --org {slug}
 ```
 
 It reads the collection name and the per-layer slots from Postgres, recreates
@@ -1112,7 +1112,7 @@ no query errors. What you do not get, until you say so, is exact-term matching
 over the documents already there.
 
 ```bash
-docker compose run --rm api rebuild-collection --org {slug}
+docker compose run --rm api node packages/api/dist/rebuild-collection.js --org {slug}
 ```
 
 It recreates the collection and requeues every live document, so everything is
