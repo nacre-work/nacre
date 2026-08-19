@@ -272,6 +272,29 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.23.4 — the access log's two columns
+
+**Nothing to do**, and one screen reads differently.
+
+The Result column's three pills were three *widths* — one size fixed the type in
+0.23.3 and left the boxes ragged, which down a column reads as the values
+meaning different amounts of something. They are one width now, taken from the
+longest value, and `allow` is ringed rather than bare so the three read as one
+control with three states. The same rule reached the Grants screen's Permission
+column, which had the same ragged edge between `read` and `write`.
+
+And the **Actor** column named nobody: it rendered `audit_events.actor_label`,
+which every writer of an event builds as `` `${type}:${id}` `` — so a whole uuid
+sat above a shortened one where an operator expects an address. The id is
+resolved to an email or a service account's name now, and where it cannot be —
+a deleted account, or a `platform_admin`, whom `GET /v1/users` refuses — the
+fallback is the actor's kind as a word.
+
+**No API change and no migration.** `actor.label` is still in the response and
+still means what it meant; the console simply stopped treating it as a name.
+An operator reading the log through `GET /v1/audit` directly sees exactly what
+they saw before.
+
 ### 0.23.3 — one column, one size
 
 **Nothing to do**, and one screen looks different. The access log's Result
