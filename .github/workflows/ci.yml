@@ -357,22 +357,32 @@ jobs:
           tools=$(mktemp -d)
           printf '{"name":"nacre-console-check","private":true}\n' > "$tools/package.json"
           (cd "$tools" && pnpm add playwright@1 >/dev/null)
-          # `--with-deps` shells out to apt, and apt is the one thing in this
-          # job that can **hang** rather than fail. It did, twice in one
-          # morning, with `apt-get update` as the last line in the log and
-          # `screenshots.mjs` never reached — a job sitting until the six-hour
-          # limit with a release waiting behind it, and a cancel-and-re-run as
-          # the only way out.
+          # **No `--with-deps`, and that is the fix rather than a saving.** That
+          # flag shells out to apt, and apt is the one thing in this job that
+          # can hang rather than fail. Bounding it with `timeout` was the first
+          # repair and it was half of one: it turned a job sitting until the
+          # six-hour limit into a job failing in eight minutes with a message
+          # saying "re-run", which moved the cost from the clock to a person.
+          # Four failures in one day, two of them consecutive re-runs, is where
+          # that stops being a flake and becomes a gate nobody can use.
           #
-          # So it is bounded and non-interactive. This repository's rule is that
-          # a check which cannot check must not report green; the corollary a
-          # release gate needs is that it must not be able to wait forever
-          # either, because "still running" reads as "not finished yet" for as
-          # long as anybody is willing to believe it. A timeout is a failure
-          # that names its own cause.
-          export DEBIAN_FRONTEND=noninteractive
-          timeout 8m "$tools/node_modules/.bin/playwright" install --with-deps chromium || {
-            echo "::error::installing chromium did not finish in eight minutes. The step that hangs is apt, inside \`playwright install --with-deps\` — not the browser and not the screenshot script. Re-run the job."
+          # The log says what it is waiting for: `Ign: http://azure.archive
+          # .ubuntu.com/ubuntu noble InRelease`, four times over, then a fall
+          # back to archive.ubuntu.com and a stall in the middle of fetching
+          # indexes. A mirror this job has no opinion about and cannot reach.
+          #
+          # The dependencies are already there. This runner image ships Google
+          # Chrome — visible in apt's own source list two lines above the stall
+          # — and Playwright's Chromium needs the same shared libraries, so the
+          # apt half was installing what was installed. What it bought was the
+          # hang.
+          #
+          # And the failure mode of being wrong about that is the good one: a
+          # library that really is missing surfaces as Playwright's own launch
+          # error naming the `.so`, in seconds, which is a failure somebody can
+          # act on. A hang is not.
+          timeout 5m "$tools/node_modules/.bin/playwright" install chromium || {
+            echo "::error::downloading chromium did not finish in five minutes. This no longer shells out to apt, so it is the browser download itself — a network failure rather than the mirror stall that used to sit here."
             exit 1
           }
           # The module's own path, not NODE_PATH: this is an ESM import and
