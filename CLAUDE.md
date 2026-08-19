@@ -1073,6 +1073,32 @@ with no credential parses and fails later. Writing that check is what turned up
 `NACRE_S3_ENDPOINT=minio:9000` being accepted by `new URL`, as the scheme
 `minio:` with an empty host.
 
+**It is five operations now, and the fifth is what found the other two.** That
+paragraph said four and the header above it said "no listing, because nothing
+needs to enumerate a bucket" — true of every caller the core has, and the
+commercial `backup` module is not one of them: an archive whose `verify` refuses
+a part the manifest does not name has to be able to ask what is there. So
+`list` went in, with continuation-token pagination, a bound on how many pages it
+will follow, and a refusal for a response that says truncated and carries no
+token — an unbounded loop against somebody else's endpoint is a process that
+never returns.
+
+Two defects came out of driving it against a real MinIO, and neither is about
+listing. The client put **`content-length` among the headers it signs**, and
+`Content-Length` is a *forbidden request header* in the Fetch standard: undici 7,
+which is Node 24's, throws `invalid content-length header` where undici 6 simply
+dropped it. So every `put` this client makes would have failed on a current
+runtime, on a line that had been correct for the runtime it was written on. The
+repair is an absence, so the test pins the absence — from the headers and from
+`SignedHeaders`, because a signature over a header the runtime then sets is a
+`403` naming none of its inputs.
+
+And the XML decoder knew `&apos;` and not `&#39;`, which is what **MinIO
+actually sends** for an apostrophe in a key. A key it appears in came back
+mis-decoded, so a `get` would `404` and `backup`'s `verify` would condemn a good
+archive. Numeric references — decimal and hex — are decoded now, and `&amp;`
+last, or a key containing `&amp;#39;` decodes twice.
+
 **`docker compose --profile minimal up` has now been run from a clean clone**,
 and the whole loop driven through it: init, layer, ingest, indexed, search,
 grant, revoke. It found four more things, one of them a regression from the

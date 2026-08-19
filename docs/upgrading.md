@@ -272,6 +272,27 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.23.7 — object storage on Node 24
+
+**Nothing to do on Node 22, and this is the release that makes Node 24 work.**
+
+The S3 client set `content-length` on every PUT and put it in the signature.
+That is a **forbidden request header**: the Fetch standard has the runtime
+compute it from the body, and undici 7 stopped tolerating one set by hand —
+`InvalidArgumentError: invalid content-length header`, thrown before the request
+leaves the process. Node 22 ships undici 6 and accepted it. **Node 24 ships
+undici 7**, so on that runtime every write to object storage failed: an ingest
+of a PDF, and every backup written to a bucket.
+
+Nothing was signed away with it. What binds the body is `x-amz-content-sha256`,
+which is in the canonical request either way — a body that changes in flight
+still fails the signature rather than being stored. SigV4 never required
+`content-length` among the signed headers.
+
+Found by running the client under a runtime that had already moved rather than
+by reading a changelog: a test harness that brings its own undici 7 failed where
+a plain `node` script passed.
+
 ### 0.23.6 — the object-storage client can list
 
 **Nothing to do.** One method on an internal client, used by nothing the open

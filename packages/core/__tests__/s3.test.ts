@@ -147,6 +147,27 @@ describe('S3', () => {
     for (const name of signed) expect(Object.keys(headers).map((h) => h.toLowerCase())).toContain(name)
   })
 
+  /*
+   * `Content-Length` is a forbidden request header — the Fetch standard has the
+   * runtime compute it from the body — and undici 7 stopped tolerating one set
+   * by hand, throwing `InvalidArgumentError` before the request leaves. Node 22
+   * ships undici 6 and accepted it; Node 24 ships 7, so this was every PUT
+   * failing on the next Node.
+   *
+   * Pinned as an absence, which is the only way to assert a header is gone.
+   */
+  it('sets no content-length of its own, which the runtime owns', async () => {
+    const calls = capture({ status: 200 })
+    await new S3(options).put('k', new TextEncoder().encode('body'))
+    const headers = calls[0]?.headers ?? {}
+    expect(Object.keys(headers).map((h) => h.toLowerCase())).not.toContain('content-length')
+    const signed = /SignedHeaders=([^,]+)/.exec(headers.authorization as string)?.[1] ?? ''
+    expect(signed).not.toContain('content-length')
+    // And the body is still bound, by the hash that is actually in the
+    // canonical request.
+    expect(signed).toContain('x-amz-content-sha256')
+  })
+
   it('hashes the body it is about to send, so a body that changes fails', async () => {
     const calls = capture({ status: 200 })
     await new S3(options).put('a', new TextEncoder().encode('hello'))
