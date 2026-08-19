@@ -46,6 +46,41 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+/**
+ * A `fetch` that answers a list of responses in order.
+ *
+ * The single-response `capture` above cannot express a paginated listing, and a
+ * listing that stops after one page is exactly the defect the pagination
+ * exists against — so the case has to be able to hand back two.
+ */
+function captureSequence(responses: readonly { status: number; body?: string }[]) {
+  const calls: { url: string; method: string }[] = []
+  let n = 0
+  const fake = vi.fn(async (input: string | URL, init?: RequestInit) => {
+    calls.push({ url: String(input), method: init?.method ?? 'GET' })
+    const response = responses[Math.min(n, responses.length - 1)]
+    n += 1
+    return {
+      ok: (response?.status ?? 500) >= 200 && (response?.status ?? 500) < 300,
+      status: response?.status ?? 500,
+      statusText: '',
+      text: async () => response?.body ?? '',
+      arrayBuffer: async () => new TextEncoder().encode(response?.body ?? '').buffer,
+    } as Response
+  })
+  vi.stubGlobal('fetch', fake)
+  return calls
+}
+
+const page = (keys: readonly string[], next?: string): string =>
+  `<?xml version="1.0"?><ListBucketResult>` +
+  keys.map((k) => `<Contents><Key>${k}</Key></Contents>`).join('') +
+  (next === undefined
+    ? '<IsTruncated>false</IsTruncated>'
+    : `<IsTruncated>true</IsTruncated><NextContinuationToken>${next}</NextContinuationToken>`) +
+  `</ListBucketResult>`
+
+
 describe('documentKey', () => {
   it('is derived from identity, never from the content', async () => {
     const a = documentKey('org', 'layer', 'notes.md')
@@ -206,5 +241,61 @@ describe('presign', () => {
     // Signed one way and requested another is the failure this shares with the
     // header path.
     expect(new S3(options).presign("a/b!c", 900)).toContain('/nacre/a/b%21c?')
+  })
+})
+
+/**
+ * Listing, which this file said for a long time was deliberately absent.
+ *
+ * The reason given was that nothing needed to enumerate a bucket. The backup
+ * module's archive reader does — it refuses a part its manifest does not name,
+ * and an archive in a bucket must not lose a refusal an archive on a disk has.
+ *
+ * The signature half is verified against a real MinIO, as everything in this
+ * client is; what is pinned here is the shape around it, and the two ways a
+ * paginated listing goes quietly wrong.
+ */
+describe('S3.list', () => {
+  it('addresses the bucket rather than a key, and asks for version 2', async () => {
+    const calls = captureSequence([{ status: 200, body: page(['a/one', 'a/two']) }])
+    const keys = await new S3(options).list('a/')
+    expect(keys).toEqual(['a/one', 'a/two'])
+    expect(calls[0]?.url).toContain('/nacre?')
+    expect(calls[0]?.url).toContain('list-type=2')
+    expect(calls[0]?.url).toContain('prefix=a%2F')
+  })
+
+  it('follows the continuation token to the end', async () => {
+    const calls = captureSequence([
+      { status: 200, body: page(['a/one'], 'TOKEN-1') },
+      { status: 200, body: page(['a/two']) },
+    ])
+    expect(await new S3(options).list('a/')).toEqual(['a/one', 'a/two'])
+    expect(calls).toHaveLength(2)
+    expect(calls[1]?.url).toContain('continuation-token=TOKEN-1')
+  })
+
+  /*
+   * The failure that matters. A caller treating a short list as complete is a
+   * stray-part check that passes on an archive it should refuse, and a weaker
+   * refusal reporting success is worse than none — so a bucket that says it
+   * truncated and hands back no token is a refusal rather than a partial answer.
+   */
+  it('refuses a truncated listing with no token rather than returning half of it', async () => {
+    captureSequence([{ status: 200, body: page(['a/one'], '') }])
+    await expect(new S3(options).list('a/')).rejects.toThrow(/continuation token/u)
+  })
+
+  it('undoes the escaping a bucket applies, numeric references included', async () => {
+    // A real MinIO returns an apostrophe as `&#39;`, not `&apos;` — found by
+    // listing such a key against one. Left encoded, the name no manifest
+    // matches and a good archive is condemned.
+    captureSequence([{ status: 200, body: page(['a/odd &#39;name&#39;', 'a/&amp;b', 'a/&#x2F;c']) }])
+    expect(await new S3(options).list('a/')).toEqual(["a/odd 'name'", 'a/&b', 'a//c'])
+  })
+
+  it('reports a refusal with the store’s own words, like every other call', async () => {
+    captureSequence([{ status: 403, body: '<Error><Code>AccessDenied</Code></Error>' }])
+    await expect(new S3(options).list('a/')).rejects.toThrow(/AccessDenied/u)
   })
 })
