@@ -14,23 +14,29 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
 
 const ENTRY_POINTS = [
-  'packages/api/dist/main.js',
-  'packages/mcp/dist/main.js',
+  { path: 'packages/api/dist/main.js' },
+  { path: 'packages/mcp/dist/main.js' },
   // The local transport is a published bin, so it is run by people rather than
   // by compose — which makes refusing an incomplete environment more important
   // here, not less. A developer gets the message; an orchestrator gets a
   // restart loop either way.
-  'packages/mcp/dist/stdio-main.js',
-  'packages/worker/dist/main.js',
+  { path: 'packages/mcp/dist/stdio-main.js' },
+  { path: 'packages/worker/dist/main.js' },
   // Compose runs this to completion before the others start. It is the one that
   // must not be silently skippable: a stack that comes up against an unmigrated
   // database fails on the first query, not at boot.
-  'packages/core/dist/migrate-main.js',
+  { path: 'packages/core/dist/migrate-main.js' },
+  // The disaster-recovery command. `docs/upgrading.md` and the infra runbook
+  // both hand it to an operator whose Qdrant is already gone, so a build that
+  // stopped emitting it has to fail here rather than during the disaster. The
+  // args get it past its own usage check to the configuration refusal, which
+  // is the property under test.
+  { path: 'packages/api/dist/rebuild-collection.js', args: ['--org', 'placeholder'] },
 ]
 
 let failed = false
 
-for (const entry of ENTRY_POINTS) {
+for (const { path: entry, args = [] } of ENTRY_POINTS) {
   if (!existsSync(entry)) {
     console.error(`::error::${entry} does not exist; docker-compose runs it`)
     failed = true
@@ -38,7 +44,7 @@ for (const entry of ENTRY_POINTS) {
   }
 
   // A deliberately empty environment. PATH is kept so node can run at all.
-  const run = spawnSync(process.execPath, [entry], {
+  const run = spawnSync(process.execPath, [entry, ...args], {
     env: { PATH: process.env.PATH ?? '' },
     encoding: 'utf8',
     timeout: 30_000,

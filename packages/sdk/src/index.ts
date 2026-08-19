@@ -61,6 +61,9 @@ export type {
   CreatedUser,
   Document,
   Effect,
+  // The return type of `providers.list` and `providers.byModel`; it was the
+  // one module export a consumer could receive and not name.
+  EmbeddingProvider,
   Grant,
   GrantInput,
   Group,
