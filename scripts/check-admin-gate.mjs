@@ -33,12 +33,16 @@
  * decide which *sentence* to show — `administers: false` cannot tell a member
  * from a platform administrator.
  *
- * So the second question is asked of the one thing that matters: **what
- * `isAdmin` is assigned from.** That is the value the nav filters on, there is
- * exactly one assignment of it, and it has to come from the server's own
- * answer. Reading the assignment rather than the file is the technique
+ * So the second question is asked of the one thing that matters: **what the
+ * value the nav filters on is assigned from.** It has to come from the server's
+ * own answer. Reading the assignment rather than the file is the technique
  * `check-platform-admin-target.mjs` had to learn — a whole-file search there
  * was satisfied by the prose describing the rule instead of the rule.
+ *
+ * That value was a boolean called `isAdmin` and is a `Viewer` now, because the
+ * access log admits two roles and one flag could not say so. The check moved
+ * with it — and it moved because it *refused* rather than passing on a tree
+ * where the name had gone, which is the half worth having.
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
@@ -107,37 +111,42 @@ if (uses === 0) {
 }
 
 /**
- * The console's nav is filtered on `isAdmin`, and `isAdmin` comes from the
- * server.
+ * The console's nav is filtered on a `Viewer`, and its `administers` comes from
+ * the server.
  *
  * `GET /v1/me` reports `administers` — the same predicate every gated handler
  * calls — precisely so a browser does not have to derive it. Deriving it is what
  * offered a platform administrator Grants, People and Service accounts, all
  * three of which answer `404` to that role.
+ *
+ * `platformAdmin` beside it is deliberately **not** held here. That is
+ * `administersTenants(auth)` in the API, which is the role and nothing else —
+ * there is no ceiling question and so nothing for the server to report that the
+ * role does not already say.
  */
 const CONSOLE = 'packages/admin/src/index.ts'
 const assignments = readFileSync(CONSOLE, 'utf8')
   .split('\n')
   .map((line, i) => ({ line, at: i + 1 }))
-  .filter(({ line }) => /^\s*(let |const )?isAdmin\s*=/.test(line) && !/^\s*(\/\/|\*)/.test(line))
-  // The declaration's own `= false` is the conservative default, not a source
-  // of truth: the nav is drawn as a member until the answer arrives.
-  .filter(({ line }) => !/isAdmin\s*=\s*false\s*$/.test(line.trim()))
+  .filter(({ line }) => /^\s*(let |const )?viewer(: Viewer)?\s*=/.test(line) && !/^\s*(\/\/|\*)/.test(line))
+  // The declaration's own `administers: false` is the conservative default, not
+  // a source of truth: the nav is drawn as a member until the answer arrives.
+  .filter(({ line }) => !/administers:\s*false/.test(line))
 
 if (assignments.length === 0) {
   console.error(
-    `::error::${CONSOLE} assigns nothing to \`isAdmin\` any more, so this check holds ` +
+    `::error::${CONSOLE} assigns nothing to \`viewer\` any more, so this check holds ` +
       'nothing. Either the nav filters on something else — in which case point this at it — ' +
       'or the gate is gone and so should this be.',
   )
   process.exit(1)
 }
 
-const derived = assignments.filter(({ line }) => !line.includes('.administers'))
+const derived = assignments.filter(({ line }) => !/administers:\s*me\.administers/.test(line))
 if (derived.length > 0) {
   console.error(
-    `::error::${CONSOLE} derives \`isAdmin\` rather than reading it from GET /v1/me. ` +
-      '`administers` is the server\'s own predicate; a role comparison here is what offered ' +
+    `::error::${CONSOLE} derives the viewer's \`administers\` rather than reading it from ` +
+      "GET /v1/me. It is the server's own predicate; a role comparison here is what offered " +
       'a platform_admin three screens that answer 404, because that role administers the ' +
       'installation and not this organization.',
   )
@@ -147,5 +156,5 @@ if (derived.length > 0) {
 
 console.log(
   `no role-name gates in ${files.length} file(s); ${uses} use(s) of administers(); ` +
-    `the console reads isAdmin from the server in ${assignments.length} place(s)`,
+    `the console reads the viewer's administers from the server in ${assignments.length} place(s)`,
 )

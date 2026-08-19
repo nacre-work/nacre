@@ -399,8 +399,8 @@ applied inside the index traversal. If that distinction is new, read
 
 ## The same thing in a browser
 
-Everything above has a screen — search, layers, grants and service accounts, for
-one organization — and the stack already serves it. Open
+Everything above has a screen — search, layers, grants, service accounts and the
+access log, for one organization — and the stack already serves it. Open
 [http://localhost:8082](http://localhost:8082).
 
 ![The sign-in screen, with tabs for a password and for a pasted token](./assets/admin/sign-in.png)
@@ -516,6 +516,25 @@ A key is shown once, when the account is made. What is stored is a hash, so it
 cannot be read back from the API, the database or a backup — losing one means
 minting another, which is the trade for a key that a leaked backup does not
 carry.
+
+### The access log
+
+![The access log: filters for action, result and a date range, and four records with their actor, target and result](./assets/admin/audit.png)
+
+Every grant issued, every account created and every document read, newest first.
+This is `GET /v1/audit` — the same endpoint `nacre audit` reads, and the same one
+that serves JSONL and CSV by content negotiation for anything larger than a
+screen. Reading it is itself recorded, as `audit.read`, so a visit here appears
+in the next page.
+
+There is no field for an actor's id, because nobody knows a uuid and a mistyped
+one returns an empty log — which reads as *nothing happened*. Pressing an actor
+narrows to that actor instead, and a chip beside the filters clears it.
+
+A `platform_admin` sees this screen too and sees a **different log**:
+administrative actions, never the record of who read what. That is rule 2 in
+[authz.md](./authz.md) applied to the journal, set by the server from the role
+and not by anything a caller can send. See [audit.md](./audit.md).
 
 ![The Security screen: a password form, and two enrolled factors — an authenticator app and a security key — with the recovery-code count under them](./assets/admin/security.png)
 

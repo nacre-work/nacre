@@ -167,3 +167,41 @@ forbidden on an object the caller can already see, and whether an organization
 keeps an audit log is not something a member is told. A method other than `GET`
 answers the same way: the append-only guarantee is not something to advertise a
 method for and then refuse.
+
+## On the screen
+
+The community console has an **Access log** view, at `#/audit`. Until it landed
+this endpoint had been readable since the journal existed and nothing in the
+product showed it — the only way to start the investigation this document opens
+with was `curl` with an `Accept` header, or `psql`. That is the shape the core
+keeps closing: the model offers something and the product gives no route to it.
+
+It is the core's screen rather than a commercial one. Reading your own
+organization's access log is what a single developer needs the day something
+looks wrong; forwarding it to a SIEM is what a security team buys, and that is
+the `audit` module.
+
+![The access log](./assets/admin/audit.png)
+
+`action`, `result`, `from` and `to` are on the screen as controls. `actor_id` is
+**not a field**, because nobody knows a uuid and a wrong one comes back as an
+empty log — which reads as "nothing happened" rather than as "you typed it
+wrong", and on this screen those are opposite answers. The list is the picker:
+pressing an actor narrows the log to that actor, and a chip beside the filters
+clears it.
+
+![The log narrowed to one actor](./assets/admin/audit-actor.png)
+
+The two roles get two different screens, and the screen *says which*, because a
+log with no document reads in it looks exactly like an organization where nobody
+read anything. The console decides what to offer from the server's own answers —
+`administers` out of `GET /v1/me`, and the role for `administersTenants` — which
+is the only endpoint in the console admitting both.
+
+![The administrative log a platform administrator sees](./assets/admin/audit-platform-admin.png)
+
+There is no export button. The endpoint serves JSONL and CSV by content
+negotiation and a browser cannot set `Accept` on a link, so the alternative
+would be fetching an entire organization's journal into a tab's memory in order
+to hand it back as a file. The screen names the header instead, and `nacre
+audit` is the other route.
