@@ -397,7 +397,14 @@ ceiling question. An extension asks the same question a core screen asks.
 **A mismatch is said out loud.** `kit.contract` is a number, an extension
 declares which one it was built against, and a console that does not speak it
 draws a message naming both rather than a nav that is silently shorter than the
-installation paid for. A hash colliding with a core route is dropped for the
+installation paid for.
+
+**Additive changes move the number too.** An extension built against 2 and
+loaded by a host at 1 finds `undefined` where it expected a helper, which is a
+screen that draws nothing with an error in nobody's log — the failure the number
+exists to turn into a sentence. `2` added `copyControl`, because the first
+screen written against this contract was one that hands a generated password
+over once and the kit could not build the control for it. A hash colliding with a core route is dropped for the
 same reason in the other direction: a module must not be able to replace Grants
 with a screen of its own.
 
