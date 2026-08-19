@@ -134,7 +134,15 @@ export interface SecondFactorDeps {
 const CHALLENGE_TTL_SECONDS = 300
 
 export class SecondFactors {
-  constructor(private readonly deps: SecondFactorDeps) {}
+  constructor(private readonly deps: SecondFactorDeps) {
+    // At startup, and not at the first enrolment. `otpauthUrl` refuses a colon
+    // in either half of the label — that is the invariant, at the one place
+    // that builds one — but a process that only finds out when somebody presses
+    // "Add an authenticator" has already been running for a week. This is the
+    // same call, made once, where a wrong value is a container that does not
+    // start rather than a screen that throws.
+    otpauthUrl({ issuer: deps.issuer, account: 'startup@check', secret: 'AA' })
+  }
 
   /**
    * Whether this installation can hold a second factor at all.

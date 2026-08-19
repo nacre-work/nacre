@@ -178,10 +178,19 @@ async function main(): Promise<void> {
   const secondFactors = new SecondFactors({
     pool,
     key: secondFactorKey,
-    // What an authenticator prints above the account. The issuer of the
-    // tokens is what this installation already calls itself, so a person
-    // with two Nacre deployments sees two distinguishable entries.
-    issuer: config.jwtIssuer,
+    // What an authenticator prints above the account, and the **host** rather
+    // than the URL — for the same reason the relying party id below is, three
+    // lines further down, with the argument already written at it.
+    //
+    // The label is `issuer:account`, so a colon in either half is read as the
+    // separator. `NACRE_JWT_ISSUER` is a URL, correctly, and passing it here
+    // put `https://` in front of the separator: an authenticator showed
+    // `https://playground.nacre.work: //playground.nacre….`, with the account
+    // name replaced by the tail of a URL. Reported from a phone.
+    //
+    // A hostname still distinguishes two Nacre deployments in a list of
+    // thirty, which is the whole reason the issuer is there.
+    issuer: canonical.hostname,
     relyingParty: {
       // The **host** and never the origin: a relying party id is a registrable
       // domain, so a scheme or a port in it is a credential no authenticator

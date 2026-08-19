@@ -77,10 +77,13 @@ try {
 // in the id: a relying party id is a registrable domain.
 const PORT = 8123
 const ORIGIN = `http://localhost:${PORT}`
+// The TOTP issuer is a **hostname**, which is what `main.ts` passes: the label
+// an authenticator prints is `issuer:account`, so a URL there makes the colon
+// the separator and the account name becomes the tail of the URL.
 const factors = new SecondFactors({
   pool,
   key: undefined, // the installation with no NACRE_2FA_KEY — WebAuthn only
-  issuer: ORIGIN,
+  issuer: new URL(ORIGIN).hostname,
   relyingParty: { id: 'localhost', name: 'localhost', origins: [ORIGIN] },
 })
 const login = new Login({

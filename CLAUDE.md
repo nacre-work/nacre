@@ -2286,6 +2286,44 @@ narrowed by a press, and the administrative-only log a platform administrator
 gets. The middle one is what says the interaction works, which a picture of the
 default view structurally cannot.
 
+**The enrolment QR named a URL where an account should be.** An authenticator
+showed `https://playground.nacre.work: //playground.nacre….` — the issuer, a
+colon, and then the *tail of a URL* standing in for the address, on the one
+screen whose whole job is to say which account you are looking at. Reported from
+a phone with the app's own list in the picture.
+
+`otpauth://` labels are `issuer:account`, so the colon is the separator and the
+key-uri format says neither half may contain one. Percent-encoding is not a way
+round it: an app that decodes the path before splitting sees the colon again,
+which is what shipped. The API passed `NACRE_JWT_ISSUER`, correctly a URL, into
+a field that must be a name.
+
+The argument was already written **three lines further down the same object**:
+the WebAuthn relying party takes `canonical.hostname` and says why — "a scheme
+or a port in it is a credential no authenticator will make". Two fields with one
+rule between them and nothing that knew there were two, which is this file's
+first paragraph.
+
+So the issuer is the hostname now, and the repair is a refusal rather than the
+one edit: `otpauthUrl` throws on a colon in either half, and `SecondFactors`
+makes that call once **when it is constructed** — a deployment that reintroduces
+a URL is a container that does not start, by name, rather than a label somebody
+lives with for as long as that authenticator exists. Checked by constructing it
+both ways: refused on the URL, accepted on the hostname — and then by CI, which
+is where it earned itself. It named **five** call sites still carrying a URL:
+the three live suites that construct a `SecondFactors`, and both end-to-end
+scripts, every one of them written to the wiring as it was. A fixture agrees
+with whatever it was written to, and here that was a defect.
+
+The case that existed passed `issuer: 'Nacre'`, a value no deployment produces —
+a fixture written to the shape somebody imagined rather than to the one the
+wiring sends, which is the defect this file already names three times. It is
+asked of the URL and of the hostname now.
+
+Nothing has to be re-enrolled: a code is `HMAC(secret, step)` and the label is
+not an input to it. An authenticator enrolled before this keeps working and
+keeps its mislabelled entry until somebody removes and re-adds it.
+
 **The console has an extension file, and it is the sixth-and-a-half point.**
 `packages/admin` is single-organization by construction — every screen is behind
 `administers(auth)`, which is `org_admin` and nothing else — while the

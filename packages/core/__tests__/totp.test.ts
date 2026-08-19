@@ -170,4 +170,40 @@ describe('otpauthUrl', () => {
     expect(url.searchParams.get('digits')).toBe('6')
     expect(url.searchParams.get('period')).toBe('30')
   })
+
+  /*
+   * The case above passed a bare name, which is a value no deployment produced:
+   * the API handed this function `NACRE_JWT_ISSUER`, a URL. The label is
+   * `issuer:account`, so the colon in `https://` became the separator and an
+   * authenticator showed
+   *
+   *     https://playground.nacre.work: //playground.nacre….
+   *
+   * — the account name replaced by the tail of a URL. A fixture written to the
+   * shape somebody imagined rather than to the one the wiring sends, which is
+   * the defect this repository names three times already.
+   */
+  it('refuses a URL as the issuer, because the colon is the label separator', () => {
+    expect(() =>
+      otpauthUrl({
+        issuer: 'https://playground.nacre.work',
+        account: 'dana@example.com',
+        secret: 'ABCD',
+      }),
+    ).toThrow(/colon/u)
+  })
+
+  it('refuses a colon in the account name too, for the same reason', () => {
+    expect(() => otpauthUrl({ issuer: 'Nacre', account: 'user:one', secret: 'ABCD' })).toThrow(
+      /colon/u,
+    )
+  })
+
+  it('takes the hostname the API now passes', () => {
+    const url = new URL(
+      otpauthUrl({ issuer: 'playground.nacre.work', account: 'dana@example.com', secret: 'ABCD' }),
+    )
+    expect(decodeURIComponent(url.pathname)).toBe('/playground.nacre.work:dana@example.com')
+    expect(url.searchParams.get('issuer')).toBe('playground.nacre.work')
+  })
 })
