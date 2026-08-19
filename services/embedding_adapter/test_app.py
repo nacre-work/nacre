@@ -17,6 +17,8 @@ import io
 import json
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -138,6 +140,68 @@ def post(port: int, path: str, body: dict):
 def lines(printed: io.StringIO) -> list[dict]:
     """Every log line, parsed. One JSON object per line is the whole format."""
     return [json.loads(line) for line in printed.getvalue().splitlines() if line.strip()]
+
+
+class TheProcess(unittest.TestCase):
+    """
+    The refusals reach the **exit code**, which is the half a `ConfigError` case
+    cannot see.
+
+    Every case in `Configuration` asserts that `load_routes` raises. What a
+    deployment meets is a container, and between the two is `serve`: it catches
+    `ConfigError`, prints one JSON line and raises `SystemExit(1)`. If that
+    `except` were ever narrowed, or the exit code dropped, the process would
+    come up, bind its port, and answer every embedding request with an error
+    from a service the orchestrator believes is healthy — which is worse than
+    not starting, because nothing restarts it and nothing says why.
+
+    This is the whole of what starting the `hosted` Compose profile in CI would
+    add over the cases above, so it is asked here instead of by a job that
+    builds a stack in order to watch one container die.
+
+    Run as a subprocess deliberately. `assertRaises(SystemExit)` proves the
+    exception and not the status a shell sees, and the message has to arrive on
+    a stream `docker logs` shows.
+    """
+
+    def _refuse(self, **environment):
+        """The module, run the way the image runs it, with a broken config."""
+        child = subprocess.run(
+            [sys.executable, "-m", "services.embedding_adapter"],
+            env={
+                # PATH and HOME only, so nothing an operator's shell happens to
+                # export can configure this into starting successfully.
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": os.environ.get("HOME", ""),
+                "PYTHONPATH": os.getcwd(),
+                **environment,
+            },
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(child.returncode, 1, f"stdout={child.stdout!r} stderr={child.stderr!r}")
+
+        lines = [line for line in child.stdout.splitlines() if line.strip()]
+        self.assertTrue(lines, f"nothing was printed; stderr={child.stderr!r}")
+        # JSON, because the log line is what an operator greps and what a log
+        # shipper parses — a traceback is neither.
+        record = json.loads(lines[-1])
+        self.assertEqual(record["level"], "error")
+        return record["msg"]
+
+    def test_with_nothing_configured_the_process_exits_1(self):
+        said = self._refuse()
+        self.assertIn("NACRE_EMBED_ROUTES", said)
+
+    def test_an_unknown_vendor_exits_1_naming_it(self):
+        said = self._refuse(NACRE_EMBED_ROUTES="m=azure")
+        self.assertIn("azure", said)
+
+    def test_a_routed_vendor_with_no_credential_exits_1(self):
+        said = self._refuse(NACRE_EMBED_ROUTES="m=google")
+        self.assertIn("NACRE_EMBED_GOOGLE_API_KEY", said)
 
 
 class Configuration(unittest.TestCase):

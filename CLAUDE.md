@@ -1268,6 +1268,24 @@ Each wants something CI would have to be given — a bucket and a reranker, a
 vendor credential, a seeded model volume — so the honest statement is that they
 are covered by `lint:compose` and by hand, and not that they are covered.
 
+**`hosted` turned out not to need one, and saying so is the finding.** Its three
+refusals — no routes, a routed vendor with no credential, an unknown vendor —
+were already asked of `load_routes`, in the sidecar's own suite, in the
+`sidecars` job. What a `ConfigError` case cannot see is the half a deployment
+actually meets: `serve` catches that error, prints one JSON line and raises
+`SystemExit(1)`, and if the `except` were narrowed or the status dropped the
+process would come up, bind its port and answer every request with an error
+from a service the orchestrator believes is healthy — worse than not starting,
+because nothing restarts it and nothing says why.
+
+That is the whole of what starting the profile in CI would add over the cases
+already there, so it is asked directly: the module run as a **subprocess**, with
+a broken environment and with `PATH` and `HOME` only so nothing an operator's
+shell exports can configure it into starting. `assertRaises(SystemExit)` would
+have proved the exception and not the status a shell sees, and the message has
+to arrive on a stream `docker logs` shows. Both halves were restored — the exit
+code and the stream — and each failed all three.
+
 **The ACL tag cache is gone** (migration 0016). `docs/authz.md` specified
 `acl_tags` in the vector payload as a second filter beside the layer bound, and
 the whole subsystem was built — the retag sweep, its lease, `acl_version`, the
