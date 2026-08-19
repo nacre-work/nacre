@@ -1,5 +1,7 @@
 import { createHash, createHmac } from 'node:crypto'
 
+import { logger } from './logging.js'
+
 /**
  * Object storage, signed by hand.
  *
@@ -10,12 +12,23 @@ import { createHash, createHmac } from 'node:crypto'
  *
  * ─── why not the AWS SDK ───
  *
- * Four operations are needed: put, get, delete, head. `@aws-sdk/client-s3` is
- * tens of megabytes and hundreds of transitive packages, in a container whose
- * job is to read documents other people send it — which is the argument
+ * Five operations are needed: put, get, delete, head, list. `@aws-sdk/client-s3`
+ * is **22 MB across 26 packages**, measured with `--omit=dev` at 3.1113.0 rather
+ * than remembered — this paragraph said "tens of megabytes and hundreds of
+ * transitive packages", which was true of v3 before it consolidated its clients
+ * and is not true now. The argument survives the correction and is smaller than
+ * it was: 22 MB of somebody else's code in a container whose job is reading
+ * documents other people send it, for five operations, which is the argument
  * `metrics.ts` already makes for not taking prom-client. SigV4 is a documented
  * algorithm with a published set of test vectors, it fits in this file, and it
  * has no release cadence to track.
+ *
+ * What the SDK would genuinely buy is **credential providers** — IRSA, an
+ * instance role, SSO — which this client has no answer to beyond a static key
+ * pair. If that is ever needed the shape is `@aws-sdk/credential-providers`
+ * feeding a session token into the signer below, not the whole client: the
+ * signing is the part that is written and verified, and the credentials are the
+ * part that is not.
  *
  * The rule that comes with that choice: **anything here is verified against a
  * real MinIO before it is believed**, because a signing bug produces a 403 that
@@ -24,9 +37,20 @@ import { createHash, createHmac } from 'node:crypto'
  * ─── what is deliberately not here ───
  *
  * No multipart upload, so an object is one PUT and `NACRE_MAX_DOCUMENT_BYTES`
- * bounds it. No retries: the callers are the ingest queue and the collector,
- * both of which already retry whole units of work and would otherwise retry
- * twice.
+ * bounds it. Nothing streams either: a body is a `Uint8Array` in and out, which
+ * is affordable only because every object here is bounded — 8 MiB for an
+ * archive part, `NACRE_MAX_DOCUMENT_BYTES` for a document — and because the
+ * caller already holds the whole thing anyway. A streaming client would not
+ * lower peak memory without reworking the ingest path that buffers to hash.
+ *
+ * **Retries were on that list and are not any more, for the same reason
+ * listing was.** The argument given was that the callers — the ingest queue and
+ * the collector — already retry whole units of work. That was true of them and
+ * is not true of the caller that arrived afterwards: `backup`'s `verify` and
+ * `restore` read an archive part by part, so a 1.6 GB artifact is two hundred
+ * GETs, and one transient `503` from a real cloud store ended the whole restore
+ * — the operation somebody runs when the database is already gone. See
+ * `RetryPolicy`.
  *
  * **Listing was on that list and is not any more.** The reason given was that
  * nothing needed to enumerate a bucket; the backup module's archive reader
@@ -53,6 +77,32 @@ export interface S3Options {
    * wants it false.
    */
   readonly forcePathStyle: boolean
+
+  /**
+   * How hard to try again. `DEFAULT_RETRIES` where absent.
+   *
+   * Deliberately **not** an environment variable. Every `NACRE_*` this product
+   * has is one somebody sets and then believes something about, and there is
+   * nothing an operator would set here that the default gets wrong — a store
+   * that needs a different policy needs a different store. The field exists
+   * because `backup` reads two hundred parts in a row and may one day want a
+   * wider budget than a single ingest does, which is a decision code makes.
+   */
+  readonly retries?: Partial<RetryPolicy>
+
+  /** Told about each retry. Defaults to a `warn` line; see the constructor. */
+  readonly onRetry?: (notice: RetryNotice) => void
+
+  /**
+   * The three seams a test needs, and the reason they are here rather than in a
+   * test double: what is under test is *when* this client tries again, and a
+   * double that replaces the loop proves the double. Waiting a real 100 ms four
+   * times over is a suite that runs slower for no assertion, and a jitter drawn
+   * from `Math.random` is a case that cannot say what it measured.
+   */
+  readonly sleep?: (ms: number) => Promise<void>
+  readonly random?: () => number
+  readonly clock?: () => number
 }
 
 const UNSIGNED = 'UNSIGNED-PAYLOAD'
@@ -82,6 +132,123 @@ function encodeSegment(segment: string): string {
 
 /** Keys are `a/b/c`; each segment is encoded and the separators are not. */
 const encodeKey = (key: string): string => key.split('/').map(encodeSegment).join('/')
+
+/**
+ * When a request is worth sending again, and how long to wait first.
+ *
+ * ## What is retried, and what deliberately is not
+ *
+ * A transport failure — a reset connection, a DNS blip, a TLS handshake that
+ * did not finish — and a `5xx`, and `429`. Nothing else. A `403` is a
+ * signature, a credential or a policy, and every attempt re-signs with the same
+ * inputs, so retrying one spends the budget to arrive at the same answer; the
+ * worst version of that is `RequestTimeTooSkewed`, where the clock is wrong and
+ * four identical refusals hide a one-line diagnosis. A `404` is an answer. A
+ * `400` is a request this store will never accept. `501` is the one status in
+ * the 5xx range that is permanent — the store does not implement the operation
+ * — so it is excluded by name rather than by falling under `>= 500`.
+ *
+ * ## Every operation here is idempotent, and that is a property rather than a hope
+ *
+ * `GET`, `HEAD`, `DELETE` and a listing trivially. `PUT` because a key here is
+ * derived from identity — `documentKey` from the organization, layer and
+ * external id; an archive part from its index — never from a sequence, so
+ * sending the same bytes to the same key twice is one object either way. And
+ * because the body is a `Uint8Array` this process still holds, so an attempt is
+ * replayable **byte for byte**. A client that streamed its body could not make
+ * that claim, which is the reason a streaming rewrite would have to revisit
+ * this and not merely inherit it.
+ *
+ * ## Full jitter, not a doubling delay
+ *
+ * The callers are a fleet: worker replicas share a bucket, and a blip they all
+ * see is a blip they would all retry from at the same instant. So the wait is
+ * `random() × min(cap, base × 2^n)` — the whole window, not half of it —
+ * because what has to be spread is the retry of every replica, and equal jitter
+ * leaves half the delay in lockstep.
+ *
+ * `Retry-After` overrides the formula where the store sends one, since a server
+ * saying how long it wants knows better than a constant here; it is still
+ * capped, or a hostile or mistaken value would park a restore for an hour.
+ *
+ * ## A budget as well as a count
+ *
+ * `attempts` alone bounds one request. A restore reads two hundred parts, so
+ * four attempts each with a five second ceiling is a run that can spend twenty
+ * minutes discovering the store is down. `budgetMs` is the wall-clock bound on
+ * one operation, checked *before* sleeping — so the failure arrives while
+ * somebody is still watching.
+ */
+export interface RetryPolicy {
+  /** Total attempts including the first. `1` disables retrying entirely. */
+  readonly attempts: number
+  /** The first backoff window, in milliseconds. Doubles each attempt. */
+  readonly baseDelayMs: number
+  /** The ceiling on any one wait, `Retry-After` included. */
+  readonly maxDelayMs: number
+  /** Wall-clock bound on one operation, retries and waits included. */
+  readonly budgetMs: number
+}
+
+/**
+ * Four attempts inside thirty seconds.
+ *
+ * Chosen against the caller that needed this rather than as a round number: a
+ * restore reads its parts in sequence, so the cost of the policy is paid per
+ * part, and thirty seconds × two hundred parts is already the outer edge of
+ * what somebody will sit through before deciding the store is down. Three
+ * retries at 100/200/400 ms of window absorbs the transient answers a real
+ * store gives; anything past that is an outage rather than a blip, and waiting
+ * longer only delays the sentence that says so.
+ */
+export const DEFAULT_RETRIES: RetryPolicy = {
+  attempts: 4,
+  baseDelayMs: 100,
+  maxDelayMs: 5_000,
+  budgetMs: 30_000,
+}
+
+/**
+ * Whether a status is worth asking again.
+ *
+ * Exported because it is the whole of the policy's judgement and a test that
+ * re-derives it is a test of its own copy.
+ */
+export function worthRetrying(status: number): boolean {
+  if (status === 429) return true
+  // Permanent, and the only 5xx that is: the store is telling you it does not
+  // have this operation. Asking again gets the same answer more slowly.
+  if (status === 501) return false
+  return status >= 500
+}
+
+/**
+ * `Retry-After`, in milliseconds, or nothing.
+ *
+ * Both forms RFC 9110 allows: a count of seconds, and an HTTP-date. The second
+ * is what a proxy in front of a store tends to send, and reading only the first
+ * would silently fall back to the formula for exactly those deployments.
+ */
+export function retryAfterMs(header: string | null, now: number): number | undefined {
+  if (header === null) return undefined
+  const trimmed = header.trim()
+  if (/^\d+$/u.test(trimmed)) return Number(trimmed) * 1000
+  const at = Date.parse(trimmed)
+  if (Number.isNaN(at)) return undefined
+  // A date in the past is "now", not a negative wait.
+  return Math.max(0, at - now)
+}
+
+/** What a caller is told about a retry that happened. */
+export interface RetryNotice {
+  readonly method: string
+  readonly key: string
+  readonly attempt: number
+  readonly of: number
+  readonly delayMs: number
+  readonly status?: number
+  readonly error?: string
+}
 
 export class S3Error extends Error {
   constructor(
@@ -154,9 +321,28 @@ function unescapeXml(value: string): string {
 
 export class S3 {
   readonly #options: S3Options
+  readonly #retries: RetryPolicy
+  readonly #onRetry: (notice: RetryNotice) => void
+  readonly #sleep: (ms: number) => Promise<void>
+  readonly #random: () => number
+  readonly #clock: () => number
 
   constructor(options: S3Options) {
     this.#options = { ...options, endpoint: options.endpoint.replace(/\/+$/, '') }
+    this.#retries = { ...DEFAULT_RETRIES, ...options.retries }
+    // Logged from here rather than wired at each construction site. The client
+    // is built in three entry points — the API, the worker and the MCP
+    // transport — and a notice a caller has to remember to pass is a notice two
+    // of the three would not have. A retry that happens silently is a system
+    // that got slower for a reason nothing recorded.
+    this.#onRetry =
+      options.onRetry ??
+      ((notice) => {
+        logger.warn('s3 request retried', { ...notice })
+      })
+    this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
+    this.#random = options.random ?? Math.random
+    this.#clock = options.clock ?? Date.now
   }
 
   get bucket(): string {
@@ -248,40 +434,131 @@ export class S3 {
     }
   }
 
+  /**
+   * Sign and send, trying again where that is the right thing to do.
+   *
+   * **One place, and that is the whole design rather than tidiness.** Three
+   * methods built a request before this existed — `#send` for put/get/remove,
+   * `list` for a paginated GET on the bucket, `ready` for a HEAD on it — each
+   * calling `fetch` itself, with nothing that knew there were three. A retry
+   * added to `#send` alone would have left a restore's *listing* unretried,
+   * which is the request that decides whether the archive's parts are all
+   * there: the check that refuses a stray part would have become the check that
+   * fails on a blip. So the loop is here and those three are its callers.
+   *
+   * **Re-signed on every attempt, never replayed.** `x-amz-date` is inside the
+   * signature and S3 refuses a request more than fifteen minutes old, so
+   * reusing the first attempt's headers after a backoff makes the second
+   * failure a different failure from the first — which is the worst shape a
+   * retry can have, because it hides the reason the request was retried.
+   *
+   * The body of a response that is going to be retried is cancelled rather than
+   * read: an error document is small but a `5xx` from a proxy can carry a page
+   * of HTML, and a stream left unread holds a socket. The response that is
+   * finally returned has its body intact, because the caller builds `S3Error`
+   * out of it.
+   */
+  async #signedFetch(input: {
+    method: string
+    key: string
+    url: URL
+    payloadHash: string
+    body?: Uint8Array
+    headers?: Record<string, string>
+    /** Overrides the client's policy. `ready` is the one caller that does. */
+    retries?: Partial<RetryPolicy>
+  }): Promise<Response> {
+    const started = this.#clock()
+    const { attempts, baseDelayMs, maxDelayMs, budgetMs } = {
+      ...this.#retries,
+      ...input.retries,
+    }
+
+    for (let attempt = 1; ; attempt += 1) {
+      const headers = this.#sign({
+        method: input.method,
+        url: input.url,
+        payloadHash: input.payloadHash,
+        headers: input.headers ?? {},
+        now: new Date(this.#clock()),
+      })
+
+      let response: Response | undefined
+      let failure: unknown
+
+      try {
+        response = await fetch(input.url, {
+          method: input.method,
+          headers,
+          ...(input.body === undefined ? {} : { body: input.body }),
+        })
+      } catch (cause) {
+        failure = cause
+      }
+
+      if (response !== undefined && !worthRetrying(response.status)) return response
+
+      const last = attempt >= attempts
+      // Full jitter over the whole window. See `RetryPolicy`.
+      const window = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1))
+      const named =
+        response === undefined
+          ? undefined
+          : retryAfterMs(response.headers.get('retry-after'), this.#clock())
+      const delay = Math.min(maxDelayMs, named ?? Math.floor(this.#random() * window))
+      const spent = this.#clock() - started
+      const affordable = spent + delay <= budgetMs
+
+      if (last || !affordable) {
+        // Out of attempts or out of budget. A transport failure has no response
+        // to hand back, so the original error is thrown — which is what this
+        // client did for every failure before there were retries.
+        if (response !== undefined) return response
+        throw failure
+      }
+
+      response?.body?.cancel().catch(() => undefined)
+      this.#onRetry({
+        method: input.method,
+        key: input.key,
+        attempt,
+        of: attempts,
+        delayMs: delay,
+        ...(response === undefined ? {} : { status: response.status }),
+        ...(failure === undefined ? {} : { error: String(failure).slice(0, 200) }),
+      })
+      await this.#sleep(delay)
+    }
+  }
+
   async #send(
     method: string,
     key: string,
     body?: Uint8Array,
     extraHeaders: Record<string, string> = {},
   ): Promise<Response> {
-    const url = this.#url(key)
-    const headers = this.#sign({
+    // **No `content-length` anywhere below.** It is a forbidden request header:
+    // the Fetch standard says the runtime computes it from the body, and undici
+    // 7 stopped tolerating one set by hand — `InvalidArgumentError: invalid
+    // content-length header`, thrown before the request leaves. Node 22 ships
+    // undici 6 and accepted it; Node 24 ships 7 and does not, so this was every
+    // PUT failing on the next Node.
+    //
+    // SigV4 does not need it signed. What binds the body is
+    // `x-amz-content-sha256`, which is in the canonical request either way — a
+    // body that changes in flight still fails the signature rather than being
+    // stored.
+    //
+    // Found by running this client under a runtime that had already moved:
+    // vitest brings its own undici 7, so the live case failed where a plain
+    // `node` script passed.
+    return this.#signedFetch({
       method,
-      url,
+      key,
+      url: this.#url(key),
       payloadHash: body === undefined ? UNSIGNED : sha256(body),
-      // **No `content-length`.** It is a forbidden request header: the Fetch
-      // standard says the runtime computes it from the body, and undici 7
-      // stopped tolerating one set by hand — `InvalidArgumentError: invalid
-      // content-length header`, thrown before the request leaves. Node 22
-      // ships undici 6 and accepted it; Node 24 ships 7 and does not, so this
-      // was every PUT failing on the next Node.
-      //
-      // SigV4 does not need it signed. What binds the body is
-      // `x-amz-content-sha256`, which is in the canonical request either way —
-      // a body that changes in flight still fails the signature rather than
-      // being stored.
-      //
-      // Found by running this client under a runtime that had already moved:
-      // vitest brings its own undici 7, so the live case failed where a plain
-      // `node` script passed.
-      headers: extraHeaders,
-      now: new Date(),
-    })
-
-    return fetch(url, {
-      method,
-      headers,
       ...(body === undefined ? {} : { body }),
+      headers: extraHeaders,
     })
   }
 
@@ -317,14 +594,12 @@ export class S3 {
       url.searchParams.set('prefix', prefix)
       if (token !== undefined) url.searchParams.set('continuation-token', token)
 
-      const headers = this.#sign({
+      const response = await this.#signedFetch({
         method: 'GET',
+        key: `${prefix}*`,
         url,
         payloadHash: UNSIGNED,
-        headers: {},
-        now: new Date(),
       })
-      const response = await fetch(url, { method: 'GET', headers })
       if (!response.ok) {
         throw new S3Error(response.status, 'GET', `${prefix}*`, await response.text())
       }
@@ -448,14 +723,19 @@ export class S3 {
     const url = this.#options.forcePathStyle
       ? new URL(`${this.#options.endpoint}/${this.#options.bucket}`)
       : this.#url('')
-    const headers = this.#sign({
+    const response = await this.#signedFetch({
       method: 'HEAD',
+      key: this.#options.bucket,
       url,
       payloadHash: UNSIGNED,
-      headers: {},
-      now: new Date(),
+      // **One attempt, and this is the one caller that says so.** A readiness
+      // probe's whole job is to answer now: retrying inside it for thirty
+      // seconds turns "the bucket is not answering" into no answer at all, and
+      // an orchestrator reads a probe that times out as a pod to kill rather
+      // than as a dependency that is down. The retries exist for work that has
+      // somewhere to get back to; a probe's caller is the next probe.
+      retries: { attempts: 1 },
     })
-    const response = await fetch(url, { method: 'HEAD', headers })
     if (!response.ok) {
       throw new S3Error(response.status, 'HEAD', this.#options.bucket, response.statusText)
     }

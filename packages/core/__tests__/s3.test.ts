@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { documentKey, S3, S3Error } from '../s3.js'
+import { documentKey, retryAfterMs, S3, S3Error, worthRetrying } from '../s3.js'
 
 /**
  * The object-storage client.
@@ -318,5 +318,240 @@ describe('S3.list', () => {
   it('reports a refusal with the store’s own words, like every other call', async () => {
     captureSequence([{ status: 403, body: '<Error><Code>AccessDenied</Code></Error>' }])
     await expect(new S3(options).list('a/')).rejects.toThrow(/AccessDenied/u)
+  })
+})
+
+/**
+ * Trying again, and the four ways that goes wrong.
+ *
+ * The transport is stubbed here and says so: what is under test is *when* this
+ * client sends a second request, which is a decision made entirely inside it.
+ * The signature is checked against a real MinIO, in `s3-live.test.ts`, and the
+ * one property those two cannot split between them — that a retry is re-signed
+ * rather than replayed — is asserted below by reading the header.
+ *
+ * `sleep` and `random` are injected, so a case that measures a backoff measures
+ * a number rather than a wall clock, and the suite does not wait seconds to
+ * assert milliseconds. `lint:test-clock` exists because a case whose claim
+ * depends on something it does not control is a case that is green four times
+ * in five.
+ */
+describe('retrying', () => {
+  /** A `fetch` that plays a script: a status, or a thrown transport failure. */
+  function script(steps: readonly ({ status: number; body?: string; retryAfter?: string } | Error)[]) {
+    const calls: { method: string; url: string; authorization: string }[] = []
+    let n = 0
+    const fake = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>
+      calls.push({
+        method: init?.method ?? 'GET',
+        url: String(input),
+        authorization: headers['authorization'] ?? '',
+      })
+      const step = steps[Math.min(n, steps.length - 1)]
+      n += 1
+      if (step instanceof Error) throw step
+      const status = step?.status ?? 500
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: '',
+        // A real `Response` always has these two, and the stub that did not is
+        // how a fixture stops looking like the wire.
+        headers: { get: (name: string) => (name === 'retry-after' ? (step?.retryAfter ?? null) : null) },
+        body: { cancel: async () => undefined },
+        text: async () => step?.body ?? '',
+        arrayBuffer: async () => new TextEncoder().encode(step?.body ?? '').buffer,
+      } as unknown as Response
+    })
+    vi.stubGlobal('fetch', fake)
+    return calls
+  }
+
+  const waits: number[] = []
+  const notices: { status?: number; attempt: number; delayMs: number }[] = []
+  /** Deterministic: the full jitter window, so a delay is a number to assert. */
+  function client(over: Record<string, unknown> = {}) {
+    return new S3({
+      ...options,
+      random: () => 1,
+      sleep: async (ms: number) => {
+        waits.push(ms)
+      },
+      onRetry: (n) => {
+        notices.push({ attempt: n.attempt, delayMs: n.delayMs, ...(n.status === undefined ? {} : { status: n.status }) })
+      },
+      ...over,
+    })
+  }
+
+  afterEach(() => {
+    waits.length = 0
+    notices.length = 0
+  })
+
+  it('sends again after a 503 and returns the answer', async () => {
+    const calls = script([{ status: 503 }, { status: 200 }])
+    await client().put('a', new Uint8Array([1]))
+    expect(calls).toHaveLength(2)
+    expect(notices).toEqual([{ attempt: 1, of: 4, delayMs: 100, status: 503 }].map((n) => ({
+      attempt: n.attempt,
+      delayMs: n.delayMs,
+      status: n.status,
+    })))
+  })
+
+  /**
+   * The whole of the judgement, and each of these is a way to waste a budget
+   * arriving at the answer already given.
+   */
+  it('does not send again for anything a second try cannot change', async () => {
+    for (const status of [400, 403, 404, 409, 501]) {
+      const calls = script([{ status }, { status: 200 }])
+      await client()
+        .get('a')
+        .catch(() => undefined)
+      expect(calls, `status ${String(status)}`).toHaveLength(1)
+    }
+  })
+
+  it('sends again for 429 and for a 500', async () => {
+    for (const status of [429, 500, 502, 503, 504]) {
+      const calls = script([{ status }, { status: 200 }])
+      await client().get('a')
+      expect(calls, `status ${String(status)}`).toHaveLength(2)
+    }
+  })
+
+  /**
+   * The property no other case here can see: `x-amz-date` is inside the
+   * signature and S3 refuses a request more than fifteen minutes old, so a
+   * retry that replayed the first attempt's headers would fail for a reason
+   * that has nothing to do with why the first one did.
+   */
+  it('re-signs each attempt rather than replaying the first', async () => {
+    let clock = Date.parse('2026-08-19T00:00:00Z')
+    const calls = script([{ status: 503 }, { status: 503 }, { status: 200 }])
+    await client({ clock: () => (clock += 1_000) }).put('a', new Uint8Array([1]))
+
+    expect(calls).toHaveLength(3)
+    expect(new Set(calls.map((c) => c.authorization)).size).toBe(3)
+    expect(calls[0]?.authorization).not.toBe(calls[1]?.authorization)
+  })
+
+  it('gives up after the attempts and reports the last failure', async () => {
+    const calls = script([{ status: 503, body: '<Error><Code>SlowDown</Code></Error>' }])
+    await expect(client().put('a', new Uint8Array([1]))).rejects.toThrow(/SlowDown/)
+    expect(calls).toHaveLength(4)
+  })
+
+  /**
+   * A transport failure has no response to hand back, so the original error is
+   * thrown — which is what this client did for every failure before there were
+   * retries, and is what a caller's `catch` is already written against.
+   */
+  it('retries a thrown transport failure and rethrows it when spent', async () => {
+    const calls = script([new TypeError('fetch failed')])
+    await expect(client().get('a')).rejects.toThrow(/fetch failed/)
+    expect(calls).toHaveLength(4)
+  })
+
+  it('doubles the window, and full jitter draws from the whole of it', async () => {
+    script([{ status: 503 }])
+    await client().get('a').catch(() => undefined)
+    // random() === 1, so each wait is the window itself: 100, 200, 400.
+    expect(waits).toEqual([100, 200, 400])
+
+    waits.length = 0
+    script([{ status: 503 }])
+    await client({ random: () => 0 })
+      .get('a')
+      .catch(() => undefined)
+    expect(waits).toEqual([0, 0, 0])
+  })
+
+  it('honours Retry-After over the formula, in both of its forms', async () => {
+    script([{ status: 429, retryAfter: '2' }, { status: 200 }])
+    await client().get('a')
+    expect(waits).toEqual([2000])
+
+    waits.length = 0
+    const clock = Date.parse('2026-08-19T00:00:00Z')
+    script([{ status: 429, retryAfter: 'Wed, 19 Aug 2026 00:00:03 GMT' }, { status: 200 }])
+    await client({ clock: () => clock }).get('a')
+    expect(waits).toEqual([3000])
+  })
+
+  it('caps Retry-After, so a mistaken value does not park a restore', async () => {
+    script([{ status: 503, retryAfter: '3600' }, { status: 200 }])
+    await client({ retries: { maxDelayMs: 1_000, budgetMs: 60_000 } }).get('a')
+    expect(waits).toEqual([1000])
+  })
+
+  /**
+   * The budget is checked *before* sleeping, so the failure arrives while
+   * somebody is still watching rather than after the last wait it could not
+   * afford.
+   */
+  it('stops when the next wait would not fit the budget', async () => {
+    const calls = script([{ status: 503 }])
+    await client({ retries: { budgetMs: 150 } })
+      .get('a')
+      .catch(() => undefined)
+    // 100 fits, 200 does not.
+    expect(waits).toEqual([100])
+    expect(calls).toHaveLength(2)
+  })
+
+  /**
+   * The second of the three call sites, and the reason the loop is one function
+   * rather than three: a listing is the request that decides whether an
+   * archive's parts are all there, so a blip on it turns the check that refuses
+   * a stray part into the check that fails.
+   */
+  it('retries a listing too', async () => {
+    const calls = script([{ status: 503 }, { status: 200, body: page(['a/1']) }])
+    expect(await client().list('a/')).toEqual(['a/1'])
+    expect(calls).toHaveLength(2)
+  })
+
+  /**
+   * And the one caller that opts out. A readiness probe's job is to answer now:
+   * retrying inside it turns "the bucket is not answering" into no answer, and
+   * an orchestrator reads a probe that times out as a pod to kill.
+   */
+  it('does not retry a readiness probe', async () => {
+    const calls = script([{ status: 503 }])
+    await expect(client().ready()).rejects.toBeInstanceOf(S3Error)
+    expect(calls).toHaveLength(1)
+    expect(waits).toEqual([])
+  })
+})
+
+describe('worthRetrying', () => {
+  it('is every 5xx but 501, plus 429', () => {
+    for (const yes of [429, 500, 502, 503, 504, 599]) expect(worthRetrying(yes), String(yes)).toBe(true)
+    for (const no of [200, 204, 301, 400, 403, 404, 409, 412, 501]) {
+      expect(worthRetrying(no), String(no)).toBe(false)
+    }
+  })
+})
+
+describe('retryAfterMs', () => {
+  const now = Date.parse('2026-08-19T00:00:00Z')
+
+  it('reads a count of seconds', () => {
+    expect(retryAfterMs('5', now)).toBe(5000)
+    expect(retryAfterMs(' 5 ', now)).toBe(5000)
+  })
+
+  it('reads an HTTP-date, which is what a proxy in front of a store sends', () => {
+    expect(retryAfterMs('Wed, 19 Aug 2026 00:00:07 GMT', now)).toBe(7000)
+  })
+
+  it('is nothing for an absent or unreadable header, and never negative', () => {
+    expect(retryAfterMs(null, now)).toBeUndefined()
+    expect(retryAfterMs('soon', now)).toBeUndefined()
+    expect(retryAfterMs('Wed, 19 Aug 2020 00:00:00 GMT', now)).toBe(0)
   })
 })

@@ -272,6 +272,34 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.23.8 — the object-storage client tries again
+
+**Nothing to do.** No variable, no schema, no route.
+
+Every request to object storage is now retried on a transport failure, on a
+`5xx` and on a `429` — three more attempts inside a thirty-second budget, with
+full jitter on the wait and `Retry-After` honoured where the store sends one.
+Nothing else is retried: a `403` re-signs with the same inputs and arrives at
+the same refusal, a `404` is an answer, and `501` means the store does not have
+the operation.
+
+**What this changes for you is a restore that survives a blip.** The client had
+no retries on a stated argument — that its callers, the ingest queue and the
+collector, already retry whole units of work. That was true of them and stopped
+being true when `backup`'s `verify` and `restore` arrived: those read an archive
+part by part, so a 1.6 GB artifact is two hundred requests, and one transient
+`503` from a real cloud store ended the whole run — the operation somebody runs
+when the database is already gone.
+
+A readiness probe is the one caller that opts out and still makes exactly one
+attempt. Retrying inside `/v1/ready` would turn "the bucket is not answering"
+into no answer at all, which an orchestrator reads as a pod to kill rather than
+as a dependency that is down.
+
+If a deployment watches its logs, expect a new `warn` line — `s3 request
+retried`, with the status, the attempt and the wait. A retry that happened
+silently is a system that got slower for a reason nothing recorded.
+
 ### 0.23.7 — object storage on Node 24
 
 **Nothing to do on Node 22, and this is the release that makes Node 24 work.**

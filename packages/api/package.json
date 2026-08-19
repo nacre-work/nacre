@@ -1,6 +1,6 @@
 {
   "name": "@nacre.work/api",
-  "version": "0.23.7",
+  "version": "0.23.8",
   "description": "Nacre REST API and authorization service",
   "repository": {
     "type": "git",

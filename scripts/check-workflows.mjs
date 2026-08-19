@@ -227,6 +227,71 @@ if (!files.includes(RELEASE)) {
   }
 }
 
+// ─── Every workflow that runs the suite has the same fixtures ─────────────
+
+// A gate is only as good as what it is pointed at.
+//
+// `s3-live.test.ts` refuses to skip when `CI` is set — a check that cannot
+// check must not report green — so the job running it needs a real object
+// store. Four workflows run the unit project: `ci.yml`, `acl-invariants.yml`,
+// `release.yml`, and `flake-hunt.yml` through `scripts/flake-hunt.mjs`. A
+// fixture added to one of them is a suite that fails in the other three, and
+// adding it to three is a nightly hunt that goes red at 3am for a reason nobody
+// changed.
+//
+// So the rule is symmetric across all of them and computed rather than listed,
+// and the *set* of workflows is discovered too: whichever ones run the suite.
+// Compared by **name** and not by value, because a port or a URL legitimately
+// differs between two jobs and the question here is only whether the fixture is
+// there at all.
+//
+// The narrower version of this rule — release against pull request — lives in
+// `nacre-enterprise`'s copy of this file, which is a repository with two
+// workflows and where the two are the same question. This is the sharper form,
+// and it is the one both should carry.
+
+/** A workflow that runs the unit project, however it spells it. */
+function runsTheSuite(text) {
+  return /pnpm\s+(?:run\s+)?test:unit/.test(text) || /flake-hunt\.mjs/.test(text)
+}
+
+/** Every `NACRE_*` a workflow file sets, anywhere in it. */
+function fixtures(text) {
+  return new Set([...text.matchAll(/^\s*(NACRE_[A-Z0-9_]+):/gm)].map((m) => m[1]))
+}
+
+const suites = files
+  .map((file) => ({ file, text: readFileSync(join(DIR, file), 'utf8') }))
+  .filter(({ text }) => runsTheSuite(text))
+  .map(({ file, text }) => ({ file, set: fixtures(text) }))
+
+if (suites.length === 0) {
+  console.error(
+    `::error::no workflow in ${DIR} runs the unit suite. This check reads that set, so an empty ` +
+      'read is a failure and never a pass — rename the pattern here if the command moved.',
+  )
+  failed = true
+} else {
+  const everywhere = new Set(suites.flatMap(({ set }) => [...set]))
+  for (const name of [...everywhere].sort()) {
+    const missing = suites.filter(({ set }) => !set.has(name)).map(({ file }) => file)
+    if (missing.length === 0) continue
+    console.error(
+      `::error::${name} is set by ${String(suites.length - missing.length)} of the ` +
+        `${String(suites.length)} workflow(s) that run the unit suite, and not by ` +
+        `${missing.join(', ')}. The suite is the same one, so a fixture only some of them have ` +
+        'is a case that runs in one job and fails in the next.',
+    )
+    failed = true
+  }
+  if (!failed) {
+    console.log(
+      `${String(suites.length)} workflow(s) run the unit suite, with the same ` +
+        `${String(everywhere.size)} fixture(s)`,
+    )
+  }
+}
+
 // ─── No in-place edit of a file a workflow did not write ──────────────────
 
 // `sed -i` and friends. Matched on the flag rather than on the file being

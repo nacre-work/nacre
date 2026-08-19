@@ -1099,6 +1099,80 @@ mis-decoded, so a `get` would `404` and `backup`'s `verify` would condemn a good
 archive. Numeric references — decimal and hex — are decoded now, and `&amp;`
 last, or a key containing `&amp;#39;` decodes twice.
 
+**And the reason it had no retries stopped being true the same way.** The header
+said the callers already retry whole units of work — the ingest queue and the
+collector — which was true of them and is not true of `verify` and `restore`:
+those read an archive part by part, so a 1.6 GB artifact is two hundred
+requests, and one transient `503` from a real cloud store ended the whole run.
+The operation somebody runs when the database is already gone. Same shape as
+`list`, one paragraph up: a stated argument that a later caller falsified, in
+the same file, twice.
+
+Three more attempts inside a thirty-second budget, and the judgement is the
+whole of it. A transport failure, a `5xx` and a `429`; nothing else. A `403`
+re-signs with the same inputs and arrives at the same refusal — the worst
+version being `RequestTimeTooSkewed`, where four identical failures hide a
+one-line diagnosis — a `404` is an answer, and `501` is the one status in the
+5xx range that is permanent, so it is excluded by name rather than by falling
+under `>= 500`.
+
+**Full jitter over the whole window**, because the callers are a fleet: worker
+replicas share a bucket, and a blip they all see is one they would all retry
+from at the same instant. `Retry-After` overrides the formula and is capped, or
+a mistaken value parks a restore for an hour. And there is a **budget** as well
+as a count, checked before sleeping — attempts alone bound one request, and two
+hundred parts × four attempts is a run that spends twenty minutes discovering
+the store is down.
+
+Every operation here is idempotent and that is a property rather than a hope: a
+key is derived from identity, never from a sequence, and the body is a
+`Uint8Array` this process still holds, so an attempt is replayable byte for
+byte. A streaming client could not make that claim, which is why a streaming
+rewrite would have to revisit this rather than inherit it.
+
+The loop is **one function three call sites go through**, and that is the design
+rather than tidiness: `#send`, `list` and `ready` each called `fetch` with
+nothing that knew there were three, and a retry added to `#send` alone would
+have left a restore's *listing* unretried — the request that decides whether an
+archive's parts are all there, so the check that refuses a stray part becomes
+the check that fails on a blip. `ready` is the one caller that opts out, at one
+attempt: a readiness probe's job is to answer now, and retrying inside it turns
+"the bucket is not answering" into no answer, which an orchestrator reads as a
+pod to kill.
+
+**And the file's own header claimed a check that did not exist.** It says every
+property here is verified against a real MinIO before it is believed — true of
+somebody running a script by hand, and false of CI, which had no object store at
+all. The `lint:tokens` shape exactly: the property held, and that is what made
+the absence invisible. `s3-live.test.ts` is six cases against a real store, and
+four workflows run the unit suite so all four now start one.
+
+`lint:workflows` is what knows there are four. It compares the `NACRE_*` every
+workflow running that suite sets, by name and computed rather than listed, and
+refuses outright if it finds no such workflow. Taking two variables out of
+`flake-hunt.yml` names both — which is the case that matters, because a nightly
+hunt going red at 3am for a fixture nobody changed is how a hunt stops being
+read.
+
+**The live case written to prove the re-signing could not fail, and that was
+measured rather than assumed.** Its first version said a client replaying the
+first attempt's headers would be caught here. Restoring exactly that left the
+file green: the backoff is stubbed to return immediately, so both attempts land
+in the same second, and S3 refuses a stale signature only past fifteen minutes.
+No suite that finishes in under fifteen minutes can show it. The re-signing is
+pinned in the unit file, where the clock is a seam; the live file claims what
+only a store can answer — that a retried write really lands — and says so.
+
+**And the paragraph above about the SDK was wrong about its size.** It said
+"tens of megabytes and hundreds of transitive packages"; `@aws-sdk/client-s3` at
+3.1113.0 installs **26 packages and 22 MB** with `--omit=dev`, measured rather
+than remembered — v3 consolidated its clients since that sentence was written.
+The argument survives the correction and is smaller than it was. What the SDK
+would genuinely buy is credential providers — IRSA, an instance role, SSO — and
+if that is ever needed the shape is `@aws-sdk/credential-providers` feeding a
+session token into this signer, not the whole client: the signing is the part
+that is written and verified, and the credentials are the part that is not.
+
 **`docker compose --profile minimal up` has now been run from a clean clone**,
 and the whole loop driven through it: init, layer, ingest, indexed, search,
 grant, revoke. It found four more things, one of them a regression from the
