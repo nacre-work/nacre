@@ -272,6 +272,43 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.23.0 — an access log on a screen, and a console a commercial image can add to
+
+**No migration, no new variables, and nothing to do.** Both changes are surfaces;
+neither asks a deployment for anything it does not already have.
+
+**The access log has a screen.** `GET /v1/audit` has been readable, cursor-paged
+and exportable since the journal landed, and nothing in the product showed it —
+the only way to start the investigation `docs/audit.md` opens with was `curl`
+with an `Accept` header, or `psql`. The console has an **Access log** view now,
+at `#/audit`, with filters for the action, the result and a date range.
+
+It offers **no field for an actor's id**, deliberately: nobody knows a uuid, and
+a mistyped one comes back as an empty log, which reads as *nothing happened*.
+Pressing an actor in the log narrows to that actor instead.
+
+An `org_admin` and a `platform_admin` see the two different logs they have always
+seen — the second is shown administrative actions and never which documents were
+read — and the screen now *says which*, because a log with no document reads in
+it is indistinguishable from an organization where nobody read anything.
+
+There is still no export button. The endpoint serves JSONL and CSV by content
+negotiation, a browser cannot set `Accept` on a link, and fetching a whole
+journal into a tab's memory to hand it back as a file is not an improvement.
+`nacre audit` is the route for that.
+
+**A commercial image can put a screen in this console.** The `web` image now
+ships one file, `extensions.js`, that registers nothing; an image built `FROM`
+it may replace that file to add views. **On the open image nothing changes** —
+the file is there, it registers nothing, and the console is exactly what it was.
+
+Two consequences worth knowing if you build your own front door. The console
+fetches `/extensions.js` at start-up, so a proxy or a CDN in front of it must
+serve that path from the same directory as `app.js` rather than falling through
+to `index.html`; and the file is loaded under `script-src 'self'`, so it must be
+same-origin. The contract is documented in
+[extensions.md](./extensions.md#the-consoles-extension-file).
+
 ### 0.22.0 — the console hands its secret over, and the mail is in the brand
 
 **No migration, no new variables, and nothing to do.** Everything here is what a
