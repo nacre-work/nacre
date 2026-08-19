@@ -272,6 +272,24 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.23.3 — one column, one size
+
+**Nothing to do**, and one screen looks different. The access log's Result
+column rendered its three values at three type sizes — `allow` at the table's
+own sans, `deny` inside a chip, `error` inside a tag — which a reader going down
+the column sees as three kinds of thing rather than as three values of one
+field. It is one control at one size now; only the fill differs, and an `allow`
+still carries none, because it is what almost every row says.
+
+Nothing about the log itself changed: the same events, the same filters, the
+same two roles seeing two different logs.
+
+**A console extension is unaffected.** The contract is still 2 and no member
+moved; `chip` on the kit is the *permission* chip and answers exactly the four
+it always did. The two classes this column needed are stylesheet-only, and the
+view that uses them builds its class directly, because a log's result is not a
+permission.
+
 ### 0.23.2 — the console's extension contract is 2
 
 **Nothing to do on the open image**, and nothing changed on any screen. The
