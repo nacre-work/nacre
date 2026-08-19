@@ -577,6 +577,14 @@ export class NacreClient {
       principalType: body.principal_type === 'service_account' ? 'service_account' : 'user',
       principalId: String(body.principal_id),
       role: String(body.role) as Self['role'],
+      // Falls back to the *conservative* half of the derivation this field
+      // replaces, and only that half: an older API that does not report it
+      // leaves an `org_admin` administering and a `platform_admin` not, which
+      // is what the server would have said anyway. The other direction — the
+      // one the console shipped — is what offered three screens that answer
+      // 404.
+      administers:
+        typeof body.administers === 'boolean' ? body.administers : body.role === 'org_admin',
       // Defaulted to true for an older API that does not answer it, which is
       // the right way round: a screen that hides its password control against a
       // server that would have accepted the change has taken a working feature

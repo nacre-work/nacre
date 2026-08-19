@@ -161,7 +161,7 @@ function shell(): { main: HTMLElement; nav: HTMLElement } {
   return { main, nav }
 }
 
-function route(main: HTMLElement, nav: HTMLElement, isAdmin: boolean): void {
+function route(main: HTMLElement, nav: HTMLElement, isAdmin: boolean, elsewhere = false): void {
   // Not a section and deliberately not in the nav: an application sends a
   // browser here, and it carries the request in the fragment. Available to
   // everybody who can sign in, because choosing an agent is not an
@@ -208,6 +208,28 @@ function route(main: HTMLElement, nav: HTMLElement, isAdmin: boolean): void {
 
   clear(main)
   current.render(main)
+
+  // Said once, and **outside `main`**, because every view opens with
+  // `clear(root)` — the first version appended it here and the screen wiped it
+  // on the same turn, which rendered a nav that was simply shorter than a
+  // platform administrator expected with nothing explaining why. Found by
+  // looking at the picture rather than by the type checker, which is the fourth
+  // defect this console has surfaced that way.
+  //
+  // It is a statement about the *account* rather than about the installation,
+  // which is the distinction the Security screen's message had to learn too:
+  // "not available on this installation" would blame a deployment for a
+  // property of the person signed in.
+  const banner = document.getElementById('elsewhere')
+  banner?.remove()
+  if (elsewhere) {
+    main.before(
+      h('p', { class: 'banner', id: 'elsewhere' },
+        'You are signed in as a platform administrator. That role administers the ' +
+        'installation rather than this organization, so the administrative screens are ' +
+        'not here — an org_admin of this organization reaches them.'),
+    )
+  }
 }
 
 /**
@@ -663,14 +685,31 @@ function start(): void {
   // that invites a click in between, and the failure mode of guessing low is a
   // menu that grows.
   let isAdmin = false
-  const draw = (): void => route(main, nav, isAdmin)
+  // Signed in as a platform administrator, which is a different thing from
+  // being a member here: the screens are absent because this account
+  // administers the installation, and saying so beats a nav that is simply
+  // shorter than they expected.
+  let elsewhere = false
+  const draw = (): void => route(main, nav, isAdmin, elsewhere)
   draw()
   window.onhashchange = draw
 
   void client()
     .me()
     .then((me) => {
-      isAdmin = me.role === 'org_admin' || me.role === 'platform_admin'
+      // **The server's answer, not a guess from the role.** This read
+      // `role === 'org_admin' || role === 'platform_admin'`, which is the
+      // obvious derivation and is wrong: `administers(auth)` in the API is
+      // `org_admin` and nothing else, because a `platform_admin` administers
+      // the *installation* rather than this organization and every endpoint
+      // scoped to one refuses that role in both directions. So the console
+      // offered Grants, People and Service accounts to exactly the person most
+      // likely to sign in to check something, and all three answered 404.
+      //
+      // The same rule as `GET /v1/auth/methods` and `holds_own_credentials`:
+      // ask what the server will do rather than re-deriving it here.
+      isAdmin = me.administers
+      elsewhere = me.role === 'platform_admin'
       draw()
     })
     .catch(() => {

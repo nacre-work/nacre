@@ -611,7 +611,7 @@ components:
         timeout_ms: { type: integer }
     Self:
       type: object
-      required: [organization, principal_type, principal_id, role, holds_own_credentials]
+      required: [organization, principal_type, principal_id, role, administers, holds_own_credentials]
       properties:
         organization:
           type: string
@@ -623,6 +623,22 @@ components:
           description: |
             `group` cannot appear: a group is granted to, never authenticated as.
         principal_id: { type: string, format: uuid }
+        administers:
+          type: boolean
+          description: |
+            Whether this token administers **this organization** — the same
+            predicate every administrative handler gates on, reported so a
+            screen can leave those controls off rather than drawing ones that
+            answer `404`.
+
+            `true` for an `org_admin` whose token is not a delegation
+            restricted below `admin`. Notably **false for a `platform_admin`**:
+            that role administers the installation and is refused by every
+            endpoint scoped to one organization, in both directions.
+
+            Deriving it from `role` is what this field exists to stop. A client
+            that reads `org_admin || platform_admin` offers a platform
+            administrator three screens that all answer `404`.
         holds_own_credentials:
           type: boolean
           description: |

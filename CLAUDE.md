@@ -2101,6 +2101,51 @@ measurement that says this would have caught what the `demo` job could not.
 That job runs a real embedder against a real corpus; it cannot ask what is left
 behind when the ingest inside it fails.
 
+**The console offered a platform administrator three screens that answer
+`404`.** `administers(auth)` in the API is `org_admin` and nothing else — a
+`platform_admin` administers the *installation*, and every endpoint scoped to
+one organization refuses that role in both directions, which this file already
+says. The console decided what to draw with `role === 'org_admin' || role ===
+'platform_admin'`, which is the obvious derivation and is the wrong one, so
+Grants, People and Service accounts were in the nav for exactly the person most
+likely to sign in to check something.
+
+Found by photographing it. The fixture is a `/v1/me` answering `platform_admin`
+and the picture is the whole finding — the fourth defect this console has
+surfaced that way.
+
+`GET /v1/me` reports **`administers`** now, and it is not a second copy of the
+predicate: it *is* the predicate, the one every gated handler calls, saying what
+it will do. Same rule as `GET /v1/auth/methods` and `holds_own_credentials` —
+ask what the server will do rather than re-deriving it in a browser. The SDK
+falls back to `role === 'org_admin'` against an older API, which is the
+conservative half of the derivation it replaces and never the half that offered
+too much.
+
+`check-admin-gate.mjs` had `packages/admin/src` in its roots the whole time and
+could not see this. Its pattern is bound to `auth.` — correctly, and for a
+reason written at it: `fields.role !== 'member'` is validating a value, not
+gating a request. The console's caller is called `me`, so the one instance it
+covered a browser for was the one spelling it could not match. Widening it to
+any `.role ===` would flag the People screen legitimately reading a `<select>`,
+which is how a check becomes something people work around.
+
+So the second question is asked of the one thing that matters — **what `isAdmin`
+is assigned from** — by reading the assignment rather than the file, which is
+the technique `check-platform-admin-target.mjs` had to learn when a whole-file
+search was satisfied by the prose describing the rule. Both refusals were
+produced: the shipped derivation restored, and the gate renamed away.
+
+The console still reads `me.role` on purpose, to choose which *sentence* to
+show. `administers: false` cannot tell a member from a platform administrator,
+and the screens being absent is worth explaining rather than leaving as a nav
+that is simply shorter than expected.
+
+That message sits **outside `main`**, and the first version did not — every view
+opens with `clear(root)`, so the screen wiped it on the same turn and the
+picture showed the corrected nav with nothing explaining it. Half a fix, caught
+by looking at the render rather than by the type checker.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

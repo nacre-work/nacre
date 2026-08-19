@@ -229,6 +229,14 @@ leave the controls off rather than drawing ones that fail, and `GET /v1/users`
 carries `shared` on every row — it cannot be changed after creation, so an
 administrator who set it has no other way to see it again.
 
+`GET /v1/me` also reports **`administers`**, which is the same predicate every
+administrative handler gates on rather than a second copy of it. It is `true`
+for an `org_admin` whose token is not a delegation restricted below `admin`, and
+**`false` for a `platform_admin`** — that role administers the installation, and
+an endpoint scoped to one organization refuses it in both directions. Working it
+out from `role` instead is what offered a platform administrator three screens
+that all answer `404`.
+
 **A module may require one, and the core answers a third way when it does.**
 `registerSignInGate` is the extension point — see
 [extensions.md](./extensions.md) — and the open core registers none, so nothing

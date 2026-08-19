@@ -16,6 +16,29 @@
  * that a *shape* does not appear, and a test can only assert about the handlers
  * somebody remembered to write one for — which is the failure this exists to
  * close.
+ *
+ * ## And the console walked straight past it
+ *
+ * `packages/admin/src` has been in the roots below since this was written, and
+ * the console still shipped the defect: it decided what to offer with
+ * `me.role === 'org_admin' || me.role === 'platform_admin'`. The pattern above
+ * is bound to `auth.` — correctly, for the reason stated at it — and the
+ * console's caller is called `me`, so the one instance this check covers a
+ * browser for was the one spelling it could not see.
+ *
+ * Widening the pattern to any `.role ===` is the obvious repair and is wrong:
+ * the People screen legitimately compares `user.role` to render a row and
+ * `role.value` to read a `<select>`, and a check that flags those is a check
+ * people work around. And the console still reads `me.role` on purpose, to
+ * decide which *sentence* to show — `administers: false` cannot tell a member
+ * from a platform administrator.
+ *
+ * So the second question is asked of the one thing that matters: **what
+ * `isAdmin` is assigned from.** That is the value the nav filters on, there is
+ * exactly one assignment of it, and it has to come from the server's own
+ * answer. Reading the assignment rather than the file is the technique
+ * `check-platform-admin-target.mjs` had to learn — a whole-file search there
+ * was satisfied by the prose describing the rule instead of the rule.
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
@@ -83,4 +106,46 @@ if (uses === 0) {
   process.exit(1)
 }
 
-console.log(`no role-name gates in ${files.length} file(s); ${uses} use(s) of administers()`)
+/**
+ * The console's nav is filtered on `isAdmin`, and `isAdmin` comes from the
+ * server.
+ *
+ * `GET /v1/me` reports `administers` — the same predicate every gated handler
+ * calls — precisely so a browser does not have to derive it. Deriving it is what
+ * offered a platform administrator Grants, People and Service accounts, all
+ * three of which answer `404` to that role.
+ */
+const CONSOLE = 'packages/admin/src/index.ts'
+const assignments = readFileSync(CONSOLE, 'utf8')
+  .split('\n')
+  .map((line, i) => ({ line, at: i + 1 }))
+  .filter(({ line }) => /^\s*(let |const )?isAdmin\s*=/.test(line) && !/^\s*(\/\/|\*)/.test(line))
+  // The declaration's own `= false` is the conservative default, not a source
+  // of truth: the nav is drawn as a member until the answer arrives.
+  .filter(({ line }) => !/isAdmin\s*=\s*false\s*$/.test(line.trim()))
+
+if (assignments.length === 0) {
+  console.error(
+    `::error::${CONSOLE} assigns nothing to \`isAdmin\` any more, so this check holds ` +
+      'nothing. Either the nav filters on something else — in which case point this at it — ' +
+      'or the gate is gone and so should this be.',
+  )
+  process.exit(1)
+}
+
+const derived = assignments.filter(({ line }) => !line.includes('.administers'))
+if (derived.length > 0) {
+  console.error(
+    `::error::${CONSOLE} derives \`isAdmin\` rather than reading it from GET /v1/me. ` +
+      '`administers` is the server\'s own predicate; a role comparison here is what offered ' +
+      'a platform_admin three screens that answer 404, because that role administers the ' +
+      'installation and not this organization.',
+  )
+  for (const { line, at } of derived) console.error(`  ${CONSOLE}:${at}  ${line.trim()}`)
+  process.exit(1)
+}
+
+console.log(
+  `no role-name gates in ${files.length} file(s); ${uses} use(s) of administers(); ` +
+    `the console reads isAdmin from the server in ${assignments.length} place(s)`,
+)

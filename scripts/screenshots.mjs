@@ -734,6 +734,30 @@ await shot('add-authenticator', {
     await page.waitForTimeout(300)
   },
 })
+// A platform administrator signing into a tenant's console.
+//
+// `administers(auth)` in the API is `org_admin` and nothing else — a
+// `platform_admin` administers the *installation*, not this organization — so
+// every administrative screen answers `404` to one. This shot is what says
+// whether the console knows that, and it is deliberately taken with the
+// administrative fixtures still in place: the question is what the nav offers,
+// not what the screens would show.
+await shot('platform-admin', {
+  hash: '#/search',
+  fixtures: {
+    'GET /v1/me': {
+      organization: 'acme',
+      principal_type: 'user',
+      principal_id: '9b3e5c71-24af-4d08-8e16-3f7c0a5b2d94',
+      role: 'platform_admin',
+      // The server's own answer, and the whole point: `administers(auth)` is
+      // `org_admin` and nothing else, so a fixture that omitted this would be
+      // one written to match a derivation rather than a response.
+      administers: false,
+      holds_own_credentials: true,
+    },
+  },
+})
 // The installation with no key, which is the default and what most self-hosters
 // see. The password panel has to survive it: the whole view used to return
 // early here, so a message about TOTP would have hidden a control that works.

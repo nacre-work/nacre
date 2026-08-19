@@ -3878,6 +3878,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
        * second-factor controls **off** rather than drawing controls that answer
        * 404. That is the same rule `GET /v1/auth/methods` exists for, applied
        * to the account instead of to the installation: ask, do not assume.
+       *
+       * `administers` is the same rule applied to the *nav*, and it is reported
+       * rather than derivable because deriving it is what went wrong. The
+       * console read `role === 'org_admin' || role === 'platform_admin'` and
+       * offered a platform administrator Grants, People and Service accounts —
+       * every one of which `administers(auth)` refuses, because that role
+       * administers the **installation** and not this organization. Three
+       * screens that answer 404, offered to exactly the person most likely to
+       * sign in to check something.
+       *
+       * So this is not a second copy of the predicate: it *is* the predicate,
+       * the one every gated handler calls, saying what it will do.
        */
       send(
         res,
@@ -3887,6 +3899,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           principal_type: auth.principal.type,
           principal_id: auth.principal.id,
           role: auth.role,
+          administers: administers(auth),
           holds_own_credentials: await holdsOwnCredentials(auth, options),
         },
         requestId,
