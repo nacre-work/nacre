@@ -227,66 +227,87 @@ if (!files.includes(RELEASE)) {
   }
 }
 
-// ─── Every workflow that runs the suite has the same fixtures ─────────────
+// ─── Every job that runs the suite has the same fixtures ──────────────────
 
 // A gate is only as good as what it is pointed at.
 //
-// `s3-live.test.ts` refuses to skip when `CI` is set — a check that cannot
-// check must not report green — so the job running it needs a real object
-// store. Four workflows run the unit project: `ci.yml`, `acl-invariants.yml`,
-// `release.yml`, and `flake-hunt.yml` through `scripts/flake-hunt.mjs`. A
-// fixture added to one of them is a suite that fails in the other three, and
-// adding it to three is a nightly hunt that goes red at 3am for a reason nobody
-// changed.
+// A live case that refuses to skip when `CI` is set — the object-storage cases
+// do, because a check that cannot check must not report green — needs its
+// service wherever that suite runs. Adding it to one job leaves the others
+// failing, and the worst of those is the one on the commit that is already the
+// release.
 //
-// So the rule is symmetric across all of them and computed rather than listed,
-// and the *set* of workflows is discovered too: whichever ones run the suite.
-// Compared by **name** and not by value, because a port or a URL legitimately
-// differs between two jobs and the question here is only whether the fixture is
-// there at all.
-//
-// The narrower version of this rule — release against pull request — lives in
-// `nacre-enterprise`'s copy of this file, which is a repository with two
-// workflows and where the two are the same question. This is the sharper form,
-// and it is the one both should carry.
+// **Per job and not per file**, which is the granularity the first version of
+// this rule got wrong: two jobs in one workflow can run different projects and
+// legitimately need different services, and a file-level union asks the wrong
+// one for a fixture it has no case for. The set of jobs is discovered — whoever
+// runs the suite — and the fixtures are compared by **name**, because a port or
+// a URL differs between jobs for good reasons and the question here is only
+// whether the fixture is there at all.
 
-/** A workflow that runs the unit project, however it spells it. */
-function runsTheSuite(text) {
-  return /pnpm\s+(?:run\s+)?test:unit/.test(text) || /flake-hunt\.mjs/.test(text)
+/** Split a workflow into its jobs, without a YAML parser. */
+function jobsOf(text) {
+  const lines = text.split('\n')
+  const start = lines.findIndex((line) => /^jobs:\s*$/.test(line))
+  if (start === -1) return []
+  const found = []
+  let current
+  for (const line of lines.slice(start + 1)) {
+    const header = /^ {2}([\w-]+):\s*$/.exec(line)
+    if (header !== null) {
+      current = { name: header[1], lines: [] }
+      found.push(current)
+      continue
+    }
+    current?.lines.push(line)
+  }
+  return found.map(({ name, lines: body }) => ({ name, text: body.join('\n') }))
 }
 
-/** Every `NACRE_*` a workflow file sets, anywhere in it. */
+/** Whether a job runs the unit project, however it spells it. */
+function runsTheSuite(text) {
+  return /pnpm\s+(?:run\s+)?test(?::unit)?(?:\s|$)/m.test(text) || /flake-hunt\.mjs/.test(text)
+}
+
+/** Every `NACRE_*` a stretch of YAML sets. */
 function fixtures(text) {
   return new Set([...text.matchAll(/^\s*(NACRE_[A-Z0-9_]+):/gm)].map((m) => m[1]))
 }
 
-const suites = files
-  .map((file) => ({ file, text: readFileSync(join(DIR, file), 'utf8') }))
-  .filter(({ text }) => runsTheSuite(text))
-  .map(({ file, text }) => ({ file, set: fixtures(text) }))
+const suiteJobs = files.flatMap((file) => {
+  const text = readFileSync(join(DIR, file), 'utf8')
+  // Anything above `jobs:` is workflow-level `env:`, which every job inherits.
+  const preamble = text.slice(0, text.search(/^jobs:\s*$/m) + 1)
+  return jobsOf(text)
+    .filter((job) => runsTheSuite(job.text))
+    .map((job) => ({
+      where: `${file}:${job.name}`,
+      set: new Set([...fixtures(preamble), ...fixtures(job.text)]),
+    }))
+})
 
-if (suites.length === 0) {
+if (suiteJobs.length === 0) {
   console.error(
-    `::error::no workflow in ${DIR} runs the unit suite. This check reads that set, so an empty ` +
-      'read is a failure and never a pass — rename the pattern here if the command moved.',
+    `::error::no job in ${DIR} runs the suite. This check reads that set, so an empty read is a ` +
+      'failure and never a pass — correct the pattern here if the command moved.',
   )
   failed = true
 } else {
-  const everywhere = new Set(suites.flatMap(({ set }) => [...set]))
+  const everywhere = new Set(suiteJobs.flatMap(({ set }) => [...set]))
   for (const name of [...everywhere].sort()) {
-    const missing = suites.filter(({ set }) => !set.has(name)).map(({ file }) => file)
+    const missing = suiteJobs.filter(({ set }) => !set.has(name)).map(({ where }) => where)
     if (missing.length === 0) continue
     console.error(
-      `::error::${name} is set by ${String(suites.length - missing.length)} of the ` +
-        `${String(suites.length)} workflow(s) that run the unit suite, and not by ` +
-        `${missing.join(', ')}. The suite is the same one, so a fixture only some of them have ` +
-        'is a case that runs in one job and fails in the next.',
+      `::error::${name} is set by ${String(suiteJobs.length - missing.length)} of the ` +
+        `${String(suiteJobs.length)} job(s) that run the suite, and not by ${missing.join(', ')}. ` +
+        'The suite is the same one, so a fixture only some of them have is a case that runs in ' +
+        'one job and fails in the next.',
     )
     failed = true
   }
   if (!failed) {
     console.log(
-      `${String(suites.length)} workflow(s) run the unit suite, with the same ` +
+      `${String(suiteJobs.length)} job(s) run the suite, with the same ` +
         `${String(everywhere.size)} fixture(s)`,
     )
   }
