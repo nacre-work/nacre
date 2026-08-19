@@ -233,6 +233,28 @@ a { color: var(--n-accent); }
 .chip-write { background: var(--n-write); }
 .chip-admin { background: var(--n-admin); }
 .chip-deny { background: var(--n-deny); }
+/* The two the access log's Result column needs beside `deny`, and they exist so
+   that column is **one size**.
+
+   It shipped as three: `allow` at the table's 15px sans, `deny` at the chip's
+   12px mono, and `error` at `.tag`'s 10px uppercase — three sizes for three
+   values of one field. A table is read down, so that reads as three kinds of
+   thing rather than as three values, and it was reported by somebody looking at
+   it. `screenshots.mjs` asks it of every column of every table now.
+
+   `chip-plain` keeps the box and drops the fill, because an `allow` is what
+   almost every row says: fifty filled pills carry no information while making
+   the few denials harder to find, and teal is `read` in the permission palette,
+   which the brand says carries a meaning rather than a mood. The padding stays
+   so the three align down the column.
+
+   `chip-error` is `--n-error` and not `--n-deny`, which is the same hex and a
+   different statement — a deny is the permission model working and an error is
+   this system failing, and painting the second with a permission colour is the
+   reassignment the brand forbids. The ring is an inset shadow rather than a
+   border so the box does not grow by two pixels and stop matching the others. */
+.chip-plain { background: none; color: var(--n-text-muted); }
+.chip-error { background: none; color: var(--n-error); box-shadow: inset 0 0 0 1px var(--n-error); }
 
 /* A heading inside a view that holds two collections — People is the only one
    so far, and both halves belong on one screen because a group exists for what
