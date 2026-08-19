@@ -125,6 +125,7 @@ jobs:
       - run: pnpm lint:admin-layout
       - run: pnpm lint:tokens
       - run: pnpm lint:mail-palette
+      - run: pnpm lint:demo-seed
       - run: pnpm lint:stored-error
       - run: pnpm lint:email-rule
       # And no screen asks a person to type an id. Nobody knows a uuid: the one

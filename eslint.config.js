@@ -26,6 +26,11 @@ export default tseslint.config(
         URL: 'readonly',
         fetch: 'readonly',
         setTimeout: 'readonly',
+        // Beside `setTimeout`, and it earned its place the same way: the seed
+        // harness arms a deadline for the stub API's port and disarms it, and a
+        // timer nobody clears keeps a check's process alive after it has
+        // answered.
+        clearTimeout: 'readonly',
         // Earned its place the same way: the WebAuthn end-to-end signs a token
         // with a secret it builds here, exactly as the suites do.
         TextEncoder: 'readonly',

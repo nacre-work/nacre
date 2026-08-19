@@ -2072,6 +2072,35 @@ the brand reserves for one of four permission semantics and says not to
 reassign. `--n-error` is the same hex, so the correction is zero pixels and one
 fewer place where a permission colour means something else.
 
+**And the harness that was parked has landed.** 0.22.0's pull request said the
+seed's four-state check "hangs, and a check that cannot run must not be
+committed", and that it would be finished separately. It is `lint:demo-seed`
+now, and what was wrong with it is worth more than the check.
+
+It served the stub API with `createServer` in the same process that ran the
+seed with `execFileSync` — which **blocks the event loop**, so the child asked
+`/v1/ready` and nothing was ever going to answer. Every run died on `waiting for
+the API to be ready`, which is the harness *accusing the script* of a fault
+entirely its own. That is the shape this file records twice already: a smoke
+test that never sent its document and then failed accusing the product, and a
+stand check that could not parse a page and reported the deployment down. The
+stub is a process of its own now and prints the port it chose rather than being
+given one.
+
+The script under test is a **copy** with two substitutions — the two absolute
+paths the seed invokes point at stubs — and both are required to apply. A
+rename in the seed fails the check by name rather than leaving the stubs
+uncalled and every assertion passing against a script that ran nothing, which is
+the blanket-exclusion shape `contract-surface.test.ts` was fixed for.
+
+Four states: fresh with a failing ingest, a resume, an already-seeded run that
+must call nothing at all, and the ordinary path. Restoring the shipped defect —
+the summary written after `load_corpus` rather than before it — fails the first
+two and prints the old `Start over: down -v` in the output, which is the
+measurement that says this would have caught what the `demo` job could not.
+That job runs a real embedder against a real corpus; it cannot ask what is left
+behind when the ingest inside it fails.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
