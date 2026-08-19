@@ -269,9 +269,17 @@ const empty = (query: AuditQuery) =>
  * An `allow` still carries no fill, because it is what almost every row says:
  * fifty filled pills carry no information while making the few denials harder
  * to find, and teal is `read` in the permission palette, which the brand says
- * carries a meaning rather than a mood. And `error` is `--n-error` rather than
- * `--n-deny` — the same hex, a different statement, since a deny is the
- * permission model working and an error is this system failing.
+ * carries a meaning rather than a mood. It is ringed rather than bare, because
+ * the frame is what makes the column read as one control with three states.
+ * And `error` is `--n-error` rather than `--n-deny` — the same hex, a different
+ * statement, since a deny is the permission model working and an error is this
+ * system failing.
+ *
+ * The width is one width for all three, taken from the longest of them, and it
+ * comes from the stylesheet rather than from here: a chip in a table cell is
+ * part of a column, so nothing on this line has to remember it. A ragged right
+ * edge reads as the values meaning different amounts of something, when what
+ * differs is how many letters they happen to have.
  */
 function row(record: AuditRecord, onActor: (id: string) => void): HTMLElement {
   const target = Object.entries(record.target)

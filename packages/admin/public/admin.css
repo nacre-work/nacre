@@ -224,7 +224,11 @@ a { color: var(--n-accent); }
    carry information rather than mood — deny sits outside the mark palette
    because it is the state that must not look like it belongs. */
 .chip {
-  display: inline-block; padding: 2px 10px;
+  /* Named so a width can be derived from it. Everything here is `border-box`,
+     so a `min-width` that does not cover the padding never binds — which is
+     exactly how the first version of `chip-set` below did nothing at all. */
+  --n-chip-pad: 10px;
+  display: inline-block; padding: 2px var(--n-chip-pad);
   border-radius: var(--n-radius-pill);
   font-family: var(--n-font-mono); font-size: 12px;
   color: var(--n-pearl-000);
@@ -245,16 +249,50 @@ a { color: var(--n-accent); }
    `chip-plain` keeps the box and drops the fill, because an `allow` is what
    almost every row says: fifty filled pills carry no information while making
    the few denials harder to find, and teal is `read` in the permission palette,
-   which the brand says carries a meaning rather than a mood. The padding stays
-   so the three align down the column.
+   which the brand says carries a meaning rather than a mood. It is **ringed**
+   rather than bare — the frame is what makes the column read as one control
+   with three states, and the ring is `--n-border-color` because a neutral
+   outcome must not borrow a colour that carries a meaning.
 
    `chip-error` is `--n-error` and not `--n-deny`, which is the same hex and a
    different statement — a deny is the permission model working and an error is
    this system failing, and painting the second with a permission colour is the
-   reassignment the brand forbids. The ring is an inset shadow rather than a
-   border so the box does not grow by two pixels and stop matching the others. */
-.chip-plain { background: none; color: var(--n-text-muted); }
+   reassignment the brand forbids. Both rings are an inset shadow rather than a
+   border so the box does not grow by two pixels and stop matching the filled
+   one, which has no border at all. */
+.chip-plain { background: none; color: var(--n-text-muted); box-shadow: inset 0 0 0 1px var(--n-border-color); }
 .chip-error { background: none; color: var(--n-error); box-shadow: inset 0 0 0 1px var(--n-error); }
+
+/* One width for a set of values, taken from the longest of them.
+
+   Pills of several widths down one column is the three-sizes defect one step
+   along: the eye reads the ragged right edge as the values meaning different
+   amounts of something. So the box is as wide as the **longest** value in the
+   set and every member gets that width, which is a decision about the set
+   rather than about any one value.
+
+   `5ch` is that longest, and it covers both vocabularies a column here holds —
+   `allow`/`deny`/`error` in the access log, `read`/`write`/`admin` in Grants.
+   The unit is what makes it a computation rather than a magic number: this chip
+   is `--n-font-mono` at a fixed size, so one `ch` is exactly one character and
+   the width follows the vocabulary. The padding is added rather than assumed,
+   because `border-box` counts it: the first version was a bare `5ch`, which is
+   narrower than the shortest pill already draws and therefore bound on nothing
+   — the pills stayed ragged and the stylesheet looked like it had an opinion.
+   Found by measuring in a browser, not by reading.
+
+   **A chip in a table cell is part of a column**, so that is the selector
+   rather than a class every such view has to remember — the `agoCell` lesson
+   without needing a helper, since the structure already says it. It is also
+   what keeps the rule off the two places a chip is not a column: `consent.ts`
+   sets one inline in a sentence, where a minimum width would open gaps in
+   prose, and a grant's detail list renders one in a `<dd>`.
+
+   A value longer than five characters needs this number moved, and
+   `screenshots.mjs` compares the rendered widths of every column's pills, so it
+   cannot be forgotten quietly — that is how the Grants column was found, having
+   been asked about by nobody. */
+.table td > .chip { min-width: calc(5ch + 2 * var(--n-chip-pad)); text-align: center; }
 
 /* A heading inside a view that holds two collections — People is the only one
    so far, and both halves belong on one screen because a group exists for what

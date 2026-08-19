@@ -281,10 +281,14 @@ const FIXTURES = {
       { id: '7b3e5d92-4a18-4c60-8e27-3f9d1a6b0c48', principal_type: 'service_account',
         principal_id: ACCOUNT, scope_type: 'layer', scope_id: LAYER,
         permission: 'read', effect: 'allow', source: 'api' },
+      // `write` beside the `read`, and the two are different lengths — so the
+      // Permission column has a width to agree about. A fixture carrying one
+      // value is a column whose pills nothing compares, which is the same gap
+      // the Result column had while its `error` row was missing.
       { id: '2d8f4a71-6c95-4b03-9a1e-5e7b2c0d0f39',
         principal_type: 'group', principal_id: '8e1a7c34-2b09-4d56-af73-6c0e5b9d2a41',
         scope_type: 'workspace', scope_id: WORKSPACE,
-        permission: 'read', effect: 'allow', source: 'api' },
+        permission: 'write', effect: 'allow', source: 'api' },
     ],
     next_cursor: null,
   },
@@ -535,6 +539,7 @@ async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} }
   await controlHeadroom(page, name)
   await dialogActionsReachable(page, name)
   await columnValuesAgree(page, name)
+  await columnChipsAgree(page, name)
 
   const file = join(OUT, `${name}.png`)
   await page.screenshot({ path: file, fullPage: true })
@@ -706,6 +711,72 @@ async function columnValuesAgree(page, name) {
       `${name}: the "${problem.column}" column renders its values at more than one size — ` +
         `${problem.sizes.join(', ')}. A table is read down, so two sizes in one column read as ` +
         'two kinds of thing rather than as two values of one field.',
+    )
+  }
+}
+
+/**
+ * Pills in one column are one width.
+ *
+ * A chip is a box, and three boxes of three widths down a column read as the
+ * values meaning different amounts of something — when all that differs is how
+ * many letters each happens to have. The fix is a width taken from the longest
+ * value in the set, which is a decision about the set; this asks the browser
+ * whether that actually came out, because the width is a `ch` value in a
+ * stylesheet and the thing it has to cover is a word in a TypeScript file, with
+ * nothing between them.
+ *
+ * So a status added later that is longer than the width fails here rather than
+ * shipping as one pill wider than its neighbours.
+ *
+ * Only chips are compared, and only against each other: a column mixing a chip
+ * with plain text is a different question, and `columnValuesAgree` above is the
+ * one that asks it.
+ */
+async function columnChipsAgree(page, name) {
+  const wrong = await page.evaluate(() => {
+    const found = []
+    const roots = [...document.querySelectorAll('dialog[open]')]
+    if (roots.length === 0) roots.push(...document.querySelectorAll('.main, .signin'))
+
+    for (const table of roots.flatMap((r) => [...r.querySelectorAll('table')])) {
+      const rows = [...table.querySelectorAll('tbody tr')]
+      if (rows.length < 2) continue
+      const columns = Math.max(...rows.map((r) => r.cells.length))
+
+      for (let i = 0; i < columns; i += 1) {
+        const widths = new Map()
+        for (const row of rows) {
+          const cell = row.cells[i]
+          if (cell === undefined) continue
+          // One chip per cell is what these columns hold; a cell carrying two
+          // is a list, and a list is not this rule's subject.
+          const chips = cell.querySelectorAll('.chip')
+          if (chips.length !== 1) continue
+          const chip = chips[0]
+          const width = chip.getBoundingClientRect().width
+          if (width === 0) continue
+          const key = width.toFixed(1)
+          if (!widths.has(key)) widths.set(key, (chip.textContent ?? '').trim())
+        }
+
+        if (widths.size > 1) {
+          const header = table.querySelectorAll('thead th')[i]?.textContent?.trim()
+          found.push({
+            column: header === undefined || header === '' ? `column ${String(i + 1)}` : header,
+            widths: [...widths].map(([width, sample]) => `${sample} at ${width}px`),
+          })
+        }
+      }
+    }
+    return found
+  })
+
+  for (const problem of wrong) {
+    failures.push(
+      `${name}: the "${problem.column}" column draws its pills at more than one width — ` +
+        `${problem.widths.join(', ')}. One width for the set, taken from the longest value: a ` +
+        'ragged edge reads as the values meaning different amounts of something.',
     )
   }
 }
