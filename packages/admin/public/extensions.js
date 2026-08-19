@@ -23,5 +23,5 @@
  * @returns {import('../src/extensions.js').ConsoleExtension}
  */
 export default function register() {
-  return { contract: 1, views: [] }
+  return { contract: 2, views: [] }
 }

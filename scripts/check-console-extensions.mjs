@@ -68,6 +68,32 @@ if (!existsSync(join(BUNDLE, 'extensions.js'))) {
   process.exit(1)
 }
 
+/*
+ * The stub declares a number, and the number lives beside the type it belongs
+ * to. Two literals in one repository with nothing that knows there are two is
+ * the shape this repository keeps closing, and this one fails *quietly*: a stub
+ * left at the old number makes the open image draw a banner about its own
+ * console extensions, which is the least explicable message the product could
+ * show a self-hoster.
+ */
+{
+  const contract = /export const CONTRACT = (\d+)/.exec(
+    readFileSync('packages/admin/src/extensions.ts', 'utf8'),
+  )?.[1]
+  const stub = /contract: (\d+)/.exec(readFileSync(join(BUNDLE, 'extensions.js'), 'utf8'))?.[1]
+  if (contract === undefined || stub === undefined) {
+    console.error('::error::could not read the contract number from the source or from the stub')
+    process.exit(1)
+  }
+  if (contract !== stub) {
+    console.error(
+      `::error::src/extensions.ts declares CONTRACT ${contract} and public/extensions.js returns ` +
+        `${stub}. The open image would then refuse its own stub and draw a banner about it.`,
+    )
+    process.exit(1)
+  }
+}
+
 /** What each state serves as `/extensions.js`. `null` means the shipped stub. */
 const SHIPPED = null
 

@@ -2232,6 +2232,24 @@ the "hiding what the server allows" defect with nothing on the screen to be
 wrong about. A hash colliding with a core route is dropped, in the other
 direction: a module must not replace Grants with a screen of its own.
 
+**The number earned its keep on the first real change.** `ConsoleKit` was
+written from what looked useful, and the first screen written against it — one
+that hands a generated password over once — found that `copyControl` was not on
+it. Assembling a button around `copyText` would have been a second control with
+the same job, which that function's own header says is how one of them gets the
+clipboard fallback, the checkmark timing or the accessible name wrong. Found by
+rendering the screen and reading the picture: the password came out **truncated
+with no visible control beside it**, which is this console's own 0.17 defect in
+a new repository. So the contract is 2, and an *additive* change moves it —
+an extension built for 2 on a host at 1 finds `undefined` where it expected a
+helper, which is the silent failure the number exists to turn into a sentence.
+
+The stub's own number is held against the constant beside the type, because two
+literals in one repository with nothing that knows there are two is this file's
+first paragraph — and that one fails quietly in the worst way available: the
+open image would refuse its own stub and show a self-hoster a banner about
+console extensions they do not have.
+
 `check-console-extensions.mjs` drives four states in a browser, because every
 part of this is a browser's business — a dynamic import of a same-origin URL
 under `script-src 'self'`, a bundler that must not inline the file an image

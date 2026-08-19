@@ -272,6 +272,24 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.23.2 — the console's extension contract is 2
+
+**Nothing to do on the open image**, and nothing changed on any screen. The
+extension file it ships is the same stub registering the same nothing.
+
+`ConsoleKit` gained `copyControl` — the control that takes a value, for a value
+shown once. It is there because the first screen written against this contract
+was one that hands a generated password over, and the kit could only offer the
+`copyText` primitive: assembling a button around that is a second control with
+the same job, which is how one of them gets the clipboard fallback, the
+checkmark timing or the accessible name wrong.
+
+**An additive change moves the number**, deliberately. An extension built
+against 2 and loaded by a console at 1 finds `undefined` where it expected a
+helper, which is a screen that draws nothing with an error in nobody's log. So
+an image carrying console extensions has to be built for this core — which its
+tag already says, and which the console says out loud if it is not.
+
 ### 0.23.1 — one sentence, on the screen a platform administrator lands on
 
 **Nothing to do.** The message a `platform_admin` sees in a tenant's console

@@ -1,7 +1,7 @@
 import { NacreError } from '@nacre.work/sdk'
 
 import { authorizedFetch, readBase, explain } from './api.js'
-import { ago, agoCell, chip, clear, copyableId, copyText, h, icon, shortId } from './dom.js'
+import { ago, agoCell, chip, clear, copyControl, copyableId, copyText, h, icon, shortId } from './dom.js'
 import { picker } from './pick.js'
 
 /**
@@ -50,8 +50,24 @@ import { picker } from './pick.js'
  * what the server allows" defect, arriving through a version number.
  */
 
-/** Bumped when `ConsoleKit` changes in a way an extension can notice. */
-export const CONTRACT = 1
+/**
+ * Bumped when `ConsoleKit` changes in a way an extension can notice.
+ *
+ * Additive counts. An extension built against 2 and loaded by a host at 1 finds
+ * `undefined` where it expected a helper, which is a screen that draws nothing
+ * with an error in nobody's log — the failure this number exists to turn into a
+ * sentence. So the rule is not "breaking changes only".
+ *
+ * **2** — `copyControl`. Added because the first screen written against this
+ * contract was one that hands a generated password over once, and the kit could
+ * not build the control for it: `copyText` is the primitive, and assembling a
+ * button around it is a second control with the same job, which `copyControl`'s
+ * own header says is how one of them gets the clipboard fallback, the checkmark
+ * timing or the accessible name wrong. Found by rendering that screen and
+ * reading the picture — the value came out truncated with no visible control
+ * beside it, which is this console's own 0.17 defect in a new repository.
+ */
+export const CONTRACT = 2
 
 /** What an extension is handed. Everything it may use, and nothing else. */
 export interface ConsoleKit {
@@ -66,6 +82,16 @@ export interface ConsoleKit {
   readonly shortId: typeof shortId
   readonly copyableId: typeof copyableId
   readonly copyText: typeof copyText
+  /**
+   * The control that takes a value, for a value shown once.
+   *
+   * Not assembled from `copyText` by a caller. Two controls with the same job
+   * is how one of them gets the clipboard fallback wrong — `navigator.clipboard`
+   * exists only in a secure context and a self-hosted console is very often not
+   * one — or the checkmark timing, or the accessible name, which this one
+   * changes on both success and failure.
+   */
+  readonly copyControl: typeof copyControl
   /** Choose a thing the caller can already see. Never a field asking for a uuid. */
   readonly picker: typeof picker
   /** What to show a person when a call fails. Never turns a 404 into "forbidden". */
@@ -126,6 +152,7 @@ const KIT: ConsoleKit = {
   shortId,
   copyableId,
   copyText,
+  copyControl,
   picker,
   explain,
   request: async ({ method, path, body }) => {
