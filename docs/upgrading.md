@@ -272,6 +272,37 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.23.5 — the enrolment QR named a URL, not an account
+
+**Nothing to do, and nothing to re-enrol.** An authenticator that already holds
+a code keeps working: a TOTP code is `HMAC(secret, step)` and the label is not
+an input to it. What changes is the label a **new** enrolment writes.
+
+`otpauth://` labels are `issuer:account`, so the colon is the separator, and the
+API was passing `NACRE_JWT_ISSUER` — a URL — as the issuer. An app that decodes
+the path before splitting therefore read `https` as the issuer and the rest of
+the URL as the account name, and showed
+
+```
+https://playground.nacre.work: //playground.nacre….
+```
+
+on the one screen whose job is to say which account you are looking at. The
+issuer is `NACRE_CANONICAL_URL`'s **hostname** now — the same value the WebAuthn
+relying party has always used, three lines further down the same object and for
+the same reason.
+
+`otpauthUrl` refuses a colon in either half outright rather than stripping it,
+and `SecondFactors` makes that call once when it is constructed — so a
+deployment that reintroduces a URL there is a container that does not start,
+by name, rather than a label somebody has to live with for as long as that
+authenticator exists.
+
+**If you enrolled before this release** and want the corrected label, remove the
+authenticator under `/v1/me` and add it again. Nothing forces that, and an
+installation that leaves it alone is not broken in any way — the entry is
+mislabelled and the codes are right.
+
 ### 0.23.4 — the access log's two columns
 
 **Nothing to do**, and one screen reads differently.

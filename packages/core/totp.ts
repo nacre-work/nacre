@@ -145,6 +145,36 @@ export function verifyTotp(
 }
 
 /**
+ * Neither half of the label may contain a colon, and this is where that is
+ * enforced.
+ *
+ * The label is `issuer:account`, so the colon is its separator — the key-uri
+ * format says in as many words that neither part may contain one. Percent-
+ * encoding is *not* a way round it: an app that decodes the path before
+ * splitting sees the colon again, and that is what actually shipped. An issuer
+ * of `https://playground.nacre.work` was displayed as
+ *
+ *     https://playground.nacre.work: //playground.nacre….
+ *
+ * — the account name replaced by the second half of a URL, on the one screen
+ * whose job is to tell you which account you are looking at. Reported from a
+ * phone with the authenticator's own list in the picture.
+ *
+ * A refusal rather than a strip, because the two ways to be wrong are not
+ * equal: a mangled issuer is a label somebody has to live with for as long as
+ * that authenticator exists, and there is no editing it afterwards.
+ */
+function withoutColon(part: string, what: string): string {
+  if (!part.includes(':')) return part
+  throw new Error(
+    `a TOTP ${what} cannot contain a colon, and this one is ${JSON.stringify(part)}. ` +
+      'The label is `issuer:account`, so a colon inside either half is read as the ' +
+      'separator by the app — a URL here becomes an account name of "//host/…". ' +
+      'Use a bare name or a hostname.',
+  )
+}
+
+/**
  * The URL an authenticator reads out of a QR code.
  *
  * The label carries the issuer as well as the account, which is what makes two
@@ -156,10 +186,12 @@ export function otpauthUrl(options: {
   readonly account: string
   readonly secret: string
 }): string {
-  const label = `${encodeURIComponent(options.issuer)}:${encodeURIComponent(options.account)}`
+  const issuer = withoutColon(options.issuer, 'issuer')
+  const account = withoutColon(options.account, 'account name')
+  const label = `${encodeURIComponent(issuer)}:${encodeURIComponent(account)}`
   const query = new URLSearchParams({
     secret: options.secret,
-    issuer: options.issuer,
+    issuer,
     algorithm: 'SHA1',
     digits: String(TOTP_DIGITS),
     period: String(TOTP_PERIOD_SECONDS),
