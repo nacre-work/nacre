@@ -201,6 +201,15 @@ jobs:
       # and the worker marks such a document `failed`, which nothing retries.
       # Two clients had the defect with nothing making them agree.
       - run: pnpm lint:embed-batch
+      # And the reranker's, which is the same limit one surface over and was
+      # wrong in the shipped profiles. `HttpReranker` sends the whole candidate
+      # set in one call — 50 by default, up to 500 — and TEI's own default is
+      # 32, so `full` and `airgapped` answered 413 to every search with more
+      # than 32 candidates. Reranking fails open, so what a deployment saw was
+      # searches that answered and were never reranked. Splitting is the wrong
+      # repair here, for the reason docs/config.md gives, so the two numbers are
+      # held against each other instead.
+      - run: pnpm lint:rerank-batch
       # A document describing the authz suite by range reaches its last case.
       # The plan grew from fifteen to twenty-five and seven documents went on
       # saying T1-T15 — including CONTRIBUTING.md and the section of
@@ -348,22 +357,32 @@ jobs:
           tools=$(mktemp -d)
           printf '{"name":"nacre-console-check","private":true}\n' > "$tools/package.json"
           (cd "$tools" && pnpm add playwright@1 >/dev/null)
-          # `--with-deps` shells out to apt, and apt is the one thing in this
-          # job that can **hang** rather than fail. It did, twice in one
-          # morning, with `apt-get update` as the last line in the log and
-          # `screenshots.mjs` never reached — a job sitting until the six-hour
-          # limit with a release waiting behind it, and a cancel-and-re-run as
-          # the only way out.
+          # **No `--with-deps`, and that is the fix rather than a saving.** That
+          # flag shells out to apt, and apt is the one thing in this job that
+          # can hang rather than fail. Bounding it with `timeout` was the first
+          # repair and it was half of one: it turned a job sitting until the
+          # six-hour limit into a job failing in eight minutes with a message
+          # saying "re-run", which moved the cost from the clock to a person.
+          # Four failures in one day, two of them consecutive re-runs, is where
+          # that stops being a flake and becomes a gate nobody can use.
           #
-          # So it is bounded and non-interactive. This repository's rule is that
-          # a check which cannot check must not report green; the corollary a
-          # release gate needs is that it must not be able to wait forever
-          # either, because "still running" reads as "not finished yet" for as
-          # long as anybody is willing to believe it. A timeout is a failure
-          # that names its own cause.
-          export DEBIAN_FRONTEND=noninteractive
-          timeout 8m "$tools/node_modules/.bin/playwright" install --with-deps chromium || {
-            echo "::error::installing chromium did not finish in eight minutes. The step that hangs is apt, inside \`playwright install --with-deps\` — not the browser and not the screenshot script. Re-run the job."
+          # The log says what it is waiting for: `Ign: http://azure.archive
+          # .ubuntu.com/ubuntu noble InRelease`, four times over, then a fall
+          # back to archive.ubuntu.com and a stall in the middle of fetching
+          # indexes. A mirror this job has no opinion about and cannot reach.
+          #
+          # The dependencies are already there. This runner image ships Google
+          # Chrome — visible in apt's own source list two lines above the stall
+          # — and Playwright's Chromium needs the same shared libraries, so the
+          # apt half was installing what was installed. What it bought was the
+          # hang.
+          #
+          # And the failure mode of being wrong about that is the good one: a
+          # library that really is missing surfaces as Playwright's own launch
+          # error naming the `.so`, in seconds, which is a failure somebody can
+          # act on. A hang is not.
+          timeout 5m "$tools/node_modules/.bin/playwright" install chromium || {
+            echo "::error::downloading chromium did not finish in five minutes. This no longer shells out to apt, so it is the browser download itself — a network failure rather than the mirror stall that used to sit here."
             exit 1
           }
           # The module's own path, not NODE_PATH: this is an ESM import and
@@ -667,3 +686,80 @@ jobs:
       - name: tear down
         if: always()
         run: docker compose --profile demo down -v
+
+  # ── the reranker, driven rather than stubbed ───────────────────────────────
+  #
+  # Every case in `packages/api/src/__tests__/rerank.test.ts` replaces
+  # `globalThis.fetch` and answers with a `Response` the test wrote, so what
+  # they prove is that the client agrees with itself. Nothing had ever asked a
+  # real Text Embeddings Inference whether `/rerank` takes
+  # `{query, texts, raw_scores}` and answers `[{index, score}]` — the
+  # fixture-written-to-match-the-code shape, on a path where being wrong is
+  # invisible: reranking fails open, so a deployment's searches go on answering
+  # in fusion order with a counter and a log line nobody reads.
+  #
+  # Asking one is what found that `--max-client-batch-size` defaults to 32
+  # while `NACRE_RERANK_CANDIDATES` is 50, so `full` and `airgapped` answered
+  # 413 to every search with more than 32 candidates, from the day reranking
+  # landed. `lint:rerank-batch` holds the two numbers against each other now;
+  # this holds them against a server.
+  #
+  # A job of its own rather than the unit suite, and that is arithmetic: four
+  # workflows run that suite, so a live case there is four model loads on every
+  # pull request. One here is enough — the property is the wire, not the run.
+  rerank:
+    name: rerank
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      # `HttpReranker` is imported from `dist`, so this drives the artifact the
+      # source produces rather than the source — the rule the console's
+      # screenshot pass had to learn after photographing a bundle two commits
+      # old and reporting success.
+      - run: pnpm build
+
+      # Started with **the flag the compose file passes**, read out of that file
+      # rather than written here: a second copy of the number is the defect this
+      # job exists to have found, one file over.
+      #
+      # A smaller cross-encoder than the profiles ship (`BAAI/bge-reranker-base`
+      # is 1.1 GB), and the same decision as the e2e smoke's stub embedder: what
+      # is under test is the wire contract and the batch bound, neither of which
+      # is a property of the weights. Which model answered is printed, so a run
+      # cannot look like it asked something it did not.
+      - name: a real reranker, with the profile's own batch limit
+        run: |
+          set -euo pipefail
+          limit=$(node -e "
+            const s = require('node:fs').readFileSync('docker-compose.yml', 'utf8')
+            const m = /--max-client-batch-size\"?,?\s*\"?(\d+)/.exec(s)
+            if (m === null) { console.error('the compose file passes no batch limit'); process.exit(1) }
+            process.stdout.write(m[1])
+          ")
+          echo "the compose file asks for a batch limit of ${limit}"
+          docker run -d --name tei-rerank -p 8099:80 \
+            ghcr.io/huggingface/text-embeddings-inference:cpu-1.6 \
+            --model-id cross-encoder/ms-marco-MiniLM-L-6-v2 \
+            --max-client-batch-size "${limit}"
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:8099/health >/dev/null 2>&1 && break
+            sleep 5
+          done
+          curl -fsS http://localhost:8099/health >/dev/null
+
+      - name: HttpReranker against it
+        env:
+          NACRE_RERANKER_ENDPOINT: http://localhost:8099
+        run: node scripts/ci/rerank-live.mjs
+
+      - name: logs on failure
+        if: failure()
+        run: docker logs tei-rerank 2>&1 | tail -30
+      - name: tear down
+        if: always()
+        run: docker rm -f tei-rerank || true

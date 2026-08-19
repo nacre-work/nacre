@@ -47,6 +47,7 @@
     "lint:endpoint-errors": "node scripts/check-endpoint-errors.mjs",
     "lint:sparse": "node scripts/check-sparse-branch.mjs",
     "lint:embed-batch": "node scripts/check-embed-batch.mjs",
+    "lint:rerank-batch": "node scripts/check-rerank-batch.mjs",
     "lint:test-plan-range": "node scripts/check-test-plan-range.mjs",
     "lint:test-clock": "node scripts/check-test-clock.mjs",
     "lint:image-packages": "node scripts/check-image-packages.mjs",

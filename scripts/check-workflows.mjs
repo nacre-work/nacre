@@ -335,4 +335,47 @@ for (const file of files) {
   })
 }
 
+// ─── apt is never on a gate's critical path ───────────────────────────────
+
+/**
+ * `playwright install --with-deps`, refused wherever a workflow runs it.
+ *
+ * That flag shells out to apt, and apt is the one thing in these workflows that
+ * can **hang** rather than fail: a mirror it has no opinion about stops
+ * answering and `apt-get update` sits there. It did so four times in one day,
+ * twice on consecutive re-runs of the same commit, with `Ign: http://azure
+ * .archive.ubuntu.com/…` as the last thing in the log.
+ *
+ * Bounding it with `timeout` was the first repair and it was half of one — it
+ * turned a job sitting until the six-hour limit into a job failing in eight
+ * minutes and asking a person to press the button again, which moves the cost
+ * rather than removing it.
+ *
+ * The deps are already on the image, which ships Google Chrome, and Playwright's
+ * Chromium wants the same shared libraries; being wrong about that fails in
+ * seconds with the missing `.so` named, which is a failure somebody can act on.
+ *
+ * A check rather than the edit, because it was in **three** places across two
+ * repositories and nothing knew there were three — and the two that were not
+ * this one carried no timeout at all, one of them in a deploy workflow.
+ */
+const WITH_DEPS = /playwright[^\n]*\binstall\b[^\n]*--with-deps|--with-deps[^\n]*\bchromium\b/
+
+for (const file of files) {
+  const lines = readFileSync(join(DIR, file), 'utf8').split('\n')
+  lines.forEach((line, index) => {
+    if (line.trimStart().startsWith('#')) return
+    if (!WITH_DEPS.test(line)) return
+    console.error(
+      `::error file=${DIR}/${file},line=${index + 1}::${file} runs \`playwright install ` +
+        '--with-deps`, which shells out to apt. apt is the one step in these workflows that can ' +
+        'hang rather than fail, and it did so four times in one day on an unreachable mirror — a ' +
+        'gate that needs a human to press re-run is a gate that stops being read. Drop the flag: ' +
+        'this runner image ships Chrome, so the shared libraries are already there, and a missing ' +
+        'one surfaces in seconds as a launch error naming it.',
+    )
+    failed = true
+  })
+}
+
 process.exit(failed ? 1 : 0)

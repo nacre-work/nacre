@@ -1080,8 +1080,21 @@ Three properties are worth knowing because each fails silently otherwise:
   is safe because each vector comes from one text; a reranker is not promised to
   be, and a vendor normalizing scores across the documents in one call would
   produce two sets that cannot be compared. That is a wrong *ordering* with no
-  symptom. `NACRE_RERANK_CANDIDATES` is 50 by default, so the limit is far
-  above anything a search sends.
+  symptom. `NACRE_RERANK_CANDIDATES` is 50 by default and 500 at most, so the
+  adapter's limit is above anything a search sends.
+
+  **That last sentence was true of the adapter and false of TEI**, which is what
+  the `full` and `airgapped` profiles run directly. Its
+  `--max-client-batch-size` defaults to **32**, so the shipped combination
+  answered `413 batch size 50 > maximum allowed batch size 32` to every search
+  with more than 32 candidates — measured against a real
+  `text-embeddings-inference:cpu-1.6`, not read. Reranking fails open, so
+  nothing broke: searches kept answering in fusion order with a counter and a
+  log line, and a deployment that had configured a reranker simply never got
+  one. Those profiles pass the flag now, and `lint:rerank-batch` holds the
+  server's limit against this variable's maximum — they are one decision
+  written in two files. **A reranker you point at yourself needs the same
+  flag**, or a `NACRE_RERANK_CANDIDATES` under its limit.
 
 Reranking stays **off unless configured** and still fails open: an unreachable
 reranker degrades a search to fusion order with a counter and a log line, which
