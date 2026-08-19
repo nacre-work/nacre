@@ -73,6 +73,13 @@ import { agoCell, clear, h, shortId } from '../dom.js'
 /** Newest first, and one page is what a screen can hold. */
 const PAGE = 50
 
+/** Which fill each result gets. One control, one size, three treatments. */
+const FILL: Record<AuditRecord['result'], string> = {
+  allow: 'plain',
+  deny: 'deny',
+  error: 'error',
+}
+
 /**
  * A calendar day's edges, as instants.
  *
@@ -252,11 +259,19 @@ const empty = (query: AuditQuery) =>
  * not help them. A uuid is shortened the way every other id on these screens
  * is; anything else is printed whole.
  *
- * The result is a chip only where it is one: an `allow` is what almost every
- * row says, and fifty teal pills carry no information while making the four
- * that matter harder to find. It would also be the wrong colour — teal is
- * `read` in the permission palette, and the brand's rule is that those four
- * carry a meaning rather than a mood.
+ * The result is one control at one size, and only the fill differs. It shipped
+ * as three sizes — `allow` at the table's 15px sans, `deny` at the chip's 12px
+ * mono, `error` at `.tag`'s 10px uppercase — which a reader going down the
+ * column sees as three kinds of thing rather than as three values of one field.
+ * Reported by somebody looking at it; `screenshots.mjs` asks it of every column
+ * of every table now.
+ *
+ * An `allow` still carries no fill, because it is what almost every row says:
+ * fifty filled pills carry no information while making the few denials harder
+ * to find, and teal is `read` in the permission palette, which the brand says
+ * carries a meaning rather than a mood. And `error` is `--n-error` rather than
+ * `--n-deny` — the same hex, a different statement, since a deny is the
+ * permission model working and an error is this system failing.
  */
 function row(record: AuditRecord, onActor: (id: string) => void): HTMLElement {
   const target = Object.entries(record.target)
@@ -289,10 +304,6 @@ function row(record: AuditRecord, onActor: (id: string) => void): HTMLElement {
             typeof value === 'string' && /^[0-9a-f-]{36}$/u.test(value) ? shortId(value) : String(value),
           ))),
     ),
-    h('td', {},
-      record.result === 'allow'
-        ? h('span', { class: 'muted' }, 'allow')
-        : h('span', { class: record.result === 'deny' ? 'chip chip-deny' : 'tag tag-off' }, record.result),
-    ),
+    h('td', {}, h('span', { class: `chip chip-${FILL[record.result]}` }, record.result)),
   )
 }

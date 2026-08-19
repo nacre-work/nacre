@@ -31,7 +31,7 @@
  * and absent here. Declared rather than disabled, so a genuine typo in this
  * file is still caught.
  */
-/* global sessionStorage, document */
+/* global sessionStorage, document, NodeFilter, getComputedStyle */
 import { createServer } from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { extname, join, resolve } from 'node:path'
@@ -213,6 +213,22 @@ const FIXTURES = {
         result: 'allow',
         detail: {},
         request_id: 'req_2b81de',
+      },
+      // An `error` beside the `allow` and the `deny`, so all three values of
+      // the Result column are on the screen — and therefore all three under the
+      // check that they render at one size. A fixture with two of three values
+      // is a column whose third size nothing measures.
+      {
+        id: '10490b',
+        occurred_at: '2026-03-15T08:40:11.402Z',
+        actor: { type: 'user', id: '7c1f0a92-3d84-4b57-a610-8e2d5f47c093', label: 'dana@example.com' },
+        surface: 'rest',
+        client: null,
+        action: 'document.ingest',
+        target: { layer: 'handbook' },
+        result: 'error',
+        detail: {},
+        request_id: 'req_2b81df',
       },
       {
         id: '10490',
@@ -518,6 +534,7 @@ async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} }
 
   await controlHeadroom(page, name)
   await dialogActionsReachable(page, name)
+  await columnValuesAgree(page, name)
 
   const file = join(OUT, `${name}.png`)
   await page.screenshot({ path: file, fullPage: true })
@@ -618,6 +635,80 @@ async function dialogActionsReachable(page, name) {
  * report a distance that is about scrolling rather than about layout.
  */
 const MIN_HEADROOM = 8
+
+/**
+ * A column's values are one size.
+ *
+ * A table is read **down**, so two cells in one column rendering their value at
+ * different type sizes read as two different kinds of thing rather than as two
+ * values of one. The access log's Result column shipped that way: `allow` at the
+ * table's 15px sans, `deny` at 12px mono inside a chip, and `error` at 10px
+ * uppercase inside a tag — three sizes for three values of one field, reported
+ * by somebody looking at it.
+ *
+ * The question is per column and not per cell, because that is the comparison a
+ * reader makes. What is compared is each cell's **largest** text size, which is
+ * the value: a name with a small `sso` badge beside it is a value and an
+ * annotation, and the annotation being smaller is the point of it.
+ *
+ * Empty cells and em-dashes are skipped — a cell with nothing in it has no size
+ * to disagree about.
+ */
+async function columnValuesAgree(page, name) {
+  const wrong = await page.evaluate(() => {
+    const found = []
+    const roots = [...document.querySelectorAll('dialog[open]')]
+    if (roots.length === 0) roots.push(...document.querySelectorAll('.main, .signin'))
+
+    for (const table of roots.flatMap((r) => [...r.querySelectorAll('table')])) {
+      const rows = [...table.querySelectorAll('tbody tr')]
+      if (rows.length < 2) continue
+      const columns = Math.max(...rows.map((r) => r.cells.length))
+
+      for (let i = 0; i < columns; i += 1) {
+        const sizes = new Map()
+        for (const row of rows) {
+          const cell = row.cells[i]
+          if (cell === undefined) continue
+          const text = (cell.textContent ?? '').trim()
+          if (text === '' || text === '\u2014') continue
+
+          // The largest size any text in this cell renders at — the value,
+          // rather than a badge annotating it.
+          let biggest = 0
+          const walk = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT)
+          for (let node = walk.nextNode(); node !== null; node = walk.nextNode()) {
+            if ((node.textContent ?? '').trim() === '') continue
+            const parent = node.parentElement
+            if (parent === null) continue
+            const size = Number.parseFloat(getComputedStyle(parent).fontSize)
+            if (size > biggest) biggest = size
+          }
+          if (biggest === 0) continue
+          const key = biggest.toFixed(1)
+          if (!sizes.has(key)) sizes.set(key, text.slice(0, 24))
+        }
+
+        if (sizes.size > 1) {
+          const header = table.querySelectorAll('thead th')[i]?.textContent?.trim()
+          found.push({
+            column: header === undefined || header === '' ? `column ${String(i + 1)}` : header,
+            sizes: [...sizes].map(([size, sample]) => `${sample} at ${size}px`),
+          })
+        }
+      }
+    }
+    return found
+  })
+
+  for (const problem of wrong) {
+    failures.push(
+      `${name}: the "${problem.column}" column renders its values at more than one size — ` +
+        `${problem.sizes.join(', ')}. A table is read down, so two sizes in one column read as ` +
+        'two kinds of thing rather than as two values of one field.',
+    )
+  }
+}
 
 async function controlHeadroom(page, name) {
   const tight = await page.evaluate((min) => {

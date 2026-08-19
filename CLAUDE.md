@@ -2186,10 +2186,31 @@ the sibling stand shipped and had reported from a phone. And making the id alone
 pressable put a control 2px under the name above it, which the console's own
 headroom pass named by exactly that distance.
 
-An `allow` is not a chip. Almost every row says `allow`, so fifty pills carry no
-information while making the few denials harder to find — and teal is `read` in
-the permission palette, which the brand says carries a meaning rather than a
-mood.
+**The Result column shipped at three sizes, one per value.** `allow` was the
+table's own 15px sans, `deny` a 12px mono chip, and `error` a 10px uppercase
+tag — three type sizes for three values of one field. A table is read *down*, so
+that reads as three kinds of thing rather than as three values, and it was
+reported by somebody looking at the screen. It is one control at one size now,
+and only the fill differs: an `allow` still carries none, because it is what
+almost every row says and fifty filled pills carry no information while making
+the few denials harder to find — and teal is `read` in the permission palette,
+which the brand says carries a meaning rather than a mood. An `error` is
+`--n-error` rather than `--n-deny`, the same hex and a different statement,
+since a deny is the permission model working and an error is this system
+failing.
+
+The repair is the check rather than the three edits, and it was **run before the
+fix**: `columnValuesAgree` asks of every column of every table on every screen
+whether the cells' largest text size agrees. It named exactly the three audit
+shots and nothing across the other sixteen screens, which is what says it is a
+rule and not a source of noise. Per column rather than per cell, because that is
+the comparison a reader makes, and the *largest* size in a cell because a name
+with a small `sso` badge beside it is a value and an annotation — the annotation
+being smaller is the point of it.
+
+The fixture gained an `error` row in the same change, and that is not decoration:
+a fixture carrying two of the three values is a column whose third size nothing
+measures.
 
 Three shots, because two of the three states are the argument: the log, the log
 narrowed by a press, and the administrative-only log a platform administrator
