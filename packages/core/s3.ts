@@ -259,10 +259,22 @@ export class S3 {
       method,
       url,
       payloadHash: body === undefined ? UNSIGNED : sha256(body),
-      headers:
-        body === undefined
-          ? extraHeaders
-          : { ...extraHeaders, 'content-length': String(body.length) },
+      // **No `content-length`.** It is a forbidden request header: the Fetch
+      // standard says the runtime computes it from the body, and undici 7
+      // stopped tolerating one set by hand — `InvalidArgumentError: invalid
+      // content-length header`, thrown before the request leaves. Node 22
+      // ships undici 6 and accepted it; Node 24 ships 7 and does not, so this
+      // was every PUT failing on the next Node.
+      //
+      // SigV4 does not need it signed. What binds the body is
+      // `x-amz-content-sha256`, which is in the canonical request either way —
+      // a body that changes in flight still fails the signature rather than
+      // being stored.
+      //
+      // Found by running this client under a runtime that had already moved:
+      // vitest brings its own undici 7, so the live case failed where a plain
+      // `node` script passed.
+      headers: extraHeaders,
       now: new Date(),
     })
 
