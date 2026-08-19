@@ -272,6 +272,43 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.23.10 — reranking, if you configured it, was never running
+
+**Something to do, and only if you run `full` or `airgapped` with a reranker.**
+No variable, no schema, no route.
+
+`HttpReranker` sends the whole candidate set in one call —
+`NACRE_RERANK_CANDIDATES`, 50 by default — and Text Embeddings Inference
+refuses a client batch over `--max-client-batch-size`, whose default is **32**.
+Those two profiles passed no such flag, so every search with more than 32
+candidates was answered `413 batch size 50 > maximum allowed batch size 32`.
+
+Nothing broke, which is why this needs saying rather than a changelog line.
+Reranking fails **open** on purpose: a refused reranker degrades the search to
+fusion order with a counter and a log line. So an installation that configured
+a reranker has been getting searches that answered, ranked by fusion, and no
+error anywhere a person looks.
+
+`docker-compose.yml` passes the flag now. **A running deployment needs
+`--force-recreate` on that service**, because Compose does not restart a
+container for a changed command on its own:
+
+```bash
+docker compose --profile full up -d --force-recreate reranker
+```
+
+Confirm it took, rather than assuming:
+
+```bash
+curl -s http://localhost:8081/info | grep -o '"max_client_batch_size":[0-9]*'
+```
+
+**If you point `NACRE_RERANKER_ENDPOINT` at a reranker of your own**, this
+release does not touch it: give that server the same flag, or set
+`NACRE_RERANK_CANDIDATES` below its limit. `lint:rerank-batch` holds the two
+numbers together for the servers this repository ships and can say nothing
+about yours.
+
 ### 0.23.9 — two things in the console, seen by looking at it
 
 **Nothing to do.** No variable, no schema, no route.
