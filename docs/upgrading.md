@@ -272,6 +272,25 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.23.6 — the object-storage client can list
+
+**Nothing to do.** One method on an internal client, used by nothing the open
+half ships.
+
+`packages/core/s3.ts` said in its own header that listing was deliberately
+absent, *"because nothing needs to enumerate a bucket"*. Something does: the
+commercial `backup` module's archive reader refuses a part its manifest does
+not name, and an archive written to a bucket must not lose a refusal an archive
+on a disk has. A reason that has stopped being true is corrected rather than
+worked around at the caller — the alternative was that check holding for one
+destination and not its sibling.
+
+The signer gained a real canonical query string with it, which had been an
+unconditional empty line. That is a change to how **every** request is signed,
+so it was driven against a real MinIO: put, get, remove and a listing, a key
+containing `!'()*`, and 1200 objects to force a continuation token — 1200
+listed, no duplicates, nothing missing, nothing extra.
+
 ### 0.23.5 — the enrolment QR named a URL, not an account
 
 **Nothing to do, and nothing to re-enrol.** An authenticator that already holds

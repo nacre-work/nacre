@@ -24,10 +24,18 @@ import { createHash, createHmac } from 'node:crypto'
  * ─── what is deliberately not here ───
  *
  * No multipart upload, so an object is one PUT and `NACRE_MAX_DOCUMENT_BYTES`
- * bounds it. No listing, because nothing needs to enumerate a bucket and a
- * paginated list is where this file would stop being small. No retries: the
- * callers are the ingest queue and the collector, both of which already retry
- * whole units of work and would otherwise retry twice.
+ * bounds it. No retries: the callers are the ingest queue and the collector,
+ * both of which already retry whole units of work and would otherwise retry
+ * twice.
+ *
+ * **Listing was on that list and is not any more.** The reason given was that
+ * nothing needed to enumerate a bucket; the backup module's archive reader
+ * does, to refuse a part its manifest does not name, and that refusal is a
+ * property an archive on a disk has and one in a bucket must not lose. A reason
+ * that has stopped being true is corrected here rather than worked around at
+ * the caller — the alternative was a stray-part check that holds for one
+ * destination and not its sibling, which is the most repeated defect this
+ * repository records.
  */
 
 export interface S3Options {
@@ -90,6 +98,60 @@ export class S3Error extends Error {
   }
 }
 
+/**
+ * RFC 3986 percent-encoding, which `encodeURIComponent` is close to and not.
+ *
+ * It leaves `!'()*` unescaped and SigV4 requires them escaped, so a key or a
+ * prefix containing one signs differently at each end — a `403` naming none of
+ * its inputs, which is the failure mode this whole file is written against.
+ */
+function encodeRfc3986(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/gu,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  )
+}
+
+/**
+ * The canonical query string: sorted by key, both halves encoded, `=` even for
+ * an empty value.
+ *
+ * This line used to be unconditionally empty with a comment saying no request
+ * here takes a query string. One does now, and an empty line for a request that
+ * has parameters is a signature over a different request than the one sent.
+ */
+function canonicalQuery(url: URL): string {
+  const pairs: [string, string][] = []
+  for (const [name, value] of url.searchParams) pairs.push([name, value])
+  pairs.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  return pairs.map(([name, value]) => `${encodeRfc3986(name)}=${encodeRfc3986(value)}`).join('&')
+}
+
+/**
+ * The escaping a bucket applies to a key in its listing, undone.
+ *
+ * **Numeric references and not only the five named ones**, which a real MinIO
+ * is what showed: it returns an apostrophe as `&#39;` rather than `&apos;`, so
+ * a key containing one came back with the reference still in it. On the caller
+ * this exists for — the backup archive's stray-part check — that is a name the
+ * manifest does not match, and the refusal that follows condemns a perfectly
+ * good archive. Found by listing a key with `!'()*` in it against the real
+ * thing, which is this file's own rule.
+ *
+ * `&amp;` is undone last, or `&amp;lt;` — an ampersand somebody actually put in
+ * a key — becomes a `<`.
+ */
+function unescapeXml(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/giu, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/gu, (_, dec: string) => String.fromCodePoint(Number(dec)))
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&amp;', '&')
+}
+
 export class S3 {
   readonly #options: S3Options
 
@@ -99,6 +161,16 @@ export class S3 {
 
   get bucket(): string {
     return this.#options.bucket
+  }
+
+  /** The bucket itself, which is what a listing addresses rather than a key. */
+  #bucketUrl(): URL {
+    const { endpoint, bucket, forcePathStyle } = this.#options
+    if (forcePathStyle) return new URL(`${endpoint}/${bucket}`)
+    const url = new URL(endpoint)
+    url.host = `${bucket}.${url.host}`
+    url.pathname = '/'
+    return url
   }
 
   #url(key: string): URL {
@@ -153,8 +225,7 @@ export class S3 {
     const canonicalRequest = [
       input.method,
       input.url.pathname,
-      // No request here takes a query string. An empty one is still a line.
-      '',
+      canonicalQuery(input.url),
       canonicalHeaders,
       signedHeaders,
       input.payloadHash,
@@ -200,6 +271,68 @@ export class S3 {
       headers,
       ...(body === undefined ? {} : { body }),
     })
+  }
+
+  /**
+   * Every key under a prefix, following the continuation token to the end.
+   *
+   * **Paginated properly rather than bounded**, because the caller that needs
+   * this is the backup archive's stray-part check: a truncated list makes that
+   * check quietly weaker instead of failing, and a weaker refusal that reports
+   * success is worse than none. S3 caps a page at 1000 keys whatever
+   * `max-keys` asks for, so "one request is enough" is a property of small
+   * archives rather than of the protocol.
+   *
+   * Keys and nothing else — sizes and timestamps have no caller, and this file
+   * stays small by not answering questions nobody asked.
+   *
+   * The XML is read with two regular expressions rather than a parser. That is
+   * a deliberate limit and it is safe for exactly one reason: `<Key>` holds
+   * text the *bucket* produced from keys this installation wrote, and the only
+   * escaping S3 applies there is the standard five entities, which are undone
+   * below. A parser dependency for two fields would be the larger risk on a
+   * path that already refuses to grow one.
+   */
+  async list(prefix: string): Promise<readonly string[]> {
+    const keys: string[] = []
+    let token: string | undefined
+
+    // A bound on requests, not on keys: without one a bucket answering with a
+    // token that never clears is an infinite loop inside a backup verification.
+    for (let page = 0; page < 10_000; page += 1) {
+      const url = this.#bucketUrl()
+      url.searchParams.set('list-type', '2')
+      url.searchParams.set('prefix', prefix)
+      if (token !== undefined) url.searchParams.set('continuation-token', token)
+
+      const headers = this.#sign({
+        method: 'GET',
+        url,
+        payloadHash: UNSIGNED,
+        headers: {},
+        now: new Date(),
+      })
+      const response = await fetch(url, { method: 'GET', headers })
+      if (!response.ok) {
+        throw new S3Error(response.status, 'GET', `${prefix}*`, await response.text())
+      }
+      const xml = await response.text()
+
+      for (const match of xml.matchAll(/<Key>([^<]*)<\/Key>/gu)) {
+        keys.push(unescapeXml(match[1] ?? ''))
+      }
+
+      const truncated = /<IsTruncated>\s*true\s*<\/IsTruncated>/iu.test(xml)
+      if (!truncated) return keys
+      const next = /<NextContinuationToken>([^<]*)<\/NextContinuationToken>/u.exec(xml)?.[1]
+      // Truncated and no token is the bucket contradicting itself. Refusing
+      // beats returning a list the caller will treat as complete.
+      if (next === undefined || next === '') {
+        throw new S3Error(200, 'GET', `${prefix}*`, 'truncated listing with no continuation token')
+      }
+      token = unescapeXml(next)
+    }
+    throw new S3Error(200, 'GET', `${prefix}*`, 'listing did not end after 10000 pages')
   }
 
   /** Store an object, overwriting whatever was there. */
