@@ -272,6 +272,41 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.24.0 — the second audit round; one repair you may want to run by hand
+
+No migration, no new variable, no schema change. Two of the fixes describe
+state your installation may already be in, which is why they need a note
+rather than a changelog line.
+
+**A document that was deleted and then re-ingested with identical content is
+invisible.** Until this release, that sequence resurrected the row to
+`indexed` while its points kept the tombstone's `deleted: true` — a live
+document no search returns, with the ingest answering `unchanged: true`.
+The fix makes every resurrection requeue, so the repair for a document
+already in that state is simply to **re-send it** (same content is enough
+now). Finding candidates, if you suspect any:
+
+```sql
+SELECT id, external_id FROM documents
+ WHERE deleted_at IS NULL AND status = 'indexed' AND chunk_count > 0
+   AND updated_at > created_at;  -- then re-send the ones a search cannot find
+```
+
+**Concurrent refreshes could stop the API entirely.** Twenty
+`POST /v1/auth/refresh` in flight at once — one busy application is enough —
+each held a pool connection while waiting for a second, forever; the only
+remedy was a restart. If you have ever seen the API stop answering with the
+database idle, this was likely it. Fixed structurally; nothing to configure.
+
+Also in this release, asking nothing of you: the collection copy a model
+migration runs is claimed with a lease and a fencing token, so scaled-out
+workers no longer race it; the worker's background sweeps (GC, lease reaping,
+retention, the reindex itself) keep running while the ingest queue is busy;
+a malformed percent-escape in a URL path answers `404` instead of `500`; and
+re-sending the same `{url}` source is now documented for what it always was —
+a refresh that re-fetches and re-embeds (docs/api.md says so beside the
+idempotency rules).
+
 ### 0.23.10 — reranking, if you configured it, was never running
 
 **Something to do, and only if you run `full` or `airgapped` with a reranker.**
