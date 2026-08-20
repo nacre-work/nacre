@@ -288,12 +288,25 @@ layer's own provider. The confinement is a `must` appended to the permission
 filter, never a filter of its own — a branch that could carry its own filter is
 the leak `buildHybridQuery` exists to make unrepresentable.
 
-Two things follow from the copy not being atomic against concurrent writes. The
-worker holds documents at `pending` while their organization is copying, because
-a document indexed in between would land in the collection about to be
-abandoned. And a layer whose provider has no slot in the collection — created
-against a second provider, not reindexed at all — starts the same copy rather
-than accepting documents it can never index.
+Four things follow from the copy not being atomic against concurrent writes.
+The worker holds documents at `pending` while their organization is copying,
+because a document indexed in between would land in the collection about to be
+abandoned — and the **embedding pass holds too**, for the same reason on the
+other slot: a vector written behind the scroll's position never reaches the
+new collection while `reindexed_vector` says done. A layer whose provider has
+no slot in the collection — created against a second provider, not reindexed
+at all — starts the same copy rather than accepting documents it can never
+index. The copy itself is **claimed**, with a lease and a fencing token inside
+`reindex_state`, because it begins by deleting its target: two replicas
+starting the same copy destroy each other's work, and a worker that stalled
+past its lease and then woke must not finish — or fail — the copy the replica
+that took it over is running. And the writers that cannot be paused — a delete
+must tombstone now, a metadata `PATCH` answers now, a document claimed before
+the copy began finishes into the old collection — are **repaired after the
+pointer moves**: everything touched since the migration began is requeued
+through the ordinary pipeline or re-tombstoned into the collection that just
+went live, and anything the collector purged from the old collection in the
+window goes back into its queue.
 
 The old collection is left in place **for a window**. Rolling the whole
 organization back is pointing `vector_collection` at it again; rolling one layer
