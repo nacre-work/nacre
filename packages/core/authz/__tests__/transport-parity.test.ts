@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs'
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { Readable } from 'node:stream'
+import { fileURLToPath } from 'node:url'
 
 import { createMcpServer, serveStdio, type Layer } from '@nacre.work/mcp'
 import { SignJWT } from 'jose'
@@ -142,6 +144,30 @@ const SHARED: readonly {
       }
     },
   },
+  {
+    // A MUST-respond for both parties in every revision, and the divergence
+    // the rewritten table guard was built against: STDIO answered `{}` and
+    // Streamable HTTP fell through to its 404 arm for the whole life of both
+    // — a client's keep-alive dropping the very connection it was checking.
+    // The old guard compared SHARED against a literal list, so a method one
+    // dispatcher grew could never fail it; the guard reads both dispatchers'
+    // own case arms now, which is what named this one.
+    name: 'ping answers the empty object on both',
+    method: 'ping',
+    params: {},
+    compare: (r) => r,
+  },
+  {
+    // The envelope, whole. Both dispatchers used to build the CallToolResult
+    // by hand — two copies of `{ content, isError }` that happened to agree —
+    // and each transport's own suite asserted its own copy, which is exactly
+    // the arrangement this file exists against. One builder in results.ts
+    // now, and this case is what notices a second one appearing.
+    name: 'tools/call answers the same envelope',
+    method: 'tools/call',
+    params: { name: 'list_layers', arguments: {} },
+    compare: (r) => r,
+  },
 ]
 
 let server: Server
@@ -259,16 +285,41 @@ describe('baseline · the two MCP transports answer alike', () => {
     }
   })
 
-  it('a method one transport gains is a failure here, not an omission', async () => {
-    // The guard on the table itself. `server/discover` was added to Streamable
-    // HTTP and not to STDIO, and nothing noticed because each transport had its
-    // own suite asserting its own behaviour. Anything either dispatcher answers
-    // and the other does not now fails one of the cases above — this asserts the
-    // table has not quietly emptied out, which is how a parity test stops
-    // working without failing.
-    expect(SHARED.length).toBeGreaterThanOrEqual(6)
-    expect(new Set(SHARED.map((s) => s.method))).toEqual(
-      new Set(['initialize', 'server/discover', 'tools/list']),
-    )
+  it('a method one transport gains is a failure here, not an omission', () => {
+    // The guard on the table itself, asked of the dispatchers rather than of
+    // a literal. Its first version compared SHARED's method set against a
+    // list written here — so nothing in this file ever read either
+    // dispatcher, a method added to one transport could never fail it, and
+    // one already had: `ping` was answered on STDIO and 404'd on Streamable
+    // HTTP with every case green. Worse, the literal pinned the table shut —
+    // adding `ping` to SHARED, the fix, made this very case red until the
+    // literal was edited too.
+    //
+    // So the sets are read out of the two dispatch switches themselves. The
+    // one asymmetry is notifications: they are one-way by definition, STDIO
+    // routes `notifications/initialized` through an arm and Streamable HTTP
+    // accepts the whole prefix before its switch — asserted as the prefix
+    // check rather than an arm, because that is what the code does.
+    const methodsOf = (relative: string): Set<string> => {
+      const source = readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
+      const arms = [...source.matchAll(/case '([^']+)':/g)].map((m) => m[1] as string)
+      if (arms.length === 0) {
+        throw new Error(`${relative} has no case arms; the dispatcher moved and this guard reads nothing`)
+      }
+      return new Set(arms)
+    }
+    const http = methodsOf('../../../mcp/src/server.ts')
+    const stdio = methodsOf('../../../mcp/src/stdio.ts')
+
+    expect(stdio.delete('notifications/initialized'), 'STDIO routes notifications through an arm').toBe(true)
+    expect(
+      readFileSync(fileURLToPath(new URL('../../../mcp/src/server.ts', import.meta.url)), 'utf8'),
+    ).toMatch(/startsWith\('notifications\/'\)/)
+
+    expect([...http].sort(), 'the two dispatchers answer the same methods').toEqual([...stdio].sort())
+    // And every method both answer is compared above — a method in the
+    // dispatchers and not in the table is a method nobody is comparing.
+    expect(new Set(SHARED.map((s) => s.method))).toEqual(http)
+    expect(SHARED.length).toBeGreaterThanOrEqual(8)
   })
 })

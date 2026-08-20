@@ -26,6 +26,9 @@ import type { AuthContext } from '@nacre.work/api'
 import { createPool } from '../../db/client.js'
 
 const url = process.env.NACRE_PG_URL
+if (!url && process.env.CI) {
+  throw new Error('NACRE_PG_URL is not set and CI is; the job-status widening would go untested.')
+}
 const when = url ? describe : describe.skip
 
 const ORG = '77777777-7777-7777-7777-777777777777'

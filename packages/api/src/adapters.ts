@@ -97,17 +97,28 @@ export interface Embedder {
 /**
  * When re-sending a document puts it back in the queue.
  *
- * Written once and interpolated three times, because the three columns it
- * decides — status, attempts, error — have to agree and Postgres cannot see one
- * SET column's new value from another. Three copies of a predicate that must
- * match is the shape this repository keeps removing.
+ * Written once and interpolated five times, because the five columns it
+ * decides — status, attempts, error, and the collector's two — have to agree
+ * and Postgres cannot see one SET column's new value from another. Five copies
+ * of a predicate that must match is the shape this repository keeps removing.
  *
  * A hash change and a metadata change were always here. `failed` is the one
  * that was missing, and the one a caller actually retries with.
+ *
+ * A tombstoned row is the other one that was missing, and it is the worst of
+ * the four: the upsert resurrects (`deleted_at = NULL` in its SET list), but
+ * a delete followed by re-ingesting the *identical* content matched none of
+ * the predicates above — so the row went back to `indexed` untouched while
+ * its points kept the `deleted: true` payload the tombstone wrote. A live,
+ * `indexed` document no search could ever return, with `unchanged: true` in
+ * the response — invariant 5's mirror image. Resurrection always requeues,
+ * because the index's copy is what the tombstone made of it, whatever the
+ * bytes say.
  */
 const REQUEUE = `documents.content_hash IS DISTINCT FROM EXCLUDED.content_hash
                    OR documents.metadata IS DISTINCT FROM EXCLUDED.metadata
-                   OR documents.status = 'failed'`
+                   OR documents.status = 'failed'
+                   OR documents.deleted_at IS NOT NULL`
 
 export class PostgresDocuments implements Documents {
   constructor(
@@ -1102,6 +1113,16 @@ export class NacreIngest implements Ingest {
         // both halves: re-sending the same file is a no-op, a changed file
         // re-indexes. For text it stays over the text, which is the same
         // statement.
+        //
+        // For a `url` source it is over the URL string, and the worker
+        // replaces it with the hash of the text it fetched — those never
+        // match, so every re-send of the same URL trips the requeue predicate
+        // and is a re-fetch. Deliberate, and stated in docs/api.md rather
+        // than discovered from a bill: a reference's content is not knowable
+        // at the door, re-sending the reference is the only way to ask for a
+        // re-fetch, and skipping the re-embedding when the fetched text turns
+        // out unchanged needs the payload-only metadata write that document
+        // records as not built.
         const hash = binary
           ? createHash('sha256').update(request.bytes as Uint8Array).digest('hex')
           : createHash('sha256').update(source as string, 'utf8').digest('hex')
@@ -1168,6 +1189,28 @@ export class NacreIngest implements Ingest {
              -- times out retries, and re-embedding is what that costs.
              source_ref   = CASE WHEN documents.content_hash IS DISTINCT FROM EXCLUDED.content_hash
                                  THEN EXCLUDED.source_ref ELSE documents.source_ref END,
+             -- Moves with source_ref, under the same condition, because the
+             -- two describe one value: the worker dispatches on the type to
+             -- decide what the ref *is* (an object key, a URL, the text
+             -- itself). It used to be written once at INSERT and never again,
+             -- so a document first ingested by URL and re-sent inline kept
+             -- 'url' against a ref that was now the whole document text — the
+             -- worker asked the parser to fetch the text as a URL, forever —
+             -- and one re-sent after the deployment gained a bucket kept
+             -- 'inline' against an object key, indexing the key string as the
+             -- document body and reporting it indexed.
+             source_type  = CASE WHEN documents.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                                 THEN EXCLUDED.source_type ELSE documents.source_type END,
+             -- Moves with source_ref, under the same condition, because the
+             -- two describe one value: the worker dispatches on the type to
+             -- decide what the ref *is* (an object key, a URL, the text
+             -- itself). It used to be written once at INSERT and never again,
+             -- so a document first ingested by URL and re-sent inline kept
+             -- 'url' against a ref that was now the whole document text — the
+             -- worker asked the parser to fetch the text as a URL, forever —
+             -- and one re-sent after the deployment gained a bucket kept
+             -- 'inline' against an object key, indexing the key string as the
+             -- document body and reporting it indexed.
              title        = COALESCE(EXCLUDED.title, documents.title),
              content_hash = EXCLUDED.content_hash,
              metadata     = EXCLUDED.metadata,
@@ -1203,6 +1246,14 @@ export class NacreIngest implements Ingest {
              -- the run that replaced it.
              attempts     = CASE WHEN ${REQUEUE} THEN 0 ELSE documents.attempts END,
              error        = CASE WHEN ${REQUEUE} THEN NULL ELSE documents.error END,
+             -- The collector's columns reset with the requeue, or a document
+             -- that was deleted, purged and then re-ingested carries
+             -- vectors_purged_at from its previous life — and the *next*
+             -- delete never reaches the sweep, because claimPurgeable
+             -- requires the column NULL. Tombstoned and leaked forever, on
+             -- the second deletion of anything that was ever purged once.
+             vectors_purged_at = CASE WHEN ${REQUEUE} THEN NULL ELSE documents.vectors_purged_at END,
+             sweep_claimed_at  = CASE WHEN ${REQUEUE} THEN NULL ELSE documents.sweep_claimed_at END,
              deleted_at   = NULL,
              updated_at   = now()
            RETURNING id, content_hash, status`,

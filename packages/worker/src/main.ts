@@ -21,6 +21,8 @@ import {
 
 import {
   claimCopyable,
+  renewCopyClaim,
+  repairAfterCopy,
   claimPurgeable,
   claimReindexable,
   dueChecks,
@@ -294,6 +296,7 @@ async function main(): Promise<void> {
       await objects.remove(key)
     },
     markPurged: documents.markPurged.bind(documents),
+    stillDeleted: documents.stillDeleted.bind(documents),
     onError: (target: { documentId: string }, error: unknown) => {
       logger.error('purge failed', { document_id: target.documentId, error: String(error) })
     },
@@ -438,8 +441,29 @@ async function main(): Promise<void> {
           await endpointReason(response),
         )
       }
-      const body = (await response.json()) as { data?: { embedding?: number[] }[] }
-      return (body.data ?? []).map((d) => d.embedding ?? [])
+      const body = (await response.json()) as {
+        data?: { embedding?: number[]; index?: number }[]
+      }
+      // By `index` where the endpoint sends one, never by arrival: the
+      // response contract carries the field because some vendors reorder —
+      // this repository's own embedding adapter sorts by it for exactly that
+      // reason — and trusting arrival order attaches the wrong vector to the
+      // wrong chunk with the count check green. And a missing `embedding` is
+      // a refusal, not `[]`: an empty vector passes the count check here and
+      // fails later as a Qdrant dimension error naming neither the provider
+      // nor the entry.
+      const data = [...(body.data ?? [])]
+      if (data.some((d) => typeof d.index === 'number')) {
+        data.sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+      }
+      return data.map((d, at) => {
+        if (d.embedding === undefined) {
+          throw new Error(
+            `embedding endpoint ${endpoint} answered entry ${String(d.index ?? at)} with no embedding`,
+          )
+        }
+        return d.embedding
+      })
     }
 
     embedders.set(providerId, embed)
@@ -463,31 +487,92 @@ async function main(): Promise<void> {
    * pointer moves, and the new one is byte-for-byte the same data afterwards.
    */
   const copyOnce = async (): Promise<number> => {
-    const targets = await claimCopyable(pool, 1)
+    const targets = await claimCopyable(pool, 1, config.indexLease)
     let done = 0
 
     for (const target of targets) {
       // A name derived from the old one rather than random, so an operator
       // looking at Qdrant can tell which collection replaced which.
       const to = `${target.collection}_${target.shadowVector}`
+      // The lease is renewed from the copy's own progress, because a copy of
+      // a large collection outlives any fixed lease: the lease exists so a
+      // dead worker's claim expires, and a live one proves it is alive here.
+      // A renewal that answers false means another worker holds the claim —
+      // the copy is abandoned by throwing, and nothing below may finish or
+      // fail a migration that is no longer this worker's.
+      let lost = false
+      let renewedAt = Date.now()
+      const renew = async (): Promise<void> => {
+        if (Date.now() - renewedAt < 30_000) return
+        renewedAt = Date.now()
+        if (!(await renewCopyClaim(pool, target.orgId, target.layerId, target.claim, APP_ROLE))) {
+          lost = true
+          throw new Error('the copy claim moved to another worker')
+        }
+      }
       try {
         logger.info('copying collection', { org: target.orgSlug, from: target.collection, to })
         await store.copyCollection({
           from: target.collection,
           to,
           addVector: { name: target.shadowVector, size: target.dimensions },
+          onProgress: renew,
         })
-        await finishCopy(pool, target.orgId, to, APP_ROLE)
+        const finished = await finishCopy(pool, target.orgId, target.layerId, target.claim, to, APP_ROLE)
+        if (!finished) {
+          // The fence refused: the claim moved while the last page was in
+          // flight. The new holder's copy is the one that will finish.
+          logger.warn('copy finished by another worker', { org: target.orgSlug })
+          continue
+        }
+        // What moved underneath the scroll — deletes, PATCHes, and documents
+        // claimed before the copy began — is requeued or re-tombstoned now,
+        // against the collection that just went live. See repairAfterCopy.
+        const repaired = await repairAfterCopy(pool, target.orgId, target.startedAt, APP_ROLE)
+        for (const documentId of repaired.tombstoned) {
+          // Re-assert the tombstone in the new collection so the pre-filter
+          // holds immediately; the cleared vectors_purged_at already sent the
+          // collector back for the physical removal, which is also what makes
+          // a failure here a retry rather than a leak.
+          await vectors.tombstone(to, documentId).catch((error: unknown) => {
+            logger.error('re-tombstone after copy failed', {
+              document_id: documentId,
+              error: String(error),
+            })
+          })
+        }
+        if (repaired.requeued > 0 || repaired.tombstoned.length > 0) {
+          logger.info('repaired copy drift', {
+            org: target.orgSlug,
+            requeued: repaired.requeued,
+            retombstoned: repaired.tombstoned.length,
+          })
+        }
         logger.info('collection copied', { org: target.orgSlug, collection: to })
         done++
       } catch (error) {
+        if (lost) {
+          logger.warn('abandoning copy: the claim moved to another worker', { org: target.orgSlug })
+          continue
+        }
         // Failed rather than left running. A layer that sits in `copying`
         // forever with nothing happening is the worst outcome here: the
         // operator watches a progress number that will never move and has
         // nothing to read. The old collection is untouched and still live, so
-        // failing costs only the attempt.
+        // failing costs only the attempt. Guarded on the claim, because a
+        // worker that lost it must not mark the new holder's healthy copy
+        // failed — the renewal doubles as "is it still mine".
         logger.error('collection copy failed', { org: target.orgSlug, error: String(error) })
-        await failReindex(pool, target.orgId, target.layerId, String(error), APP_ROLE).catch(() => {})
+        const stillOurs = await renewCopyClaim(
+          pool,
+          target.orgId,
+          target.layerId,
+          target.claim,
+          APP_ROLE,
+        ).catch(() => false)
+        if (stillOurs) {
+          await failReindex(pool, target.orgId, target.layerId, String(error), APP_ROLE).catch(() => {})
+        }
       }
     }
 
@@ -572,8 +657,17 @@ async function main(): Promise<void> {
 
   // Zero, unlike collection. A worker starting up is very often a worker
   // replacing one that died, and the documents that one abandoned are the first
-  // thing worth looking for. Reaping is also not destructive — the worst case
-  // is indexing a document twice, and ingest is idempotent.
+  // thing worth looking for. Reaping is also not destructive — the common case
+  // of a reclaimed document is indexing it twice, and ingest is idempotent.
+  //
+  // The honest worst case is worse and is a recorded limitation rather than a
+  // solved one: nothing fences the original claimant. A worker stalled past
+  // NACRE_INDEX_LEASE that then wakes interleaves its chunk upsert and point
+  // sweep with its replacement's, and the two passes can leave chunk rows
+  // from one and points from the other — a document whose hits hydrate to
+  // nothing. The lease bounds abandonment, not overlap; a fencing token
+  // checked by the upsert is what overlap needs, and this comment exists so
+  // the next reader does not take the sentence above for that guarantee.
   let lastReap = 0
 
   let running = true
@@ -616,26 +710,22 @@ async function main(): Promise<void> {
 
   logger.info('worker started', { env: config.env })
 
-  while (running) {
-    let claim: Claim | undefined
-    try {
-      claim = await claimNext(pool)
-    } catch (error) {
-      logger.error('claim failed', { error: String(error) })
-      await sleep(IDLE_MS)
-      continue
-    }
-
-    if (claim === undefined) {
-      // The idle wait, one value for every background pass.
-      //
-      // It used to back off when the retag sweep failed repeatedly, and that
-      // sweep is gone — see migration 0016. No other pass ever set it: reap,
-      // collect, reindex and prune each catch, log, and fall through to the
-      // same sleep, so the loop's timing is now one number rather than one
-      // number and an exception.
-      const wait = IDLE_MS
-
+  /**
+   * One tick of every background clock: reap, collect, copy/reindex/recall,
+   * prune and retire, each on its own timer.
+   *
+   * Called from the idle branch *and* after every processed document, because
+   * these passes used to live only in the idle branch — so any sustained
+   * ingest backlog (a bulk --watch, or a fleet scaled out precisely because
+   * it is busy) starved all of them for its whole duration: no lease reaping,
+   * no garbage collection, no progress on the reindex an operator is
+   * watching, no retention. Each pass keeps its own clock, so when nothing is
+   * due this costs a few Date.now() comparisons per document.
+   *
+   * Returns true when a pass put claimable work back or left a backlog worth
+   * returning to now — the idle branch skips its sleep on that answer.
+   */
+  const backgroundOnce = async (): Promise<boolean> => {
       // Reaping first among the background passes, because it is the one that
       // puts work back into the queue and the loop is about to sleep. On its
       // own clock, and never skipped by another pass failing — the jobs share
@@ -647,7 +737,7 @@ async function main(): Promise<void> {
           if (reaped.requeued > 0) {
             // Requeued documents are claimable right now, so go take one rather
             // than sleeping first.
-            continue
+            return true
           }
         } catch (error) {
           logger.error('reap pass failed', { error: String(error) })
@@ -681,7 +771,7 @@ async function main(): Promise<void> {
           // has drained the queue, and there is nothing to hurry back to.
           if (swept.purged >= GC_BATCH) {
             lastCollect = 0
-            continue
+            return true
           }
         } catch (error) {
           logger.error('collect pass failed', { error: String(error) })
@@ -700,7 +790,7 @@ async function main(): Promise<void> {
           const copied = await copyOnce()
           if (copied > 0) {
             lastReindex = 0
-            continue
+            return true
           }
 
           const pass = await reindexOnce(reindexPorts, REINDEX_BATCH)
@@ -731,7 +821,7 @@ async function main(): Promise<void> {
           // an idle timer.
           if (pass.reindexed >= REINDEX_BATCH) {
             lastReindex = 0
-            continue
+            return true
           }
         } catch (error) {
           logger.error('reindex pass failed', { error: String(error) })
@@ -784,8 +874,22 @@ async function main(): Promise<void> {
           logger.error('vector retire pass failed', { error: String(error) })
         }
       }
+    return false
+  }
 
-      await sleep(wait)
+  while (running) {
+    let claim: Claim | undefined
+    try {
+      claim = await claimNext(pool)
+    } catch (error) {
+      logger.error('claim failed', { error: String(error) })
+      await sleep(IDLE_MS)
+      continue
+    }
+
+    if (claim === undefined) {
+      if (await backgroundOnce()) continue
+      await sleep(IDLE_MS)
       continue
     }
 
@@ -865,6 +969,16 @@ async function main(): Promise<void> {
       logger.error('indexing failed', { document_id: claim.documentId, error: String(error) })
       await markFailed(pool, claim, error).catch(() => {})
     }
+
+    // The clocks tick while the queue is busy too. These passes used to run
+    // only from the idle branch, so any sustained ingest backlog — a bulk
+    // --watch, or a fleet scaled out precisely because it is busy — starved
+    // all of them for its whole duration: no lease reaping, no garbage
+    // collection, no progress on the reindex an operator is watching, no
+    // retention. Each pass keeps its own clock, so when nothing is due this
+    // is a few comparisons per document. The return value is the idle
+    // branch's business; here the next claim is fetched either way.
+    await backgroundOnce()
   }
 
   await pool.end()

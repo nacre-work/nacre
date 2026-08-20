@@ -5,7 +5,6 @@ export const ORG = 'org-a'
 export const OTHER_ORG = 'org-b'
 
 export const user = (id: string): Principal => ({ type: 'user', id })
-export const group = (id: string): Principal => ({ type: 'group', id })
 export const service = (id: string): Principal => ({ type: 'service_account', id })
 
 /**

@@ -213,6 +213,26 @@ const revealed = all.filter(
     hidden.some((h) => r.selector.includes(h.selector.split(/[\s,]/)[0])),
 )
 
+// The zero-subject refusal its three siblings already have and this rule did
+// not: with nothing hidden and nothing revealed, both loops below iterate an
+// empty list and the summary prints "0 hover-revealed control(s)", which
+// reads as a pass. That is exactly how a re-spelling defeats the rule — hide
+// with `visibility: hidden` instead of opacity, or move the reveal onto an
+// ancestor the substring pairing cannot see, and every list goes empty while
+// the defect (an id no phone can reach) is fully restored. The stylesheet
+// does hide controls behind hover today — the copy control beside every id —
+// so an empty subject set is the rule losing its grip, not the design
+// changing quietly.
+if (revealed.length === 0) {
+  problems.push(
+    'rule 2 found no hover-revealed control at all. The copy control beside every id is hidden ' +
+      'until hover by design, so an empty subject list here means the rule lost its grip — a ' +
+      're-spelling (`visibility` instead of opacity, the reveal moved onto an ancestor the ' +
+      'pairing cannot see) empties it with the defect fully restorable. Teach the rule the new ' +
+      'spelling rather than letting a summary reading "0 hover-revealed control(s)" pass as one.',
+  )
+}
+
 for (const rule of revealed) {
   if (/\(\s*hover\s*:\s*hover\s*\)/.test(rule.media)) continue
   problems.push(
@@ -342,7 +362,13 @@ for (const rule of all) {
   const selectors = rule.selector.split(',').map((x) => x.trim())
   const hover = selectors.find((sel) => /^\.btn(-[\w-]+)?:hover$/.test(sel))
   if (hover === undefined) continue
-  if (!OVERRIDING.some((prop) => declaration(rule.body, prop) !== undefined)) continue
+  // `declaration()` answers null for a property that is not there — never
+  // undefined, so the first version of this line compared against a value it
+  // could not produce and the `continue` was dead: rule 4 asked its question
+  // of every `.btn*:hover` whether or not it painted. Over-strict rather than
+  // a hole, but a filter that does not run under a comment saying it does is
+  // the kind of line the next edit trusts.
+  if (!OVERRIDING.some((prop) => declaration(rule.body, prop) !== null)) continue
   const base = hover.replace(':hover', '')
   const covered =
     [...disabledFor].some((sel) => sel === base || sel === '.btn') &&

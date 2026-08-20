@@ -3,6 +3,7 @@ import type { Server } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
+import { SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { createApi } from '../index.js'
@@ -243,5 +244,51 @@ describe('the contract describes the surface the server presents', () => {
       `${missing.join('\n')}\n\nThe contract's base for a path is its \`servers\` override, or ` +
         'the global one. A document served at the origin root needs the override.',
     ).toEqual([])
+  })
+
+  it('never answers 500 for a malformed percent-escape in a path parameter', async () => {
+    // `/v1/documents/%ZZ`: WHATWG `URL` leaves an invalid escape in `pathname`
+    // verbatim, so a handler decoding the captured segment by hand threw
+    // `URIError`, and the boundary turned that into a `500` and an audit row
+    // saying `error` — where the right answer is the `404` every other unknown
+    // id gets, because a malformed escape names nothing. Twelve routes decoded
+    // a segment; asking every parameterised operation in the contract is what
+    // covers the thirteenth on the day it is written.
+    //
+    // Authenticated, because the throw lived past the credential check — an
+    // unauthenticated sweep stops at the 401 and proves nothing about routing.
+    const parameterised = operations().filter((op) => op.path.includes('{'))
+    // A filter that matches nothing makes the loop below vacuously green.
+    expect(parameterised.length).toBeGreaterThan(8)
+
+    const token = await new SignJWT({
+      org: '11111111-1111-1111-1111-111111111111',
+      principal_type: 'user',
+      role: 'org_admin',
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject('cccccccc-0000-4000-8000-000000000001')
+      .setIssuer('https://api.nacre.test')
+      .setAudience('nacre')
+      .setExpirationTime('5m')
+      .sign(SECRET)
+
+    const broken: string[] = []
+    for (const op of parameterised) {
+      const target = `${op.base}${op.path}`.replace(/\{[^}]+\}/g, '%ZZ')
+      const response = await fetch(`${base}${target}`, {
+        method: op.method,
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(op.method === 'GET' || op.method === 'DELETE' ? {} : { 'content-type': 'application/json' }),
+        },
+        ...(op.method === 'GET' || op.method === 'DELETE' ? {} : { body: '{}' }),
+      })
+      if (response.status >= 500) {
+        broken.push(`${op.method} ${target} answered ${String(response.status)}`)
+      }
+    }
+
+    expect(broken, broken.join('\n')).toEqual([])
   })
 })

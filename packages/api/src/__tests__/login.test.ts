@@ -4,6 +4,7 @@ import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { Login } from '../login.js'
+import { SecondFactors } from '../second-factor.js'
 
 /**
  * Email and password sign-in, against a real database.
@@ -192,6 +193,68 @@ when('signing in', () => {
     expect(second).toBeDefined()
     expect(second!.refreshToken).not.toBe(first!.refreshToken)
     expect(await login.refresh(second!.refreshToken)).toBeDefined()
+  })
+
+  /**
+   * A refresh must complete on **one** pool connection.
+   *
+   * `refresh` runs `issue` inside its `withOrg` transaction, and `issue` asks
+   * `secondFactors.required(...)` before minting. A `required` that opened its
+   * own `withOrg` there took a *second* connection while the first was held —
+   * and `createPool` sets no connection timeout, so on a saturated pool that
+   * is not a slow path, it is the whole API stopping: N concurrent refreshes
+   * each hold one connection and wait forever for another. A pool of one is
+   * the deterministic version of "saturated", so this case hangs on the defect
+   * and completes on the fix — the race is what turns the hang into a named
+   * failure instead of a suite timeout. The password-change path shares the
+   * same call and is covered by the same line in `issue`.
+   */
+  it('refreshes to completion on a pool of one connection', async () => {
+    const one = createPool({ connectionString: url as string, max: 1 })
+    try {
+      const gated = new Login({
+        pool: one,
+        key: SECRET,
+        issuer: ISSUER,
+        audience: AUDIENCE,
+        accessTokenTtl: 900,
+        refreshTokenTtl: 3600,
+        role: 'nacre_app',
+        // A real store over the same one-connection pool, so `required` is
+        // genuinely consulted — with no store, `issue` never asks and the case
+        // proves nothing. WebAuthn needs no key, so a relying party id alone
+        // makes the store live.
+        secondFactors: new SecondFactors({
+          pool: one,
+          key: undefined,
+          issuer: 'login.test',
+          relyingParty: { id: 'login.test', name: 'Nacre', origins: ['https://login.test'] },
+          role: 'nacre_app',
+        }),
+      })
+
+      const first = tokensOf(await gated.login({ email: 'alice@login.test', password: PASSWORD }))
+      expect(first).toBeDefined()
+
+      const refreshed = await Promise.race([
+        gated.refresh(first!.refreshToken),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  'refresh did not complete on a one-connection pool: something inside the ' +
+                    'refresh transaction is waiting for a second connection',
+                ),
+              ),
+            10_000,
+          ).unref(),
+        ),
+      ])
+      expect(tokensOf(refreshed)).toBeDefined()
+    } finally {
+      await one.end()
+    }
   })
 
   it('revokes the whole family when a used token is presented again', async () => {

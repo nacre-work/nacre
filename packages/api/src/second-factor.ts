@@ -15,7 +15,7 @@ import {
   withOrg,
   type PublicKey,
 } from '@nacre.work/core'
-import type { Pool } from 'pg'
+import type { Pool, PoolClient } from 'pg'
 
 /**
  * The second factor, as far as the API is concerned.
@@ -178,25 +178,36 @@ export class SecondFactors {
    * secret that did not reach an authenticator, and treating it as live is how
    * somebody locks themselves out at the moment they turn 2FA on.
    */
-  async required(orgId: string, userId: string): Promise<boolean> {
+  /**
+   * `on` is the connection to reuse when the caller already holds a
+   * transaction, and threading it is not an optimisation — it is what stops a
+   * deadlock. `Login.issue` calls this from **inside** its own `withOrg` on
+   * the refresh and password-change paths (it hands its client to `insert`
+   * for exactly the same reason), and a `required` that opened its own
+   * `withOrg` there would check out a second pool connection while holding the
+   * first. `createPool` sets no `connectionTimeoutMillis`, so a saturated pool
+   * does not error — it waits forever: N concurrent refreshes, each holding
+   * one connection and awaiting a second, drain the pool and never return.
+   * Reusing the caller's connection is correct because it is already scoped to
+   * this same `orgId` (`issue` passes `user.org_id`, the org the transaction
+   * opened on).
+   */
+  async required(orgId: string, userId: string, on?: PoolClient): Promise<boolean> {
     // Deliberately not gated on `available`. A deployment that removes a key
     // still has the rows, and answering "no factor required" for somebody who
     // enrolled one would turn a configuration change into a silent downgrade
     // of every account that had turned it on.
     if (this.deps.key === undefined && this.deps.relyingParty.id === '') return false
-    return withOrg(
-      this.deps.pool,
-      orgId,
-      async (client) => {
-        const { rows } = await client.query<{ count: string }>(
-          `SELECT count(*)::text AS count FROM user_second_factors
-            WHERE org_id = $1 AND user_id = $2 AND confirmed_at IS NOT NULL`,
-          [orgId, userId],
-        )
-        return Number(rows[0]?.count ?? '0') > 0
-      },
-      this.scope,
-    )
+    const count = async (client: PoolClient): Promise<boolean> => {
+      const { rows } = await client.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM user_second_factors
+          WHERE org_id = $1 AND user_id = $2 AND confirmed_at IS NOT NULL`,
+        [orgId, userId],
+      )
+      return Number(rows[0]?.count ?? '0') > 0
+    }
+    if (on !== undefined) return count(on)
+    return withOrg(this.deps.pool, orgId, count, this.scope)
   }
 
   async list(orgId: string, userId: string): Promise<readonly EnrolledFactor[]> {
@@ -414,8 +425,15 @@ export class SecondFactors {
         }
 
         // Counted against every factor this person holds, because the attacker
-        // is guessing at the person and not at a device.
+        // is guessing at the person and not at a device — except one that is
+        // currently locked. A locked row was skipped above, so this attempt
+        // said nothing about it; counting it anyway re-stamps `locked_until`
+        // on every try, and then the person entering the *correct* code each
+        // minute holds their own lock open forever. The lock keeps its
+        // original expiry, and a wrong code after it lapses re-locks on the
+        // first failure, because `failed_attempts` only resets on a success.
         for (const row of rows) {
+          if (row.locked_until !== null && row.locked_until > now) continue
           const failures = row.failed_attempts + 1
           // Every parameter cast, because `$2` is read twice — once as the new
           // value and once in the comparison — and Postgres infers a type from

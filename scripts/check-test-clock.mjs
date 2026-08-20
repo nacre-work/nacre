@@ -83,11 +83,16 @@ for (const file of tests) {
   const text = readFileSync(file, 'utf8')
   const lines = text.split('\n')
   for (const name of clocked) {
-    // `name()` with nothing between the brackets. A comment mentioning it is
-    // prose, and prose is how the first version of another check here passed
-    // on the documentation of a rule instead of the rule — so the line has to
-    // be code, which for these files means not starting with `*` or `//`.
-    const bare = new RegExp(`\\b${name}\\(\\s*\\)`)
+    // `name()` with nothing between the brackets — and `name(new Date())` and
+    // `name(Date.now())`, which are the same wall-clock read spelled to get
+    // past a check that only refused the empty parens. The property is that
+    // the instant is a value pinned outside the call, and an inline
+    // constructor is not one: two such calls are still two times. A comment
+    // mentioning any of these is prose, and prose is how the first version of
+    // another check here passed on the documentation of a rule instead of the
+    // rule — so the line has to be code, which for these files means not
+    // starting with `*` or `//`.
+    const bare = new RegExp(`\\b${name}\\(\\s*(new\\s+Date\\(\\s*\\)|Date\\.now\\(\\s*\\))?\\s*\\)`)
     lines.forEach((line, index) => {
       const code = line.trim()
       if (code.startsWith('*') || code.startsWith('//') || code.startsWith('/*')) return

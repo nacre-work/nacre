@@ -451,6 +451,14 @@ inherits; the encoding leaves room to move.
   `document_id` without creating a version. It does **not** take an
   `Idempotency-Key`: the content hash is the stronger guarantee, because it
   survives a cache expiring.
+- **A `url` source is the exception, and re-sending one is a refresh.** The
+  request carries a reference rather than the bytes, so "identical content"
+  is not knowable at the door: the API hashes the URL string and the worker
+  replaces that with the hash of the text it fetched, which never match — so
+  every re-send of the same URL re-fetches, re-parses and re-embeds. That is
+  the only way to ask for a re-fetch, and the re-embedding is its cost;
+  skipping the embedding when the fetched text turns out unchanged needs the
+  payload-only metadata write recorded below as not built.
 - Every other unsafe method accepts an `Idempotency-Key` header; the result is
   cached for 24 hours and replayed with `Idempotency-Replayed: true`.
 - The key is scoped to the organization, **the principal**, the method, the path,

@@ -65,6 +65,7 @@ export async function whileAuthenticating<T>(
   options: WithOrgOptions = {},
 ): Promise<T> {
   const client = await pool.connect()
+  let broken: Error | undefined
   try {
     await client.query('BEGIN')
     if (options.role !== undefined) {
@@ -80,10 +81,17 @@ export async function whileAuthenticating<T>(
     await client.query('COMMIT')
     return result
   } catch (cause) {
-    await client.query('ROLLBACK').catch(() => {})
+    // A rollback that itself fails means the connection is unusable — it goes
+    // back to the pool inside an aborted transaction, and every later
+    // borrower fails with 25P02 for a fault that happened here. Releasing
+    // with an error is what makes pg discard it instead.
+    broken = await client
+      .query('ROLLBACK')
+      .then(() => undefined)
+      .catch(() => new Error('rollback failed; discarding the connection'))
     throw cause
   } finally {
-    client.release()
+    client.release(broken)
   }
 }
 
@@ -111,6 +119,7 @@ export async function acrossOrganizations<T>(
   role = 'nacre_worker',
 ): Promise<T> {
   const client = await pool.connect()
+  let broken: Error | undefined
   try {
     await client.query('BEGIN')
     if (!/^[a-z_][a-z0-9_]*$/i.test(role)) {
@@ -121,10 +130,17 @@ export async function acrossOrganizations<T>(
     await client.query('COMMIT')
     return result
   } catch (cause) {
-    await client.query('ROLLBACK').catch(() => {})
+    // A rollback that itself fails means the connection is unusable — it goes
+    // back to the pool inside an aborted transaction, and every later
+    // borrower fails with 25P02 for a fault that happened here. Releasing
+    // with an error is what makes pg discard it instead.
+    broken = await client
+      .query('ROLLBACK')
+      .then(() => undefined)
+      .catch(() => new Error('rollback failed; discarding the connection'))
     throw cause
   } finally {
-    client.release()
+    client.release(broken)
   }
 }
 
@@ -135,6 +151,7 @@ export async function withOrg<T>(
   options: WithOrgOptions = {},
 ): Promise<T> {
   const client = await pool.connect()
+  let broken: Error | undefined
   try {
     await client.query('BEGIN')
     if (options.role !== undefined) {
@@ -150,13 +167,18 @@ export async function withOrg<T>(
     await client.query('COMMIT')
     return result
   } catch (cause) {
-    await client.query('ROLLBACK').catch(() => {
-      // A rollback that itself fails means the connection is unusable. Releasing
-      // it with an error below discards it rather than returning it to the pool
-      // with an open transaction and someone else's org setting on it.
-    })
+    // A rollback that itself fails means the connection is unusable. Releasing
+    // it with an error below discards it rather than returning it to the pool
+    // inside an aborted transaction — which is what a bare release() did while
+    // this comment claimed otherwise: `finally { client.release() }` pools the
+    // connection whatever happened, and every later borrower then fails with
+    // 25P02 for a fault that happened here.
+    broken = await client
+      .query('ROLLBACK')
+      .then(() => undefined)
+      .catch(() => new Error('rollback failed; discarding the connection'))
     throw cause
   } finally {
-    client.release()
+    client.release(broken)
   }
 }

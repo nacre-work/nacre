@@ -27,7 +27,7 @@ import { catalog, type Layer, type ToolDefinition } from './tools.js'
 // these, rather than each building its own object — which is how one server
 // came to declare two different capability sets, and to send a cache hint over
 // one transport and not the other. results.ts has the whole argument.
-import { discoverResult, initializeResult, PROTOCOL_VERSIONS, toolsListResult } from './results.js'
+import { discoverResult, initializeResult, PROTOCOL_VERSIONS, toolsListResult, pingResult, callToolResult } from './results.js'
 
 // Re-exported because this module is what the package's entry point and the
 // surface tests already import them from.
@@ -736,6 +736,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
       return
     }
 
+    // A MUST-respond for both parties in every revision, and the arm this
+    // dispatcher was missing: STDIO answered ping and this one fell through
+    // to the 404 below, so a client's keep-alive dropped the very connection
+    // it was checking. The result is built in results.ts like the others.
+    case 'ping': {
+      send(res, 200, { jsonrpc: '2.0', id, result: pingResult() })
+      return
+    }
+
     case 'tools/list': {
       const layers = await options.layers.forCaller(auth)
       const tools: ToolDefinition[] = [...catalog(layers)]
@@ -802,14 +811,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
         // and no compliant client could read a single result from it. The
         // product's claim is that agents reach it over MCP; the shape of this
         // object is the whole of that claim in practice.
-        send(res, 200, {
-          jsonrpc: '2.0',
-          id,
-          result: {
-            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-            isError: false,
-          },
-        })
+        send(res, 200, { jsonrpc: '2.0', id, result: callToolResult(result) })
       } catch (error) {
         options.observe?.toolDuration.observe(
           Number(process.hrtime.bigint() - started) / 1e9,
