@@ -2646,6 +2646,58 @@ reported as a control a phone can never reveal. It requires a matching
 already used. The narrow-projection shape this file names three times, in a
 check written against it.
 
+**A second full audit swept the tree, and the worst of it was on the paths a
+suite structurally cannot see.** The refresh path could deadlock the whole API:
+`issue`, inside the transaction the refresh and password-change paths hand it,
+awaited a `required()` that opened a second pool connection — and `createPool`
+sets no `connectionTimeoutMillis`, so twenty concurrent refreshes each held one
+connection and waited forever for a twenty-first. The connection is threaded
+now, and a `max: 1`-pool test proves a refresh completes where it used to hang.
+Delete → re-ingest identical content left a live document invisible forever —
+resurrection matched no requeue predicate, so the row went back to `indexed`
+while its points kept the tombstone's `deleted: true`, invariant 5's mirror
+image answering `unchanged: true`; resurrection always requeues now, and resets
+the collector's columns, or the next delete of a once-purged document never
+reached the sweep. `source_type` moves with `source_ref` — written once at
+INSERT, a document re-sent as a different kind was dispatched as the old one,
+up to indexing an object key as the document body. The collection copy had no
+claim: every replica's tick started the same copy, which begins by deleting its
+target — it is a lease plus a fencing token now, renewed from the copy's own
+progress, `finishCopy` refuses a token that is no longer the holder's, the
+embedding pass holds during a copy like ingest does, and `repairAfterCopy`
+requeues or re-tombstones what moved under the scroll. The background clocks
+tick while the queue is busy — they lived only in the idle branch, so a
+sustained backlog starved reaping, collection, the reindex an operator watches,
+and retention.
+
+The password-reset endpoint was a timing oracle — it awaited the SMTP round
+trip before its `204`, so the one route needing no credential told an attacker
+which addresses have accounts; the answer now comes before the work, proved by
+a stub whose send never resolves. A locked TOTP factor renewed its own lock on
+every attempt, the correct code included. A malformed percent-escape in any
+path segment was a `500` and a spurious `error` audit row; segments decode
+inside `pathMatch`, eslint refuses a bare `decodeURIComponent`, and a
+contract-wide case drives `%ZZ` through every parameterised operation. A
+cursor from one collection pasted into another died in a type cast; the id
+shape is a required argument now.
+
+**And `ping` was answered on STDIO and 404'd on Streamable HTTP for the whole
+life of both**, because the parity suite's table guard compared `SHARED`
+against a literal — nothing in the file ever read either dispatcher, and the
+literal even pinned the table shut: adding `ping`, the fix, made the guard red
+until the literal moved too. The guard reads both dispatch switches' own case
+arms now, the hand-built `CallToolResult` copies became one builder in
+`results.ts`, and `check-test-clock` matches the inline `new Date()` spelling
+that behaved exactly like the flake it exists against. The screenshot pass's
+`/v1/me` fixture was a body no server sends, and nothing anywhere held the
+SDK's `administers` mapping in the one direction where the field and the
+legacy derivation disagree — `client.test.ts` pins both directions now,
+because no screenshot can separate them where they agree.
+
+Every fix in that round was measured red with the defect restored and green
+with it in place — including two checks whose own first versions could not
+fail and were caught the same way, in the same session that wrote them.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
