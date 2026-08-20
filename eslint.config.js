@@ -51,4 +51,29 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'error',
     },
   },
+  {
+    // A bare `decodeURIComponent` over a captured path segment throws
+    // `URIError` on a malformed escape (`/v1/documents/%ZZ` — WHATWG `URL`
+    // leaves the invalid escape in `pathname` verbatim), which the error
+    // boundary turns into a `500` and a spurious `error` audit row where the
+    // answer is the `404` every unknown id gets. Twelve routes decoded one by
+    // hand; they all go through `pathMatch` in `server.ts` now, and this is
+    // what stops the thirteenth being written the old way. The one legitimate
+    // reader outside it is `core/redis.ts`, decoding credentials out of a URL
+    // an operator wrote — a URIError there is a configuration error at
+    // startup, not a caller-reachable throw.
+    files: ['packages/api/src/**/*.ts', 'packages/mcp/src/**/*.ts'],
+    ignores: ['**/__tests__/**'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "CallExpression[callee.name='decodeURIComponent']:not(FunctionDeclaration[id.name='pathMatch'] CallExpression)",
+          message:
+            'A malformed percent-escape throws URIError and becomes a 500. Route segments go through pathMatch (server.ts), which answers the 404 an unknown path gets.',
+        },
+      ],
+    },
+  },
 )

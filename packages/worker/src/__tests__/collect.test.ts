@@ -41,6 +41,10 @@ function ports(overrides: Partial<CollectPorts> = {}) {
       state.order.push(`object:${key}`)
       state.objects.push(key)
     },
+    stillDeleted: async (_org, id) => {
+      state.order.push(`check:${id}`)
+      return true
+    },
     onError: () => {
       state.errors++
     },
@@ -62,7 +66,26 @@ describe('collectOnce', () => {
     // Marking first and then failing takes the document out of the queue
     // permanently while its points are still there — an orphan nothing will
     // ever look for again, because the only thing that looks is this query.
-    expect(state.order).toEqual(['purge:doc-1', 'mark:doc-1'])
+    // The liveness check comes first, because the claim answered for the
+    // whole batch and ingest resurrects.
+    expect(state.order).toEqual(['check:doc-1', 'purge:doc-1', 'mark:doc-1'])
+  })
+
+  it('skips a target that was resurrected after the claim, purging nothing', async () => {
+    // Ingest brings a tombstoned row back (`deleted_at = NULL`) and requeues
+    // it, so by the time the serial loop reaches this target the document is
+    // live again — and `purge` removes every point of a document on purpose,
+    // fresh ones included. Purging here is an `indexed` document that answers
+    // no search; skipping costs one wasted claim, and the requeue reset the
+    // sweep columns so the next delete claims it again.
+    const { ports: p, state } = ports({
+      claim: async () => [target(1), target(2)],
+      stillDeleted: async (_org, id) => id !== 'doc-1',
+    })
+
+    expect(await collectOnce(p, 10, 3600)).toEqual({ purged: 1, failed: 0 })
+    expect(state.purged).toEqual(['doc-2'])
+    expect(state.marked).toEqual(['doc-2'])
   })
 
   it('a failed purge leaves the row unmarked, so it comes back', async () => {

@@ -135,6 +135,20 @@ when('I5 · the delete path', () => {
     }
   }
 
+  /** Remove a case's own row, so a run does not assert on the last run's. */
+  async function wipe(externalId: string): Promise<void> {
+    const c = await pool.connect()
+    try {
+      await c.query('DELETE FROM documents WHERE org_id = $1 AND layer_id = $2 AND external_id = $3', [
+        ORG,
+        ids.layer,
+        externalId,
+      ])
+    } finally {
+      c.release()
+    }
+  }
+
   async function deletedAt(id: string): Promise<Date | null> {
     const c = await pool.connect()
     try {
@@ -247,5 +261,105 @@ when('I5 · the delete path', () => {
 
     expect(index.seen).toEqual([])
     expect(await deletedAt(id)).toBeNull()
+  })
+
+  it('re-ingesting identical content after a delete requeues, never "unchanged"', async () => {
+    // The requeue predicate compared the hash, the metadata and `failed` — and
+    // a tombstoned row re-sent with the *identical* content matched none of
+    // them, so resurrection (`deleted_at = NULL`) went back to `indexed`
+    // untouched while the points kept the tombstone's `deleted: true`. A live,
+    // `indexed` document no search could ever return, with `unchanged: true`
+    // in the response: invariant 5's mirror image. The index's copy is what
+    // the tombstone made of it whatever the bytes say, so a resurrection
+    // always requeues — and the collector's columns reset with it, or the
+    // *next* delete of a once-purged document never reaches the sweep.
+    const index = new RecordingIndex()
+    const request = {
+      layer: 'notes',
+      externalId: 'resurrect-1',
+      content: 'the same bytes before and after the delete',
+      metadata: {},
+    }
+    // From a clean slate: this database outlives runs, and a row left by a
+    // previous pass is a case asserting on the last run's answer.
+    await wipe('resurrect-1')
+
+    const first = (await ingest(index).queue(auth(ids.alice), request)) as { documentId: string }
+    expect(first.documentId).toBeDefined()
+
+    const c = await pool.connect()
+    try {
+      // The worker finished, and an earlier life was purged once.
+      await c.query(
+        `UPDATE documents SET status = 'indexed', vectors_purged_at = now() WHERE id = $1`,
+        [first.documentId],
+      )
+    } finally {
+      c.release()
+    }
+    expect(await ingest(index).remove(auth(ids.alice), first.documentId)).toBe(true)
+
+    const second = (await ingest(index).queue(auth(ids.alice), request)) as {
+      documentId: string
+      unchanged: boolean
+    }
+    expect(second.documentId).toBe(first.documentId)
+    expect(second.unchanged).toBe(false)
+
+    const check = await pool.connect()
+    try {
+      const { rows } = await check.query<{
+        status: string
+        deleted_at: Date | null
+        vectors_purged_at: Date | null
+        sweep_claimed_at: Date | null
+      }>(
+        'SELECT status, deleted_at, vectors_purged_at, sweep_claimed_at FROM documents WHERE id = $1',
+        [first.documentId],
+      )
+      expect(rows[0]?.status).toBe('pending')
+      expect(rows[0]?.deleted_at).toBeNull()
+      expect(rows[0]?.vectors_purged_at).toBeNull()
+      expect(rows[0]?.sweep_claimed_at).toBeNull()
+    } finally {
+      check.release()
+    }
+  })
+
+  it('a document re-sent as a different source kind is dispatched as the new kind', async () => {
+    // `source_type` was written once at INSERT and never again, while
+    // `source_ref` moved on every content change — so a document first
+    // ingested by URL and re-sent inline kept 'url' against a ref that was
+    // now the whole document text, and the worker asked the parser to fetch
+    // the text as a URL, failing forever. The type moves with the ref, under
+    // the same condition, because the two describe one value.
+    const index = new RecordingIndex()
+    await wipe('source-kind-1')
+    const asUrl = (await ingest(index).queue(auth(ids.alice), {
+      layer: 'notes',
+      externalId: 'source-kind-1',
+      url: 'https://example.test/source-kind',
+      metadata: {},
+    })) as { documentId: string }
+
+    const asInline = (await ingest(index).queue(auth(ids.alice), {
+      layer: 'notes',
+      externalId: 'source-kind-1',
+      content: 'now it is the text itself',
+      metadata: {},
+    })) as { documentId: string }
+    expect(asInline.documentId).toBe(asUrl.documentId)
+
+    const c = await pool.connect()
+    try {
+      const { rows } = await c.query<{ source_type: string; source_ref: string }>(
+        'SELECT source_type, source_ref FROM documents WHERE id = $1',
+        [asUrl.documentId],
+      )
+      expect(rows[0]?.source_type).toBe('inline')
+      expect(rows[0]?.source_ref).toBe('now it is the text itself')
+    } finally {
+      c.release()
+    }
   })
 })

@@ -521,7 +521,13 @@ export class VectorStore {
     addVector: { name: string; size: number }
     /** Points per scroll page and per upsert. */
     batch?: number
-    onProgress?: (copied: number) => void
+    /**
+     * Awaited per page. The worker renews its copy claim here — a copy of a
+     * large collection outlives any fixed lease, and a callback that can
+     * throw is how an over-taken claim aborts the copy instead of finishing
+     * over the new holder's.
+     */
+    onProgress?: (copied: number) => void | Promise<void>
   }): Promise<void> {
     const existing = await this.vectorsOf(input.from)
     if (input.addVector.name in existing) {
@@ -592,7 +598,7 @@ export class VectorStore {
           })),
         } as never)
         copied += points.length
-        input.onProgress?.(copied)
+        await input.onProgress?.(copied)
       }
 
       offset = page.next_page_offset

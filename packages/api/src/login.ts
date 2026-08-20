@@ -158,7 +158,14 @@ export interface LoginDeps {
  * store imports nothing from here.
  */
 export interface SecondFactorGate {
-  required(orgId: string, userId: string): Promise<boolean>
+  /**
+   * `on` reuses the caller's connection where the caller is already inside a
+   * transaction. `issue` calls this while holding `withOrg`'s client on the
+   * refresh and password-change paths, and an implementation that opened its
+   * own connection there would take a second one from a pool with no
+   * connection timeout — a deadlock once the pool is saturated, not a delay.
+   */
+  required(orgId: string, userId: string, on?: PoolClient): Promise<boolean>
   verify(orgId: string, userId: string, code: string): Promise<boolean>
   beginWebAuthnAssertion(orgId: string, userId: string): Promise<WebAuthnAssertionOptions | undefined>
   verifyWebAuthnAssertion(orgId: string, userId: string, response: WebAuthnProof): Promise<boolean>
@@ -915,7 +922,11 @@ export class Login {
       // still have one.
       enrolled: this.deps.secondFactors === undefined
         ? false
-        : await this.deps.secondFactors.required(user.org_id, user.id),
+        // `client` when we hold one: on the refresh and password-change paths
+        // this runs inside `withOrg`, and letting `required` open its own would
+        // check out a second pool connection under the first — a deadlock, not
+        // a slow path, because the pool has no connection timeout.
+        : await this.deps.secondFactors.required(user.org_id, user.id, client),
       // From the row, not asked again. A shared account cannot enrol, so a gate
       // reading this is what stops it demanding one.
       holdsOwnCredentials: !user.shared,

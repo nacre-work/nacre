@@ -155,10 +155,50 @@ for (const file of dockerfiles) {
   }
 }
 
+/*
+ * ─── The release planner's own list agrees with the pushed set ───────────────
+ *
+ * `release-plan.mjs` holds `IMAGES` as a literal, and it is the list that
+ * decides whether a re-run believes the images already exist: a fifth image
+ * added to the Dockerfiles and the push steps — which the checks above hold —
+ * but not to that literal is a release whose re-run computes `built.length ===
+ * 0`, emits `images=false`, and never builds it. That is the unrecoverable
+ * 0.16.0 state the planner's own header describes, arriving through the one
+ * copy of the list nothing above reads.
+ */
+const PLAN = 'scripts/release-plan.mjs'
+const plan = readFileSync(PLAN, 'utf8')
+const literal = /const IMAGES = \[([^\]]*)\]/.exec(plan)
+if (literal?.[1] === undefined) {
+  console.error(`::error file=${PLAN}::no \`const IMAGES = [...]\` found; this check compared nothing`)
+  failed = true
+} else {
+  const planned = new Set([...literal[1].matchAll(/'([a-z0-9-]+)'/g)].map((m) => m[1]))
+  for (const image of tagged) {
+    if (!planned.has(image)) {
+      console.error(
+        `::error file=${PLAN}::the release pushes \`${image}\` and IMAGES does not name it — ` +
+          'a re-run of a partly-failed release would report it already built and never build it.',
+      )
+      failed = true
+    }
+  }
+  for (const image of planned) {
+    if (!tagged.has(image)) {
+      console.error(
+        `::error file=${PLAN}::IMAGES names \`${image}\` and no push step tags it — the planner ` +
+          'asks the registry about an image the release never produces.',
+      )
+      failed = true
+    }
+  }
+}
+
 if (!failed) {
   console.log(
     `${dockerfiles.length} Dockerfile(s), ${tagged.size} image(s), all published and all checked ` +
-      'for both architectures, and every context copy reaches the context',
+      'for both architectures, every context copy reaches the context, and the release planner ' +
+      'names the same set',
   )
 }
 process.exit(failed ? 1 : 0)

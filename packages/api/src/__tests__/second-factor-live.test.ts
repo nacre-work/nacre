@@ -210,6 +210,22 @@ when('the second factor', () => {
     // Correct, and refused, because the factor is locked.
     expect(await factors.verify(ORG, userId, totpCode(fresh!.secret, step + 1))).toBe(false)
 
+    // And refused without renewing the lock. A locked row never gets to
+    // verify, so counting the attempt against it re-stamps `locked_until` on
+    // every try — and then the person retrying the correct code each minute
+    // holds their own lock open forever, on the one surface an administrator
+    // deliberately cannot clear. The lock keeps its original expiry.
+    const stamped = await pool.query<{ locked_until: Date | null }>(
+      'SELECT locked_until FROM user_second_factors WHERE id = $1',
+      [fresh!.id],
+    )
+    expect(await factors.verify(ORG, userId, totpCode(fresh!.secret, step + 1))).toBe(false)
+    const after = await pool.query<{ locked_until: Date | null }>(
+      'SELECT locked_until FROM user_second_factors WHERE id = $1',
+      [fresh!.id],
+    )
+    expect(after.rows[0]?.locked_until).toEqual(stamped.rows[0]?.locked_until)
+
     const recovery = await pool.query<{ code_hash: string }>(
       'SELECT code_hash FROM user_recovery_codes WHERE org_id = $1 AND user_id = $2 AND used_at IS NULL',
       [ORG, userId],

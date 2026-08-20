@@ -81,7 +81,7 @@ import {
   toCsv,
   toNdjson,
 } from './audit-export.js'
-import { readPage, type Page, type PageResult } from './pagination.js'
+import { decodeCursor, readPage, type Page, type PageResult } from './pagination.js'
 export type { Page, PageResult }
 
 /**
@@ -1986,6 +1986,35 @@ function sendSessionOutcome(
   send(res, problem.status, problem.toJSON(), requestId)
 }
 
+/**
+ * Match a route whose captured segments are percent-decoded, or `null`.
+ *
+ * WHATWG `URL` leaves an invalid escape in `pathname` verbatim, so a bare
+ * `decodeURIComponent` over a captured segment throws `URIError` on
+ * `/v1/documents/%ZZ` — which the error boundary turned into a `500` and an
+ * audit row saying `error`, where the right answer is the `404` every other
+ * unknown id gets. A malformed escape names nothing, so here it is a path
+ * that does not match: the request falls through to the same `notFound` an
+ * unrouted path gets, and any authenticated caller stops being able to fill
+ * the journal with `error` rows on demand. Twelve routes decode a segment;
+ * this is the one place they all do it, and eslint refuses a bare
+ * `decodeURIComponent` in this package so the thirteenth cannot be written
+ * the old way.
+ */
+function pathMatch(pattern: RegExp, instance: string): RegExpExecArray | null {
+  const matched = pattern.exec(instance)
+  if (matched === null) return null
+  try {
+    for (let i = 1; i < matched.length; i += 1) {
+      const raw = matched[i]
+      if (raw !== undefined) matched[i] = decodeURIComponent(raw)
+    }
+    return matched
+  } catch {
+    return null
+  }
+}
+
 async function handleAuth(
   req: IncomingMessage,
   res: ServerResponse,
@@ -2224,10 +2253,15 @@ async function handleAuth(
       }
     }
 
-    // Awaited, but its failure is swallowed: the answer is the same either way,
-    // and an unhandled rejection would take the process down over a relay being
-    // briefly unreachable.
-    await options.recovery.request(email.email).catch((error: unknown) => {
+    // Deliberately not awaited. The body is the same `204` either way, but the
+    // *time* to it was not: a miss returns after one SELECT and a hit does a
+    // full SMTP round trip — hundreds of milliseconds against a couple — so an
+    // awaited request() made the one endpoint reachable without a credential a
+    // timing oracle for "does this address have an account", which is exactly
+    // what the module's own header says it must not be. The failure is still
+    // swallowed into a log line: an unhandled rejection would take the process
+    // down over a relay being briefly unreachable.
+    void options.recovery.request(email.email).catch((error: unknown) => {
       logger.warn('could not start a password recovery', {
         request_id: requestId,
         error: String(error).slice(0, 200),
@@ -3685,9 +3719,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       return
     }
 
-    const documentMatch = /^\/v1\/documents\/([^/]+)$/.exec(instance)
+    const documentMatch = pathMatch(/^\/v1\/documents\/([^/]+)$/, instance)
     if (req.method === 'DELETE' && documentMatch) {
-      const id = decodeURIComponent(documentMatch[1] as string)
+      const id = documentMatch[1] as string
       const removed = await options.ingest.remove(auth, id)
 
       await options.audit.write({
@@ -3711,7 +3745,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     }
 
     if (req.method === 'PATCH' && documentMatch) {
-      const id = decodeURIComponent(documentMatch[1] as string)
+      const id = documentMatch[1] as string
 
       if (options.documents.updateMetadata === undefined) {
         const problem = notFound(instance, requestId)
@@ -3773,7 +3807,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     }
 
     if (req.method === 'GET' && documentMatch) {
-      const id = decodeURIComponent(documentMatch[1] as string)
+      const id = documentMatch[1] as string
       const document = await options.documents.read(auth, id)
 
       if (document === undefined) {
@@ -3807,9 +3841,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       return
     }
 
-    const jobMatch = /^\/v1\/jobs\/([^/]+)$/.exec(instance)
+    const jobMatch = pathMatch(/^\/v1\/jobs\/([^/]+)$/, instance)
     if (req.method === 'GET' && jobMatch && options.jobs !== undefined) {
-      const id = decodeURIComponent(jobMatch[1] as string)
+      const id = jobMatch[1] as string
       const job = await options.jobs.read(auth, id)
 
       if (job === undefined) {
@@ -4243,7 +4277,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
     if (instance === '/v1/workspaces' && options.workspaces !== undefined) {
       if (req.method === 'GET') {
-        const page = readPage(url.searchParams, instance, requestId)
+        const page = readPage(url.searchParams, instance, requestId, 'uuid')
         if (page instanceof Problem) {
           send(res, page.status, page.toJSON(), requestId)
           return
@@ -4336,7 +4370,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     }
 
     if (req.method === 'GET' && instance === '/v1/layers' && options.layers !== undefined) {
-      const page = readPage(url.searchParams, instance, requestId)
+      const page = readPage(url.searchParams, instance, requestId, 'uuid')
       if (page instanceof Problem) {
         send(res, page.status, page.toJSON(), requestId)
         return
@@ -4452,7 +4486,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     }
 
     if (req.method === 'GET' && instance === '/v1/grants' && options.grants !== undefined) {
-      const page = readPage(url.searchParams, instance, requestId)
+      const page = readPage(url.searchParams, instance, requestId, 'uuid')
       if (page instanceof Problem) {
         send(res, page.status, page.toJSON(), requestId)
         return
@@ -4499,9 +4533,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       return
     }
 
-    const grantMatch = /^\/v1\/grants\/([^/]+)$/.exec(instance)
+    const grantMatch = pathMatch(/^\/v1\/grants\/([^/]+)$/, instance)
     if (req.method === 'DELETE' && grantMatch && options.grants !== undefined) {
-      const id = decodeURIComponent(grantMatch[1] as string)
+      const id = grantMatch[1] as string
       const revoked = await options.grants.revoke(auth, id)
 
       // Written before the response either way. A revocation nobody can prove
@@ -4879,7 +4913,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
-      const page = readPage(url.searchParams, instance, requestId)
+      const page = readPage(url.searchParams, instance, requestId, 'sequence')
       if (page instanceof Problem) {
         send(res, page.status, page.toJSON(), requestId)
         return
@@ -5197,13 +5231,29 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // consent theirs to give. `404` for anything else, because an agent they
       // cannot see and one that does not exist are the same answer here as
       // everywhere.
+      //
+      // The whole listing, not one page of it. A `find` over the first 200
+      // used to stand here, so in an organization with more accounts than
+      // that, approving one ordered past the cut answered `404`
+      // indistinguishably from "no such agent" — a valid consent refused with
+      // nothing on the screen to say why. The loop terminates because the
+      // listing seeks on `(created_at, id)`, and it stops early on a hit.
       if (!delegating) {
-        const visible = options.serviceAccounts === undefined
-          ? undefined
-          : (await options.serviceAccounts.list(auth, { limit: 200, after: undefined })).items.find(
-              (a) => a.id === serviceAccountId,
-            )
-        if (visible === undefined) {
+        let visible = false
+        if (options.serviceAccounts !== undefined) {
+          let after: Page['after']
+          for (;;) {
+            const found = await options.serviceAccounts.list(auth, { limit: 200, after })
+            if (found.items.some((a) => a.id === serviceAccountId)) {
+              visible = true
+              break
+            }
+            if (found.nextCursor === null) break
+            after = decodeCursor(found.nextCursor, 'uuid')
+            if (after === undefined) break
+          }
+        }
+        if (!visible) {
           const problem = notFound(instance, requestId)
           send(res, problem.status, problem.toJSON(), requestId)
           return
@@ -5219,10 +5269,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // restriction they wrote is not the one they meant. `404` for an unknown
       // id and for an unreadable one alike, on invariant I6.
       if (delegating && narrowing !== undefined && narrowing.length > 0) {
-        const readable = options.layers === undefined
-          ? []
-          : (await options.layers.list(auth, { limit: 500, after: undefined })).items.map((l) => l.id)
-        if (narrowing.some((l) => !readable.includes(l.id))) {
+        // The whole listing, for the reason the agent lookup above walks its
+        // pages: one fixed page refused any layer ordered past the cut. The
+        // loop stops early once every named layer has been seen.
+        const readable = new Set<string>()
+        if (options.layers !== undefined) {
+          let after: Page['after']
+          for (;;) {
+            const found = await options.layers.list(auth, { limit: 500, after })
+            for (const layer of found.items) readable.add(layer.id)
+            if (narrowing.every((l) => readable.has(l.id))) break
+            if (found.nextCursor === null) break
+            after = decodeCursor(found.nextCursor, 'uuid')
+            if (after === undefined) break
+          }
+        }
+        if (narrowing.some((l) => !readable.has(l.id))) {
           const problem = notFound(instance, requestId)
           send(res, problem.status, problem.toJSON(), requestId)
           return
@@ -5336,7 +5398,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       }
 
       if (req.method === 'GET') {
-        const page = readPage(url.searchParams, instance, requestId)
+        const page = readPage(url.searchParams, instance, requestId, 'uuid')
         if (page instanceof Problem) {
           send(res, page.status, page.toJSON(), requestId)
           return
@@ -5403,7 +5465,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       }
     }
 
-    const accountMatch = /^\/v1\/service-accounts\/([^/]+)$/.exec(instance)
+    const accountMatch = pathMatch(/^\/v1\/service-accounts\/([^/]+)$/, instance)
     if (req.method === 'DELETE' && accountMatch && options.serviceAccounts !== undefined) {
       if (!administers(auth)) {
         const problem = notFound(instance, requestId)
@@ -5411,7 +5473,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
-      const id = decodeURIComponent(accountMatch[1] as string)
+      const id = accountMatch[1] as string
       const revoked = await options.serviceAccounts.revoke(auth, id)
 
       await options.audit.write({
@@ -5465,7 +5527,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
     if (instance === '/v1/users' && options.users !== undefined) {
       if (req.method === 'GET') {
-        const page = readPage(url.searchParams, instance, requestId)
+        const page = readPage(url.searchParams, instance, requestId, 'uuid')
         if (page instanceof Problem) {
           send(res, page.status, page.toJSON(), requestId)
           return
@@ -5563,9 +5625,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       }
     }
 
-    const userMatch = /^\/v1\/users\/([^/]+)$/.exec(instance)
+    const userMatch = pathMatch(/^\/v1\/users\/([^/]+)$/, instance)
     if (userMatch && options.users !== undefined) {
-      const id = decodeURIComponent(userMatch[1] as string)
+      const id = userMatch[1] as string
 
       if (req.method === 'DELETE') {
         // Disabled, never deleted, which is what `DELETE` means on every
@@ -5706,9 +5768,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       }
     }
 
-    const passwordMatch = /^\/v1\/users\/([^/]+)\/password$/.exec(instance)
+    const passwordMatch = pathMatch(/^\/v1\/users\/([^/]+)\/password$/, instance)
     if (req.method === 'POST' && passwordMatch && options.users !== undefined) {
-      const id = decodeURIComponent(passwordMatch[1] as string)
+      const id = passwordMatch[1] as string
       const reset = await options.users.resetPassword(auth, id)
       const refused = typeof reset === 'string' ? reset : undefined
 
@@ -5749,7 +5811,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
     if (instance === '/v1/groups' && options.groups !== undefined) {
       if (req.method === 'GET') {
-        const page = readPage(url.searchParams, instance, requestId)
+        const page = readPage(url.searchParams, instance, requestId, 'uuid')
         if (page instanceof Problem) {
           send(res, page.status, page.toJSON(), requestId)
           return
@@ -5807,9 +5869,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       }
     }
 
-    const groupMatch = /^\/v1\/groups\/([^/]+)$/.exec(instance)
+    const groupMatch = pathMatch(/^\/v1\/groups\/([^/]+)$/, instance)
     if (req.method === 'DELETE' && groupMatch && options.groups !== undefined) {
-      const id = decodeURIComponent(groupMatch[1] as string)
+      const id = groupMatch[1] as string
       const removed = await options.groups.remove(auth, id)
 
       await options.audit.write({
@@ -5832,12 +5894,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       return
     }
 
-    const membersMatch = /^\/v1\/groups\/([^/]+)\/members$/.exec(instance)
+    const membersMatch = pathMatch(/^\/v1\/groups\/([^/]+)\/members$/, instance)
     if (membersMatch && options.groups !== undefined) {
-      const groupId = decodeURIComponent(membersMatch[1] as string)
+      const groupId = membersMatch[1] as string
 
       if (req.method === 'GET') {
-        const page = readPage(url.searchParams, instance, requestId)
+        const page = readPage(url.searchParams, instance, requestId, 'uuid')
         if (page instanceof Problem) {
           send(res, page.status, page.toJSON(), requestId)
           return
@@ -5906,11 +5968,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     // `{type}/{id}` rather than `{id}` alone: the edge is keyed by which member
     // column it uses, so a bare uuid does not identify one. Same shape `grants`
     // uses for the other end of the same relationship.
-    const memberMatch = /^\/v1\/groups\/([^/]+)\/members\/(user|group)\/([^/]+)$/.exec(instance)
+    const memberMatch = pathMatch(/^\/v1\/groups\/([^/]+)\/members\/(user|group)\/([^/]+)$/, instance)
     if (req.method === 'DELETE' && memberMatch && options.groups !== undefined) {
-      const groupId = decodeURIComponent(memberMatch[1] as string)
+      const groupId = memberMatch[1] as string
       const type = memberMatch[2] as 'user' | 'group'
-      const memberId = decodeURIComponent(memberMatch[3] as string)
+      const memberId = memberMatch[3] as string
 
       const removed = await options.groups.removeMember(auth, groupId, { type, id: memberId })
 

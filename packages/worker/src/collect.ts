@@ -46,6 +46,19 @@ export interface CollectPorts {
   removeObject(key: string): Promise<void>
   /** Documents tombstoned longer than the grace period, oldest first. */
   claim(limit: number, graceSeconds: number): Promise<readonly PurgeTarget[]>
+  /**
+   * Is this document still tombstoned, right now?
+   *
+   * Asked again per target, immediately before the destructive step, because
+   * `claim` answers for the whole batch at once and the loop below is
+   * deliberately serial and slow: ingest resurrects a tombstoned row
+   * (`deleted_at = NULL`), so a document re-ingested while the batch works
+   * through its predecessors is live by the time its turn comes — and `purge`
+   * removes **every** point of a document on purpose, fresh ones included.
+   * Skipping a resurrected target costs one wasted claim; purging one is an
+   * `indexed` document that answers no search.
+   */
+  stillDeleted(orgId: string, documentId: string): Promise<boolean>
   /** Remove every point of a document. Physical, not a payload flag. */
   purge(collection: string, documentId: string): Promise<void>
   /** Record that the vectors are gone, so it is not swept twice. */
@@ -92,6 +105,12 @@ export async function collectOnce(
   // no deadline. There is nothing waiting on this finishing sooner.
   for (const target of targets) {
     try {
+      // A resurrected target is skipped, not failed: ingest brought the
+      // document back after the claim, its requeue resets the sweep columns,
+      // and the next delete re-claims it. Purging it instead would remove a
+      // live document's points — see `stillDeleted` above. Not counted as
+      // purged either, because nothing was.
+      if (!(await ports.stillDeleted(target.orgId, target.documentId))) continue
       await ports.purge(target.collection, target.documentId)
       // Between the points and the row, and only when there is one. Its own
       // failure fails the whole target, which leaves the row unpurged and the

@@ -7,7 +7,7 @@ import { logger } from '@nacre.work/core'
 import { catalog } from './tools.js'
 // The same three results the HTTP transport answers with, built once. Each was
 // hand-built in both files until a capability set and a cache hint diverged.
-import { discoverResult, initializeResult, toolsListResult } from './results.js'
+import { discoverResult, initializeResult, toolsListResult, pingResult, callToolResult } from './results.js'
 import { PROTOCOL_VERSION } from './server.js'
 import type { Layers, ToolRunner } from './server.js'
 
@@ -158,7 +158,7 @@ async function dispatch(
       return undefined
 
     case 'ping':
-      return {}
+      return pingResult()
 
     case 'tools/list':
       return toolsListResult(catalog(await options.layers.forCaller(auth)))
@@ -181,10 +181,7 @@ async function dispatch(
         // this is the only thing tying an audit row to one invocation.
         randomUUID(),
       )
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        isError: false,
-      }
+      return callToolResult(result)
     }
 
     default:

@@ -186,6 +186,15 @@ const FIXTURES = {
     principal_type: 'user',
     principal_id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90',
     role: 'org_admin',
+    // Both of what the server actually sends — admin-surface.test.ts pins the
+    // key set. Without them every default shot rendered through the SDK's
+    // legacy fallback (`role === 'org_admin'`), so a fixture no server sends
+    // was proving the derivation the field exists to replace. The direction
+    // where the two disagree — an org_admin whose ceiling-bounded delegation
+    // answers administers: false — is pinned in the SDK's own client.test.ts,
+    // where it belongs: no screenshot can separate them when they agree.
+    administers: true,
+    holds_own_credentials: true,
   },
   /*
    * The access log. Two roles read two different logs and the server decides

@@ -168,3 +168,30 @@ export const toolsListResult = (tools: readonly ToolDefinition[]) => ({
   ttlMs: TOOLS_TTL_MS,
   cacheScope: 'user',
 })
+
+/**
+ * `ping`'s result: the empty object, by specification.
+ *
+ * Built here like the other three even though there is nothing to build,
+ * because the method itself is what diverged: ping is a MUST-respond for both
+ * parties in every revision, and STDIO answered it while Streamable HTTP fell
+ * through to its 404 arm for the whole life of both — a client's keep-alive
+ * dropping the very connection it was checking, over the transport the
+ * product is for. A result the transports share is a result a dispatcher has
+ * to name to return, and the parity suite reads both dispatchers' method
+ * lists now, so losing the arm again fails there.
+ */
+export const pingResult = (): Record<string, never> => ({})
+
+/**
+ * `tools/call`'s envelope: a CallToolResult, never the bare value.
+ *
+ * The protocol requires `content` to be a list of content blocks, and a
+ * client that follows it rejects anything else. Both dispatchers used to
+ * spell this object out by hand — two copies of the shape this module exists
+ * to make one.
+ */
+export const callToolResult = (result: unknown) => ({
+  content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+  isError: false,
+})

@@ -85,12 +85,44 @@ export class PostgresDocumentStore implements DocumentStore {
         // nothing will claim again is a lie in the table, and the next person
         // to read `sweep_claimed_at` should not have to work out which of the
         // two sweeps left it there.
+        //
+        // `deleted_at IS NOT NULL` because ingest resurrects: a document
+        // re-ingested between the claim and this statement is live again, and
+        // stamping a live row purged would keep its *next* delete out of the
+        // sweep for good. The sweep's own `stillDeleted` check makes this
+        // window milliseconds, and this predicate is what makes losing the
+        // race harmless.
         await client.query(
           `UPDATE documents
               SET vectors_purged_at = now(), sweep_claimed_at = NULL
-            WHERE org_id = $1 AND id = $2 AND vectors_purged_at IS NULL`,
+            WHERE org_id = $1 AND id = $2 AND vectors_purged_at IS NULL
+              AND deleted_at IS NOT NULL`,
           [orgId, documentId],
         )
+      },
+      this.scope,
+    )
+  }
+
+  /**
+   * Still tombstoned, right now? The collector asks per target before the
+   * destructive step — its claim answered for the whole batch, and ingest
+   * resurrects. See `CollectPorts.stillDeleted`.
+   */
+  async stillDeleted(orgId: string, documentId: string): Promise<boolean> {
+    return withOrg(
+      this.pool,
+      orgId,
+      async (client) => {
+        const { rows } = await client.query<{ deleted: boolean }>(
+          `SELECT (deleted_at IS NOT NULL) AS deleted
+             FROM documents WHERE org_id = $1 AND id = $2`,
+          [orgId, documentId],
+        )
+        // A row that is gone entirely was taken by a cascade (its layer, or
+        // its organization); the points went with the collection or are
+        // nobody's to keep, and purging is still the right answer.
+        return rows[0]?.deleted ?? true
       },
       this.scope,
     )
@@ -168,11 +200,22 @@ export class PostgresDocumentStore implements DocumentStore {
 
         await client.query('DELETE FROM chunks WHERE org_id = $1 AND document_id = $2', [input.orgId, id])
 
-        for (const c of input.chunks) {
+        // One statement however many chunks, via unnest. This used to be a
+        // loop of single-row INSERTs inside the transaction — a large
+        // document was hundreds of round trips per pass, each holding the
+        // row lock a little longer for nothing.
+        if (input.chunks.length > 0) {
           await client.query(
             `INSERT INTO chunks (org_id, document_id, ordinal, text, point_id)
-             VALUES ($1,$2,$3,$4,$5)`,
-            [input.orgId, id, c.ordinal, c.text, c.pointId],
+             SELECT $1, $2, ordinal, text, point_id
+               FROM unnest($3::int[], $4::text[], $5::uuid[]) AS c(ordinal, text, point_id)`,
+            [
+              input.orgId,
+              id,
+              input.chunks.map((c) => c.ordinal),
+              input.chunks.map((c) => c.text),
+              input.chunks.map((c) => c.pointId),
+            ],
           )
         }
 
@@ -1011,6 +1054,24 @@ export async function claimReindexable(
          JOIN layers l        ON l.id = d.layer_id
          JOIN organizations o ON o.id = d.org_id
         WHERE l.reindex_state ->> 'status' = 'running'
+          -- The phase, like both siblings name theirs. Without it a replica's
+          -- embedding pass claims a layer still in the copy phase — the loop
+          -- order inside one replica masks it, and across replicas every claimed
+          -- document fails on the not-yet-existing slot, so twenty empty
+          -- passes mark a healthy migration failed while its copy is running.
+          AND l.reindex_state ->> 'phase' = 'embedding'
+          -- And not while any layer of this organization is being copied —
+          -- the same hold claimNext puts on ingest, for the same reason: the
+          -- copy scrolls the old collection with no snapshot, so a vector
+          -- written behind the scroll's position never reaches the new one,
+          -- while reindexed_vector says done. The switch then fires and those
+          -- documents match nothing on the new slot, silently.
+          AND NOT EXISTS (
+            SELECT 1 FROM layers c
+             WHERE c.org_id = l.org_id
+               AND c.reindex_state ->> 'status' = 'running'
+               AND c.reindex_state ->> 'phase'  = 'copying'
+          )
           AND l.deleted_at IS NULL
           AND o.deleted_at IS NULL
           AND d.deleted_at IS NULL
@@ -1159,17 +1220,39 @@ export interface CopyTarget {
   readonly shadowVector: string
   readonly providerId: string
   readonly dimensions: number
+  /**
+   * The fencing token this claim holds. `renewCopyClaim` and `finishCopy`
+   * both require it, so a worker whose lease expired and was taken over
+   * cannot finish — or fail — somebody else's copy.
+   */
+  readonly claim: string
+  /**
+   * When the migration began, for `repairAfterCopy`'s window. Anything the
+   * copy could have raced happened after this instant, so it is a safe
+   * overcount of the drift.
+   */
+  readonly startedAt: string
 }
 
 /**
- * Layers stuck in the copy phase.
+ * Layers stuck in the copy phase, **claimed** with a lease.
  *
  * At most one per organization, because the API refuses a second start while
- * one is copying — but the query says so rather than assuming it, since the
- * cost of two workers rebuilding one collection is losing whichever finished
- * first.
+ * one is copying. What the claim adds is at most one *worker* per layer: the
+ * copy begins by deleting its target — a half-copied collection is worse than
+ * none — so two replicas' five-second ticks both starting the same copy is
+ * one deleting the other's work mid-scroll, and in the worst interleaving
+ * deleting a collection `finishCopy` has already made live. The claim is the
+ * same lease shape `claimPurgeable` uses, carried inside `reindex_state`
+ * because that is the state it protects, plus a fencing token: a lease alone
+ * says who may start, and the token is what stops the *previous* holder —
+ * stalled past the lease and then waking — from finishing over the top.
  */
-export async function claimCopyable(pool: Pool, limit: number): Promise<readonly CopyTarget[]> {
+export async function claimCopyable(
+  pool: Pool,
+  limit: number,
+  leaseSeconds: number,
+): Promise<readonly CopyTarget[]> {
   return acrossOrganizations(pool, async (client) => {
     const { rows } = await client.query<{
       org_id: string
@@ -1179,21 +1262,39 @@ export async function claimCopyable(pool: Pool, limit: number): Promise<readonly
       shadow_vector: string
       provider_id: string
       dimensions: number
+      claim: string
+      started_at: string
     }>(
-      `SELECT DISTINCT ON (l.org_id)
-              l.org_id, o.slug, o.vector_collection AS collection, l.id AS layer_id,
-              l.reindex_state ->> 'shadow_vector' AS shadow_vector,
-              l.reindex_state ->> 'provider_id'   AS provider_id,
-              p.dimensions
-         FROM layers l
-         JOIN organizations o      ON o.id = l.org_id
-         JOIN embedding_providers p ON p.id = (l.reindex_state ->> 'provider_id')::uuid
-        WHERE l.reindex_state ->> 'status' = 'running'
-          AND l.reindex_state ->> 'phase'  = 'copying'
-          AND l.deleted_at IS NULL AND o.deleted_at IS NULL
-        ORDER BY l.org_id, l.id
-        LIMIT $1`,
-      [limit],
+      `WITH claimed AS (
+         SELECT l.id
+           FROM layers l
+           JOIN organizations o ON o.id = l.org_id
+          WHERE l.reindex_state ->> 'status' = 'running'
+            AND l.reindex_state ->> 'phase'  = 'copying'
+            AND l.deleted_at IS NULL AND o.deleted_at IS NULL
+            AND (l.reindex_state ->> 'copy_claimed_at' IS NULL
+                 OR (l.reindex_state ->> 'copy_claimed_at')::timestamptz
+                    < now() - make_interval(secs => $2))
+          ORDER BY l.org_id, l.id
+          LIMIT $1
+          FOR UPDATE OF l SKIP LOCKED
+       )
+       UPDATE layers l
+          SET reindex_state = l.reindex_state
+                || jsonb_build_object('copy_claim', gen_random_uuid()::text,
+                                      'copy_claimed_at', now()::text)
+         FROM claimed c
+         JOIN organizations o       ON TRUE
+         JOIN embedding_providers p ON TRUE
+        WHERE l.id = c.id AND o.id = l.org_id
+          AND p.id = (l.reindex_state ->> 'provider_id')::uuid
+        RETURNING l.org_id, o.slug, o.vector_collection AS collection, l.id AS layer_id,
+                  l.reindex_state ->> 'shadow_vector'   AS shadow_vector,
+                  l.reindex_state ->> 'provider_id'     AS provider_id,
+                  l.reindex_state ->> 'copy_claim'      AS claim,
+                  COALESCE(l.reindex_state ->> 'started_at', now()::text) AS started_at,
+                  p.dimensions`,
+      [limit, leaseSeconds],
     )
 
     return rows.map((r) => ({
@@ -1204,8 +1305,107 @@ export async function claimCopyable(pool: Pool, limit: number): Promise<readonly
       shadowVector: r.shadow_vector,
       providerId: r.provider_id,
       dimensions: Number(r.dimensions),
+      claim: r.claim,
+      startedAt: r.started_at,
     }))
   })
+}
+
+/**
+ * Repair what moved underneath a collection copy, once the pointer has.
+ *
+ * The copy scrolls the old collection with no snapshot, so any write that
+ * landed behind the scroll's position is absent from — or stale in — the new
+ * collection: a document that finished indexing after the scroll passed it, a
+ * `PATCH` that re-tagged one, a delete whose tombstone the scroll had already
+ * copied over as `deleted: false`, and a purge that ran against the old
+ * collection and then stamped `vectors_purged_at`, taking the document out of
+ * the sweep for good while its points sit live in the new one.
+ *
+ * Ingest and the embedding pass are *paused* during a copy — `claimNext` and
+ * `claimReindexable` both hold while a copy runs — so what is left is the
+ * writers that cannot be paused: a delete must tombstone now (invariant 5), a
+ * `PATCH` answers 204 now, and a document claimed *before* the copy began
+ * finishes into the old collection. All three are bounded by the migration's
+ * own window, so the repair is a window too: everything touched since the
+ * migration began is requeued or re-tombstoned, which overcounts a little and
+ * misses nothing. Requeueing reuses the ordinary pipeline rather than a
+ * second payload writer — the cost is re-embedding the handful of documents
+ * somebody touched mid-migration.
+ *
+ * The returned ids are tombstoned documents whose points in the new
+ * collection may still say `deleted: false`; the caller re-tombstones each so
+ * the pre-filter holds immediately, and the cleared `vectors_purged_at` sends
+ * the collector back for the physical removal.
+ */
+export async function repairAfterCopy(
+  pool: Pool,
+  orgId: string,
+  since: string,
+  role?: string,
+): Promise<{ requeued: number; tombstoned: readonly string[] }> {
+  return withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      const { rowCount: requeued } = await client.query(
+        `UPDATE documents
+            SET status = 'pending', attempts = 0, error = NULL, updated_at = now()
+          WHERE org_id = $1 AND deleted_at IS NULL
+            AND status = 'indexed'
+            AND updated_at >= $2::timestamptz`,
+        [orgId, since],
+      )
+
+      const { rows } = await client.query<{ id: string }>(
+        `UPDATE documents
+            SET vectors_purged_at = NULL, sweep_claimed_at = NULL
+          WHERE org_id = $1 AND deleted_at IS NOT NULL
+            AND (deleted_at >= $2::timestamptz
+                 OR (vectors_purged_at IS NOT NULL AND vectors_purged_at >= $2::timestamptz))
+          RETURNING id`,
+        [orgId, since],
+      )
+
+      return { requeued: requeued ?? 0, tombstoned: rows.map((r) => r.id) }
+    },
+    role === undefined ? {} : { role },
+  )
+}
+
+/**
+ * Extend a copy claim's lease, or learn that it was taken.
+ *
+ * Called from the copy's own progress callback, because a copy of a large
+ * collection can outlive any fixed lease: the lease is there so a *dead*
+ * worker's claim expires, and a live one proves it is alive by renewing. A
+ * `false` answer means another worker holds the claim now — the caller must
+ * abandon the copy without finishing or failing anything.
+ */
+export async function renewCopyClaim(
+  pool: Pool,
+  orgId: string,
+  layerId: string,
+  claim: string,
+  role?: string,
+): Promise<boolean> {
+  return withOrg(
+    pool,
+    orgId,
+    async (client) => {
+      const { rowCount } = await client.query(
+        `UPDATE layers
+            SET reindex_state = jsonb_set(reindex_state, '{copy_claimed_at}', to_jsonb(now()::text))
+          WHERE org_id = $1 AND id = $2
+            AND reindex_state ->> 'copy_claim' = $3
+            AND reindex_state ->> 'status' = 'running'
+            AND reindex_state ->> 'phase'  = 'copying'`,
+        [orgId, layerId, claim],
+      )
+      return (rowCount ?? 0) > 0
+    },
+    role === undefined ? {} : { role },
+  )
 }
 
 /**
@@ -1225,13 +1425,32 @@ export async function claimCopyable(pool: Pool, limit: number): Promise<readonly
 export async function finishCopy(
   pool: Pool,
   orgId: string,
+  layerId: string,
+  claim: string,
   collection: string,
   role?: string,
-): Promise<void> {
-  await withOrg(
+): Promise<boolean> {
+  return withOrg(
     pool,
     orgId,
     async (client) => {
+      // The fence. Only the worker still holding the claim may move the
+      // pointer: one whose lease expired mid-copy — and whose target another
+      // replica has since deleted and is rebuilding — would otherwise make a
+      // half-copied collection live. `FOR UPDATE` holds the row for the rest
+      // of this transaction, so a competing claim cannot land between this
+      // check and the writes below.
+      const { rowCount: held } = await client.query(
+        `SELECT 1 FROM layers
+          WHERE org_id = $1 AND id = $2
+            AND reindex_state ->> 'copy_claim' = $3
+            AND reindex_state ->> 'status' = 'running'
+            AND reindex_state ->> 'phase'  = 'copying'
+          FOR UPDATE`,
+        [orgId, layerId, claim],
+      )
+      if ((held ?? 0) === 0) return false
+
       const { rows: before } = await client.query<{ vector_collection: string }>(
         'SELECT vector_collection FROM organizations WHERE id = $1',
         [orgId],
@@ -1326,6 +1545,7 @@ export async function finishCopy(
             AND l.reindex_state ->> 'phase'  = 'copying'`,
         [orgId],
       )
+      return true
     },
     role === undefined ? {} : { role },
   )

@@ -79,6 +79,62 @@ describe('NacreClient', () => {
     }
   })
 
+  it('honours administers over the role, in the direction the console shipped wrong', async () => {
+    // `role: 'org_admin'` with `administers: false` is a ceiling-bounded
+    // delegation of an administrator — the one combination where the field
+    // and the legacy derivation (`role === 'org_admin'`) disagree, and the
+    // entire reason the field exists. No screenshot fixture can separate the
+    // two (where they agree the pictures are identical), so this is the line
+    // that holds it: replace the mapping with the derivation and the console
+    // offers Grants, People and Service accounts that all answer 404.
+    const { fetchImpl } = stub(
+      json(200, {
+        organization: 'acme',
+        principal_type: 'user',
+        principal_id: 'p-1',
+        role: 'org_admin',
+        administers: false,
+        holds_own_credentials: true,
+      }),
+    )
+    const self = await client(fetchImpl).me()
+    expect(self.administers).toBe(false)
+  })
+
+  it('falls back to the conservative half of the derivation against an older API', async () => {
+    const { fetchImpl } = stub(
+      json(200, {
+        organization: 'acme',
+        principal_type: 'user',
+        principal_id: 'p-1',
+        role: 'org_admin',
+      }),
+    )
+    const self = await client(fetchImpl).me()
+    // An org_admin administers and holds their own credentials — what the
+    // server would have said. The dangerous halves are the other directions.
+    expect(self.administers).toBe(true)
+    expect(self.holdsOwnCredentials).toBe(true)
+  })
+
+  it('honours holds_own_credentials: false, which is what a shared account is', async () => {
+    // Replacing this mapping with a constant `true` changes no screenshot and
+    // no server test — and draws password and second-factor controls for an
+    // account whose whole point is that those answer 404.
+    const { fetchImpl } = stub(
+      json(200, {
+        organization: 'acme',
+        principal_type: 'user',
+        principal_id: 'p-1',
+        role: 'member',
+        administers: false,
+        holds_own_credentials: false,
+      }),
+    )
+    const self = await client(fetchImpl).me()
+    expect(self.holdsOwnCredentials).toBe(false)
+  })
+
   it('passes top_k through uncorrected', async () => {
     const { fetchImpl, calls } = stub(json(200, { items: [] }))
     await client(fetchImpl).search('anything', { topK: 5 })

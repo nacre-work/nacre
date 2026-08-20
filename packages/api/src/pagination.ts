@@ -64,7 +64,22 @@ export function encodeCursor(position: Position): string {
   return Buffer.from(`${position.createdAt}|${position.id}`, 'utf8').toString('base64url')
 }
 
-function decodeCursor(cursor: string): Position | undefined {
+/**
+ * Which shape of id this collection's cursor carries.
+ *
+ * Every paged collection here seeks on a uuid except `audit_events`, whose
+ * primary key is a bigserial. The shape is an argument rather than "either",
+ * because each adapter casts its bound to exactly one type — `::uuid` or
+ * `::bigint` — so a cursor from one collection pasted into another used to
+ * pass this decoder and then blow up in the cast: `invalid input syntax for
+ * type bigint`, a `500` and an audit row saying `error`, for what is a caller
+ * holding a cursor the message below already tells them not to construct.
+ * Making the argument required is what turns the ninth listing into a compile
+ * error until it says which shape it seeks on.
+ */
+export type CursorIdShape = 'uuid' | 'sequence'
+
+export function decodeCursor(cursor: string, idShape: CursorIdShape): Position | undefined {
   let decoded: string
   try {
     decoded = Buffer.from(cursor, 'base64url').toString('utf8')
@@ -77,23 +92,20 @@ function decodeCursor(cursor: string): Position | undefined {
 
   const createdAt = decoded.slice(0, at)
   const id = decoded.slice(at + 1)
-  // A cursor that does not carry a timestamp and an identifier is not one this
-  // API issued, whatever it decodes to.
+  // A cursor that does not carry a timestamp and this collection's shape of
+  // identifier is not one this API issued *for this collection*, whatever it
+  // decodes to. The first version accepted a uuid **or** a run of digits from
+  // any listing, on the argument that the cursor is not a security boundary —
+  // which is true and was never the problem: each adapter casts its bound to
+  // exactly one type, so the shape the collection does not seek on sailed
+  // through here and failed in the cast as a 500. The refusal a caller can
+  // read belongs here, where the message tells them cursors are opaque.
   //
-  // A uuid **or** a run of digits: every paged collection here is keyed by uuid
-  // except `audit_events`, whose primary key is a bigserial — an audit log is
-  // append-only and strictly ordered, and a sequence says so in a way a random
-  // uuid does not.
-  //
-  // Widening the format does not weaken anything, and it is worth saying why
-  // rather than leaving the next reader to work it out. The cursor is not a
-  // security boundary: it is not signed, it is decodable by anyone, and a
-  // forged one selects a different page of the caller's *own* collection —
-  // which they could reach by paging. What this check is for is telling a
-  // client that built its own cursor that it has taken a dependency on a format
-  // allowed to change, before that becomes their problem.
+  // Still not a security boundary: it is not signed, it is decodable by
+  // anyone, and a forged one selects a different page of the caller's *own*
+  // collection — which they could reach by paging.
   if (Number.isNaN(Date.parse(createdAt))) return undefined
-  if (!/^[0-9a-f-]{36}$/i.test(id) && !/^\d{1,19}$/.test(id)) return undefined
+  if (idShape === 'uuid' ? !/^[0-9a-f-]{36}$/i.test(id) : !/^\d{1,19}$/.test(id)) return undefined
 
   return { createdAt, id }
 }
@@ -109,6 +121,7 @@ export function readPage(
   params: URLSearchParams,
   instance: string,
   requestId: string,
+  idShape: CursorIdShape,
 ): Page | Problem {
   if (params.has('offset')) {
     return badRequest(
@@ -132,7 +145,7 @@ export function readPage(
   let after: Position | undefined
   const cursor = params.get('cursor')
   if (cursor !== null && cursor !== '') {
-    const position = decodeCursor(cursor)
+    const position = decodeCursor(cursor, idShape)
     if (position === undefined) {
       return badRequest(
         instance,
