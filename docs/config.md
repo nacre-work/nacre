@@ -1172,16 +1172,17 @@ token reach the container" is a question with an answer rather than a guess. See
 MinIO appears only in `full`, and that is a licensing decision as much as a
 packaging one — see [licensing.md](./licensing.md).
 
-**On arm64 the embedder and the reranker are the exception, and only those two.**
-Text Embeddings Inference publishes no arm64 image, so `full` and `airgapped`
-run those containers emulated on an Apple Silicon Mac or an arm64 node;
-everything else in every profile — this repository's four images since 0.5.2,
-Postgres, Qdrant, Redis, nginx, MinIO and Keycloak — is native.
+**On arm64 the three Text Embeddings Inference containers are the exception —
+`embedder`, `demo-embedder` and `reranker` — and only those three.** TEI
+publishes no arm64 image, so `full`, `demo` and `airgapped` run those
+containers emulated on an Apple Silicon Mac or an arm64 node; everything else
+in every profile — this repository's four images since 0.5.2, Postgres, Qdrant,
+Redis, nginx, MinIO and Keycloak — is native.
 
 Emulated only because `docker-compose.yml` names the platform. Without that key
 a plain `docker compose --profile full up -d` on an arm64 host fails at the pull
 with `no matching manifest for linux/arm64/v8` — there is no arm64 to resolve
-and Compose asks for the host's — so `platform: linux/amd64` on those two
+and Compose asks for the host's — so `platform: linux/amd64` on those three
 services is what turns a failure into an emulated container. On an amd64 host it
 does nothing.
 
@@ -1214,6 +1215,13 @@ says so rather than implying it happens by itself.**
   containers use the cached weights and never reach for the network. With it set
   and the volume empty, they fail at startup rather than silently downloading,
   which is the behaviour an airgapped deployment wants.
+- **Object storage is not part of the profile.** MinIO is `full`-only — a
+  licensing decision, see [licensing.md](./licensing.md) — so `airgapped`
+  starts with no bucket, and a closed network is the environment least able to
+  add one after the fact. Text and URL ingest are unaffected; a binary upload
+  is refused on the request, naming `NACRE_S3_*`. A deployment that needs PDFs
+  inside the perimeter brings its own S3-compatible endpoint and sets those
+  four variables.
 - **Sign-in is email and password**, the built-in mechanism, not OIDC. The
   Keycloak container in this profile is a placeholder for the commercial `sso`
   module — the open core has no code path that accepts a token Keycloak issues,

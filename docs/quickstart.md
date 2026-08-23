@@ -21,14 +21,17 @@
 - Docker with Compose v2
 - 8 GB of RAM for the `minimal` profile
 - An embedding endpoint. Any OpenAI-compatible one will do; the `full` profile
-  brings its own **on x86-64 only** — see the note directly below.
+  brings its own — emulated on arm64, see the note directly below.
 
-> **On arm64, `--profile full` runs its embedder and reranker emulated.** Both
-> are `text-embeddings-inference`, published for linux/amd64 and nothing else,
-> so `docker-compose.yml` names `platform: linux/amd64` on them: the amd64 image
-> is pulled and run under emulation rather than the pull failing with
+> **On arm64, `--profile full` and `--profile demo` run their embedders — and
+> `full`'s reranker — emulated.** All three are `text-embeddings-inference`,
+> published for linux/amd64 and nothing else, so `docker-compose.yml` names
+> `platform: linux/amd64` on them: the amd64 image is pulled and run under
+> emulation rather than the pull failing with
 > `no matching manifest for linux/arm64/v8`. Everything else in this stack is
-> arm64 and native.
+> arm64 and native. For the two-minute section below that means the seed's
+> embedder (`demo-embedder`) runs emulated on an M-series Mac — it works, and
+> it takes noticeably longer than the same command on x86-64.
 >
 > Nothing to select and no second file — the commands on this page are the same
 > on an M-series Mac, an arm64 node and an x86-64 server. Emulation does work on
@@ -108,7 +111,7 @@ so this is a value only you can supply:
 NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://host.docker.internal:8000
 ```
 
-On `--profile full` — x86-64 only, per the note above — use the embedder that
+On `--profile full` — emulated on arm64, per the note above — use the embedder that
 profile brings: `http://embedder:80`. Either way,
 `NACRE_DEFAULT_EMBEDDING_DIM` has to match the model or the index is built with
 the wrong width and every search misses.

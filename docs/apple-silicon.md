@@ -13,10 +13,13 @@ deployment pulls and which were amd64-only until 0.5.2.
 > **What has been checked, and how.** Every architecture claim below was read
 > off the registry with `docker buildx imagetools inspect`, not from a README —
 > the table is a transcript. The images this repository publishes are built for
-> both architectures by the release workflow, and CI builds the arm64 image on
+> both architectures by the release workflow; CI builds the arm64 image on
 > every pull request, **starts it under emulation** and asserts that it reaches
-> configuration validation, so a cross-build that produces an image nobody can
-> run fails here rather than on somebody's laptop.
+> configuration validation, and the `e2e` job runs a second leg **natively on an
+> arm64 runner** — the same build-start-ingest-search loop as the amd64 one, on
+> the architecture this page is about. What no CI leg asserts is TEI under
+> emulation; that stays a by-hand measurement, which is what the note below
+> already says.
 >
 > What has **not** happened is a run on actual Apple hardware — there is none in
 > CI, and there is none behind this page. Where that matters the text says so
@@ -36,8 +39,12 @@ deployment pulls and which were amd64-only until 0.5.2.
 | `quay.io/keycloak/keycloak:26.0` (`airgapped`) | amd64, **arm64** | native |
 | `ghcr.io/huggingface/text-embeddings-inference:cpu-1.6` | amd64 | **emulated** |
 
-One row is different, and it is the embedder and the reranker — the same image
-serves both. Text Embeddings Inference publishes no arm64 build: not for
+One row is different, and it is one image reaching three containers: the
+`full` and `airgapped` profiles' `embedder` and `reranker`, and the `demo`
+profile's own `demo-embedder` — which means the quickstart's "two minutes,
+nothing configured" section runs its embedder emulated on this hardware too,
+slower and working, exactly as that page now says. Text Embeddings Inference
+publishes no arm64 build: not for
 `cpu-1.6`, not for `cpu-1.7`, `cpu-1.8` or `cpu-latest`, and there is no
 `arm64`, `aarch64` or `metal` tag in the repository. TEI's own answer for Apple
 Silicon is to build it from source with `--features metal`, which is a Rust

@@ -586,10 +586,24 @@ jobs:
   # `full` service and stays one, but binary ingest has nowhere to put a PDF's
   # bytes without a bucket — so without it the smoke could not prove that path
   # at all, only that the edge refuses it.
+  # Both architectures the release publishes, and the split of claims is
+  # deliberate. The arm64 leg builds this repository's images natively on an
+  # arm runner and drives the whole loop — which is the substantive promise,
+  # since an M-series Mac and an arm64 node run exactly these images. What it
+  # deliberately does **not** assert is TEI under emulation: that is the demo
+  # job's embedder, and a gate on QEMU throughput on a shared runner is a claim
+  # depending on something it does not control — the flake class this
+  # repository hunts. The stub embedder here is arch-native, so nothing in this
+  # job emulates anything. Emulation stays a by-hand measurement, and
+  # docs/quickstart.md says so.
   e2e:
-    name: e2e
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: e2e (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@v4
       - name: configure the environment
