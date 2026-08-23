@@ -347,4 +347,137 @@ if (tracked.status !== 0) {
   }
 }
 
+/**
+ * ─── The header describes the file it sits on ────────────────────────────────
+ *
+ * `docker-compose.yml` opens with a profile list and a count of the unprofiled
+ * services, and both are prose — they rendered exactly as well after `web`
+ * joined the unprofiled nine and after `demo` became a fifth profile, which is
+ * how the first thing an operator reads came to omit the service behind the
+ * URL the quickstart tells them to open. A count in a comment is a claim about
+ * the file, so it is held against the file.
+ */
+{
+  const text = readFileSync(COMPOSE, 'utf8')
+  const header = text.split('\n').filter((line) => line.startsWith('#'))
+
+  // Every profile has a `#   name` line of its own in the header list.
+  for (const profile of Object.keys(EXPECTED)) {
+    if (profile === 'minimal') {
+      // `minimal` is the unprofiled set and its line carries the service list,
+      // checked below.
+    }
+    if (!header.some((line) => new RegExp(`^#\\s{3}${profile}\\b`).test(line))) {
+      console.error(
+        `::error file=${COMPOSE}::the header lists the profiles and \`${profile}\` is not among ` +
+          'them. It is the first thing an operator reads, and a profile it omits is one they ' +
+          'meet by accident.',
+      )
+      failed = true
+    }
+  }
+
+  // The `minimal` entry names the unprofiled services — all of them. `web` is
+  // the one it lost once, and it is the service behind the quickstart's URL.
+  // The entry is the `#   minimal` line plus its continuation lines, because
+  // prose wraps and a check that reads one line is defeated by a line break.
+  const start = header.findIndex((line) => /^#\s{3}minimal\s/.test(line))
+  let minimalLine = start === -1 ? '' : header[start]
+  for (let i = start + 1; i > 0 && i < header.length && /^#\s{14}\S/.test(header[i]); i += 1) {
+    minimalLine += ` ${header[i]}`
+  }
+  for (const service of EXPECTED.minimal) {
+    const spelled = service === 'migrate' ? 'the migrate job' : service
+    if (!minimalLine.includes(spelled)) {
+      console.error(
+        `::error file=${COMPOSE}::the header's minimal line does not name \`${service}\`, which ` +
+          'is in the unprofiled set. The list is prose and this is what keeps it honest.',
+      )
+      failed = true
+    }
+  }
+
+  // The written count of unprofiled services matches the parsed file.
+  const WORDS = { six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 }
+  const services = /^services:\n([\s\S]*?)^(?:volumes|networks):/m.exec(text)?.[1] ?? ''
+  const names = [...services.matchAll(/^ {2}([a-z][a-z0-9-]*):\s*$/gm)].map((m) => m[1])
+  const profiled = new Set(
+    [...services.matchAll(/^ {2}([a-z][a-z0-9-]*):\s*\n(?: {4}.*\n)*? {4}profiles:/gm)].map((m) => m[1]),
+  )
+  const unprofiled = names.filter((n) => !profiled.has(n))
+  const claim = /the (\w+) unprofiled services/.exec(text)
+  if (claim === null) {
+    console.error(
+      `::error file=${COMPOSE}::the header no longer states how many services are unprofiled; ` +
+        'this check holds that count and must not pass with nothing to hold.',
+    )
+    failed = true
+  } else if (WORDS[claim[1]] !== unprofiled.length) {
+    console.error(
+      `::error file=${COMPOSE}::the header says "the ${claim[1]} unprofiled services" and the ` +
+        `file has ${String(unprofiled.length)}: ${unprofiled.join(', ')}.`,
+    )
+    failed = true
+  }
+}
+
+/**
+ * ─── Every amd64-pinned service is named where arm64 is explained ────────────
+ *
+ * `platform: linux/amd64` is what turns "no matching manifest" into an
+ * emulated container, and `docs/config.md`'s arm64 paragraph is where an
+ * operator learns which containers those are. It said "the embedder and the
+ * reranker … and only those two" while `demo-embedder` was a third — so the
+ * profile a first-time Mac reader runs was the one the sentence did not cover.
+ * The paragraph's own count word is held too, because "only those two" is
+ * exactly the claim that went stale.
+ */
+{
+  const text = readFileSync(COMPOSE, 'utf8')
+  const pinned = []
+  let current = ''
+  for (const line of text.split('\n')) {
+    const service = /^ {2}([a-z][a-z0-9-]*):\s*$/.exec(line)
+    if (service !== null) current = service[1]
+    if (/^ {4}platform: linux\/amd64\s*$/.test(line)) pinned.push(current)
+  }
+  if (pinned.length === 0) {
+    console.error(
+      `::error file=${COMPOSE}::no service pins linux/amd64 any more; this check compares that ` +
+        'set against docs/config.md and must not pass with nothing to compare.',
+    )
+    failed = true
+  } else {
+    const reference = readFileSync(REFERENCE, 'utf8')
+    const paragraph = /\*\*On arm64[\s\S]*?\n\n/.exec(reference)?.[0] ?? ''
+    if (paragraph === '') {
+      console.error(
+        `::error file=${REFERENCE}::the "On arm64" paragraph is gone; the amd64-pinned services ` +
+          `(${pinned.join(', ')}) are documented nowhere.`,
+      )
+      failed = true
+    } else {
+      for (const name of pinned) {
+        if (!paragraph.includes(`\`${name}\``)) {
+          console.error(
+            `::error file=${REFERENCE}::\`${name}\` carries platform: linux/amd64 and the arm64 ` +
+              'paragraph does not name it — the container a reader runs emulated is the one the ' +
+              'sentence does not cover.',
+          )
+          failed = true
+        }
+      }
+      const NUMBERS = { two: 2, three: 3, four: 4, five: 5 }
+      const count = /only (?:those|these) (\w+)/.exec(paragraph)
+      if (count !== null && NUMBERS[count[1]] !== pinned.length) {
+        console.error(
+          `::error file=${REFERENCE}::the arm64 paragraph says "only ${count[1]}" and the compose ` +
+            `file pins ${String(pinned.length)}: ${pinned.join(', ')}.`,
+        )
+        failed = true
+      }
+    }
+  }
+}
+
 process.exit(failed ? 1 : 0)
