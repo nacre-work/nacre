@@ -48,11 +48,15 @@ how a reader ends up running the profile that cannot start.
 ## Two minutes, nothing configured
 
 If what you want is to see it work, start here. `--profile demo` brings its own
-embedder and seeds itself, so there is no `.env` to fill in and no endpoint to
-supply:
+embedder and seeds itself, so there is nothing in `.env` to fill in and no
+endpoint to supply — copy the example and leave it alone. The copy itself is
+required: it carries a development-only JWT secret, and the API refuses to
+start without one because a signing key with a default is a key anybody
+reading the source can forge tokens with.
 
 ```bash
 git clone https://github.com/nacre-work/nacre && cd nacre
+cp .env.example .env
 docker compose -f docker-compose.yml -f docker-compose.images.yml pull
 docker compose -f docker-compose.yml -f docker-compose.images.yml --profile demo up -d
 docker compose --profile demo logs -f demo-seed

@@ -680,16 +680,20 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: configure the environment
-        # The defaults, and nothing else. `demo-seed` carries the embedding
-        # endpoint, model and dimensions itself — they are `init`'s arguments
-        # rather than `loadConfig`'s since core 0.13.0 — so a deployment of
-        # this profile needs no embedder configuration of its own, and writing
-        # one here would be testing an arrangement the quickstart does not
-        # describe.
-        run: cp .env.example .env
-      - name: build and start the demo profile
-        run: docker compose --profile demo up -d --build
+      # The doc's own block, extracted and executed — not a transcription.
+      # This job used to spell its steps by hand, and the two drifted the one
+      # way nothing could see: CI ran `cp .env.example .env` on a line of its
+      # own while the doc's command block omitted it, so a reader following
+      # the block verbatim met an API crash-looping on a missing JWT secret.
+      # Found by running the block from a clean directory, which nothing had
+      # ever done. The script's two substitutions — dropping `git clone`, and
+      # building from the tree instead of pulling the release — are stated in
+      # its header; everything else runs verbatim, so a command the doc omits
+      # is a command this job does not run.
+      - name: run the quickstart's two-minute block, built from this tree
+        run: sh scripts/ci/quickstart-two-minutes.sh
+        env:
+          CI_BUILD_FROM_TREE: '1'
       - name: three people, one query, three answers
         run: bash scripts/ci/demo-smoke.sh
         env:
