@@ -116,7 +116,11 @@ NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://host.docker.internal:8000
 ```
 
 On `--profile full` — emulated on arm64, per the note above — use the embedder that
-profile brings: `http://embedder:80`. Either way,
+profile brings: `http://embedder:80`. No GPU and no machine to spare? Route the
+model to a hosted vendor instead — `--profile hosted` starts an adapter that
+speaks to Cloudflare Workers AI, the Gemini API and others, and
+[config.md](./config.md#two-hosted-arrangements-end-to-end) carries the two
+worked arrangements with their models and widths. Whichever you pick,
 `NACRE_DEFAULT_EMBEDDING_DIM` has to match the model or the index is built with
 the wrong width and every search misses.
 
