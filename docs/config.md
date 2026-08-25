@@ -864,10 +864,21 @@ moves. `GET /health` on the adapter reports any substitution in effect.
 ### Two hosted arrangements, end to end
 
 The reference above says what each variable does; this is what a deployment
-actually sets, twice, for the two vendors people ask about first. Both were
-read from the vendors' own catalogs rather than from memory, and each block is
+actually sets, twice, for the two vendors people ask about first. Each block is
 complete — the adapter's half, the API's half, and the width the index is
 built at, which is the number that fails worst when it is wrong.
+
+**What is verified here, and what is not.** The model names and dimensions
+were read from the vendors' own catalogs on the day this was written, and both
+endpoint constructions were probed against the live services — each request
+reaches the vendor's own routing and credential check, which is what rules out
+an invented path. What has **not** been driven is a successful call: nobody
+has put a real credential through this adapter at either vendor and measured
+the vector that comes back, so the response shapes are held by the sidecar's
+suite against the vendors' documented answers rather than against the wire.
+The first deployment to run either arrangement should do what the suite
+cannot: ingest one document, and check `GET /health` on the adapter and the
+document reaching `indexed` before pointing a corpus at it.
 
 **Cloudflare, both halves from one vendor.** Workers AI hosts the same
 `bge-m3` weights the `full` profile runs locally, which is what the
@@ -943,7 +954,6 @@ dimensions column is the one to copy carefully — it becomes the index:
 | `cloudflare` | `@cf/baai/bge-small-en-v1.5` | 384 | English-only, small and cheap — what the demo profile runs locally |
 | `cloudflare` | `@cf/baai/bge-large-en-v1.5` | 1024 | English-only, larger |
 | `google` | `gemini-embedding-001` | 3072 | text-only input; the width is fixed at the default, see above |
-| `google` | `gemini-embedding-2` | 3072 | the newer model; multimodal at the vendor, text through this adapter |
 | `openai-compatible` | `text-embedding-3-small` | 1536 | the section's own example above; any OpenAI-shaped endpoint |
 
 A model changed later is a layer moved onto a different provider — the console
