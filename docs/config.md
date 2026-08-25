@@ -861,6 +861,106 @@ of every layer to move vectors that did not need to move. The weights are
 identical and only the vendor's spelling differs, so the spelling is what this
 moves. `GET /health` on the adapter reports any substitution in effect.
 
+### Two hosted arrangements, end to end
+
+The reference above says what each variable does; this is what a deployment
+actually sets, twice, for the two vendors people ask about first. Each block is
+complete — the adapter's half, the API's half, and the width the index is
+built at, which is the number that fails worst when it is wrong.
+
+**What is verified here, and what is not.** The model names and dimensions
+were read from the vendors' own catalogs on the day this was written, and both
+endpoint constructions were probed against the live services — each request
+reaches the vendor's own routing and credential check, which is what rules out
+an invented path. What has **not** been driven is a successful call: nobody
+has put a real credential through this adapter at either vendor and measured
+the vector that comes back, so the response shapes are held by the sidecar's
+suite against the vendors' documented answers rather than against the wire.
+The first deployment to run either arrangement should do what the suite
+cannot: ingest one document, and check `GET /health` on the adapter and the
+document reaching `indexed` before pointing a corpus at it.
+
+**Cloudflare, both halves from one vendor.** Workers AI hosts the same
+`bge-m3` weights the `full` profile runs locally, which is what the
+vendor-spelling route is for: the product keeps the model name `bge-m3`, so an
+installation can later move onto a self-hosted TEI — or back — without a
+reindex, because the layer's vector slot never changes.
+
+```
+# the adapter (--profile hosted)
+NACRE_EMBED_ROUTES=bge-m3=cloudflare:@cf/baai/bge-m3
+NACRE_EMBED_CLOUDFLARE_ACCOUNT=<your account id>
+NACRE_EMBED_CLOUDFLARE_API_KEY_FILE=/run/secrets/cloudflare
+NACRE_RERANK_VENDOR=cloudflare
+NACRE_RERANK_MODEL=@cf/baai/bge-reranker-base
+NACRE_RERANK_CLOUDFLARE_ACCOUNT=<your account id>
+NACRE_RERANK_CLOUDFLARE_API_KEY_FILE=/run/secrets/cloudflare-rerank
+
+# the API and MCP processes
+NACRE_RERANKER_ENABLED=true
+NACRE_RERANKER_ENDPOINT=http://embedding-adapter:8091
+
+# a fresh install's default provider — or the same three values on a
+# POST /v1/embedding-providers row for an installation that already runs
+NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://embedding-adapter:8091
+NACRE_DEFAULT_EMBEDDING_MODEL=bge-m3
+NACRE_DEFAULT_EMBEDDING_DIM=1024
+```
+
+`@cf/baai/bge-reranker-base` is, at the time of writing, the only reranker in
+the Workers AI catalog, and it is an older English-and-Chinese cross-encoder.
+That is a real limit and a survivable one: reranking fails open, so the worst
+a weak reranker costs is ordering. A corpus in other languages does better
+taking its reranker from another vendor below — the credentials are separate
+by design, so mixing vendors is one variable, not a rewiring — or running
+`BAAI/bge-reranker-v2-m3` on a TEI of its own and pointing
+`NACRE_RERANKER_ENDPOINT` straight at it, no adapter involved.
+
+**Gemini.** The `google` vendor is the Gemini API
+(`generativelanguage.googleapis.com`), and the credential is one API key:
+
+```
+# the adapter (--profile hosted)
+NACRE_EMBED_ROUTES=gemini-embedding-001=google
+NACRE_EMBED_GOOGLE_API_KEY_FILE=/run/secrets/gemini
+
+# a fresh install's default provider
+NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://embedding-adapter:8091
+NACRE_DEFAULT_EMBEDDING_MODEL=gemini-embedding-001
+NACRE_DEFAULT_EMBEDDING_DIM=3072
+```
+
+The width is not a choice here. Gemini's embedding models can truncate their
+output when asked, and this adapter deliberately never asks — it sends no
+dimensionality parameter, so what comes back is the model's default, and
+**3072 is therefore the only number `NACRE_DEFAULT_EMBEDDING_DIM` can hold**
+for this route. Setting 768 because a smaller index sounded better builds the
+collection at a width the vendor never answers with, and every ingest fails
+naming the mismatch.
+
+There is no Gemini half for reranking, and that is the vendor and not this
+product: Google publishes no reranking API, as the refusal section above
+already states. A Gemini arrangement runs with reranking off — the default,
+and fine — or takes its reranker from `cloudflare`, `cohere`, `jina` or
+`voyage`, exactly as in the Cohere example above. Embeddings and reranking are
+independent jobs on this sidecar, so nothing about the pairing is special.
+
+**Model examples**, for both routes and the protocol vendor beside them. The
+dimensions column is the one to copy carefully — it becomes the index:
+
+| Vendor | Model | Dimensions | Notes |
+|---|---|---|---|
+| `cloudflare` | `@cf/baai/bge-m3` | 1024 | multilingual; same weights as a self-hosted TEI, so the route spelling moves an installation between them with no reindex |
+| `cloudflare` | `@cf/baai/bge-small-en-v1.5` | 384 | English-only, small and cheap — what the demo profile runs locally |
+| `cloudflare` | `@cf/baai/bge-large-en-v1.5` | 1024 | English-only, larger |
+| `google` | `gemini-embedding-001` | 3072 | text-only input; the width is fixed at the default, see above |
+| `openai-compatible` | `text-embedding-3-small` | 1536 | the section's own example above; any OpenAI-shaped endpoint |
+
+A model changed later is a layer moved onto a different provider — the console
+has the screen and the recall gate for it — not an edit to these variables:
+they decide what a **new** organization is provisioned with, and nothing else
+re-reads them.
+
 ### When the adapter answers 502
 
 **502 from the adapter means the vendor failed, not the adapter.** It is the one
