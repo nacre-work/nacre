@@ -872,13 +872,16 @@ built at, which is the number that fails worst when it is wrong.
 were read from the vendors' own catalogs on the day this was written, and both
 endpoint constructions were probed against the live services — each request
 reaches the vendor's own routing and credential check, which is what rules out
-an invented path. What has **not** been driven is a successful call: nobody
-has put a real credential through this adapter at either vendor and measured
-the vector that comes back, so the response shapes are held by the sidecar's
-suite against the vendors' documented answers rather than against the wire.
-The first deployment to run either arrangement should do what the suite
-cannot: ingest one document, and check `GET /health` on the adapter and the
-document reaching `indexed` before pointing a corpus at it.
+an invented path. The **Gemini arrangement has been driven** through this
+adapter with a real key: `gemini-embedding-001` answered vectors of exactly
+3072, which is where the width above comes from — measured, not inferred from
+the default. The **Cloudflare arrangement has not yet had a successful call**
+through this adapter — the wire reached the vendor's credential check and no
+further — so its response shapes are still held by the sidecar's suite against
+the vendor's documented answers rather than against the wire. Either way, the
+first deployment of an arrangement should do what a suite cannot: ingest one
+document, and check `GET /health` on the adapter and the document reaching
+`indexed` before pointing a corpus at it.
 
 **Cloudflare, both halves from one vendor.** Workers AI hosts the same
 `bge-m3` weights the `full` profile runs locally, which is what the
