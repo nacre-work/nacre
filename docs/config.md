@@ -872,13 +872,18 @@ built at, which is the number that fails worst when it is wrong.
 were read from the vendors' own catalogs on the day this was written, and both
 endpoint constructions were probed against the live services — each request
 reaches the vendor's own routing and credential check, which is what rules out
-an invented path. What has **not** been driven is a successful call: nobody
-has put a real credential through this adapter at either vendor and measured
-the vector that comes back, so the response shapes are held by the sidecar's
-suite against the vendors' documented answers rather than against the wire.
-The first deployment to run either arrangement should do what the suite
-cannot: ingest one document, and check `GET /health` on the adapter and the
-document reaching `indexed` before pointing a corpus at it.
+an invented path. The **Gemini arrangement has been driven** through this
+adapter with a real key: `gemini-embedding-001` answered vectors of exactly
+3072, which is where the width above comes from — measured, not inferred from
+the default. The **Cloudflare arrangement has been driven too**: through this
+adapter with a real token, `@cf/baai/bge-m3` answered vectors of exactly 1024,
+and `/rerank` on `@cf/baai/bge-reranker-base` scored every candidate — the one
+text answering the query at 0.9992 and the two that do not at 0 — with the
+scores attached by `index`, which is this service's stated contract and what
+`rerank.ts` reads. Either way, the
+first deployment of an arrangement should do what a suite cannot: ingest one
+document, and check `GET /health` on the adapter and the document reaching
+`indexed` before pointing a corpus at it.
 
 **Cloudflare, both halves from one vendor.** Workers AI hosts the same
 `bge-m3` weights the `full` profile runs locally, which is what the
@@ -906,6 +911,12 @@ NACRE_DEFAULT_EMBEDDING_ENDPOINT=http://embedding-adapter:8091
 NACRE_DEFAULT_EMBEDDING_MODEL=bge-m3
 NACRE_DEFAULT_EMBEDDING_DIM=1024
 ```
+
+**The rerank half of that block is optional.** Drop the four `NACRE_RERANK_*`
+lines and leave `NACRE_RERANKER_ENABLED` unset, and search answers in fusion
+order — the default, and what every profile ships. Only the embedding half is
+load-bearing: an installation cannot index without an embedder, and runs
+happily forever without a reranker.
 
 `@cf/baai/bge-reranker-base` is, at the time of writing, the only reranker in
 the Workers AI catalog, and it is an older English-and-Chinese cross-encoder.
@@ -1125,6 +1136,16 @@ that work — a refusal that says "pick from this list" invites the reader to
 assume their vendor was forgotten.
 
 ### Reranking through a vendor
+
+**Reranking is optional, off by default, and a second opinion rather than a
+requirement.** A cross-encoder reads the query and each candidate *together*
+and scores real relevance, which a bi-encoder's two separately-compressed
+vectors cannot; the search path fetches `NACRE_RERANK_CANDIDATES`
+already-permitted results and returns the best `top_k` in the cross-encoder's
+order. It pays on corpora large enough that many near-matches crowd the top,
+and it fails **open**: a reranker that is absent, refused or down degrades a
+search to fusion order with a counter and a log line, never an error. With
+`NACRE_RERANKER_ENABLED` unset nothing here is consulted at all.
 
 The same sidecar answers **TEI's `/rerank`**, so a deployment with no GPU can
 rerank without running a cross-encoder. Nothing in the core changes: point
