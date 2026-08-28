@@ -333,10 +333,26 @@ answers `409` — not `404` — for a document that has not failed. It resets
 `attempts`, because that count measures one run against one deployment and the
 deployment is what you just changed.
 
-To find them, an enterprise installation has
-`GET /v1/admin/directory/documents?layer_id=…&status=failed`. On the open core
-the honest answer is that there is no listing yet: what you have is the job id
-ingest returned, `nacre ingest` again, or a query.
+To find them, an enterprise installation running `enterprise-directory` 0.9.3 or
+later has
+
+```
+GET /v1/admin/directory/layers/{layer_id}/documents?status=failed
+```
+
+— the layer is a path segment, and `status` is compared against the states the
+schema admits, so a value outside them is refused by name rather than answered
+with an empty page.
+
+On the open core the honest answer is that there is no listing yet: what you
+have is the job id ingest returned, `nacre ingest` again, or a query.
+
+This sentence was wrong twice when 0.25.0 shipped — it named a `?layer_id=`
+query parameter the route does not take, and a `status` filter that did not
+exist at all. Both are recorded here rather than quietly corrected, because a
+URL written into a normative document from memory is exactly the kind of claim
+this repository has no mechanical check for, and the version that says which
+release makes it true is the part that was missing.
 
 ### 0.24.0 — the second audit round; one repair you may want to run by hand
 
