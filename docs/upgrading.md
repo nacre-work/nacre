@@ -272,6 +272,35 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.26.0 — an egress guard, and listings that page at scale
+
+No migration and no new variable. Two behaviour changes worth reading before
+you upgrade.
+
+**`POST /v1/embedding-providers` now refuses an internal endpoint that is not
+your embedder.** The worker POSTs document text to whatever this stores, so an
+unconstrained endpoint was an exfiltration channel: an `org_admin` could name
+`http://169.254.169.254/…` and read the cloud metadata back as a search result.
+An endpoint is now admitted only if it is a **public `https://`** address, or is
+the origin your installation is configured with in
+`NACRE_DEFAULT_EMBEDDING_ENDPOINT` (the internal embedder, which may be a
+single-label host like `http://embedder`). If you point providers at an
+internal embedder under some *other* name — an unusual arrangement — add it to
+that configured default, or front it with the embedding adapter, which is the
+supported way to reach a private model. Existing provider rows are not
+re-validated; this gates new writes.
+
+**`list_layers` (MCP) and every `.list()` in the SDK now page.** `list_layers`
+answers `{ layers, next_cursor }`, one page per call — `{ limit }` up to 500,
+`{ cursor }` to continue — where it used to return the whole catalog in one
+result. A client that read `result.layers` already works; one that treated the
+result as the complete list sees a page and a cursor now. The SDK's `list()`
+methods walk that cursor to the end for you, so a console using them is
+unchanged for organizations under ~10,000 rows and throws with a clear message
+past that, pointing at the filtered directory (an enterprise module) or the
+API's own `?cursor`. The search tool's description names a sample of your
+layers rather than all of them.
+
 ### 0.25.1 — the retry counter an operator reads was one behind
 
 **Nothing to do.** No migration, no configuration, and the number of attempts a

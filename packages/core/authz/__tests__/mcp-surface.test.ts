@@ -165,7 +165,12 @@ describe('baseline · the MCP surface', () => {
       verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE, serviceKeys },
       resourceMetadataUrl: METADATA,
       resourceMetadata: protectedResourceMetadata({ canonicalUrl: 'https://api.example.test' }),
-      layers: { forCaller: async (auth: AuthContext) => LAYERS[auth.orgId] ?? [] },
+      layers: {
+        forCaller: async (auth: AuthContext, page: { limit: number }) => {
+          const all = LAYERS[auth.orgId] ?? []
+          return { layers: all.slice(0, page.limit), nextCursor: null }
+        },
+      },
       tools: {
         call: async (name, args) => {
           if (name === 'search') {
@@ -729,7 +734,7 @@ describe('baseline · the MCP surface', () => {
       resourceMetadataUrl: METADATA,
       resourceMetadata: protectedResourceMetadata({ canonicalUrl: 'http://localhost:8081' }),
       resourceFromRequest: (origin: string) => protectedResourceMetadata({ canonicalUrl: origin }),
-      layers: { forCaller: async () => [] },
+      layers: { forCaller: async () => ({ layers: [], nextCursor: null }) },
       tools: { call: async () => ({ content: [] }) },
     })
     await new Promise<void>((r) => derived.listen(0, '127.0.0.1', r))
@@ -854,7 +859,12 @@ describe('baseline · a browser this transport allows can actually reach it', ()
       verify: { key: SECRET, issuer: ISSUER, audience: AUDIENCE, serviceKeys },
       resourceMetadataUrl: METADATA,
       resourceMetadata: protectedResourceMetadata({ canonicalUrl: 'https://api.example.test' }),
-      layers: { forCaller: async (auth: AuthContext) => LAYERS[auth.orgId] ?? [] },
+      layers: {
+        forCaller: async (auth: AuthContext, page: { limit: number }) => {
+          const all = LAYERS[auth.orgId] ?? []
+          return { layers: all.slice(0, page.limit), nextCursor: null }
+        },
+      },
       tools: { call: async () => ({ items: [] }) },
       allowedOrigins: [ALLOWED],
     })

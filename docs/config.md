@@ -835,6 +835,24 @@ POST /v1/embedding-providers
 Two organizations can then sit on two vendors with no new machinery, which is
 what `embedding_providers.org_id` has offered since migration 0001.
 
+**Where that endpoint may point, and where it may not.** The worker POSTs the
+text of every document in a layer to this endpoint, so it is the one tenant
+input on the ingest path that leaves with document contents attached. An
+`org_admin` may name any **public `https://`** address — that is the
+"point at your own embedder" case, and the trade is the same one
+`NACRE_EMBED_*` documents: the text of your documents leaves your installation.
+What they may **not** name is an internal address that is not the embedder this
+installation is configured with. `http://169.254.169.254/…`, the API next door,
+the vector store — all are refused with a `400`, because the alternative is an
+exfiltration channel with a request body. The trusted internal embedder is the
+one the operator named in `NACRE_DEFAULT_EMBEDDING_ENDPOINT` (the origin the
+installation's default provider row carries), which is why
+`http://embedding-adapter:8091` above is admitted and an arbitrary
+`http://…-internal:9200` is not. This mirrors the parser sidecar's
+`NACRE_PARSER_ALLOW_PRIVATE_URLS` guard, on the surface that *sends* text rather
+than the one that fetches it — the same class of hole, arriving from the other
+side.
+
 | `vendor` | Upstream | Credential |
 |---|---|---|
 | `openai-compatible` | Anything answering OpenAI's `/embeddings`: OpenAI, Together, DeepInfra, vLLM, a self-hosted TEI | `NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY` or `NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY_FILE`, with `NACRE_EMBED_OPENAI_COMPATIBLE_ENDPOINT` |

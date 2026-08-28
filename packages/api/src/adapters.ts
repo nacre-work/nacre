@@ -1,4 +1,7 @@
 import {
+  admitEmbeddingEndpoint,
+  endpointOrigin,
+  type AddressResolver,
   buildFilter,
   cachedEffectivePrincipals,
   documentKey,
@@ -2065,6 +2068,9 @@ export class PostgresEmbeddingProviders implements EmbeddingProviders {
   constructor(
     private readonly pool: Pool,
     private readonly role?: string,
+    /** A DNS resolver seam, so a test can rule on an endpoint without a
+     * network. Production uses `dns.lookup` through the guard's default. */
+    private readonly resolver?: AddressResolver,
   ) {}
 
   async list(auth: AuthContext): Promise<readonly EmbeddingProviderView[]> {
@@ -2108,6 +2114,24 @@ export class PostgresEmbeddingProviders implements EmbeddingProviders {
       this.pool,
       auth.orgId,
       async (client) => {
+        // The egress guard, before the row is written. The worker POSTs every
+        // chunk of every document in a layer to this endpoint, so an
+        // unconstrained one is an exfiltration channel: an org_admin could name
+        // the cloud metadata address or an internal service and read the reply
+        // back as document text. The trusted internal embedders are the
+        // installation's own — the global (NULL-org) provider rows `init`
+        // seeds from `NACRE_DEFAULT_EMBEDDING_ENDPOINT` — and `org_isolation`
+        // lets a tenant read those and only those. Anything else must be a
+        // public https address. See `admitEmbeddingEndpoint`.
+        const { rows: globals } = await client.query<{ endpoint: string }>(
+          `SELECT endpoint FROM embedding_providers WHERE org_id IS NULL`,
+        )
+        const allowed = globals
+          .map((g) => endpointOrigin(g.endpoint))
+          .filter((o): o is string => o !== undefined)
+        const verdict = await admitEmbeddingEndpoint(input.endpoint, allowed, this.resolver)
+        if (verdict !== 'ok') return { kind: 'refused', reason: verdict.refused }
+
         // `auth.orgId` and never NULL, so a tenant cannot write the global
         // default. The restrictive policy refuses it anyway — this is the
         // application saying the same thing, because a statement that relies

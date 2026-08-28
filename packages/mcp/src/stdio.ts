@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline'
 import { authenticate, Problem, type AuthContext, type VerifyOptions } from '@nacre.work/api'
 import { logger } from '@nacre.work/core'
 
-import { catalog } from './tools.js'
+import { CATALOG_SAMPLE, catalog, dispatchCatalog } from './tools.js'
 // The same three results the HTTP transport answers with, built once. Each was
 // hand-built in both files until a capability set and a cache hint diverged.
 import { discoverResult, initializeResult, toolsListResult, pingResult, callToolResult } from './results.js'
@@ -161,7 +161,8 @@ async function dispatch(
       return pingResult()
 
     case 'tools/list':
-      return toolsListResult(catalog(await options.layers.forCaller(auth)))
+      const page = await options.layers.forCaller(auth, { limit: CATALOG_SAMPLE })
+      return toolsListResult([...catalog(page.layers, { more: page.nextCursor !== null })])
 
     case 'tools/call': {
       const call = (params ?? {}) as { name?: unknown; arguments?: unknown }
@@ -170,7 +171,9 @@ async function dispatch(
       // The catalog is per caller, so a tool this service account cannot see is
       // indistinguishable from one that does not exist — the same property the
       // HTTP surface has, reached the same way.
-      const visible = catalog(await options.layers.forCaller(auth))
+      // Names and permissions only — dispatch reads no description, so it
+      // pays for no listing. Same reasoning, same function, as Streamable HTTP.
+      const visible = dispatchCatalog()
       if (!visible.some((t) => t.name === call.name)) throw new Error('unknown tool')
 
       const result = await options.tools.call(

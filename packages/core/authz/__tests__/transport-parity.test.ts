@@ -60,7 +60,12 @@ const token = async (): Promise<string> =>
     .sign(SECRET)
 
 const ports = {
-  layers: { forCaller: async (): Promise<readonly Layer[]> => LAYERS },
+  layers: {
+    forCaller: async (_auth: unknown, page: { limit: number; afterId?: string }) => ({
+      layers: LAYERS.slice(0, page.limit),
+      nextCursor: LAYERS.length > page.limit ? (LAYERS[page.limit - 1]?.id ?? null) : null,
+    }),
+  },
   tools: {
     call: async (_name: string, args: Record<string, unknown>): Promise<unknown> => ({ ok: true, args }),
   },

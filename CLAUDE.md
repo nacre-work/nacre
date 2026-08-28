@@ -2698,6 +2698,39 @@ Every fix in that round was measured red with the defect restored and green
 with it in place — including two checks whose own first versions could not
 fail and were caught the same way, in the same session that wrote them.
 
+**A tenant could point the worker at the cloud metadata endpoint, and every
+listing lied by omission at scale — 0.26.0 closes both.** `POST
+/v1/embedding-providers` takes an endpoint from an `org_admin` and the worker
+POSTs every chunk of every document in that layer to it. That is the feature —
+point a provider at your own embedder — and unguarded it is an exfiltration
+channel with a request body: name `http://169.254.169.254/…` and read the cloud
+metadata back as a search result. The parser sidecar had carried a
+private-address guard for tenant URLs since it existed; this path, which *sends*
+document text rather than fetching it, had none. `admitEmbeddingEndpoint` is the
+parser's guard on the other surface, in the other language: a public `https://`
+address, or the internal embedder the operator named in configuration (matched
+by origin against the global provider rows, which is what a tenant may read and
+all it may read), and nothing else. A public name that resolves to a private
+address is refused by resolving every address it answers with, the trick the
+DNS check exists for. Both refusals were produced, and the whole thing was
+driven against a real PostgreSQL where the allow-list is the installation's own
+rows under RLS.
+
+The listings were the other half, and the worst was silent. Every `.list()` in
+the SDK fetched **one page and dropped the cursor**, so a console showed the
+first fifty of everything and said nothing — and on the grant list, "who can
+see this patient" answered from a truncation that looks complete is a security
+surface answering a narrower question than the one asked. The helper walks the
+cursor to the end now, or throws past a bound naming the filtered directory —
+never a partial set that reads as whole. `list_layers` on MCP had the same
+shape from the other side: it returned every layer the plan reaches, no limit,
+no order, no cursor, which on an installation at the scale layers are sold for
+is a million rows in one tool result, and the search description interpolated
+that whole catalog on every `tools/list` **and** `tools/call`. It pages now,
+the description names a sample, and dispatch reads a name-and-permission catalog
+that needs no listing at all — a per-call cost paid by every caller, read by
+nobody, gone.
+
 **A transient failure was a permanent verdict, on the first attempt.**
 `markFailed` wrote `status = 'failed'` for anything the worker caught, and
 `attempts` and `NACRE_INDEX_MAX_ATTEMPTS` were read by exactly one caller — the

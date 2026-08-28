@@ -473,6 +473,11 @@ export type EmbeddingProviderOutcome =
   | { readonly kind: 'created'; readonly provider: EmbeddingProvider }
   | { readonly kind: 'denied' }
   | { readonly kind: 'conflict' }
+  // The endpoint is one the worker must not be pointed at — a private address
+  // that is not the installation's own embedder. `400` with the reason, not
+  // `404`: the caller may create providers and is looking at their own form,
+  // so this is about the value they typed, not about visibility.
+  | { readonly kind: 'refused'; readonly reason: string }
 
 export interface EmbeddingProviders {
   /**
@@ -4319,6 +4324,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             instance,
             requestId,
           })
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        if (outcome.kind === 'refused') {
+          // The endpoint failed the egress guard. Audited as a deny, because a
+          // caller trying to point the worker at an internal address is exactly
+          // the event an operator would want in the log.
+          await options.audit.write({
+            orgId: auth.orgId,
+            actor: `${auth.principal.type}:${auth.principal.id}`,
+            action: 'embedding_provider.create',
+            result: 'deny',
+            target: { name: name.trim() },
+            detail: { reason: 'endpoint_refused' },
+            requestId,
+          })
+          const problem = badRequest(instance, requestId, outcome.reason)
           send(res, problem.status, problem.toJSON(), requestId)
           return
         }
