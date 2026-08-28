@@ -2730,6 +2730,16 @@ following a redirect at fetch time is how a create-validated public host reaches
 an internal one. `lint:embed-egress` holds that last property across the three
 places rather than the three edits.
 
+`NACRE_EMBED_TENANT_PROVIDERS=false` removes the surface rather than bounding it,
+which is the answer to "no `org_admin` UI creates a provider — is this even
+reachable?" The route is reachable by an `org_admin` credential through the API
+with no console button at all, so the guard stays right; but on a managed
+platform, where an `org_admin` is a customer and embedding is a service the
+platform provides, the whole route answers `404` and there is nothing to guard.
+Default `true` is the open core, where the `org_admin` is the operator and
+tightening the *role* would reintroduce the `psql`-only shape this repository
+keeps closing — so the switch is a flag, not a role change.
+
 The listings were the other half, and the worst was silent. Every `.list()` in
 the SDK fetched **one page and dropped the cursor**, so a console showed the
 first fifty of everything and said nothing — and on the grant list, "who can

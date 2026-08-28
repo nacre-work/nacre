@@ -289,9 +289,16 @@ the origin your installation is configured with in
 `NACRE_DEFAULT_EMBEDDING_ENDPOINT` (the internal embedder, which may be a
 single-label host like `http://embedder`). If you run a **second** internal
 embedder and point a provider at it by another name, add it as the configured
-default, or front it with the embedding adapter — the supported way to reach a
-private model. The `platform_admin` installation-default screen is unaffected.
-Existing provider rows are not re-validated; this gates new writes.
+default, add its origin to `NACRE_EMBED_ALLOWED_HOSTS`, or front it with the
+embedding adapter — the supported ways to reach a private model. The
+`platform_admin` installation-default screen is unaffected. Existing provider
+rows are not re-validated; this gates new writes.
+
+**A managed multi-tenant platform can turn the surface off entirely** with
+`NACRE_EMBED_TENANT_PROVIDERS=false`: there `POST /v1/embedding-providers`
+answers `404` to a tenant `org_admin`, because embedding is a service the
+platform provides rather than something a customer configures. Default `true`
+is the open core, where the `org_admin` is the operator.
 
 **`list_layers` (MCP) and every `.list()` in the SDK now page.** `list_layers`
 answers `{ layers, next_cursor }`, one page per call — `{ limit }` up to 500,

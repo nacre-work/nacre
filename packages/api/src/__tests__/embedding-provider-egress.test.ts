@@ -52,7 +52,7 @@ let providers: PostgresEmbeddingProviders
 when('the embedding-provider egress guard', () => {
   beforeAll(async () => {
     pool = createPool({ connectionString: url as string })
-    providers = new PostgresEmbeddingProviders(pool, 'nacre_app', [], resolver)
+    providers = new PostgresEmbeddingProviders(pool, 'nacre_app', [], true, resolver)
 
     const c = await pool.connect()
     try {
@@ -147,6 +147,26 @@ when('the embedding-provider egress guard', () => {
     expect(outcome.kind).toBe('refused')
   })
 
+  it('refuses every create when tenant providers are turned off', async () => {
+    // NACRE_EMBED_TENANT_PROVIDERS=false, the managed-platform state: the whole
+    // surface is off, so even a valid public endpoint is denied — 404 to the
+    // caller. Nothing is written.
+    const off = new PostgresEmbeddingProviders(pool, 'nacre_app', [], false, resolver)
+    const outcome = await off.create(admin, {
+      name: 'blocked',
+      endpoint: 'https://good.example.com/v1',
+      model: 'm',
+      dimensions: 8,
+    })
+    expect(outcome.kind).toBe('denied')
+
+    const { rows } = await pool.query(
+      "SELECT 1 FROM embedding_providers WHERE org_id = $1 AND name = 'blocked'",
+      [ORG],
+    )
+    expect(rows).toHaveLength(0)
+  })
+
   it('admits a second internal embedder named in NACRE_EMBED_ALLOWED_HOSTS', async () => {
     // The env allow-list, threaded through the adapter constructor. A tenant may
     // reuse it though it is internal, because the operator named it.
@@ -154,6 +174,7 @@ when('the embedding-provider egress guard', () => {
       pool,
       'nacre_app',
       ['http://embedder-2:8080'],
+      true,
       resolver,
     )
     const ok = await withEnv.create(admin, {

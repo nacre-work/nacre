@@ -92,6 +92,17 @@ export interface Config {
    * only internal endpoint a tenant may name is the configured default itself.
    */
   readonly embedAllowedHosts: readonly string[]
+  /**
+   * Whether a tenant `org_admin` may create an embedding provider at all, from
+   * `NACRE_EMBED_TENANT_PROVIDERS`. Default **true**, which is the open core: a
+   * single-organization operator *is* the `org_admin` and manages their own
+   * embedders. A managed multi-tenant platform sets it **false** — there
+   * `org_admin` is a customer, embedding is a service the platform provides,
+   * and `POST /v1/embedding-providers` answers `404` so no tenant can point the
+   * shared worker anywhere. When false the SSRF surface does not exist; when
+   * true the egress guard bounds it.
+   */
+  readonly embedTenantProviders: boolean
   readonly mcpAllowedOrigins: readonly string[]
   /**
    * Browser origins the REST API answers, from `NACRE_API_ALLOWED_ORIGINS`.
@@ -1093,6 +1104,7 @@ export function loadConfig(env: Env = process.env): Config {
       r.url('NACRE_OAUTH_CONSENT_URL', { required: false }) ||
       `${r.url('NACRE_CANONICAL_URL').replace(/\/+$/, '')}/#/consent`,
     embedAllowedHosts: r.originList('NACRE_EMBED_ALLOWED_HOSTS'),
+    embedTenantProviders: r.boolean('NACRE_EMBED_TENANT_PROVIDERS', true),
     mcpAllowedOrigins: r.originList('NACRE_MCP_ALLOWED_ORIGINS'),
     apiAllowedOrigins: r.originList('NACRE_API_ALLOWED_ORIGINS'),
     oauthAuthorizationServer: r.url('NACRE_OAUTH_AUTHORIZATION_SERVER', { required: false }),

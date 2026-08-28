@@ -11,6 +11,7 @@ NACRE_ENV=production                   # development | production
 NACRE_CANONICAL_URL=https://nacre.work # OAuth issuer, well-known base, WebAuthn relying party, links
 NACRE_MCP_CANONICAL_URL=               # only when MCP is on a different origin
 NACRE_EMBED_ALLOWED_HOSTS=             # extra internal embedder origins a tenant may name; empty is safe
+NACRE_EMBED_TENANT_PROVIDERS=true      # may a tenant org_admin create a provider; false on a managed platform
 NACRE_MCP_ALLOWED_ORIGINS=             # browser origins MCP answers; empty refuses all
 NACRE_LOG_LEVEL=info
 NACRE_LOG_FORMAT=json
@@ -857,7 +858,15 @@ internal embedder. That is why `http://embedding-adapter:8091` is admitted and
 an arbitrary `http://…-internal:9200` is not. The `platform_admin` screen that sets that
 default is a different path and is deliberately un-gated — that role administers
 the installation. In the single-organization open core the `org_admin` is the
-operator, so there this is defence in depth rather than a boundary. It mirrors
+operator, so there this is defence in depth rather than a boundary.
+
+**On a managed platform, turn the surface off entirely.**
+`NACRE_EMBED_TENANT_PROVIDERS=false` makes `POST /v1/embedding-providers` answer
+`404` to a tenant `org_admin` — there embedding is a service the platform
+provides, not something a customer configures, so no tenant points the shared
+worker anywhere and the SSRF surface does not exist. Default `true`, which is
+the open core, where the `org_admin` is the operator and the guard above bounds
+what they may name. It mirrors
 the parser sidecar's `NACRE_PARSER_ALLOW_PRIVATE_URLS` guard, on the surface
 that steers a request rather than the one that fetches a URL.
 

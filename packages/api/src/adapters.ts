@@ -2075,6 +2075,10 @@ export class PostgresEmbeddingProviders implements EmbeddingProviders {
     /** Extra internal embedder origins an operator trusts, from
      * `NACRE_EMBED_ALLOWED_HOSTS`. Combined with the global provider rows. */
     private readonly allowedHosts: readonly string[] = [],
+    /** Whether an `org_admin` may create a provider at all
+     * (`NACRE_EMBED_TENANT_PROVIDERS`). False on a managed platform, where the
+     * whole tenant-endpoint surface — and its SSRF — is turned off. */
+    private readonly tenantProviders: boolean = true,
     /** A DNS resolver seam, so a test can rule on an endpoint without a
      * network. Production uses `dns.lookup` through the guard's default. */
     private readonly resolver?: AddressResolver,
@@ -2115,6 +2119,10 @@ export class PostgresEmbeddingProviders implements EmbeddingProviders {
     auth: AuthContext,
     input: { name: string; endpoint: string; model: string; dimensions: number },
   ): Promise<EmbeddingProviderOutcome> {
+    // On a managed platform this whole surface is off: a tenant does not
+    // configure embedding, and the route answers `404` as if it did not exist.
+    // Checked before the role, so the disabled case is one answer whoever asks.
+    if (!this.tenantProviders) return { kind: 'denied' }
     if (!administers(auth)) return { kind: 'denied' }
 
     return withOrg(
