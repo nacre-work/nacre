@@ -1,20 +1,40 @@
 /**
  * Whether a tenant-supplied embedder endpoint is one the worker may POST to.
  *
- * ## The hole this closes
+ * ## The hole this closes, and the one it does not
  *
- * `POST /v1/embedding-providers` takes an `endpoint` from an `org_admin`, and
- * the worker then POSTs every chunk of every document in that layer to it. That
- * is the *feature* — "point a provider at your own embedder" — and it is also,
- * unguarded, an exfiltration channel with a request body: an administrator can
- * name `http://169.254.169.254/…`, the cloud metadata endpoint, or the API next
- * to the worker, or the vector store, and read the answer back as document text.
+ * `POST /v1/embedding-providers` takes an `endpoint` and is gated on
+ * **`org_admin`**, and that role is the whole of the threat model — so it is
+ * worth being exact. In the open core there is one organization, so its
+ * `org_admin` is the operator: they own the documents already, and pointing the
+ * worker at an endpoint of their choosing takes nothing from anyone. An earlier
+ * version of this header called it "an exfiltration channel with a request
+ * body", which was wrong — the document text sent is the caller's own, and
+ * there is nobody to take it from.
+ *
+ * The real hole is in **multi-tenancy**, where `org_admin` administers **one
+ * tenant** and not the installation. The worker is a single, installation-owned
+ * process on the internal network. A tenant admin who can make it POST to
+ * `http://169.254.169.254/…`, the API beside it, or the vector store — which
+ * has no per-tenant authorization of its own — holds an SSRF primitive: at
+ * minimum a blind request from a privileged position, and plausibly a partial
+ * read oracle, because `endpointReason` surfaces the response as
+ * `documents.error`. Cloud metadata credentials are installation-wide, so that
+ * is a tenant→installation escalation performed by somebody entitled to
+ * administer one customer's data and nothing else. In the single-organization
+ * case it is defence in depth against a leaked `org_admin` token, and little
+ * more.
+ *
+ * The installation *default* — the `platform_admin` "Installation" screen that
+ * writes the global provider row — is a different, un-gated path on purpose:
+ * that role administers the installation and is trusted with the internal
+ * network. This guard is on the tenant-scoped write, and the default's origin
+ * is exactly what it admits below.
  *
  * The parser sidecar has carried a private-address guard for tenant-supplied
- * URLs since it existed, behind `NACRE_PARSER_ALLOW_PRIVATE_URLS`, and this path
- * — which sends document *contents* rather than fetching them — had none. That
- * asymmetry is the defect; this is the parser's guard on the other surface, in
- * the language that surface is written in.
+ * URLs since it existed, behind `NACRE_PARSER_ALLOW_PRIVATE_URLS`; the
+ * asymmetry was that this path had none. This is that guard on the other
+ * surface, in the language that surface is written in.
  *
  * ## The rule, which is the operator's
  *
@@ -27,11 +47,11 @@
  * and the operator naming it is the whole point.
  *
  * Any *other* endpoint is the "your own embedder" case, and it must be
- * `https://` to a **globally routable** host: the document text leaves the
- * installation either way, so the least it can be is encrypted in transit and
- * pointed somewhere that is not the deployment's own private network. A public
- * name that resolves to a private address is the trick this exists against, so
- * every address the name answers with is checked, not the first.
+ * `https://` to a **globally routable** host: an internal address is where the
+ * SSRF value lives, so a non-configured endpoint is confined to the public
+ * network, and encrypted because a tenant's own document text does travel to it.
+ * A public name that resolves to a private address is the trick this exists
+ * against, so every address the name answers with is checked, not the first.
  *
  * ## Not covered, and said rather than hidden
  *
@@ -153,14 +173,15 @@ export async function admitEmbeddingEndpoint(
   // Compose profile this product ships.
   if (allowedOrigins.includes(url.origin)) return 'ok'
 
-  // Otherwise this is the "point at your own embedder" case, and the text of
-  // the documents leaves the installation. The least it can be is encrypted.
+  // Otherwise this is the "point at your own embedder" case. An internal
+  // address is where the SSRF value is, so a non-configured endpoint is
+  // confined to the public network; https because a tenant's own document text
+  // does travel to it and a plaintext hop would put it on the wire in the clear.
   if (url.protocol !== 'https:') {
     return {
       refused:
         "'endpoint' must be https unless it is the embedder this installation " +
-        'is configured with. Document text is sent to it, so a plaintext ' +
-        'endpoint would put that text on the wire in the clear.',
+        'is configured with, so a tenant\'s document text is not sent in the clear.',
     }
   }
 

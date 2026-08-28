@@ -835,23 +835,26 @@ POST /v1/embedding-providers
 Two organizations can then sit on two vendors with no new machinery, which is
 what `embedding_providers.org_id` has offered since migration 0001.
 
-**Where that endpoint may point, and where it may not.** The worker POSTs the
-text of every document in a layer to this endpoint, so it is the one tenant
-input on the ingest path that leaves with document contents attached. An
-`org_admin` may name any **public `https://`** address — that is the
-"point at your own embedder" case, and the trade is the same one
-`NACRE_EMBED_*` documents: the text of your documents leaves your installation.
-What they may **not** name is an internal address that is not the embedder this
-installation is configured with. `http://169.254.169.254/…`, the API next door,
-the vector store — all are refused with a `400`, because the alternative is an
-exfiltration channel with a request body. The trusted internal embedder is the
-one the operator named in `NACRE_DEFAULT_EMBEDDING_ENDPOINT` (the origin the
-installation's default provider row carries), which is why
+**Where that endpoint may point, and where it may not.** This is a tenant-scoped
+write, gated on `org_admin`, and the guard exists for the multi-tenant case:
+there, an `org_admin` administers **one tenant**, not the installation, and
+pointing the shared worker at `http://169.254.169.254/…`, the API beside it, or
+the vector store (which has no per-tenant authorization) is an SSRF from a
+privileged position — a tenant→installation escalation, since cloud metadata
+credentials are installation-wide. So an `org_admin` may name any **public
+`https://`** address — the "point at your own embedder" case, whose trade is the
+one `NACRE_EMBED_*` documents, that a tenant's own text leaves the installation —
+and may **not** name an internal address that is not the embedder this
+installation is configured with; those are refused with a `400`. The trusted
+internal embedder is the origin the installation's default provider row carries
+(seeded from `NACRE_DEFAULT_EMBEDDING_ENDPOINT`), which is why
 `http://embedding-adapter:8091` above is admitted and an arbitrary
-`http://…-internal:9200` is not. This mirrors the parser sidecar's
-`NACRE_PARSER_ALLOW_PRIVATE_URLS` guard, on the surface that *sends* text rather
-than the one that fetches it — the same class of hole, arriving from the other
-side.
+`http://…-internal:9200` is not. The `platform_admin` screen that sets that
+default is a different path and is deliberately un-gated — that role administers
+the installation. In the single-organization open core the `org_admin` is the
+operator, so there this is defence in depth rather than a boundary. It mirrors
+the parser sidecar's `NACRE_PARSER_ALLOW_PRIVATE_URLS` guard, on the surface
+that steers a request rather than the one that fetches a URL.
 
 | `vendor` | Upstream | Credential |
 |---|---|---|

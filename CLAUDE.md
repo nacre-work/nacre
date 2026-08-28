@@ -2698,23 +2698,28 @@ Every fix in that round was measured red with the defect restored and green
 with it in place — including two checks whose own first versions could not
 fail and were caught the same way, in the same session that wrote them.
 
-**A tenant could point the worker at the cloud metadata endpoint, and every
-listing lied by omission at scale — 0.26.0 closes both.** `POST
-/v1/embedding-providers` takes an endpoint from an `org_admin` and the worker
-POSTs every chunk of every document in that layer to it. That is the feature —
-point a provider at your own embedder — and unguarded it is an exfiltration
-channel with a request body: name `http://169.254.169.254/…` and read the cloud
-metadata back as a search result. The parser sidecar had carried a
-private-address guard for tenant URLs since it existed; this path, which *sends*
-document text rather than fetching it, had none. `admitEmbeddingEndpoint` is the
-parser's guard on the other surface, in the other language: a public `https://`
-address, or the internal embedder the operator named in configuration (matched
-by origin against the global provider rows, which is what a tenant may read and
-all it may read), and nothing else. A public name that resolves to a private
-address is refused by resolving every address it answers with, the trick the
-DNS check exists for. Both refusals were produced, and the whole thing was
-driven against a real PostgreSQL where the allow-list is the installation's own
-rows under RLS.
+**A tenant admin could steer the shared worker at the internal network, and
+every listing lied by omission at scale — 0.26.0 closes both.** `POST
+/v1/embedding-providers` is `org_admin`-gated, and that role is the threat
+model. In the open core there is one organization, so its `org_admin` is the
+operator — they own the documents, and an earlier version of this note calling
+it "document exfiltration" was wrong: there is nobody to take the caller's own
+text from. The real hole is **multi-tenancy**, where an `org_admin` administers
+one tenant and not the installation: pointing the worker at
+`http://169.254.169.254/…`, the API beside it, or the vector store (no
+per-tenant authorization) is an SSRF from a privileged position — blind at
+least, plausibly a partial read oracle through `documents.error` — and cloud
+metadata credentials are installation-wide, so it is a tenant→installation
+escalation by somebody entitled to one customer's data and nothing else. The
+`platform_admin` installation-default screen is a different, un-gated path,
+because that role *is* trusted with the internal network. `admitEmbeddingEndpoint`
+is the parser's private-address guard on the surface that *steers* a request
+rather than fetches a URL: a public `https://` address, or the embedder the
+operator configured (matched by origin against the global provider rows, which
+is what a tenant may read and all it may read), and nothing else. A public name
+resolving to a private address is refused by checking every address it answers
+with. Both refusals were produced; the allow-list being the installation's own
+rows under RLS is what the live case against a real PostgreSQL proves.
 
 The listings were the other half, and the worst was silent. Every `.list()` in
 the SDK fetched **one page and dropped the cursor**, so a console showed the

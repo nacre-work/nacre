@@ -278,17 +278,20 @@ No migration and no new variable. Two behaviour changes worth reading before
 you upgrade.
 
 **`POST /v1/embedding-providers` now refuses an internal endpoint that is not
-your embedder.** The worker POSTs document text to whatever this stores, so an
-unconstrained endpoint was an exfiltration channel: an `org_admin` could name
-`http://169.254.169.254/…` and read the cloud metadata back as a search result.
-An endpoint is now admitted only if it is a **public `https://`** address, or is
+your embedder.** This endpoint is `org_admin`-gated, and the guard matters most
+in **multi-tenancy**: an `org_admin` administers one tenant, not the
+installation, and could point the shared worker at `http://169.254.169.254/…`
+or an internal service — an SSRF from a privileged position, reaching cloud
+metadata credentials that are installation-wide. (In the single-organization
+open core the `org_admin` is the operator, so there it is defence in depth.) An
+endpoint is now admitted only if it is a **public `https://`** address, or is
 the origin your installation is configured with in
 `NACRE_DEFAULT_EMBEDDING_ENDPOINT` (the internal embedder, which may be a
-single-label host like `http://embedder`). If you point providers at an
-internal embedder under some *other* name — an unusual arrangement — add it to
-that configured default, or front it with the embedding adapter, which is the
-supported way to reach a private model. Existing provider rows are not
-re-validated; this gates new writes.
+single-label host like `http://embedder`). If you run a **second** internal
+embedder and point a provider at it by another name, add it as the configured
+default, or front it with the embedding adapter — the supported way to reach a
+private model. The `platform_admin` installation-default screen is unaffected.
+Existing provider rows are not re-validated; this gates new writes.
 
 **`list_layers` (MCP) and every `.list()` in the SDK now page.** `list_layers`
 answers `{ layers, next_cursor }`, one page per call — `{ limit }` up to 500,
