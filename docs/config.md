@@ -10,6 +10,7 @@ Plaintext values are acceptable in the development profile and nowhere else.
 NACRE_ENV=production                   # development | production
 NACRE_CANONICAL_URL=https://nacre.work # OAuth issuer, well-known base, WebAuthn relying party, links
 NACRE_MCP_CANONICAL_URL=               # only when MCP is on a different origin
+NACRE_EMBED_ALLOWED_HOSTS=             # extra internal embedder origins a tenant may name; empty is safe
 NACRE_MCP_ALLOWED_ORIGINS=             # browser origins MCP answers; empty refuses all
 NACRE_LOG_LEVEL=info
 NACRE_LOG_FORMAT=json
@@ -841,15 +842,19 @@ there, an `org_admin` administers **one tenant**, not the installation, and
 pointing the shared worker at `http://169.254.169.254/…`, the API beside it, or
 the vector store (which has no per-tenant authorization) is an SSRF from a
 privileged position — a tenant→installation escalation, since cloud metadata
-credentials are installation-wide. So an `org_admin` may name any **public
-`https://`** address — the "point at your own embedder" case, whose trade is the
-one `NACRE_EMBED_*` documents, that a tenant's own text leaves the installation —
-and may **not** name an internal address that is not the embedder this
-installation is configured with; those are refused with a `400`. The trusted
-internal embedder is the origin the installation's default provider row carries
-(seeded from `NACRE_DEFAULT_EMBEDDING_ENDPOINT`), which is why
-`http://embedding-adapter:8091` above is admitted and an arbitrary
-`http://…-internal:9200` is not. The `platform_admin` screen that sets that
+credentials are installation-wide. So a tenant endpoint is held to the strict form: **`https://`**, a **hostname**
+and not an IP literal, and every address that name resolves to globally
+routable. The IP-literal refusal is deliberate — a real "your own embedder" is a
+public API behind a DNS name, and refusing literals closes the obfuscations a
+range check misses (`http://2130706433`, octal, hex, bracketed IPv4-mapped
+forms). A public name that resolves to a private address is refused by checking
+every address it answers with, and the worker refuses a redirect rather than
+follow one into the private network. The **trusted internal embedder** is the
+origin the installation's default provider row carries (seeded from
+`NACRE_DEFAULT_EMBEDDING_ENDPOINT`), plus anything in
+**`NACRE_EMBED_ALLOWED_HOSTS`** — which is how an operator trusts a *second*
+internal embedder. That is why `http://embedding-adapter:8091` is admitted and
+an arbitrary `http://…-internal:9200` is not. The `platform_admin` screen that sets that
 default is a different path and is deliberately un-gated — that role administers
 the installation. In the single-organization open core the `org_admin` is the
 operator, so there this is defence in depth rather than a boundary. It mirrors

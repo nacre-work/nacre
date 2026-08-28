@@ -2719,7 +2719,16 @@ operator configured (matched by origin against the global provider rows, which
 is what a tenant may read and all it may read), and nothing else. A public name
 resolving to a private address is refused by checking every address it answers
 with. Both refusals were produced; the allow-list being the installation's own
-rows under RLS is what the live case against a real PostgreSQL proves.
+rows under RLS is what the live case against a real PostgreSQL proves. The guard
+is hardened past a range check: a tenant endpoint must be a **hostname** and not
+an IP literal — which closes decimal/octal/hex obfuscations a range table never
+sees — the blocked set covers TEST-NET, 6to4 anycast, NAT64 and the IPv6
+special ranges, an operator's second internal embedder is trusted through
+`NACRE_EMBED_ALLOWED_HOSTS`, and the create-time check is paired with
+`redirect: 'error'` on all three model fetches (ingest, search, rerank), because
+following a redirect at fetch time is how a create-validated public host reaches
+an internal one. `lint:embed-egress` holds that last property across the three
+places rather than the three edits.
 
 The listings were the other half, and the worst was silent. Every `.list()` in
 the SDK fetched **one page and dropped the cursor**, so a console showed the

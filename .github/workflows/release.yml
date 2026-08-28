@@ -179,6 +179,7 @@ jobs:
       - run: pnpm lint:test-plan-range
       - run: pnpm lint:test-clock
       - run: pnpm lint:definer-path
+      - run: pnpm lint:embed-egress
       - run: pnpm lint:password
       - run: pnpm lint:me-credentials
       - run: pnpm lint:collection-config

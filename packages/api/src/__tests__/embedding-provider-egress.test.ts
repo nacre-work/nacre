@@ -38,7 +38,7 @@ const CONFIGURED = 'http://embedder:80'
 // name answers with rather than depending on the runner's DNS.
 const resolver: AddressResolver = async (host) => {
   const map: Record<string, string[]> = {
-    'good.example.com': ['203.0.113.7'],
+    'good.example.com': ['93.184.216.34'],
     'evil.example.com': ['169.254.169.254'],
   }
   const a = map[host]
@@ -52,7 +52,7 @@ let providers: PostgresEmbeddingProviders
 when('the embedding-provider egress guard', () => {
   beforeAll(async () => {
     pool = createPool({ connectionString: url as string })
-    providers = new PostgresEmbeddingProviders(pool, 'nacre_app', resolver)
+    providers = new PostgresEmbeddingProviders(pool, 'nacre_app', [], resolver)
 
     const c = await pool.connect()
     try {
@@ -135,5 +135,42 @@ when('the embedding-provider egress guard', () => {
       dimensions: 8,
     })
     expect(outcome.kind).toBe('refused')
+  })
+
+  it('refuses a public IP-literal endpoint, because a real embedder is a name', async () => {
+    const outcome = await providers.create(admin, {
+      name: 'literal',
+      endpoint: 'https://8.8.8.8/v1',
+      model: 'm',
+      dimensions: 8,
+    })
+    expect(outcome.kind).toBe('refused')
+  })
+
+  it('admits a second internal embedder named in NACRE_EMBED_ALLOWED_HOSTS', async () => {
+    // The env allow-list, threaded through the adapter constructor. A tenant may
+    // reuse it though it is internal, because the operator named it.
+    const withEnv = new PostgresEmbeddingProviders(
+      pool,
+      'nacre_app',
+      ['http://embedder-2:8080'],
+      resolver,
+    )
+    const ok = await withEnv.create(admin, {
+      name: 'second-internal',
+      endpoint: 'http://embedder-2:8080',
+      model: 'm',
+      dimensions: 8,
+    })
+    expect(ok.kind).toBe('created')
+
+    // A different internal host is still refused, even with the env list set.
+    const no = await withEnv.create(admin, {
+      name: 'other-internal',
+      endpoint: 'http://embedder-9:8080',
+      model: 'm',
+      dimensions: 8,
+    })
+    expect(no.kind).toBe('refused')
   })
 })

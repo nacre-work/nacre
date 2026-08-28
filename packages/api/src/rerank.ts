@@ -84,6 +84,11 @@ export class HttpReranker implements Reranker {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query, texts: [...texts], raw_scores: false }),
       signal: abort,
+      // The reranker endpoint is operator-configured, not tenant-supplied, so
+      // this is defence in depth rather than the SSRF fix: a model endpoint has
+      // no legitimate reason to redirect, and refusing keeps all three model
+      // fetches — ingest, search, rerank — consistent.
+      redirect: 'error',
     })
 
     if (!response.ok) {

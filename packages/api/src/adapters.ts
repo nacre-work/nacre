@@ -1084,6 +1084,10 @@ export class HttpEmbedder implements Embedder {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: this.model, input: texts }),
       signal: AbortSignal.timeout(this.timeoutMs),
+      // Refuse a redirect rather than follow it into the private network —
+      // the same fetch-path half of the egress guard the worker's embedder
+      // has, on the search path where a query's embedding is computed.
+      redirect: 'error',
     })
 
     if (!response.ok) {
@@ -2068,6 +2072,9 @@ export class PostgresEmbeddingProviders implements EmbeddingProviders {
   constructor(
     private readonly pool: Pool,
     private readonly role?: string,
+    /** Extra internal embedder origins an operator trusts, from
+     * `NACRE_EMBED_ALLOWED_HOSTS`. Combined with the global provider rows. */
+    private readonly allowedHosts: readonly string[] = [],
     /** A DNS resolver seam, so a test can rule on an endpoint without a
      * network. Production uses `dns.lookup` through the guard's default. */
     private readonly resolver?: AddressResolver,
@@ -2126,9 +2133,12 @@ export class PostgresEmbeddingProviders implements EmbeddingProviders {
         const { rows: globals } = await client.query<{ endpoint: string }>(
           `SELECT endpoint FROM embedding_providers WHERE org_id IS NULL`,
         )
-        const allowed = globals
-          .map((g) => endpointOrigin(g.endpoint))
-          .filter((o): o is string => o !== undefined)
+        const allowed = [
+          ...this.allowedHosts,
+          ...globals
+            .map((g) => endpointOrigin(g.endpoint))
+            .filter((o): o is string => o !== undefined),
+        ]
         const verdict = await admitEmbeddingEndpoint(input.endpoint, allowed, this.resolver)
         if (verdict !== 'ok') return { kind: 'refused', reason: verdict.refused }
 

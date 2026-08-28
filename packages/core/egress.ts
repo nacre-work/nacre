@@ -125,7 +125,11 @@ function isGlobalV4(address: string): boolean {
   if (a === 172 && b >= 16 && b <= 31) return false // private
   if (a === 192 && b === 168) return false // private
   if (a === 100 && b >= 64 && b <= 127) return false // CGNAT 100.64/10
-  if (a === 192 && b === 0 && parts[2] === 0) return false // 192.0.0/24 IETF
+  if (a === 192 && b === 0 && parts[2] === 0) return false // 192.0.0/24 IETF protocol
+  if (a === 192 && b === 0 && parts[2] === 2) return false // TEST-NET-1 192.0.2/24
+  if (a === 198 && b === 51 && parts[2] === 100) return false // TEST-NET-2
+  if (a === 203 && b === 0 && parts[2] === 113) return false // TEST-NET-3
+  if (a === 192 && b === 88 && parts[2] === 99) return false // 6to4 relay anycast
   if (a === 198 && (b === 18 || b === 19)) return false // benchmarking 198.18/15
   if (a >= 224) return false // multicast 224/4 and reserved 240/4, 255.255.255.255
   return true
@@ -138,7 +142,15 @@ function isGlobalV6(address: string): boolean {
   // trick this catches.
   const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower)
   if (mapped?.[1] !== undefined) return isGlobalV4(mapped[1])
+  // NAT64 (64:ff9b::/96 and 64:ff9b:1::/48) embeds a v4 address in its low
+  // bits — `64:ff9b::a9fe:a9fe` is the metadata endpoint by another spelling.
+  // Refused wholesale rather than decoded: a public host never resolves to a
+  // NAT64 address (it is an on-network translation prefix), and decoding the
+  // embedded v4 through IPv6 zero-compression is exactly the fragile parsing
+  // this guard avoids.
+  if (lower.startsWith('64:ff9b:')) return false
   if (lower === '::1' || lower === '::') return false // loopback, unspecified
+  if (lower.startsWith('2001:db8')) return false // documentation 2001:db8::/32
   if (lower.startsWith('fe8') || lower.startsWith('fe9') ||
       lower.startsWith('fea') || lower.startsWith('feb')) return false // fe80::/10 link-local
   if (lower.startsWith('fc') || lower.startsWith('fd')) return false // fc00::/7 unique-local
@@ -150,8 +162,18 @@ function isGlobalV6(address: string): boolean {
  * The verdict on a tenant-supplied embedder endpoint.
  *
  * `allowedOrigins` are the operator-configured embedder origins — admitted as
- * written, whatever they resolve to. Everything else must be https to a host
- * that resolves entirely to global addresses.
+ * written, whatever they resolve to. Everything a *tenant* supplies is held to
+ * the strict form: `https://`, a **hostname** and not an IP literal, and every
+ * address that name resolves to globally routable.
+ *
+ * The IP-literal refusal is deliberate and does more than the resolve check.
+ * A legitimate "your own embedder" is a public API behind a DNS name — OpenAI,
+ * a cloud GPU, a hosted TEI — never a bare address. Refusing literals closes
+ * the obfuscations a range check keeps missing: decimal (`http://2130706433`),
+ * octal (`http://0177.0.0.1`), hex, and `[::ffff:a.b.c.d]` bracket forms, none
+ * of which a URL parser normalises the way a range check expects. The
+ * operator's own embedder can still be an address, because it is matched by
+ * exact origin against `allowedOrigins` before any of this.
  */
 export async function admitEmbeddingEndpoint(
   endpoint: string,
@@ -170,28 +192,29 @@ export async function admitEmbeddingEndpoint(
 
   // The operator's own embedder, named in configuration. Admitted as written —
   // it is typically an internal host, and refusing it would refuse every
-  // Compose profile this product ships.
+  // Compose profile this product ships. This is the only path an internal
+  // address reaches 'ok'.
   if (allowedOrigins.includes(url.origin)) return 'ok'
 
-  // Otherwise this is the "point at your own embedder" case. An internal
-  // address is where the SSRF value is, so a non-configured endpoint is
-  // confined to the public network; https because a tenant's own document text
-  // does travel to it and a plaintext hop would put it on the wire in the clear.
+  // Everything below is a tenant's "point at your own embedder". Document text
+  // travels to it, so https; a plaintext hop would put it on the wire in the
+  // clear.
   if (url.protocol !== 'https:') {
     return {
       refused:
         "'endpoint' must be https unless it is the embedder this installation " +
-        'is configured with, so a tenant\'s document text is not sent in the clear.',
+        'is configured with, so document text is not sent in the clear.',
     }
   }
 
-  // A literal address is checked directly; a name is resolved and every address
-  // it answers with is checked, because one public and one private is the trick.
+  // No IP literals. A public embedder is a DNS name; a literal is either an
+  // internal address or an obfuscation of one, and both are refused here rather
+  // than range-checked, because the URL parser's idea of an address and a range
+  // check's do not agree on the octal/decimal/hex spellings.
   const host = url.hostname
-  if (isIP(host) !== 0) {
-    return isGlobalAddress(host)
-      ? 'ok'
-      : { refused: refusalFor() }
+  const bracketed = host.startsWith('[') && host.endsWith(']')
+  if (isIP(host) !== 0 || isIP(bracketed ? host.slice(1, -1) : host) !== 0) {
+    return { refused: refusalFor(true) }
   }
 
   let addresses: readonly { address: string }[]
@@ -207,11 +230,13 @@ export async function admitEmbeddingEndpoint(
   return 'ok'
 }
 
-function refusalFor(): string {
-  return (
-    "'endpoint' resolves to an address inside this installation's own network. " +
-    'Only the embedder named in configuration may be an internal host; any ' +
-    'other endpoint must be a public https address, because document text is ' +
-    'sent to it.'
-  )
+function refusalFor(literal = false): string {
+  return literal
+    ? "'endpoint' must be a hostname, not an IP address. Only the embedder named " +
+        'in configuration may be given as an address; any other endpoint is a ' +
+        'public https URL, because document text is sent to it.'
+    : "'endpoint' resolves to an address inside this installation's own network. " +
+        'Only the embedder named in configuration may be an internal host; any ' +
+        'other endpoint must be a public https address, because document text is ' +
+        'sent to it.'
 }

@@ -283,6 +283,12 @@ async function main(): Promise<void> {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ model: provider.model, input: texts }),
+          // A 3xx is refused, not followed. The endpoint passed the egress
+          // guard when the provider row was written; following a redirect at
+          // fetch time is how a create-time-validated public host reaches an
+          // internal one — `302 Location: http://169.254.169.254/…`. Closing it
+          // here is the fetch-path half of that guard.
+          redirect: 'error',
           // Bounded, for the same reason the parser call is: this worker is
           // serial, so an embedder that accepts connections and never answers
           // stops indexing for every tenant until undici's 300 s default gives

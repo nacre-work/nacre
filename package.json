@@ -51,6 +51,7 @@
     "lint:test-plan-range": "node scripts/check-test-plan-range.mjs",
     "lint:test-clock": "node scripts/check-test-clock.mjs",
     "lint:definer-path": "node scripts/check-definer-search-path.mjs",
+    "lint:embed-egress": "node scripts/check-embed-egress.mjs",
     "lint:image-packages": "node scripts/check-image-packages.mjs",
     "lint:published": "node scripts/check-published-manifests.mjs",
     "lint:audit-target": "node scripts/check-audit-target.mjs",
