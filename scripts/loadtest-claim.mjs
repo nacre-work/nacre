@@ -17,7 +17,14 @@
  * where row-lock contention on `ORDER BY created_at LIMIT 1` stops paying for
  * another connection.
  *
- *   NACRE_PG_URL=… node scripts/loadtest-claim.mjs [--docs N] [--conns 1,2,4,8,16,32]
+ * Run it from a workspace package where `pg` resolves (pnpm does not hoist),
+ * e.g. from packages/worker:
+ *
+ *   NACRE_PG_URL=… node ../../scripts/loadtest-claim.mjs [--docs N] [--conns 1,2,4,8,16,32]
+ *
+ * A manual diagnostic — no check runs it. The claim statement below is copied
+ * verbatim from packages/worker/src/claim.ts, so it measures the query that
+ * ships rather than a paraphrase; update it if that query changes.
  */
 import { Client, Pool } from 'pg'
 

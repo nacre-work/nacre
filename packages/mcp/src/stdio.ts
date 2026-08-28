@@ -160,9 +160,10 @@ async function dispatch(
     case 'ping':
       return pingResult()
 
-    case 'tools/list':
+    case 'tools/list': {
       const page = await options.layers.forCaller(auth, { limit: CATALOG_SAMPLE })
       return toolsListResult([...catalog(page.layers, { more: page.nextCursor !== null })])
+    }
 
     case 'tools/call': {
       const call = (params ?? {}) as { name?: unknown; arguments?: unknown }
