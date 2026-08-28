@@ -1,6 +1,6 @@
 {
   "name": "@nacre.work/sdk",
-  "version": "0.25.0",
+  "version": "0.25.1",
   "description": "TypeScript client for the Nacre REST API",
   "repository": {
     "type": "git",
