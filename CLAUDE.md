@@ -2698,6 +2698,119 @@ Every fix in that round was measured red with the defect restored and green
 with it in place — including two checks whose own first versions could not
 fail and were caught the same way, in the same session that wrote them.
 
+**A transient failure was a permanent verdict, on the first attempt.**
+`markFailed` wrote `status = 'failed'` for anything the worker caught, and
+`attempts` and `NACRE_INDEX_MAX_ATTEMPTS` were read by exactly one caller — the
+reaper, which handles a worker that *died* mid-document. The far commoner case
+had no retry at all: an embedder restarting, a Qdrant that blinked, a parser
+timing out, and every document in flight was recorded as failed forever.
+Nothing retries `failed`, so they sat there until somebody re-sent the bytes,
+while the layer went on answering searches out of whatever had indexed —
+quietly worse, with nothing in a log a person reads. The twenty-six-out-of-fifty
+shape, arriving without a threshold to notice.
+
+`classifyIngestFailure` has known the answer the whole time. `unavailable` is
+documented "re-sending later may work" and `too_long` "re-sending will not
+help", and it was asked only by the API, to explain a failure to a caller, and
+never by the worker, to decide what to do about one. Declared, correct, and read
+by one side. `isRetryable` is that documentation made executable, in the file
+that defines the reasons, so the two cannot drift.
+
+`retry_after` (migration 0033) is what makes a bounded retry a bound. Without a
+"not before" time an embedder down for thirty seconds burns all five attempts of
+every queued document inside one poll — five times the load on the service that
+is already failing, and a permanent verdict anyway. NULL is claimable now, which
+every existing row and every fresh document carries, so there is no backfill.
+`quota` deliberately does not retry: its remedy is an administrator raising a
+limit, and retrying against a full one is load with no chance of success.
+`internal` does, and that is the one judgement call — the honest prior for an
+unknown error in a distributed system is that it might not happen twice, and the
+bound is what makes the guess cost five spaced attempts rather than forever.
+
+The status and the window are chosen by **one** `UPDATE`, from the row's own
+`attempts`, because reading the count and then writing a verdict is two
+statements with a window between them and two workers in it would each read
+four against a bound of five. So what is under test is a `CASE` and a
+`make_interval`, which is why the cases are against a real PostgreSQL: a fake
+would assert my own arithmetic back at me on a path where being wrong is
+silent, and the two ways to be wrong are documents that retry forever and a
+permanent verdict on the first blip. Restoring the shipped behaviour names the
+three cases about retrying while the five about permanent failure stay green,
+which is the signature that says the permanent half was always right.
+
+`POST /v1/documents/{id}/retry` is the operator's way out of what is left.
+Re-sending through `POST /v1/documents` requeues a failed document and always
+did — `REQUEUE` has carried `status = 'failed'` since it existed — and what it
+needs is the *document*. The caller who most wants to retry is the one who no
+longer has it: an integration that posted those bytes from a file that has since
+moved, after a quota somebody has now raised. The row still knows where its
+content is. `write` on the layer, the same permission as ingesting into it;
+`204` and never the document, because rule 6; `attempts` reset to zero, because
+that count measures one run against one deployment and the deployment is what
+changed.
+
+A document that has **not** failed is `409` and not `404`. The caller may write
+it and is looking straight at it, so `404` would send them hunting for something
+on their own screen — and the refusal is about the document's *state* and stops
+applying the moment it fails, which is the last-administrator `409`'s shape
+rather than a `403`'s. A boolean port would have collapsed the two; `RetryOutcome`
+is three values, and the SDK matches on the problem **type** rather than the
+status, because a status is too coarse to carry two facts.
+
+The claim's own predicate is one exported string both the query and the case
+use, and that alone does not close it: `CLAIMABLE_NOW` stops two spellings
+drifting and cannot stop the claim dropping the clause, which the live case
+would not see, because it asks the constant. So the subject is **discovered** —
+any statement in the worker asking for a `pending` document has to carry it, and
+a run that finds none refuses. Both were produced.
+
+**Two `SECURITY DEFINER` functions could be shadowed by a temp table, in the two
+migrations written to prevent exactly that.** 0010 pinned `search_path =
+pg_catalog, public` on `bump_groups_version` with a paragraph explaining the
+hazard, and 0012 wrote the same on `prune_audit_events` — and omitting `pg_temp`
+does not exclude it, it moves it to the **front**, ahead of `pg_catalog`. The
+pin had the opposite of its stated effect. 0032's function, written later,
+already says `public, pg_temp` and is correct; nothing compared the three.
+
+Not remotely reachable — it takes the ability to run SQL on the session that
+then calls the function, which is possession of `nacre_app` or `nacre_worker`,
+and 0010 was right to call itself defence in depth. What it would have cost from
+there is what those migrations were protecting: a shadowed `organizations` means
+`groups_version` never moves, so the effective-principals cache never
+invalidates and a revoked grant goes on being served, which is the invariant 4
+failure 0010 exists against.
+
+Measured both ways with the product's own trigger against a real PostgreSQL,
+which is the part worth keeping: with the shipped pin and a temp `organizations`
+present, an insert into `groups` moved the **shadow** and left the real row
+alone; with `pg_temp` named last, the real row moved and the shadow did not.
+Migration 0034 is an `ALTER` rather than an edit, because migration text is
+checksummed. `lint:definer-path` is the repair — it reads every `CREATE` and
+every `ALTER` in file order, so the *last* setting decides, which is what a
+forward-only tree needs. Its own first version found **two** subjects where the
+tree has three: `bump_groups_version` becomes a definer by a later `ALTER`, and
+the one it could not see is one of the two 0034 repairs — so it would have passed
+half a fix. Four refusals, each produced.
+
+The rest of that audit found nothing to fix, and saying so is most of its value:
+every request-reachable value reaches SQL as a bound parameter, every
+interpolation is a file-local literal or a `$n` placeholder, `SET LOCAL ROLE`
+carries its identifier guard at all three sites, and there is no `quote_ident`,
+no dynamic `EXECUTE`, no `OFFSET` and no caller-built `ORDER BY` anywhere. Nor
+is there a filter-injection path into Qdrant: the metadata key regex excludes
+`.` and `[]`, so `meta.${key}` cannot address another field, and a caller entry
+can only ever become a `must`.
+
+**What retrieved text does to a model is the boundary that had no sentence.**
+Nothing filters a document's contents and nothing should — a payload inside a
+document the agent may legitimately read is, to every control here, a correct
+answer. But `docs/mcp.md`'s care about who may read what reads as a broader
+safety claim than is being made, so it now says plainly that a chunk is
+untrusted input to the calling model, that rule 6 makes an ingest-only service
+account a sufficient position from which to plant one, and that the delegation's
+permission ceiling is the control that bounds the damage — because it bounds
+what an agent can *do*, which is the half that is actually boundable.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

@@ -40,6 +40,31 @@ export type IngestFailureReason =
   /** Anything else. The operator has the detail. */
   | 'internal'
 
+/**
+ * Whether the worker should try this document again.
+ *
+ * The reasons already say the answer in their own documentation — `unavailable`
+ * is "re-sending later may work", `too_long` is "re-sending will not help" —
+ * and this is that sentence made executable, in the file that defines them, so
+ * the two cannot drift.
+ *
+ * `internal` retries, and that is the one judgement call here. It is the
+ * unmatched case: something went wrong that this classifier has never seen, and
+ * the honest prior for an unknown error in a distributed system is that it
+ * might not happen twice. The bound is what makes the guess safe — a permanent
+ * unknown costs `NACRE_INDEX_MAX_ATTEMPTS` attempts spaced by backoff and then
+ * fails exactly as it would have, while a transient unknown recovers by itself.
+ * Guessing the other way costs a document that would have indexed.
+ *
+ * `quota` deliberately does **not** retry. It is the one failure whose remedy
+ * is an administrator raising a limit, and retrying against a quota that is
+ * still full is load with no chance of success — the caller is told, and a
+ * re-send after the limit moves is a re-send somebody meant.
+ */
+export function isRetryable(reason: IngestFailureReason): boolean {
+  return reason === 'unavailable' || reason === 'internal'
+}
+
 export interface IngestFailure {
   readonly reason: IngestFailureReason
   /** Safe to show a caller: no host, no URL, no credential, no document text. */

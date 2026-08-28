@@ -1,0 +1,48 @@
+-- `SET search_path` on a SECURITY DEFINER function has to name pg_temp.
+--
+-- ## What 0010 believed, and what PostgreSQL does
+--
+-- 0010 pinned `search_path = pg_catalog, public` on `bump_groups_version()`,
+-- and 0012 wrote the same on `prune_audit_events()`. Both were written
+-- specifically to close temp-schema shadowing; 0010's body is a paragraph
+-- explaining that hazard, and 0012 repeats it — "a shadowed `audit_events`
+-- here would be a caller choosing which rows a privileged function deletes."
+--
+-- Omitting pg_temp does not remove it from the path. It moves it to the
+-- **front**: the manual's rule is that the session's temporary schema "is
+-- always searched if it exists … If it is not listed in the path then it is
+-- searched first (even before pg_catalog)." Naming it explicitly, last, is the
+-- documented way to put it behind everything else. So the pin these two
+-- migrations added had the opposite of its stated effect for relation names,
+-- which is the only kind of name that reaches a temp schema at all.
+--
+-- Measured rather than read, against a real PostgreSQL: a session that creates
+-- `CREATE TEMP TABLE organizations` and then calls a definer function pinned
+-- `pg_catalog, public` reads the temp table; the same function pinned
+-- `pg_catalog, public, pg_temp` reads the real one.
+--
+-- ## What it was worth
+--
+-- Not a remote hole, and 0010 was right to call itself defence in depth: this
+-- needs the ability to run arbitrary SQL on the session that then calls the
+-- function, which is possession of `nacre_app` or `nacre_worker`. What it
+-- would cost from there is exactly what those two migrations were protecting.
+-- A shadowed `organizations` means `groups_version` never advances, so the
+-- effective-principals cache never invalidates and a revoked grant goes on
+-- being served — the invariant 4 failure 0010 exists against. A shadowed
+-- `audit_events` makes retention a silent no-op; it is *not* a way to erase
+-- chosen events, because both the CTE and the DELETE resolve to the same
+-- shadow, so the append-only property holds.
+--
+-- ## Why an ALTER and not an edit
+--
+-- Migrations are forward-only and their text is checksummed, so correcting
+-- 0010 and 0012 in place is a mismatch on every database that has applied
+-- them. `ALTER FUNCTION … SET` replaces the setting without touching the body.
+--
+-- 0032's `refuse_factor_on_shared_account()` already writes `public, pg_temp`
+-- and needs nothing. `scripts/check-definer-search-path.mjs` is what makes
+-- that a property of the tree rather than of the two functions somebody
+-- happened to look at.
+ALTER FUNCTION bump_groups_version() SET search_path = pg_catalog, public, pg_temp;
+ALTER FUNCTION prune_audit_events(integer, integer) SET search_path = pg_catalog, public, pg_temp;

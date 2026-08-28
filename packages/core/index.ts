@@ -159,7 +159,7 @@ export type {
   RegistrationInput,
 } from './webauthn.js'
 export type { SparseVector } from './text/bm25.js'
-export { classifyIngestFailure, withoutHosts } from './ingest-failure.js'
+export { classifyIngestFailure, isRetryable, withoutHosts } from './ingest-failure.js'
 export type { IngestFailure, IngestFailureReason } from './ingest-failure.js'
 export {
   DEFAULT_EMBED_MAX_TOKENS,
