@@ -490,6 +490,37 @@ that a database is down rather than reading it as a tool that does not exist.
 - Accept `org_id` as an argument. The organization comes from the token.
 - Bypass the authorization service "for speed" on the search path.
 
+## Retrieved text is untrusted input to the calling model
+
+Nothing here filters what a document says, and nothing claims to. A search hit
+carries the chunk verbatim and `get_document` carries the whole document, both
+straight into the model's context — which is what a retrieval tool is for, and
+is also the boundary worth stating rather than leaving somebody to infer from
+the care taken over everything else on this page.
+
+**Anyone who can ingest into a layer can leave instructions there for any agent
+that later searches it.** Rule 6 makes that the *least*-privileged position on
+this surface: `write` does not imply `read`, so an ingest-only service account
+is enough. The permission model bounds **which** documents reach an agent; it
+says nothing about **what those documents say**, and a payload inside a document
+the agent may legitimately read is, to every control in this system, a correct
+answer.
+
+What does bound the damage is the delegation's permission ceiling, and it bounds
+what the agent can *do* rather than what it can be told. A connection approved
+for `read` on one layer cannot be talked into deleting anything, because the
+authority is not there to be talked into. That is the control to reach for: give
+a client the narrowest ceiling that lets it do its job, and treat a delegation
+holding `write` as one whose writes you would want to be able to review.
+
+`include_content: false` reduces a search result to ids and scores, which is
+worth knowing about and is not a general answer — it defaults to `true` on both
+surfaces, and an agent that cannot read the text usually cannot do the task.
+
+This is the correct boundary for a retrieval product to have. Stating it is the
+point: the surrounding documentation's care about who may read what can be read
+as a broader safety claim than is being made.
+
 ## Current state
 
 Both transports are implemented in `packages/mcp`, and the tool bodies behind

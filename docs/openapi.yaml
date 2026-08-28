@@ -1551,6 +1551,48 @@ paths:
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '204': { description: Deleted }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /documents/{id}/retry:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      summary: Put a failed document back in the queue
+      description: >
+        Requeues a document whose status is `failed`, without re-sending its
+        content. The worker retries a *transient* failure by itself — an
+        embedder that was restarting, a parser that timed out — up to
+        NACRE_INDEX_MAX_ATTEMPTS, spacing the attempts out. What reaches this
+        endpoint is the class that will not come back on its own: a document
+        that was too long, one that could not be read, one refused by a quota,
+        and one that exhausted its attempts. Each of those is a failure whose
+        remedy is a change somebody made, and this is how they say the change
+        is in place.
+
+
+        It exists because the caller who most wants to retry is the one who no
+        longer has the document: re-sending it through POST /v1/documents
+        requeues it too, and needs the bytes. The row still knows where its
+        content is.
+
+
+        Requires `write` on the layer — the same permission as ingesting into
+        it, because that is what this is. Answers `204` and never the document:
+        `write` does not imply `read`. Attempts are reset to zero, because the
+        count measures one run against one deployment and the deployment is
+        what changed.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '204': { description: 'Requeued. The job is visible again at GET /v1/jobs/{id}' }
+        '409':
+          description: >
+            The document has not failed, so there is nothing to retry. Not
+            `404`: the caller may write this document and is looking straight
+            at it. The refusal is about the document's state and goes away when
+            it fails.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /.well-known/jwks.json:
     # At the origin, not under /v1. RFC 8615 fixes where a well-known document
     # lives, and the `WWW-Authenticate` on every 401 already names this exact

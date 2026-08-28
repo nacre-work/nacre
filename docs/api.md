@@ -12,6 +12,7 @@ POST   /v1/documents                 ingest (json or multipart/form-data; text �
 GET    /v1/documents/{id}
 PATCH  /v1/documents/{id}            metadata only; no re-embed
 DELETE /v1/documents/{id}            tombstone
+POST   /v1/documents/{id}/retry      requeue a failed document, without its bytes
 POST   /v1/search
 GET    /v1/workspaces    POST /v1/workspaces
 GET    /v1/layers        POST /v1/layers        PATCH /v1/layers/{id}
@@ -506,6 +507,43 @@ collection is filtered per caller after the database has applied the cursor —
 grants are, because who may see one is decided by walking the scope tree —
 `next_cursor` is taken from the last row *fetched*, not the last one returned.
 It is the only signal that more exist.
+
+### A failed document goes back in the queue
+
+The worker retries a **transient** failure by itself, and this endpoint is not
+for those. An embedder that was restarting, a Qdrant that blinked, a parser that
+timed out: the document goes back to `pending` with a `retry_after` a short way
+out, up to `NACRE_INDEX_MAX_ATTEMPTS` times with the window doubling, and
+nobody is asked to do anything. Before that it was recorded as permanently
+failed on the first attempt, and a layer went on answering searches out of
+whatever had indexed.
+
+What is left is the class that will not come back on its own — a document too
+long for the model, one the parser could not read, one refused by a quota, one
+that used up its attempts. Each of those has a remedy somebody performs: a
+bigger limit, a different model, a repaired sidecar. `POST
+/v1/documents/{id}/retry` is how they say the remedy is in place.
+
+```http
+POST /v1/documents/8f3c…/retry
+→ 204
+```
+
+Re-sending the document through `POST /v1/documents` requeues it too, and
+always did. The difference is that this needs no bytes: the caller who most
+wants to retry is the one whose integration read those bytes from a file that
+has since moved, and the row still knows where its content is.
+
+It needs `write` on the layer — the same permission as ingesting into it,
+because that is what this is — and answers `204` with no body, because `write`
+does not imply `read`. `attempts` is reset to zero: the count measures one run
+against one deployment, and the deployment is what just changed.
+
+A document that has **not** failed is `409`, not `404`. The caller may write it
+and is looking straight at it, so `404` would send them hunting for something
+on their own screen; the refusal is about the document's state and stops
+applying the moment it fails. Absent, invisible, or not permitted is `404` in
+one wording, as everywhere else.
 
 ### Deleting a layer
 

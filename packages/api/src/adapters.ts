@@ -45,6 +45,7 @@ import { applyRanking, type Reranker } from './rerank.js'
 import type {
   Reindex,
   ReindexOutcome,
+  RetryOutcome,
   ReindexStatus,
   ReferenceQueries,
   ReferenceQuery,
@@ -97,8 +98,9 @@ export interface Embedder {
 /**
  * When re-sending a document puts it back in the queue.
  *
- * Written once and interpolated five times, because the five columns it
- * decides — status, attempts, error, and the collector's two — have to agree
+ * Written once and interpolated six times, because the six columns it
+ * decides — status, attempts, error, the collector's two and the retry
+ * backoff — have to agree
  * and Postgres cannot see one SET column's new value from another. Five copies
  * of a predicate that must match is the shape this repository keeps removing.
  *
@@ -280,6 +282,99 @@ export class PostgresDocuments implements Documents {
    * from on the next index, so a row that ran ahead would be reverted while a
    * payload that ran ahead would not.
    */
+  /**
+   * Put a failed document back in the queue, without its bytes.
+   *
+   * ## Why this exists when re-ingesting already requeues
+   *
+   * `REQUEUE` above includes `status = 'failed'`, so re-sending a document is
+   * a retry and always was. What that needs is the *document* — and the caller
+   * who most wants to retry is the one who no longer has it: an operator whose
+   * organization hit a quota, who raised the limit an hour later, and whose
+   * integration posted those bytes from a file that has since moved. The row
+   * still knows where its content is, in `source_ref` or in the bucket, so
+   * asking for it again needs nothing from the caller but the id.
+   *
+   * The worker retries transient failures by itself now, so what reaches this
+   * route is the class that will not come back on its own: `too_long`,
+   * `unreadable`, `quota`, and anything that exhausted its attempts. Each of
+   * those is a failure whose remedy is a change somebody made — a bigger
+   * quota, a reconfigured model, a repaired sidecar — and this is how they say
+   * the change is in place. That is why it resets `attempts` to zero: the
+   * count measures one run against one deployment, and the deployment is what
+   * just changed.
+   *
+   * ## Permissions
+   *
+   * `write` on the layer, the same as ingesting into it, because that is what
+   * this is — an ingest of content already stored. Not `admin`: an
+   * ingest-only service account is exactly the principal that should be able
+   * to retry what it sent. Every narrowing the retag path applies applies
+   * here, in the same order, because a layer id and a document meet here too.
+   *
+   * ## Three outcomes rather than a boolean
+   *
+   * A document that is not there, not visible, or not permitted is
+   * `'unreachable'`, which the route turns into `404` — one answer for absent
+   * and invisible, invariant 4. A document the caller may write and which is
+   * not `failed` is `'not-failed'`, a `409`: the caller is looking straight at
+   * something they may write, so `404` would be a lie, and the refusal is
+   * about the document's *state* and goes away the moment it fails — which is
+   * the same shape as the last-administrator `409` and not the permanent
+   * refusal a `403` states.
+   *
+   * A boolean would have collapsed those two, and the collapse is the wrong
+   * way round: an operator whose retry answered `404` would go looking for a
+   * document that is sitting in front of them.
+   */
+  async retry(auth: AuthContext, documentId: string): Promise<RetryOutcome> {
+    if (!/^[0-9a-f-]{36}$/i.test(documentId)) return 'unreachable'
+
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const plan = activeResolver().resolve(
+          await contextFor(client, auth, this.principalsCache),
+          'write',
+        )
+        if (plan.kind === 'none') return 'unreachable'
+
+        const { rows } = await client.query<{ layer_id: string }>(
+          `SELECT layer_id FROM documents
+            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+          [auth.orgId, documentId],
+        )
+        const layerId = rows[0]?.layer_id
+        if (layerId === undefined) return 'unreachable'
+
+        if (!withinDelegation(auth, layerId, 'write')) return 'unreachable'
+
+        if (plan.kind === 'scoped') {
+          if (plan.deniedDocs.includes(documentId)) return 'unreachable'
+          if (!plan.layers.includes(layerId) && !plan.extraDocs.includes(documentId)) {
+            return 'unreachable'
+          }
+        }
+
+        // Only a failed document. A `pending` one is already queued and
+        // resetting its attempts would hand a document that is failing its way
+        // through the bound a fresh set of attempts every time somebody
+        // pressed the button; an `indexed` one has nothing to retry, and
+        // requeueing it would take it out of search until the worker got to it.
+        const { rowCount } = await client.query(
+          `UPDATE documents
+              SET status = 'pending', attempts = 0, error = NULL,
+                  retry_after = NULL, claimed_at = NULL, updated_at = now()
+            WHERE org_id = $1 AND id = $2 AND status = 'failed'`,
+          [auth.orgId, documentId],
+        )
+        return (rowCount ?? 0) > 0 ? 'requeued' : 'not-failed'
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+
   async updateMetadata(
     auth: AuthContext,
     documentId: string,
@@ -1254,6 +1349,12 @@ export class NacreIngest implements Ingest {
              -- the second deletion of anything that was ever purged once.
              vectors_purged_at = CASE WHEN ${REQUEUE} THEN NULL ELSE documents.vectors_purged_at END,
              sweep_claimed_at  = CASE WHEN ${REQUEUE} THEN NULL ELSE documents.sweep_claimed_at END,
+             -- The sixth column the predicate decides. A re-send is somebody
+             -- asking for this document *now*, so it must not inherit a
+             -- backoff the worker set on the attempt that failed — otherwise
+             -- the response says queued and the document waits out a delay
+             -- computed for a run the caller has just replaced.
+             retry_after  = CASE WHEN ${REQUEUE} THEN NULL ELSE documents.retry_after END,
              deleted_at   = NULL,
              updated_at   = now()
            RETURNING id, content_hash, status`,

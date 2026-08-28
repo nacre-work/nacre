@@ -123,7 +123,29 @@ export interface Documents {
    * capability a surface does not have.
    */
   updateMetadata?(auth: AuthContext, documentId: string, metadata: Metadata): Promise<boolean>
+  /**
+   * Put a failed document back in the queue, without re-sending its bytes.
+   *
+   * `'unreachable'` covers absent, another organization's, denied, and a
+   * caller with no `write` reaching it — one answer for all of them, the same
+   * rule `read` and `updateMetadata` follow. `'not-failed'` is a document the
+   * caller may write which has nothing to retry.
+   *
+   * Absent from an implementation means the path answers `404`, like any other
+   * capability a surface does not have.
+   */
+  retry?(auth: AuthContext, documentId: string): Promise<RetryOutcome>
 }
+
+/**
+ * What asking for a retry did.
+ *
+ * Three values rather than a boolean because the two refusals are different
+ * statements to whoever is reading them: one says the document is not yours to
+ * see, the other says it is yours and there is nothing to do. Collapsing them
+ * sends an operator looking for a document that is on their screen.
+ */
+export type RetryOutcome = 'requeued' | 'not-failed' | 'unreachable'
 
 /**
  * A document, as a caller sees it.
@@ -3740,6 +3762,57 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
+      send(res, 204, null, requestId)
+      return
+    }
+
+    const retryMatch = pathMatch(/^\/v1\/documents\/([^/]+)\/retry$/, instance)
+    if (req.method === 'POST' && retryMatch) {
+      const id = retryMatch[1] as string
+
+      if (options.documents.retry === undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      const outcome = await options.documents.retry(auth, id)
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'retry_document',
+        result: outcome === 'requeued' ? 'allow' : 'deny',
+        target: { document_id: id },
+        detail: { document_id: id, outcome },
+        requestId,
+      })
+
+      if (outcome === 'unreachable') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      if (outcome === 'not-failed') {
+        const problem = new Problem({
+          type: 'https://nacre.work/errors/conflict',
+          title: 'Conflict',
+          status: 409,
+          detail:
+            'This document has not failed, so there is nothing to retry. ' +
+            'Only a document whose status is `failed` can be requeued this way; ' +
+            'send it again through POST /v1/documents to re-index one that has not.',
+          instance,
+          requestId,
+        })
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      // `204`, and never the document, for the same reason the PATCH beside it
+      // does: rule 6 means a caller may hold `write` without `read`, so a body
+      // describing what was requeued would be a read this caller has not got.
       send(res, 204, null, requestId)
       return
     }

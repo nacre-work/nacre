@@ -272,6 +272,51 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.25.0 — a failed document is not necessarily failed for good
+
+**Migration 0033.** `documents.retry_after`, nullable, plus a partial index on
+the queue. Nothing to backfill: NULL means claimable now, which is what every
+existing row and every fresh document carries.
+
+Until this release the worker recorded **any** failure as permanent, on the
+first attempt. `attempts` and `NACRE_INDEX_MAX_ATTEMPTS` existed and were read
+by the reaper alone — the case where a worker *dies* holding a document — so
+the far commoner case had no retry: an embedder restarting, a Qdrant that
+blinked, a parser that timed out, and every document in flight was `failed`
+forever. Nothing retries `failed`, so the only way out was somebody re-sending
+the bytes, while the layer went on answering searches out of whatever had
+indexed. Quietly worse, with nothing in a log a person reads.
+
+**Nothing to do.** After the migration the worker requeues a transient failure
+by itself, with a window that doubles from thirty seconds and caps at fifteen
+minutes, bounded by `NACRE_INDEX_MAX_ATTEMPTS`. `too_long`, `unreadable` and
+`quota` still fail immediately, because re-sending cannot help — that is what
+those reasons have always meant, and it is the classifier's own documentation
+made executable rather than a new judgement.
+
+**Worth doing once:** documents that failed *before* this release are still
+`failed`, including the ones whose cause was a blip years of uptime ago. There
+are two ways to put them back:
+
+```bash
+# one document, needing no bytes — new in this release
+curl -sX POST -H "authorization: Bearer $TOKEN" \
+  "$NACRE_API_URL/v1/documents/$ID/retry"
+
+# or, if you still have the corpus, the way that always worked
+nacre ingest ./corpus --layer handbook
+```
+
+`POST /v1/documents/{id}/retry` needs `write` on the layer, answers `204`, and
+answers `409` — not `404` — for a document that has not failed. It resets
+`attempts`, because that count measures one run against one deployment and the
+deployment is what you just changed.
+
+To find them, an enterprise installation has
+`GET /v1/admin/directory/documents?layer_id=…&status=failed`. On the open core
+the honest answer is that there is no listing yet: what you have is the job id
+ingest returned, `nacre ingest` again, or a query.
+
 ### 0.24.0 — the second audit round; one repair you may want to run by hand
 
 No migration, no new variable, no schema change. Two of the fixes describe

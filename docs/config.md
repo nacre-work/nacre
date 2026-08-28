@@ -153,7 +153,7 @@ NACRE_SERVICE_KEY=nacre_sk_…
 # ─── the background worker ───
 NACRE_GC_GRACE=3600                    # tombstone to physical purge
 NACRE_INDEX_LEASE=900                  # any claim older than this is abandoned: indexing, purge
-NACRE_INDEX_MAX_ATTEMPTS=5             # then the document is failed, not requeued
+NACRE_INDEX_MAX_ATTEMPTS=5             # transient failures only; then failed for good
 
 # ─── limits ───
 NACRE_RATE_SEARCH_PER_MIN=60

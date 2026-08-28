@@ -456,14 +456,6 @@ export class NacreClient {
     },
 
     /**
-     * Delete a document. `true` when it was deleted, `false` when it was
-     * already gone or was never visible to this caller.
-     *
-     * It leaves search immediately — the vectors are flagged before the row is
-     * written, and collection of the points is a background job that nothing
-     * depends on.
-     */
-    /**
      * Replace a document's metadata without re-indexing it.
      *
      * `false` for a document that is absent, another organization's, or one
@@ -492,6 +484,49 @@ export class NacreClient {
       }
     },
 
+    /**
+     * Put a failed document back in the queue, without re-sending its content.
+     *
+     * `'requeued'` when it is queued again; `'not-failed'` when this caller may
+     * write the document and it has nothing to retry; `'unreachable'` when it
+     * is absent, another organization's, or one this credential may not write.
+     *
+     * Three values rather than a boolean, and the two refusals are matched on
+     * the problem **type** rather than on the status: they are different
+     * statements to whoever reads them, and collapsing them sends somebody
+     * looking for a document that is on their screen.
+     *
+     * The worker retries a transient failure by itself. This is for the class
+     * that will not come back on its own — too long, unreadable, over a quota,
+     * or out of attempts — once whatever caused it has been changed.
+     */
+    retry: async (documentId: string): Promise<'requeued' | 'not-failed' | 'unreachable'> => {
+      try {
+        await this.#request({
+          method: 'POST',
+          path: `/v1/documents/${encodeURIComponent(documentId)}/retry`,
+          // Requeueing a document that is already queued is the same queue. A
+          // retry after a timeout cannot produce a second anything.
+          retryable: true,
+        })
+        return 'requeued'
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return 'unreachable'
+        if (error instanceof NacreError && error.type === 'https://nacre.work/errors/conflict') {
+          return 'not-failed'
+        }
+        throw error
+      }
+    },
+
+    /**
+     * Delete a document. `true` when it was deleted, `false` when it was
+     * already gone or was never visible to this caller.
+     *
+     * It leaves search immediately — the vectors are flagged before the row is
+     * written, and collection of the points is a background job that nothing
+     * depends on.
+     */
     remove: async (documentId: string): Promise<boolean> => {
       try {
         await this.#request({

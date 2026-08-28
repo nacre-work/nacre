@@ -16,7 +16,6 @@ import {
   VectorStore,
   vectorStoreOptions,
   loadConfig,
-  withOrg,
 } from '@nacre.work/core'
 
 import {
@@ -55,6 +54,7 @@ import { reapOnce } from './reap.js'
 import { reindexOnce } from './reindex.js'
 import { recallOnce, type RecallPorts } from './recall.js'
 import { retireOnce, retireVectorsOnce } from './retire.js'
+import { CLAIMABLE_NOW, recordFailure } from './retry.js'
 
 /**
  * The indexing worker.
@@ -137,6 +137,13 @@ interface Claim {
   readonly sourceType: string
   /** What the stored bytes are. Decides how the s3 branch hands them to the parser. */
   readonly contentType: string
+  /**
+   * How many times this document has been tried, *including* this claim — the
+   * claim statement increments it. The backoff grows from it, so a document
+   * that keeps meeting a service that is still down waits longer each time
+   * rather than at a fixed interval.
+   */
+  readonly attempts: number
 }
 
 async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | undefined> {
@@ -163,13 +170,18 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
       source_ref: string | null
       source_type: string
       content_type: string
+      attempts: number
     }>(
       `SELECT d.id, d.org_id, o.vector_collection AS collection, d.layer_id, d.external_id, l.vector_name,
-              l.provider_id, d.metadata, d.source_ref, d.source_type, d.content_type
+              l.provider_id, d.metadata, d.source_ref, d.source_type, d.content_type, d.attempts
          FROM documents d
          JOIN organizations o ON o.id = d.org_id
          JOIN layers l        ON l.id = d.layer_id
         WHERE d.status = 'pending' AND d.deleted_at IS NULL
+          -- Not before a requeued document's backoff has elapsed. NULL is
+          -- claimable now, which every row that never failed carries and which
+          -- is what makes this column need no backfill.
+          AND ${CLAIMABLE_NOW}
           -- Not while this organization's collection is being copied.
           --
           -- The copy scrolls the old collection and the pointer moves when it
@@ -223,32 +235,9 @@ async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | u
       sourceRef: row.source_ref,
       sourceType: row.source_type,
       contentType: row.content_type,
+      attempts: row.attempts,
     }
   })
-}
-
-async function markFailed(
-  pool: ReturnType<typeof createPool>,
-  claim: Claim,
-  error: unknown,
-): Promise<void> {
-  await withOrg(
-    pool,
-    claim.orgId,
-    async (client) => {
-      // The message, not the document. A parse failure that quotes the file
-      // puts document contents in a column anyone with database access reads.
-      // The lease is released with the status. A failed row that keeps its
-      // claim would be reaped back into `pending` and retried, which is the
-      // opposite of what recording a failure means.
-      await client.query(
-        `UPDATE documents SET status = 'failed', error = $3, claimed_at = NULL, updated_at = now()
-          WHERE org_id = $1 AND id = $2`,
-        [claim.orgId, claim.documentId, String(error).slice(0, 500)],
-      )
-    },
-    { role: APP_ROLE },
-  )
 }
 
 async function main(): Promise<void> {
@@ -966,8 +955,20 @@ async function main(): Promise<void> {
           chunks: result.chunkCount,
           unchanged: result.unchanged })
     } catch (error) {
-      logger.error('indexing failed', { document_id: claim.documentId, error: String(error) })
-      await markFailed(pool, claim, error).catch(() => {})
+      // Reported after the decision rather than before it, so the log says
+      // which of the two happened. "indexing failed" on a document that is
+      // about to be retried reads as a lost document and sends an operator
+      // looking for one.
+      const outcome = await recordFailure(pool, claim, error, config.indexMaxAttempts).catch(
+        () => undefined,
+      )
+      logger.error(outcome?.retrying === true ? 'indexing failed, will retry' : 'indexing failed', {
+        document_id: claim.documentId,
+        error: String(error),
+        reason: outcome?.reason,
+        attempts: claim.attempts,
+        max_attempts: config.indexMaxAttempts,
+      })
     }
 
     // The clocks tick while the queue is busy too. These passes used to run
