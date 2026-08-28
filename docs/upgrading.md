@@ -272,6 +272,27 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.25.1 — the retry counter an operator reads was one behind
+
+**Nothing to do.** No migration, no configuration, and the number of attempts a
+document actually got was always right.
+
+`Claim.attempts` is documented as "including this claim — the claim statement
+increments it", and for one release it did not: the `SELECT` reads the row and
+the `UPDATE` increments it afterwards, so the field arrived one behind. Both of
+its readers were wrong in the same direction — the worker logged `attempts: 0`
+on a *first* attempt, beside a `max_attempts` printed on the same line, and the
+backoff's exponent started a step low, so the first two attempts shared one
+thirty-second ceiling instead of doubling.
+
+The bound was never affected, which is why nothing failed: `recordFailure`
+compares the row's own post-increment count inside the statement that writes the
+verdict, so `NACRE_INDEX_MAX_ATTEMPTS=3` always meant three attempts. What was
+wrong was every number a person reads.
+
+Found by starting the released 0.25.0 image against a dependency that was down
+and reading the worker's own log.
+
 ### 0.25.0 — a failed document is not necessarily failed for good
 
 **Migration 0033.** `documents.retry_after`, nullable, plus a partial index on

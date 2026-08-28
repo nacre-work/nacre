@@ -2764,6 +2764,36 @@ would not see, because it asks the constant. So the subject is **discovered** �
 any statement in the worker asking for a `pending` document has to carry it, and
 a run that finds none refuses. Both were produced.
 
+**And the counter an operator reads was one behind, found by running the
+released image.** `Claim.attempts` says in its own documentation "including this
+claim — the claim statement increments it", and it did not: the `SELECT` reads
+the row and the `UPDATE` increments it afterwards. Both readers were wrong in
+the same direction — the worker logged `attempts: 0` on a *first* attempt beside
+a `max_attempts` on the same line, and the backoff's exponent started a step
+low, so the first two attempts shared one thirty-second ceiling instead of
+doubling.
+
+The bound was never affected, and that is why nothing failed: it is not computed
+from this field. `recordFailure` compares the row's own post-increment count
+inside the statement that writes the verdict, so the number of attempts a
+document got was always right. What was wrong was every number a person reads —
+which is the class this file already names as a claim in a comment that stopped
+being true, arriving in the same change that wrote the comment.
+
+Found by pulling `ghcr.io/nacre-work/nacre:0.25.0`, starting it against a parser
+that was not there, and reading its log: `attempts: 0`, then `1`, then a
+permanent verdict at `2`, on a document the row said had been tried three times.
+That is this repository's own rule about running the artifact rather than the
+source, one step further out than it usually reaches — the artifact had already
+shipped, and every gate was green when it did.
+
+`claimNext` moved into `claim.ts` to be askable at all, for the reason
+`retry.ts` beside it gives: `main.ts` calls `main()` at the bottom, so importing
+anything from it starts a worker. Moving it is also what made the queue check
+refuse — it named three files and the claim went into a fourth — so that check
+discovers the package's sources now instead of listing them. A check that has to
+be edited when code moves is a check somebody edits the wrong way.
+
 **Two `SECURITY DEFINER` functions could be shadowed by a temp table, in the two
 migrations written to prevent exactly that.** 0010 pinned `search_path =
 pg_catalog, public` on `bump_groups_version` with a paragraph explaining the

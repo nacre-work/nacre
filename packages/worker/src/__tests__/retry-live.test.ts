@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { createPool } from '@nacre.work/core'
@@ -6,6 +6,7 @@ import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { CLAIMABLE_NOW, recordFailure, retryDelayMs } from '../retry.js'
+import { claimNext } from '../claim.js'
 
 /**
  * A transient failure is retried and a permanent one is not, against a real
@@ -226,6 +227,62 @@ when('the ingest retry window', () => {
     expect(free.rowCount).toBe(1)
   })
 
+  /**
+   * `Claim.attempts` counts this attempt.
+   *
+   * Its own documentation says "including this claim — the claim statement
+   * increments it", and for one release it did not: the SELECT reads the row
+   * and the UPDATE increments it afterwards, so the field arrived one behind.
+   * Two readers, wrong in the same direction — the worker logged
+   * `attempts: 0` on a first attempt beside a `max_attempts: 3`, and the
+   * backoff's exponent started a step low, so the first two attempts shared
+   * one ceiling instead of doubling.
+   *
+   * Nothing failed, and the reason is worth keeping: the *bound* is not
+   * computed from this field. `recordFailure` compares the row's own
+   * post-increment count inside the statement that writes the verdict, so the
+   * number of attempts a document got was always right. What was wrong was
+   * every number a person reads.
+   *
+   * Found by starting the released 0.25.0 image against a parser that was not
+   * there and reading the worker's own log — which is this repository's rule
+   * about running the artifact, one step further out than usual: the artifact
+   * had already shipped.
+   */
+  it('counts the attempt it is handing over', async () => {
+    // The queue is emptied first, and that is not tidiness. `claimNext` takes
+    // the oldest claimable document in the *installation*, so a case that
+    // assumes the row it just wrote is the one that comes back is a case whose
+    // claim depends on what the cases above it left behind — the flake shape
+    // this repository runs a nightly hunt for. Emptying it makes the answer a
+    // property of the statement rather than of the file's ordering.
+    await pool.query("DELETE FROM documents WHERE org_id = $1 AND status = 'pending'", [orgId])
+
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO documents
+         (org_id, layer_id, external_id, title, source_type, source_ref, content_hash, status)
+       VALUES ($1, $2, 'counted', 'counted', 'inline', 'body', $3, 'pending')
+       RETURNING id`,
+      [orgId, layerId, 'counted'.padEnd(64, '0')],
+    )
+    const id = rows[0]!.id
+
+    const first = await claimNext(pool)
+    expect(first?.documentId).toBe(id)
+    // One, not zero. The row says one too, which is the agreement that was
+    // missing: the field and the column are the same count.
+    expect(first?.attempts).toBe(1)
+    expect((await row(id)).attempts).toBe(1)
+
+    await recordFailure(pool, { orgId, documentId: id, attempts: first!.attempts }, new Error('fetch failed'), 5)
+    await pool.query('UPDATE documents SET retry_after = NULL WHERE id = $1', [id])
+
+    const second = await claimNext(pool)
+    expect(second?.documentId).toBe(id)
+    expect(second?.attempts).toBe(2)
+    expect((await row(id)).attempts).toBe(2)
+  })
+
   it('leaves a document that never failed claimable', async () => {
     // No backfill: `retry_after` is NULL on every row that existed before this
     // migration and on every fresh document, and NULL means now.
@@ -291,16 +348,16 @@ describe('the claim', () => {
    * reporting green on nothing.
    */
   it('will not take a document before its window, in every statement that takes one', () => {
+    // Every source in the package, discovered rather than listed. The first
+    // version named three files, and the claim then moved into a fourth —
+    // `claim.ts` — which turned this check from "the clause is missing" into
+    // "there is nothing here to check". It refused, which is the behaviour that
+    // matters, and a check that has to be edited when code moves is a check
+    // somebody edits the wrong way.
     const root = fileURLToPath(new URL('../', import.meta.url))
-    const sources = ['main.ts', 'retry.ts', 'collect.ts']
-      .map((name) => {
-        try {
-          return { name, text: readFileSync(`${root}${name}`, 'utf8') }
-        } catch {
-          return undefined
-        }
-      })
-      .filter((file): file is { name: string; text: string } => file !== undefined)
+    const sources = readdirSync(root)
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => ({ name, text: readFileSync(`${root}${name}`, 'utf8') }))
 
     const claims: string[] = []
     for (const file of sources) {
@@ -323,4 +380,3 @@ describe('the claim', () => {
       toBeGreaterThan(0)
   })
 })
-
