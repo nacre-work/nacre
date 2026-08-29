@@ -1,4 +1,7 @@
 import {
+  admitEmbeddingEndpoint,
+  endpointOrigin,
+  type AddressResolver,
   buildFilter,
   cachedEffectivePrincipals,
   documentKey,
@@ -46,6 +49,7 @@ import type {
   Reindex,
   ReindexOutcome,
   RetryOutcome,
+  EmbeddingProviderRemoval,
   ReindexStatus,
   ReferenceQueries,
   ReferenceQuery,
@@ -1081,6 +1085,10 @@ export class HttpEmbedder implements Embedder {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: this.model, input: texts }),
       signal: AbortSignal.timeout(this.timeoutMs),
+      // Refuse a redirect rather than follow it into the private network —
+      // the same fetch-path half of the egress guard the worker's embedder
+      // has, on the search path where a query's embedding is computed.
+      redirect: 'error',
     })
 
     if (!response.ok) {
@@ -2065,6 +2073,16 @@ export class PostgresEmbeddingProviders implements EmbeddingProviders {
   constructor(
     private readonly pool: Pool,
     private readonly role?: string,
+    /** Extra internal embedder origins an operator trusts, from
+     * `NACRE_EMBED_ALLOWED_HOSTS`. Combined with the global provider rows. */
+    private readonly allowedHosts: readonly string[] = [],
+    /** Whether an `org_admin` may create a provider at all
+     * (`NACRE_EMBED_TENANT_PROVIDERS`). False on a managed platform, where the
+     * whole tenant-endpoint surface — and its SSRF — is turned off. */
+    private readonly tenantProviders: boolean = true,
+    /** A DNS resolver seam, so a test can rule on an endpoint without a
+     * network. Production uses `dns.lookup` through the guard's default. */
+    private readonly resolver?: AddressResolver,
   ) {}
 
   async list(auth: AuthContext): Promise<readonly EmbeddingProviderView[]> {
@@ -2102,12 +2120,37 @@ export class PostgresEmbeddingProviders implements EmbeddingProviders {
     auth: AuthContext,
     input: { name: string; endpoint: string; model: string; dimensions: number },
   ): Promise<EmbeddingProviderOutcome> {
+    // On a managed platform this whole surface is off: a tenant does not
+    // configure embedding, and the route answers `404` as if it did not exist.
+    // Checked before the role, so the disabled case is one answer whoever asks.
+    if (!this.tenantProviders) return { kind: 'denied' }
     if (!administers(auth)) return { kind: 'denied' }
 
     return withOrg(
       this.pool,
       auth.orgId,
       async (client) => {
+        // The egress guard, before the row is written. The worker POSTs every
+        // chunk of every document in a layer to this endpoint, so an
+        // unconstrained one is an exfiltration channel: an org_admin could name
+        // the cloud metadata address or an internal service and read the reply
+        // back as document text. The trusted internal embedders are the
+        // installation's own — the global (NULL-org) provider rows `init`
+        // seeds from `NACRE_DEFAULT_EMBEDDING_ENDPOINT` — and `org_isolation`
+        // lets a tenant read those and only those. Anything else must be a
+        // public https address. See `admitEmbeddingEndpoint`.
+        const { rows: globals } = await client.query<{ endpoint: string }>(
+          `SELECT endpoint FROM embedding_providers WHERE org_id IS NULL`,
+        )
+        const allowed = [
+          ...this.allowedHosts,
+          ...globals
+            .map((g) => endpointOrigin(g.endpoint))
+            .filter((o): o is string => o !== undefined),
+        ]
+        const verdict = await admitEmbeddingEndpoint(input.endpoint, allowed, this.resolver)
+        if (verdict !== 'ok') return { kind: 'refused', reason: verdict.refused }
+
         // `auth.orgId` and never NULL, so a tenant cannot write the global
         // default. The restrictive policy refuses it anyway — this is the
         // application saying the same thing, because a statement that relies
@@ -2139,6 +2182,42 @@ export class PostgresEmbeddingProviders implements EmbeddingProviders {
             dimensions: Number(row.dimensions),
             isDefault: false,
           },
+        }
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+
+  async remove(auth: AuthContext, id: string): Promise<EmbeddingProviderRemoval> {
+    // Same switch as create: with the surface off, a tenant does not touch
+    // providers at all, and the route answers `404`.
+    if (!this.tenantProviders) return 'unreachable'
+    if (!administers(auth)) return 'unreachable'
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return 'unreachable'
+
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        // `org_id = auth.orgId` and never NULL, so a tenant cannot delete the
+        // global default even though `org_isolation` lets them read it: the row
+        // is invisible to this DELETE, which returns nothing, which is
+        // `unreachable`.
+        try {
+          const { rowCount } = await client.query(
+            `DELETE FROM embedding_providers WHERE org_id = $1 AND id = $2`,
+            [auth.orgId, id],
+          )
+          return (rowCount ?? 0) > 0 ? 'removed' : 'unreachable'
+        } catch (error) {
+          // `layers.provider_id` references this with no cascade, so a provider
+          // a layer still names raises 23503. That is a fact about the
+          // resource, not about visibility, so it is `in-use` (409) and not a
+          // 500.
+          if (error instanceof Error && 'code' in error && error.code === '23503') {
+            return 'in-use'
+          }
+          throw error
         }
       },
       this.role === undefined ? {} : { role: this.role },

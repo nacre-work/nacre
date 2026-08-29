@@ -144,7 +144,10 @@ export function buildServices(
    * globally.
    */
   const layers: Layers = {
-    forCaller: async (auth: AuthContext): Promise<readonly Layer[]> =>
+    forCaller: async (
+      auth: AuthContext,
+      page: { readonly limit: number; readonly afterId?: string },
+    ): Promise<{ readonly layers: readonly Layer[]; readonly nextCursor: string | null }> =>
       withOrg(
         pool,
         auth.orgId,
@@ -178,8 +181,15 @@ export function buildServices(
             { orgId: auth.orgId, role: auth.role, principals, grants, tree },
             'read',
           )
-          if (plan.kind === 'none') return []
+          if (plan.kind === 'none') return { layers: [], nextCursor: null }
 
+          // A page, ordered by id with an id seek — the same shape every REST
+          // listing uses, minus the timestamp, because a catalog has no
+          // recency to order by. `limit + 1` is how the page knows whether
+          // there is another one without a count over the table. The per-layer
+          // document count stays a correlated subquery because it is now
+          // bounded by the page rather than by the organization.
+          const bounded = Math.min(Math.max(1, page.limit), 500)
           const { rows } = await client.query<{
             id: string
             slug: string
@@ -192,17 +202,31 @@ export function buildServices(
                       WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS documents
                FROM layers l
               WHERE l.org_id = $1 AND l.deleted_at IS NULL
-                AND ($2::boolean OR l.id = ANY($3::uuid[]))`,
-            [auth.orgId, plan.kind === 'all', plan.kind === 'scoped' ? plan.layers : []],
+                AND ($2::boolean OR l.id = ANY($3::uuid[]))
+                AND ($4::uuid IS NULL OR l.id > $4::uuid)
+              ORDER BY l.id
+              LIMIT $5`,
+            [
+              auth.orgId,
+              plan.kind === 'all',
+              plan.kind === 'scoped' ? plan.layers : [],
+              page.afterId ?? null,
+              bounded + 1,
+            ],
           )
 
-          return rows.map((r) => ({
-            id: r.id,
-            slug: r.slug,
-            name: r.name,
-            description: r.description,
-            documentCount: Number(r.documents),
-          }))
+          const slice = rows.slice(0, bounded)
+          const last = slice[slice.length - 1]
+          return {
+            layers: slice.map((r) => ({
+              id: r.id,
+              slug: r.slug,
+              name: r.name,
+              description: r.description,
+              documentCount: Number(r.documents),
+            })),
+            nextCursor: rows.length > bounded && last !== undefined ? last.id : null,
+          }
         },
         { role: APP_ROLE },
       ),
@@ -305,8 +329,24 @@ export function buildServices(
           })
           return hits
         }
-        case 'list_layers':
-          return layers.forCaller(auth)
+        case 'list_layers': {
+          // The page the caller asked for, bounded. A cursor that is not a
+          // uuid is refused rather than cast blind — the postgres cast error
+          // would be a 500 wearing somebody else's message.
+          const limit =
+            typeof args.limit === 'number' && Number.isInteger(args.limit)
+              ? Math.min(Math.max(1, args.limit), 500)
+              : 100
+          const cursor = typeof args.cursor === 'string' && args.cursor !== '' ? args.cursor : undefined
+          if (cursor !== undefined && !/^[0-9a-f-]{36}$/i.test(cursor)) {
+            throw new Error('cursor is not one this tool issued; start again without one')
+          }
+          const page = await layers.forCaller(auth, {
+            limit,
+            ...(cursor === undefined ? {} : { afterId: cursor }),
+          })
+          return { layers: page.layers, next_cursor: page.nextCursor }
+        }
         case 'get_document': {
           const id = await resolveId(auth, args)
           if (id === undefined) throw new Error('not found')

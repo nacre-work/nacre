@@ -22,7 +22,7 @@ import {
   type VerifyOptions,
 } from '@nacre.work/api'
 
-import { catalog, type Layer, type ToolDefinition } from './tools.js'
+import { CATALOG_SAMPLE, catalog, dispatchCatalog, type Layer, type ToolDefinition } from './tools.js'
 // Both transports answer `initialize`, `server/discover` and `tools/list` from
 // these, rather than each building its own object — which is how one server
 // came to declare two different capability sets, and to send a cache hint over
@@ -40,8 +40,20 @@ export {
 } from './results.js'
 
 export interface Layers {
-  /** The layers this caller may read. Drives both list_layers and the search description. */
-  forCaller(auth: AuthContext): Promise<readonly Layer[]>
+  /**
+   * One page of the layers this caller may read, ordered by id.
+   *
+   * A page and never the whole catalog, and the bound is **required** rather
+   * than defaulted: this used to return every layer the plan reaches, which on
+   * an installation at the scale layers are sold for — one per patient, one
+   * per matter — is a million-row answer built per call. `afterId` is the seek;
+   * `nextCursor` is the last id when another page exists. Drives `list_layers`
+   * and the search description, each at its own bound.
+   */
+  forCaller(
+    auth: AuthContext,
+    page: { readonly limit: number; readonly afterId?: string },
+  ): Promise<{ readonly layers: readonly Layer[]; readonly nextCursor: string | null }>
 }
 
 export interface ToolRunner {
@@ -746,8 +758,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
     }
 
     case 'tools/list': {
-      const layers = await options.layers.forCaller(auth)
-      const tools: ToolDefinition[] = [...catalog(layers)]
+      // A bounded page: the search description names a handful of layers and
+      // says there are more, rather than interpolating a catalog that is a
+      // million entries on the installations layers are sold for.
+      const page = await options.layers.forCaller(auth, { limit: CATALOG_SAMPLE })
+      const tools: ToolDefinition[] = [
+        ...catalog(page.layers, { more: page.nextCursor !== null }),
+      ]
       send(res, 200, { jsonrpc: '2.0', id, result: toolsListResult(tools) })
       return
     }
@@ -759,8 +776,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
         return
       }
 
-      const layers = await options.layers.forCaller(auth)
-      const definition = catalog(layers).find((t) => t.name === params.name)
+      // Dispatch needs a tool's name and permission, and neither depends on
+      // the caller's layers — only the search *description* does, and nothing
+      // reads a description while dispatching. The full-catalog read that used
+      // to sit here made every tool call pay for a listing it never used.
+      const definition = dispatchCatalog().find((t) => t.name === params.name)
       if (definition === undefined) {
         send(res, 404, rpcError(id, -32601, 'Not found'))
         return

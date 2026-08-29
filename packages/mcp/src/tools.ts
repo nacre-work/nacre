@@ -81,7 +81,22 @@ const WHAT_SEARCH_DOES =
   'Search corporate documents by meaning and by exact term — identifiers, error codes, ' +
   'part numbers and names match literally.'
 
-export function searchDescription(layers: readonly Layer[]): string {
+/**
+ * How many layers `tools/list` names inside the search description.
+ *
+ * A sample, not the catalog. The description used to interpolate every layer
+ * the caller can read, which reads well at three and is a megabytes-long tool
+ * description at the scale layers are sold for — one per patient, one per
+ * matter. A dozen is enough for a model to see what kind of thing a layer is;
+ * `list_layers` is the enumeration surface, and the description says so when
+ * there are more.
+ */
+export const CATALOG_SAMPLE = 12
+
+export function searchDescription(
+  layers: readonly Layer[],
+  options: { readonly more: boolean } = { more: false },
+): string {
   if (layers.length === 0) {
     // Honest rather than inviting. A caller with no layers should not be
     // encouraged to call this, and must not be told what exists elsewhere.
@@ -89,17 +104,23 @@ export function searchDescription(layers: readonly Layer[]): string {
   }
 
   const catalog = layers
+    .slice(0, CATALOG_SAMPLE)
     .map((l) => `${l.name} — ${l.description} (${l.documentCount} docs)`)
     .join('; ')
 
-  return `${WHAT_SEARCH_DOES} Available: ${catalog}.`
+  return options.more || layers.length > CATALOG_SAMPLE
+    ? `${WHAT_SEARCH_DOES} Available: ${catalog}; and more — call list_layers for the rest.`
+    : `${WHAT_SEARCH_DOES} Available: ${catalog}.`
 }
 
-export function catalog(layers: readonly Layer[]): readonly ToolDefinition[] {
+export function catalog(
+  layers: readonly Layer[],
+  options: { readonly more: boolean } = { more: false },
+): readonly ToolDefinition[] {
   return [
     {
       name: 'search',
-      description: searchDescription(layers),
+      description: searchDescription(layers, options),
       permission: 'read',
       inputSchema: {
         type: 'object',
@@ -150,9 +171,21 @@ export function catalog(layers: readonly Layer[]): readonly ToolDefinition[] {
     },
     {
       name: 'list_layers',
-      description: 'The layers you can read, with descriptions and document counts.',
+      description:
+        'The layers you can read, with descriptions and document counts. ' +
+        'One page per call: pass next_cursor from the previous answer to continue.',
       permission: 'read',
-      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'integer', default: 100, minimum: 1, maximum: 500 },
+          cursor: {
+            type: 'string',
+            description: 'The next_cursor from the previous page. Absent means the first page.',
+          },
+        },
+        additionalProperties: false,
+      },
     },
     {
       name: 'get_document',
@@ -242,3 +275,17 @@ export interface ToolContext {
   readonly auth: AuthContext
   readonly requestId: string
 }
+
+/**
+ * The catalog as a dispatcher sees it: names and permissions, no listing.
+ *
+ * A tool's name and its permission are static; only the search *description*
+ * depends on the caller's layers, and nothing reads a description while
+ * dispatching. Both transports used to fetch the full per-caller catalog to
+ * find a tool by name — a listing per call, paid for by every caller on every
+ * call, read by nobody.
+ */
+export function dispatchCatalog(): readonly ToolDefinition[] {
+  return catalog([])
+}
+

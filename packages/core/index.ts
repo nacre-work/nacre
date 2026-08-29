@@ -112,6 +112,13 @@ export {
   message,
   type Message,
 } from './mail.js'
+export {
+  admitEmbeddingEndpoint,
+  endpointOrigin,
+  isGlobalAddress,
+  type AddressResolver,
+  type EndpointVerdict,
+} from './egress.js'
 export { documentKey, S3, S3Error } from './s3.js'
 export type { S3Options } from './s3.js'
 export type { Hit, SearchRequest, VectorStoreOptions } from './vector/search.js'

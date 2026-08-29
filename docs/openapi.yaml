@@ -658,6 +658,14 @@ components:
             It is here so a screen can leave those controls **off** rather than
             drawing ones that answer `404` — the same reason `GET /auth/methods`
             exists, applied to the account instead of to the installation.
+        manages_embedders:
+          type: boolean
+          description: |
+            Whether this caller may manage embedding providers: `org_admin`, and
+            `NACRE_EMBED_TENANT_PROVIDERS` on. Drives whether the console shows
+            the Models screen — a managed platform turns the surface off, and the
+            screen goes with it. Absent on an older API, which a client should
+            read as `false`.
         role:
           type: string
           enum: [platform_admin, org_admin, member]
@@ -2376,6 +2384,32 @@ paths:
             The name is already in use in this organization. Deliberately not a
             404: the caller has proved they administer the organization, so this
             is a fact about the resource rather than about what they can see.
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /embedding-providers/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      summary: Remove an embedding provider this organization owns. `org_admin` only.
+      description: >
+        Removes one this organization added. The installation default is
+        invisible to this — a tenant may read it and not delete it — and a
+        provider a layer still uses is refused, because `layers.provider_id`
+        references it with no cascade and the honest answer is to move those
+        layers first.
+
+
+        Answers `404` where `NACRE_EMBED_TENANT_PROVIDERS=false`, the managed
+        platform where a tenant does not manage embedders at all.
+      responses:
+        '204': { description: Removed }
+        '409':
+          description: >
+            A layer still uses this provider. Not `404`: the caller administers
+            the organization and is looking at the provider, so this is a fact
+            about its state, and it goes away once the layers move.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /workspaces:
     get:

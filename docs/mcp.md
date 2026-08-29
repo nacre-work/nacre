@@ -316,7 +316,8 @@ The rate limits are the API's, shared: `search` spends
 `NACRE_RATE_INGEST_PER_HOUR`, and the counters are the same keys the REST
 surface increments. Shared rather than per-surface on purpose — separate buckets
 would give a caller twice the documented allowance for holding two clients.
-`list_layers` is unlimited: one indexed query, and refusing it breaks discovery.
+`list_layers` is unlimited: one indexed query per page, and refusing it breaks
+discovery.
 
 A refusal is JSON-RPC `-32003` over HTTP `429`, with the RFC 9331 `RateLimit-*`
 headers. It is checked **after** the catalog lookup, so a tool the caller may
@@ -392,8 +393,17 @@ that is where the link is.
 
 ### `list_layers`
 
-The accessible layer catalog with descriptions and document counts. No
-arguments. Permission: `read`.
+The accessible layer catalog with descriptions and document counts, **one page
+per call**: `{ limit }` (default 100, max 500) and `{ cursor }`, the
+`next_cursor` from the previous page. The answer is
+`{ layers: […], next_cursor }`, with `next_cursor: null` on the last page.
+Permission: `read`.
+
+It answered the whole catalog in one result until 0.26.0, which reads well at
+three layers and is a million-entry answer at the scale layers are sold for —
+one per patient, one per matter. The search tool's description names a sample
+of a dozen layers and says there are more, rather than interpolating the
+catalog; this tool is the enumeration surface.
 
 ### `get_document`
 

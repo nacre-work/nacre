@@ -272,6 +272,45 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.26.0 — an egress guard, and listings that page at scale
+
+No migration and no new variable. Two behaviour changes worth reading before
+you upgrade.
+
+**`POST /v1/embedding-providers` now refuses an internal endpoint that is not
+your embedder.** This endpoint is `org_admin`-gated, and the guard matters most
+in **multi-tenancy**: an `org_admin` administers one tenant, not the
+installation, and could point the shared worker at `http://169.254.169.254/…`
+or an internal service — an SSRF from a privileged position, reaching cloud
+metadata credentials that are installation-wide. (In the single-organization
+open core the `org_admin` is the operator, so there it is defence in depth.) An
+endpoint is now admitted only if it is a **public `https://`** address, or is
+the origin your installation is configured with in
+`NACRE_DEFAULT_EMBEDDING_ENDPOINT` (the internal embedder, which may be a
+single-label host like `http://embedder`). If you run a **second** internal
+embedder and point a provider at it by another name, add it as the configured
+default, add its origin to `NACRE_EMBED_ALLOWED_HOSTS`, or front it with the
+embedding adapter — the supported ways to reach a private model. The
+`platform_admin` installation-default screen is unaffected. Existing provider
+rows are not re-validated; this gates new writes.
+
+**A managed multi-tenant platform can turn the surface off entirely** with
+`NACRE_EMBED_TENANT_PROVIDERS=false`: there `POST /v1/embedding-providers`
+answers `404` to a tenant `org_admin`, because embedding is a service the
+platform provides rather than something a customer configures. Default `true`
+is the open core, where the `org_admin` is the operator.
+
+**`list_layers` (MCP) and every `.list()` in the SDK now page.** `list_layers`
+answers `{ layers, next_cursor }`, one page per call — `{ limit }` up to 500,
+`{ cursor }` to continue — where it used to return the whole catalog in one
+result. A client that read `result.layers` already works; one that treated the
+result as the complete list sees a page and a cursor now. The SDK's `list()`
+methods walk that cursor to the end for you, so a console using them is
+unchanged for organizations under ~10,000 rows and throws with a clear message
+past that, pointing at the filtered directory (an enterprise module) or the
+API's own `?cursor`. The search tool's description names a sample of your
+layers rather than all of them.
+
 ### 0.25.1 — the retry counter an operator reads was one behind
 
 **Nothing to do.** No migration, no configuration, and the number of attempts a

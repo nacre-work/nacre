@@ -2698,6 +2698,63 @@ Every fix in that round was measured red with the defect restored and green
 with it in place — including two checks whose own first versions could not
 fail and were caught the same way, in the same session that wrote them.
 
+**A tenant admin could steer the shared worker at the internal network, and
+every listing lied by omission at scale — 0.26.0 closes both.** `POST
+/v1/embedding-providers` is `org_admin`-gated, and that role is the threat
+model. In the open core there is one organization, so its `org_admin` is the
+operator — they own the documents, and an earlier version of this note calling
+it "document exfiltration" was wrong: there is nobody to take the caller's own
+text from. The real hole is **multi-tenancy**, where an `org_admin` administers
+one tenant and not the installation: pointing the worker at
+`http://169.254.169.254/…`, the API beside it, or the vector store (no
+per-tenant authorization) is an SSRF from a privileged position — blind at
+least, plausibly a partial read oracle through `documents.error` — and cloud
+metadata credentials are installation-wide, so it is a tenant→installation
+escalation by somebody entitled to one customer's data and nothing else. The
+`platform_admin` installation-default screen is a different, un-gated path,
+because that role *is* trusted with the internal network. `admitEmbeddingEndpoint`
+is the parser's private-address guard on the surface that *steers* a request
+rather than fetches a URL: a public `https://` address, or the embedder the
+operator configured (matched by origin against the global provider rows, which
+is what a tenant may read and all it may read), and nothing else. A public name
+resolving to a private address is refused by checking every address it answers
+with. Both refusals were produced; the allow-list being the installation's own
+rows under RLS is what the live case against a real PostgreSQL proves. The guard
+is hardened past a range check: a tenant endpoint must be a **hostname** and not
+an IP literal — which closes decimal/octal/hex obfuscations a range table never
+sees — the blocked set covers TEST-NET, 6to4 anycast, NAT64 and the IPv6
+special ranges, an operator's second internal embedder is trusted through
+`NACRE_EMBED_ALLOWED_HOSTS`, and the create-time check is paired with
+`redirect: 'error'` on all three model fetches (ingest, search, rerank), because
+following a redirect at fetch time is how a create-validated public host reaches
+an internal one. `lint:embed-egress` holds that last property across the three
+places rather than the three edits.
+
+`NACRE_EMBED_TENANT_PROVIDERS=false` removes the surface rather than bounding it,
+which is the answer to "no `org_admin` UI creates a provider — is this even
+reachable?" The route is reachable by an `org_admin` credential through the API
+with no console button at all, so the guard stays right; but on a managed
+platform, where an `org_admin` is a customer and embedding is a service the
+platform provides, the whole route answers `404` and there is nothing to guard.
+Default `true` is the open core, where the `org_admin` is the operator and
+tightening the *role* would reintroduce the `psql`-only shape this repository
+keeps closing — so the switch is a flag, not a role change.
+
+The listings were the other half, and the worst was silent. Every `.list()` in
+the SDK fetched **one page and dropped the cursor**, so a console showed the
+first fifty of everything and said nothing — and on the grant list, "who can
+see this patient" answered from a truncation that looks complete is a security
+surface answering a narrower question than the one asked. The helper walks the
+cursor to the end now, or throws past a bound naming the filtered directory —
+never a partial set that reads as whole. `list_layers` on MCP had the same
+shape from the other side: it returned every layer the plan reaches, no limit,
+no order, no cursor, which on an installation at the scale layers are sold for
+is a million rows in one tool result, and the search description interpolated
+that whole catalog on every `tools/list` **and** `tools/call`. It pages now,
+the description names a sample, and dispatch reads a name-and-permission catalog
+that needs no listing at all — a per-call cost paid by every caller, read by
+nobody, gone.
+
 **A transient failure was a permanent verdict, on the first attempt.**
 `markFailed` wrote `status = 'failed'` for anything the worker caught, and
 `attempts` and `NACRE_INDEX_MAX_ATTEMPTS` were read by exactly one caller — the

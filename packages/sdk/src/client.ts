@@ -251,6 +251,48 @@ export class NacreClient {
     }
   }
 
+  /**
+   * Walk a cursor-paged collection to completion, or fail loudly.
+   *
+   * Every `.list()` here used to fetch **one page and drop the cursor**, so a
+   * console showing the result showed the first page of everything and said
+   * nothing about the rest. On a grant list — "who can see this patient" — a
+   * truncation that looks complete is worse than an error: it is a security
+   * surface answering a narrower question than the one asked, silently.
+   *
+   * So this follows `next_cursor` to the end, asking for the largest page the
+   * server allows (200) to keep the round trips down. The cap is the honesty:
+   * past `MAX_PAGES` it throws rather than returning a partial set, because a
+   * listing that quietly stops at ten thousand rows is the same lie one order
+   * of magnitude up. An installation that has outgrown this reaches for the
+   * filtered directory (an enterprise module) or the API's own cursors — the
+   * error says so.
+   */
+  async #listAll<T>(path: string, map: (row: Record<string, unknown>) => T): Promise<readonly T[]> {
+    const LIMIT = 200
+    const MAX_PAGES = 50 // 10,000 rows; a console past this wants a filter, not a scroll
+    const items: T[] = []
+    let cursor: string | undefined
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      const query = new URLSearchParams({ limit: String(LIMIT) })
+      if (cursor !== undefined) query.set('cursor', cursor)
+      const body = (await this.#request({
+        method: 'GET',
+        path: `${path}?${query.toString()}`,
+        retryable: true,
+      })) as { items?: unknown[]; next_cursor?: string | null }
+      for (const row of body.items ?? []) items.push(map(row as Record<string, unknown>))
+      const next = body.next_cursor
+      if (next === null || next === undefined || next === '') return items
+      cursor = next
+    }
+    throw new Error(
+      `This organization has more than ${String(LIMIT * MAX_PAGES)} rows under ${path}. ` +
+        'The console lists what fits; filter with the directory (an enterprise module) ' +
+        'or page the API directly with ?cursor.',
+    )
+  }
+
   async #request(options: RequestOptions): Promise<unknown> {
     try {
       return await this.#attempt(options)
@@ -626,6 +668,7 @@ export class NacreClient {
       // away, and a screen that shows one against a server that refuses gets a
       // 404 the person can read.
       holdsOwnCredentials: body.holds_own_credentials !== false,
+      managesEmbedders: body.manages_embedders === true,
     }
   }
 
@@ -635,24 +678,14 @@ export class NacreClient {
    */
   readonly workspaces = {
     /** Only the workspaces this token can reach. The catalog is permission data. */
-    list: async (): Promise<readonly Workspace[]> => {
-      const body = (await this.#request({
-        method: 'GET',
-        path: '/v1/workspaces',
-        retryable: true,
-      })) as { items?: unknown[] }
-
-      return (body.items ?? []).map((w) => {
-        const ws = w as Record<string, unknown>
-        return {
-          id: String(ws.id),
-          slug: String(ws.slug),
-          name: String(ws.name ?? ''),
-          layerCount: Number(ws.layer_count ?? 0),
-          permissions: readPermissions(ws.permissions),
-        }
-      })
-    },
+    list: async (): Promise<readonly Workspace[]> =>
+      this.#listAll('/v1/workspaces', (ws) => ({
+        id: String(ws.id),
+        slug: String(ws.slug),
+        name: String(ws.name ?? ''),
+        layerCount: Number(ws.layer_count ?? 0),
+        permissions: readPermissions(ws.permissions),
+      })),
 
     /** `org_admin` only — there is no scope above a workspace to hold a grant on. */
     create: async (input: { slug: string; name: string }): Promise<Workspace | undefined> => {
@@ -709,29 +742,44 @@ export class NacreClient {
       })
       return body === undefined ? undefined : providerFrom(body)
     },
+
+    /**
+     * Remove one this organization owns.
+     *
+     * `'removed'` on success; `'in-use'` when a layer still names it (move or
+     * delete those first); `'unreachable'` when it is absent, another
+     * organization's (the global default included), or this caller may not
+     * manage providers. Matched on the problem **type**, because a `409` and a
+     * `404` are two facts a status is too coarse to carry.
+     */
+    remove: async (id: string): Promise<'removed' | 'in-use' | 'unreachable'> => {
+      try {
+        await this.#request({
+          method: 'DELETE',
+          path: `/v1/embedding-providers/${encodeURIComponent(id)}`,
+        })
+        return 'removed'
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return 'unreachable'
+        if (error instanceof NacreError && error.type === 'https://nacre.work/errors/conflict') {
+          return 'in-use'
+        }
+        throw error
+      }
+    },
   }
 
   readonly layers = {
     /** Only the layers this token may read. The catalog is permission data. */
-    list: async (): Promise<readonly Layer[]> => {
-      const body = (await this.#request({
-        method: 'GET',
-        path: '/v1/layers',
-        retryable: true,
-      })) as { items?: unknown[] }
-
-      return (body.items ?? []).map((l) => {
-        const layer = l as Record<string, unknown>
-        return {
-          id: String(layer.id),
-          slug: String(layer.slug),
-          name: String(layer.name ?? ''),
-          description: String(layer.description ?? ''),
-          documentCount: Number(layer.document_count ?? 0),
-          failedCount: Number(layer.failed_count ?? 0),
-        }
-      })
-    },
+    list: async (): Promise<readonly Layer[]> =>
+      this.#listAll('/v1/layers', (layer) => ({
+        id: String(layer.id),
+        slug: String(layer.slug),
+        name: String(layer.name ?? ''),
+        description: String(layer.description ?? ''),
+        documentCount: Number(layer.document_count ?? 0),
+        failedCount: Number(layer.failed_count ?? 0),
+      })),
 
     create: async (input: LayerInput): Promise<Layer | undefined> => {
       const body = await this.#maybe<Record<string, unknown>>({
@@ -889,14 +937,9 @@ export class NacreClient {
   // ─── grants ──────────────────────────────────────────────────────────────
 
   readonly grants = {
-    list: async (): Promise<readonly Grant[]> => {
-      const body = (await this.#request({
-        method: 'GET',
-        path: '/v1/grants',
-        retryable: true,
-      })) as { items?: unknown[] }
-      return (body.items ?? []).map((g) => grantFrom(g as Record<string, unknown>))
-    },
+    // Walked to the end on purpose: "who can see this patient" answered from
+    // the first page of grants is a security question answered wrong.
+    list: async (): Promise<readonly Grant[]> => this.#listAll('/v1/grants', grantFrom),
 
     /**
      * Issue a grant. Requires admin on the scope being granted, not admin in
@@ -1081,14 +1124,8 @@ export class NacreClient {
   }
 
   readonly serviceAccounts = {
-    list: async (): Promise<readonly ServiceAccount[]> => {
-      const body = (await this.#request({
-        method: 'GET',
-        path: '/v1/service-accounts',
-        retryable: true,
-      })) as { items?: unknown[] }
-      return (body.items ?? []).map((a) => accountFrom(a as Record<string, unknown>))
-    },
+    list: async (): Promise<readonly ServiceAccount[]> =>
+      this.#listAll('/v1/service-accounts', accountFrom),
 
     /** The response carries the key. It is not recoverable afterwards. */
     create: async (name: string): Promise<CreatedServiceAccount> => {
@@ -1126,14 +1163,7 @@ export class NacreClient {
    * working as intended rather than a shortcoming of this client.
    */
   readonly users = {
-    list: async (): Promise<readonly User[]> => {
-      const body = (await this.#request({
-        method: 'GET',
-        path: '/v1/users',
-        retryable: true,
-      })) as { items?: unknown[] }
-      return (body.items ?? []).map((u) => userFrom(u as Record<string, unknown>))
-    },
+    list: async (): Promise<readonly User[]> => this.#listAll('/v1/users', userFrom),
 
     /** The response carries the password. It is not recoverable afterwards. */
     /**
@@ -1209,14 +1239,7 @@ export class NacreClient {
   }
 
   readonly groups = {
-    list: async (): Promise<readonly Group[]> => {
-      const body = (await this.#request({
-        method: 'GET',
-        path: '/v1/groups',
-        retryable: true,
-      })) as { items?: unknown[] }
-      return (body.items ?? []).map((g) => groupFrom(g as Record<string, unknown>))
-    },
+    list: async (): Promise<readonly Group[]> => this.#listAll('/v1/groups', groupFrom),
 
     create: async (name: string): Promise<Group> => {
       const body = (await this.#request({

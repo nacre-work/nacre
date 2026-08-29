@@ -53,7 +53,12 @@ let stdout: typeof process.stdout.write
 let calls: { name: string; auth: AuthContext }[]
 
 const ports = () => ({
-  layers: { forCaller: async () => LAYERS },
+  layers: {
+    forCaller: async (_auth: unknown, page: { limit: number }) => ({
+      layers: LAYERS.slice(0, page.limit),
+      nextCursor: null,
+    }),
+  },
   tools: {
     call: async (name: string, args: Record<string, unknown>, auth: AuthContext) => {
       calls.push({ name, auth })

@@ -250,18 +250,21 @@ when('the ingest retry window', () => {
    * had already shipped.
    */
   it('counts the attempt it is handing over', async () => {
-    // The queue is emptied first, and that is not tidiness. `claimNext` takes
-    // the oldest claimable document in the *installation*, so a case that
-    // assumes the row it just wrote is the one that comes back is a case whose
-    // claim depends on what the cases above it left behind — the flake shape
-    // this repository runs a nightly hunt for. Emptying it makes the answer a
-    // property of the statement rather than of the file's ordering.
-    await pool.query("DELETE FROM documents WHERE org_id = $1 AND status = 'pending'", [orgId])
-
+    // `claimNext` takes the oldest claimable document in the *installation* —
+    // deliberately unscoped, because that is what the worker does — so a case
+    // that assumes the row it just wrote is the one that comes back depends on
+    // what every other suite sharing this database left behind. The first
+    // version emptied this organization's queue, and a fixture from another
+    // *file* was the next oldest: the flake shape this repository runs a
+    // nightly hunt for, twice in one case. The document is made the oldest in
+    // the installation instead, which is a property of the row rather than of
+    // whatever else is running.
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO documents
-         (org_id, layer_id, external_id, title, source_type, source_ref, content_hash, status)
-       VALUES ($1, $2, 'counted', 'counted', 'inline', 'body', $3, 'pending')
+         (org_id, layer_id, external_id, title, source_type, source_ref, content_hash, status,
+          created_at)
+       VALUES ($1, $2, 'counted', 'counted', 'inline', 'body', $3, 'pending',
+               now() - interval '20 years')
        RETURNING id`,
       [orgId, layerId, 'counted'.padEnd(64, '0')],
     )

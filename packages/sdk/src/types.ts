@@ -523,6 +523,14 @@ export interface Self {
    * feature away.
    */
   readonly holdsOwnCredentials: boolean
+  /**
+   * Whether this caller may manage embedding providers: `org_admin`, and the
+   * tenant-providers switch on. Drives whether the console shows the Models
+   * screen. `false` against an older API that does not report it, the safe
+   * direction here — a managed platform with the surface off should not have
+   * the screen appear just because the field is missing.
+   */
+  readonly managesEmbedders: boolean
 }
 
 /**

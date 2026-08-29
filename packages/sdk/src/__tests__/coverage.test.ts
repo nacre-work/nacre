@@ -133,6 +133,7 @@ const COVERAGE: Record<string, string | null> = {
 
   'GET /embedding-providers': 'embeddingProviders.list',
   'POST /embedding-providers': 'embeddingProviders.create',
+  'DELETE /embedding-providers/{id}': 'embeddingProviders.remove',
 
   'GET /layers': 'layers.list',
   'POST /layers': 'layers.create',

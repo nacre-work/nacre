@@ -135,6 +135,34 @@ describe('NacreClient', () => {
     expect(self.holdsOwnCredentials).toBe(false)
   })
 
+  it('maps manages_embedders in the two directions that hide the screen', async () => {
+    // `manages_embedders: true` is the only value that draws the embedder
+    // screen. An older API that never sends the field, and a managed platform
+    // that sends `false`, must both leave it off — so the mapping is
+    // `=== true`, and loosening it to `!== false` would draw a screen whose
+    // route answers 404 on every deployment that predates the field.
+    const on = await client(stub(json(200, {
+      organization: 'acme', principal_type: 'user', principal_id: 'p-1',
+      role: 'org_admin', administers: true, holds_own_credentials: true,
+      manages_embedders: true,
+    })).fetchImpl).me()
+    expect(on.managesEmbedders).toBe(true)
+
+    const off = await client(stub(json(200, {
+      organization: 'acme', principal_type: 'user', principal_id: 'p-1',
+      role: 'org_admin', administers: true, holds_own_credentials: true,
+      manages_embedders: false,
+    })).fetchImpl).me()
+    expect(off.managesEmbedders).toBe(false)
+
+    // Absent — an older API. The conservative half: the screen stays off.
+    const older = await client(stub(json(200, {
+      organization: 'acme', principal_type: 'user', principal_id: 'p-1',
+      role: 'org_admin', administers: true, holds_own_credentials: true,
+    })).fetchImpl).me()
+    expect(older.managesEmbedders).toBe(false)
+  })
+
   it('passes top_k through uncorrected', async () => {
     const { fetchImpl, calls } = stub(json(200, { items: [] }))
     await client(fetchImpl).search('anything', { topK: 5 })
@@ -327,7 +355,47 @@ describe('NacreClient', () => {
   it('a trailing slash on the base URL does not double up', async () => {
     const { fetchImpl, calls } = stub(json(200, { items: [] }))
     await new NacreClient({ baseUrl: `${BASE}///`, token: TOKEN, fetch: fetchImpl }).layers.list()
-    expect(calls[0]?.url).toBe(`${BASE}/v1/layers`)
+    expect(calls[0]?.url).toBe(`${BASE}/v1/layers?limit=200`)
+  })
+
+  /**
+   * A listing walks its cursor to the end.
+   *
+   * Every `.list()` used to fetch one page and drop `next_cursor`, so the
+   * console showed the first fifty of everything and said nothing about the
+   * rest — on the grant list, a security question answered from a truncation
+   * that looks complete. These three cases pin the repair: the walk, the
+   * cursor actually advancing the request, and the cap that turns "too many to
+   * list" into a sentence instead of a silent partial set.
+   */
+  it('follows next_cursor to the end and returns the whole collection', async () => {
+    const { fetchImpl, calls } = stub(
+      json(200, { items: [{ id: 'a', slug: 'a', name: 'A' }], next_cursor: 'c1' }),
+      json(200, { items: [{ id: 'b', slug: 'b', name: 'B' }], next_cursor: 'c2' }),
+      json(200, { items: [{ id: 'c', slug: 'c', name: 'C' }], next_cursor: null }),
+    )
+    const layers = await client(fetchImpl).layers.list()
+    expect(layers.map((l) => l.id)).toEqual(['a', 'b', 'c'])
+    expect(calls.map((c) => c.url)).toEqual([
+      `${BASE}/v1/layers?limit=200`,
+      `${BASE}/v1/layers?limit=200&cursor=c1`,
+      `${BASE}/v1/layers?limit=200&cursor=c2`,
+    ])
+  })
+
+  it('stops at the page cap with an error naming the way out, never a partial set', async () => {
+    // A server that always answers another page. Returning what was collected
+    // would be the original defect one order of magnitude up.
+    const { fetchImpl, calls } = stub(
+      json(200, { items: [{ id: 'x', slug: 'x', name: 'X' }], next_cursor: 'again' }),
+    )
+    await expect(client(fetchImpl).layers.list()).rejects.toThrow(/directory|cursor/)
+    expect(calls.length).toBe(50)
+  })
+
+  it('treats a missing next_cursor as the end, for a server that omits the field', async () => {
+    const { fetchImpl } = stub(json(200, { items: [{ id: 'only', slug: 's', name: 'S' }] }))
+    expect(await client(fetchImpl).layers.list()).toHaveLength(1)
   })
 
   it('refuses to be constructed without a base URL or a token', () => {
@@ -684,9 +752,9 @@ describe('automatic token refresh', () => {
     expect(result).toHaveLength(1)
 
     expect(calls.map((c) => c.url)).toEqual([
-      `${BASE}/v1/workspaces`,
+      `${BASE}/v1/workspaces?limit=200`,
       `${BASE}/v1/auth/refresh`,
-      `${BASE}/v1/workspaces`,
+      `${BASE}/v1/workspaces?limit=200`,
     ])
     // the exchange presented the token the client was constructed with
     expect(calls[1]?.body).toEqual({ refresh_token: 'refresh-1' })
@@ -734,7 +802,7 @@ describe('automatic token refresh', () => {
     const nacre = new NacreClient({ baseUrl: BASE, token: 'access-1', fetch: fetchImpl, refreshToken: 'spent' })
 
     await expect(nacre.workspaces.list()).rejects.toMatchObject({ status: 401 })
-    expect(calls.map((c) => c.url)).toEqual([`${BASE}/v1/workspaces`, `${BASE}/v1/auth/refresh`])
+    expect(calls.map((c) => c.url)).toEqual([`${BASE}/v1/workspaces?limit=200`, `${BASE}/v1/auth/refresh`])
 
     // the spent token is gone, so a later 401 does not present it a second time
     await expect(nacre.workspaces.list()).rejects.toMatchObject({ status: 401 })
