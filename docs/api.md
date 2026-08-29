@@ -19,6 +19,8 @@ GET    /v1/layers        POST /v1/layers        PATCH /v1/layers/{id}
 DELETE /v1/layers/{id}            tombstone, and every document in it
 GET    /v1/layers/{id}/reindex             POST /v1/layers/{id}/reindex
 GET    /v1/layers/{id}/reference-queries   PUT  /v1/layers/{id}/reference-queries
+GET    /v1/embedding-providers   POST /v1/embedding-providers
+DELETE /v1/embedding-providers/{id}          org_admin; off where the switch is
 GET    /v1/grants        POST /v1/grants        DELETE /v1/grants/{id}
 GET    /v1/users         POST /v1/users         PATCH /v1/users/{id}
 DELETE /v1/users/{id}                             tombstone: disabled, row kept
@@ -568,6 +570,36 @@ and there is no undelete.
 Grants naming the layer are removed with it. They would resolve to nothing
 anyway, so no permission answer changes — what it avoids is `GET /v1/grants`
 listing rows that point at a scope no reader can look up.
+
+### Embedding providers
+
+`GET`/`POST /v1/embedding-providers` and `DELETE /v1/embedding-providers/{id}`
+are how an `org_admin` adds a second embedding model — a hosted vendor behind
+the adapter, or their own embedder — and puts a layer's reindex onto it. The
+model string an organization's providers carry is the routing key, so two
+organizations can run two vendors with nothing new in the schema; the
+installation default is a `NULL`-org row every tenant reads and none may
+delete.
+
+`POST` is a real widening and is guarded as one: the text of documents in a
+layer on a provider is sent to that provider's `endpoint`, so the server
+**refuses** an internal address that is not the installation's own embedder —
+a public `https://` host, or an origin the operator already configured, and
+nothing else. A refused endpoint comes back as a `400` naming the reason. The
+guard lives in the server; a client does not repeat it.
+
+`DELETE` removes one this organization added. The installation default is
+invisible to it (`404` — a tenant may read it, not delete it), and a provider a
+layer still uses is `409`, not `404`: `layers.provider_id` references it with no
+cascade, and the honest answer is to move those layers onto another model — the
+reindex on the Layers screen — first. `204` otherwise.
+
+The whole surface answers `404` where `NACRE_EMBED_TENANT_PROVIDERS=false` — the
+managed-platform state, where an `org_admin` is a customer and embedding is a
+service the platform provides rather than a knob a tenant turns. `GET /v1/me`
+reports `manages_embedders` (that switch **and** the role) so a console can
+leave the screen off exactly where the route would answer `404`, rather than
+drawing one that fails.
 
 ### Users and groups
 

@@ -509,7 +509,21 @@ export interface EmbeddingProviders {
     auth: AuthContext,
     input: { name: string; endpoint: string; model: string; dimensions: number },
   ): Promise<EmbeddingProviderOutcome>
+  /**
+   * Remove one this organization owns, at `org_admin`.
+   *
+   * `'in-use'` when a layer still names it — `layers.provider_id` references it
+   * with no cascade, so removing one under a live layer is a foreign-key
+   * violation, and the honest answer is a `409` telling the caller to move or
+   * delete those layers first rather than a `500`. `'unreachable'` for absent,
+   * another organization's (the global default included — a tenant may read it
+   * but not delete it), or a caller who may not manage providers, which the
+   * route turns into `404`.
+   */
+  remove(auth: AuthContext, id: string): Promise<EmbeddingProviderRemoval>
 }
+
+export type EmbeddingProviderRemoval = 'removed' | 'in-use' | 'unreachable'
 
 export type WorkspaceOutcome =
   | { readonly kind: 'created'; readonly workspace: Workspace }
@@ -970,6 +984,13 @@ export interface ApiOptions {
   readonly oauth?: OAuthServer
   readonly workspaces?: Workspaces
   readonly embeddingProviders?: EmbeddingProviders
+  /**
+   * Whether a tenant `org_admin` may manage embedding providers
+   * (`NACRE_EMBED_TENANT_PROVIDERS`). Drives `manages_embedders` on `/v1/me` so
+   * the console can leave the screen off, and is the same flag the adapter
+   * enforces on the write. Absent means enabled, the open-core default.
+   */
+  readonly embeddersManageable?: boolean
   /**
    * The second factor, in whichever kinds this installation can offer.
    *
@@ -4013,6 +4034,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           role: auth.role,
           administers: administers(auth),
           holds_own_credentials: await holdsOwnCredentials(auth, options),
+          // The console draws the embedder screen only where the server would
+          // answer it: org_admin, and the tenant-providers switch on. Same rule
+          // as `administers` and `holds_own_credentials` — ask what the server
+          // will do, do not re-derive it in a browser.
+          manages_embedders: administers(auth) && (options.embeddersManageable ?? true),
         },
         requestId,
       )
@@ -4368,6 +4394,44 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         )
         return
       }
+    }
+
+    const providerMatch = pathMatch(/^\/v1\/embedding-providers\/([^/]+)$/, instance)
+    if (req.method === 'DELETE' && providerMatch && options.embeddingProviders !== undefined) {
+      const id = providerMatch[1] as string
+      const outcome = await options.embeddingProviders.remove(auth, id)
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'embedding_provider.delete',
+        result: outcome === 'removed' ? 'allow' : 'deny',
+        target: { provider_id: id },
+        detail: { outcome },
+        requestId,
+      })
+
+      if (outcome === 'in-use') {
+        const problem = new Problem({
+          type: 'https://nacre.work/errors/conflict',
+          title: 'Conflict',
+          status: 409,
+          detail:
+            'A layer still uses this provider. Move those layers onto another model, ' +
+            'or delete them, before removing it.',
+          instance,
+          requestId,
+        })
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      if (outcome === 'unreachable') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      send(res, 204, null, requestId)
+      return
     }
 
     if (instance === '/v1/workspaces' && options.workspaces !== undefined) {

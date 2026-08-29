@@ -49,6 +49,7 @@ import type {
   Reindex,
   ReindexOutcome,
   RetryOutcome,
+  EmbeddingProviderRemoval,
   ReindexStatus,
   ReferenceQueries,
   ReferenceQuery,
@@ -2181,6 +2182,42 @@ export class PostgresEmbeddingProviders implements EmbeddingProviders {
             dimensions: Number(row.dimensions),
             isDefault: false,
           },
+        }
+      },
+      this.role === undefined ? {} : { role: this.role },
+    )
+  }
+
+  async remove(auth: AuthContext, id: string): Promise<EmbeddingProviderRemoval> {
+    // Same switch as create: with the surface off, a tenant does not touch
+    // providers at all, and the route answers `404`.
+    if (!this.tenantProviders) return 'unreachable'
+    if (!administers(auth)) return 'unreachable'
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return 'unreachable'
+
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        // `org_id = auth.orgId` and never NULL, so a tenant cannot delete the
+        // global default even though `org_isolation` lets them read it: the row
+        // is invisible to this DELETE, which returns nothing, which is
+        // `unreachable`.
+        try {
+          const { rowCount } = await client.query(
+            `DELETE FROM embedding_providers WHERE org_id = $1 AND id = $2`,
+            [auth.orgId, id],
+          )
+          return (rowCount ?? 0) > 0 ? 'removed' : 'unreachable'
+        } catch (error) {
+          // `layers.provider_id` references this with no cascade, so a provider
+          // a layer still names raises 23503. That is a fact about the
+          // resource, not about visibility, so it is `in-use` (409) and not a
+          // 500.
+          if (error instanceof Error && 'code' in error && error.code === '23503') {
+            return 'in-use'
+          }
+          throw error
         }
       },
       this.role === undefined ? {} : { role: this.role },

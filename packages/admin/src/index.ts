@@ -27,6 +27,7 @@ import { grantsView } from './views/grants.js'
 import { layersView } from './views/layers.js'
 import { peopleView } from './views/people.js'
 import { resetView } from './views/reset.js'
+import { modelsView } from './views/models.js'
 import { searchView } from './views/search.js'
 import { securityView } from './views/security.js'
 
@@ -79,7 +80,22 @@ import { securityView } from './views/security.js'
  * rather than two: a screen from `nacre-enterprise-web` decides who it is for
  * by asking exactly what a screen in this file asks.
  */
-type Viewer = ConsoleViewer
+type Viewer = ConsoleViewer & { readonly managesEmbedders: boolean }
+
+/**
+ * A core route, whose `shows`/`render` take the richer internal `Viewer`.
+ *
+ * An extension's `ConsoleView` takes the contract's `ConsoleViewer`, which is
+ * *wider* than `Viewer`, so it is assignable here — a screen that reads fewer
+ * viewer fields fits where more are offered. This is what lets the merged list
+ * hold both without `managesEmbedders` leaking onto the extension contract.
+ */
+interface Route {
+  readonly hash: string
+  readonly label: string
+  readonly shows: (viewer: Viewer) => boolean
+  readonly render: (root: HTMLElement, viewer: Viewer) => void
+}
 
 const anybody = (): boolean => true
 const administers = (v: Viewer): boolean => v.administers
@@ -95,7 +111,7 @@ const administers = (v: Viewer): boolean => v.administers
  * the two rather than after everything, which is where an appended list would
  * put them and where they would read as an afterthought in the nav.
  */
-const ORGANIZATION_ROUTES: readonly ConsoleView[] = [
+const ORGANIZATION_ROUTES: readonly Route[] = [
   { hash: '#/search', label: 'Search', render: (root) => searchView(root), shows: anybody },
   { hash: '#/layers', label: 'Layers', render: (root) => void layersView(root), shows: anybody },
   { hash: '#/grants', label: 'Grants', render: (root) => void grantsView(root), shows: administers },
@@ -105,6 +121,16 @@ const ORGANIZATION_ROUTES: readonly ConsoleView[] = [
     label: 'Service accounts',
     render: (root) => void accountsView(root),
     shows: administers,
+  },
+  // Only where the server would answer the write — org_admin and the
+  // tenant-providers switch on. `managesEmbedders` is not on the extension
+  // contract; it is a fact this console reads off `/v1/me`, so the route's
+  // `shows` takes the richer internal Viewer.
+  {
+    hash: '#/models',
+    label: 'Models',
+    render: (root) => void modelsView(root),
+    shows: (v: Viewer) => v.managesEmbedders,
   },
   // Both roles, and the two see different logs. `/v1/audit` is the one endpoint
   // here that admits a `platform_admin`, and the screen says which log is on
@@ -130,7 +156,7 @@ const ORGANIZATION_ROUTES: readonly ConsoleView[] = [
  * one of these, and an administrator has no more business in that screen than
  * anybody else — the API answers only for the caller.
  */
-const PERSONAL_ROUTES: readonly ConsoleView[] = [
+const PERSONAL_ROUTES: readonly Route[] = [
   { hash: '#/security', label: 'Security', render: (root) => void securityView(root), shows: anybody },
   {
     hash: '#/connections',
@@ -151,7 +177,7 @@ const PERSONAL_ROUTES: readonly ConsoleView[] = [
 let extraRoutes: readonly ConsoleView[] = []
 let extensionProblem: string | null = null
 
-const routes = (): readonly ConsoleView[] => {
+const routes = (): readonly Route[] => {
   const taken = new Set([...ORGANIZATION_ROUTES, ...PERSONAL_ROUTES].map((r) => r.hash))
   return [
     ...ORGANIZATION_ROUTES,
@@ -792,7 +818,7 @@ function start(): void {
   // not derivable from it: `false` there covers a member and a platform
   // administrator alike, and only one of them is owed an explanation for the
   // screens that are missing.
-  let viewer: Viewer = { administers: false, platformAdmin: false }
+  let viewer: Viewer = { administers: false, platformAdmin: false, managesEmbedders: false }
   const draw = (): void => route(main, nav, viewer)
   draw()
   window.onhashchange = draw
@@ -816,7 +842,7 @@ function start(): void {
       // access log — and to choose which sentence to show. That is
       // `administersTenants(auth)` in the API, which is the role and has no
       // ceiling question, so there is nothing else to ask for.
-      viewer = { administers: me.administers, platformAdmin: me.role === 'platform_admin' }
+      viewer = { administers: me.administers, platformAdmin: me.role === 'platform_admin', managesEmbedders: me.managesEmbedders }
       draw()
     })
     .catch(() => {

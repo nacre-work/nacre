@@ -237,14 +237,16 @@ describe('the administrative surface', () => {
        * which is what makes it a guard: a field added here is a field somebody
        * had to come and write down.
        *
-       * Four of these come from the token. `holds_own_credentials` is a read,
+       * Four come straight from the token. `holds_own_credentials` is a read,
        * and it takes the id the token already carries and answers one boolean
-       * about it — so the property this case is really about, that this
+       * about it; `manages_embedders` is the role and a config option and asks
+       * about nobody. So the property this case is really about, that this
        * endpoint cannot grow a way to name somebody else, is unchanged.
        */
       expect(Object.keys(body).sort()).toEqual([
         'administers',
         'holds_own_credentials',
+        'manages_embedders',
         'organization',
         'principal_id',
         'principal_type',

@@ -410,6 +410,7 @@ async function main(): Promise<void> {
     layers: new PostgresLayers(pool, vectors, APP_ROLE, principalsCache),
     workspaces: new PostgresWorkspaces(pool, APP_ROLE, principalsCache),
     embeddingProviders: new PostgresEmbeddingProviders(pool, APP_ROLE, config.embedAllowedHosts, config.embedTenantProviders),
+    embeddersManageable: config.embedTenantProviders,
     ...(secondFactors === undefined ? {} : { secondFactors }),
     ...(recovery === undefined ? {} : { recovery }),
     ...(mailer === undefined ? {} : { mailer }),

@@ -668,6 +668,7 @@ export class NacreClient {
       // away, and a screen that shows one against a server that refuses gets a
       // 404 the person can read.
       holdsOwnCredentials: body.holds_own_credentials !== false,
+      managesEmbedders: body.manages_embedders === true,
     }
   }
 
@@ -740,6 +741,31 @@ export class NacreClient {
         },
       })
       return body === undefined ? undefined : providerFrom(body)
+    },
+
+    /**
+     * Remove one this organization owns.
+     *
+     * `'removed'` on success; `'in-use'` when a layer still names it (move or
+     * delete those first); `'unreachable'` when it is absent, another
+     * organization's (the global default included), or this caller may not
+     * manage providers. Matched on the problem **type**, because a `409` and a
+     * `404` are two facts a status is too coarse to carry.
+     */
+    remove: async (id: string): Promise<'removed' | 'in-use' | 'unreachable'> => {
+      try {
+        await this.#request({
+          method: 'DELETE',
+          path: `/v1/embedding-providers/${encodeURIComponent(id)}`,
+        })
+        return 'removed'
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return 'unreachable'
+        if (error instanceof NacreError && error.type === 'https://nacre.work/errors/conflict') {
+          return 'in-use'
+        }
+        throw error
+      }
     },
   }
 

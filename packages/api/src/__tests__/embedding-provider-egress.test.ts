@@ -167,6 +167,80 @@ when('the embedding-provider egress guard', () => {
     expect(rows).toHaveLength(0)
   })
 
+  it('removes a provider this organization owns', async () => {
+    const created = await providers.create(admin, {
+      name: 'to-remove',
+      endpoint: 'https://good.example.com/v1',
+      model: 'm',
+      dimensions: 8,
+    })
+    expect(created.kind).toBe('created')
+    const id = created.kind === 'created' ? created.provider.id : ''
+    expect(await providers.remove(admin, id)).toBe('removed')
+    const { rows } = await pool.query('SELECT 1 FROM embedding_providers WHERE id = $1', [id])
+    expect(rows).toHaveLength(0)
+  })
+
+  it('refuses to remove the installation default — a tenant may read it, not delete it', async () => {
+    const { rows } = await pool.query<{ id: string }>(
+      "SELECT id FROM embedding_providers WHERE org_id IS NULL AND model = 'egress-default'",
+    )
+    // The global row exists and is visible to this tenant, but `org_id = $1`
+    // makes it invisible to the DELETE — which is `unreachable`, a 404.
+    expect(await providers.remove(admin, rows[0]!.id)).toBe('unreachable')
+    const still = await pool.query('SELECT 1 FROM embedding_providers WHERE id = $1', [rows[0]!.id])
+    expect(still.rows).toHaveLength(1)
+  })
+
+  it('refuses to remove a provider a layer still uses, with in-use rather than a 500', async () => {
+    const created = await providers.create(admin, {
+      name: 'used',
+      endpoint: 'https://good.example.com/v1',
+      model: 'm',
+      dimensions: 8,
+    })
+    const id = created.kind === 'created' ? created.provider.id : ''
+    // A layer naming this provider — the FK with no cascade is what makes the
+    // delete a 23503, which the adapter turns into in-use.
+    const ws = await pool.query<{ id: string }>(
+      `INSERT INTO workspaces (org_id, slug, name) VALUES ($1,'usedws','usedws')
+       ON CONFLICT (org_id, slug) DO UPDATE SET name='usedws' RETURNING id`,
+      [ORG],
+    )
+    await pool.query('DELETE FROM layers WHERE org_id = $1', [ORG])
+    await pool.query(
+      `INSERT INTO layers (org_id, workspace_id, slug, name, provider_id, vector_name)
+       VALUES ($1, $2, 'usedlayer', 'usedlayer', $3, 'v_m_8')`,
+      [ORG, ws.rows[0]!.id, id],
+    )
+    expect(await providers.remove(admin, id)).toBe('in-use')
+    await pool.query('DELETE FROM layers WHERE org_id = $1', [ORG])
+    await pool.query('DELETE FROM embedding_providers WHERE id = $1', [id])
+  })
+
+  it('refuses every remove when tenant providers are turned off', async () => {
+    // A provider this org *owns* — with the flag on, `remove` would delete it.
+    // A non-existent id could not tell the guard apart from an org-scoped DELETE
+    // that matches nothing, so the case would pass with the guard removed; a
+    // real owned row is what makes the guard the thing under test.
+    const created = await providers.create(admin, {
+      name: 'off-owned',
+      endpoint: 'https://good.example.com/v1',
+      model: 'm',
+      dimensions: 8,
+    })
+    expect(created.kind).toBe('created')
+    const id = created.kind === 'created' ? created.provider.id : ''
+
+    const off = new PostgresEmbeddingProviders(pool, 'nacre_app', [], false, resolver)
+    expect(await off.remove(admin, id)).toBe('unreachable')
+    // The flag refused; it did not delete. The row is still there.
+    const still = await pool.query('SELECT 1 FROM embedding_providers WHERE id = $1', [id])
+    expect(still.rows).toHaveLength(1)
+
+    await pool.query('DELETE FROM embedding_providers WHERE id = $1', [id])
+  })
+
   it('admits a second internal embedder named in NACRE_EMBED_ALLOWED_HOSTS', async () => {
     // The env allow-list, threaded through the adapter constructor. A tenant may
     // reuse it though it is internal, because the operator named it.

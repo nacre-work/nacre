@@ -135,6 +135,34 @@ describe('NacreClient', () => {
     expect(self.holdsOwnCredentials).toBe(false)
   })
 
+  it('maps manages_embedders in the two directions that hide the screen', async () => {
+    // `manages_embedders: true` is the only value that draws the embedder
+    // screen. An older API that never sends the field, and a managed platform
+    // that sends `false`, must both leave it off — so the mapping is
+    // `=== true`, and loosening it to `!== false` would draw a screen whose
+    // route answers 404 on every deployment that predates the field.
+    const on = await client(stub(json(200, {
+      organization: 'acme', principal_type: 'user', principal_id: 'p-1',
+      role: 'org_admin', administers: true, holds_own_credentials: true,
+      manages_embedders: true,
+    })).fetchImpl).me()
+    expect(on.managesEmbedders).toBe(true)
+
+    const off = await client(stub(json(200, {
+      organization: 'acme', principal_type: 'user', principal_id: 'p-1',
+      role: 'org_admin', administers: true, holds_own_credentials: true,
+      manages_embedders: false,
+    })).fetchImpl).me()
+    expect(off.managesEmbedders).toBe(false)
+
+    // Absent — an older API. The conservative half: the screen stays off.
+    const older = await client(stub(json(200, {
+      organization: 'acme', principal_type: 'user', principal_id: 'p-1',
+      role: 'org_admin', administers: true, holds_own_credentials: true,
+    })).fetchImpl).me()
+    expect(older.managesEmbedders).toBe(false)
+  })
+
   it('passes top_k through uncorrected', async () => {
     const { fetchImpl, calls } = stub(json(200, { items: [] }))
     await client(fetchImpl).search('anything', { topK: 5 })
