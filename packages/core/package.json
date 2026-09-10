@@ -32,7 +32,7 @@
   ],
   "dependencies": {
     "@qdrant/js-client-rest": "^1.18.0",
-    "nodemailer": "^9.0.5",
+    "nodemailer": "^9.1.1",
     "pg": "^8.22.0"
   },
   "devDependencies": {
