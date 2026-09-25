@@ -85,6 +85,8 @@ export {
   vectorStoreOptions,
 } from './vector/search.js'
 export { MAX_AUDITED_QUERY, queryAudit } from './audit.js'
+export { AUDIT_ACTIONS, DOCUMENT_ACCESS_ACTIONS } from './audit-actions.js'
+export type { AuditActionInfo } from './audit-actions.js'
 export {
   MAX_PARTS,
   MAX_PART_HEADER_BYTES,

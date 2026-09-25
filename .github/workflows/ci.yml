@@ -239,6 +239,11 @@ jobs:
       # absorbs a prefetch that returns nothing without a trace.
       - run: pnpm lint:sparse
       - run: pnpm lint:audit-target
+      # Every action name the journal records, from one list: the writers,
+      # the platform administrator's document-access deny-list, the SDK copy
+      # the console offers and the screenshot fixtures. The deny-list named
+      # three actions nothing records and missed `get_document`.
+      - run: pnpm lint:audit-actions
       # Four spellings of "act on this person" — demote, disable, delete,
       # reset the password — each of which had to remember that a
       # `platform_admin` is not administered from inside an organization, with

@@ -73,11 +73,13 @@ needs a new event instead.
 
 `GET /v1/audit` shows `platform_admin` administrative actions only, never the
 record of who read what — rule 2 applied to the journal. The set of actions
-counted as document access is a deny-list in
-`PostgresAuditReader.DOCUMENT_ACCESS`.
+counted as document access is a deny-list, `PostgresAuditReader.DOCUMENT_ACCESS`,
+derived from `packages/core/audit-actions.ts`.
 
-**If the action you are adding records a substantive access to a document's
-contents, add it to that list.** Left out, it is visible to a platform
+**Every new action goes into that catalogue** — and into its copy in
+`packages/sdk/src/audit-actions.ts`, which the console offers — or
+`lint:audit-actions` fails. **If it records a substantive access to a
+document's contents, mark it `documentAccess: true`.** Left out, it is visible to a platform
 administrator, which is the disclosure that rule exists to prevent.
 
 The list is a deny-list on purpose: an allow-list would make a new

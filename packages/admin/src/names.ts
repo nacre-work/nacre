@@ -2,6 +2,7 @@ import type { Group, Layer, ServiceAccount, User, Workspace } from '@nacre.work/
 
 import { client } from './api.js'
 import { h, shortId } from './dom.js'
+import type { Named } from './listing.js'
 
 /**
  * What each id is called, so a table reads as sentences rather than as hex.
@@ -37,19 +38,40 @@ import { h, shortId } from './dom.js'
  */
 export type Names = ReadonlyMap<string, string>
 
-export async function names(): Promise<Names> {
+/**
+ * Everything `names()` resolves, plus the accounts that can be an actor.
+ *
+ * The access log's "search by user" field needs the second half: the people
+ * and service accounts a typed email or name could mean, by the label a person
+ * would type — the address without the "(disabled)" the table adds, because
+ * somebody investigating a disabled account types its address. Built from the
+ * same two listings rather than a second request for them.
+ */
+export interface Directory {
+  readonly names: Names
+  readonly actors: readonly Named[]
+}
+
+export async function directory(): Promise<Directory> {
   const found = new Map<string, string>()
+  const actors: Named[] = []
   // Separately, so one refusal costs one kind rather than all five. `allSettled`
   // and not `all` for the same reason.
   await Promise.allSettled([
     client().users.list().then((rows: readonly User[]) => {
-      for (const u of rows) found.set(u.id, u.disabledAt === null ? u.email : `${u.email} (disabled)`)
+      for (const u of rows) {
+        found.set(u.id, u.disabledAt === null ? u.email : `${u.email} (disabled)`)
+        actors.push({ id: u.id, label: u.email })
+      }
     }),
     client().groups.list().then((rows: readonly Group[]) => {
       for (const g of rows) found.set(g.id, g.name)
     }),
     client().serviceAccounts.list().then((rows: readonly ServiceAccount[]) => {
-      for (const a of rows) found.set(a.id, a.name)
+      for (const a of rows) {
+        found.set(a.id, a.name)
+        actors.push({ id: a.id, label: a.name })
+      }
     }),
     client().layers.list().then((rows: readonly Layer[]) => {
       for (const l of rows) found.set(l.id, l.slug)
@@ -58,7 +80,11 @@ export async function names(): Promise<Names> {
       for (const w of rows) found.set(w.id, w.slug)
     }),
   ])
-  return found
+  return { names: found, actors }
+}
+
+export async function names(): Promise<Names> {
+  return (await directory()).names
 }
 
 /**

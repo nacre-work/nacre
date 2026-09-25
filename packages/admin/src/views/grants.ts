@@ -2,6 +2,7 @@ import type { Grant, Group, Layer, ServiceAccount, User, Workspace } from '@nacr
 
 import { client, explain } from '../api.js'
 import { chip, clear, h } from '../dom.js'
+import { listing } from '../listing.js'
 import { type Names, named, names } from '../names.js'
 import { picker } from '../pick.js'
 
@@ -47,7 +48,25 @@ export async function grantsView(root: HTMLElement): Promise<void> {
     // serially would show a table that rewrites itself under the cursor.
     const [grants, resolved] = await Promise.all([client().grants.list(), names()])
     clear(body)
-    body.append(grants.length === 0 ? empty() : table(grants, resolved, root))
+    body.append(grants.length === 0
+      ? empty()
+      : listing({
+          rows: grants,
+          // The names as the table shows them, so what somebody reads in a
+          // row is what finds it — and the ids too, for a grant looked up by
+          // one copied from elsewhere.
+          fields: (g) => [
+            g.principalType.replace('_', ' '),
+            resolved.get(g.principalId),
+            g.principalId,
+            g.scopeType,
+            resolved.get(g.scopeId),
+            g.scopeId,
+            g.permission,
+          ],
+          label: 'Search grants by principal, scope or permission',
+          render: (shown) => table(shown, resolved, root),
+        }))
   } catch (error) {
     clear(body)
     body.append(h('div', { class: 'error' }, explain(error)))

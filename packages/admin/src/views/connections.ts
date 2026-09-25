@@ -1,5 +1,8 @@
+import type { Connection } from '@nacre.work/sdk'
+
 import { client, explain } from '../api.js'
 import { agoCell, clear, h } from '../dom.js'
+import { listing } from '../listing.js'
 
 /**
  * Applications connected to this organization, and forgetting one.
@@ -56,7 +59,7 @@ function actsAs(
 
 export async function connectionsView(root: HTMLElement): Promise<void> {
   clear(root)
-  const body = h('tbody', {})
+  const body = h('div', {})
   const message = h('p', { class: 'form-message' })
 
   root.append(
@@ -74,20 +77,7 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
       ),
     ),
     message,
-    h('div', { class: 'panel' },
-      h('table', { class: 'table' },
-        h('thead', {},
-          h('tr', {},
-            h('th', {}, 'Application'),
-            h('th', {}, 'Acts as'),
-            h('th', {}, 'Approved'),
-            h('th', {}, 'Last renewed'),
-            h('th', {}, ''),
-          ),
-        ),
-        body,
-      ),
-    ),
+    h('div', { class: 'panel' }, body),
   )
 
   // Read once for the screen rather than per row, and tolerated when it fails:
@@ -102,7 +92,6 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
   }
 
   const load = async (): Promise<void> => {
-    clear(body)
     let listed
     try {
       listed = await client().connections.list()
@@ -110,71 +99,95 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
       message.textContent = explain(error)
       return
     }
+    clear(body)
 
     if (listed.items.length === 0) {
       body.append(
-        h('tr', {}, h('td', { colspan: 5 },
-          h('div', { class: 'empty' },
-            h('p', {}, 'Nothing is connected. An application appears here after somebody approves it.')))),
+        h('div', { class: 'empty' },
+          h('p', {}, 'Nothing is connected. An application appears here after somebody approves it.')),
       )
       return
     }
 
-    for (const c of listed.items) {
-      const ended = c.revokedAt !== null
-      const forget = h('button', { class: 'btn btn-quiet', type: 'button' }, 'Forget') as HTMLButtonElement
-      forget.addEventListener('click', () => {
-        void (async () => {
-          forget.disabled = true
-          try {
-            const result = await client().connections.end(c.id)
-            if (result === undefined) {
-              message.textContent = 'That connection is already gone.'
-            } else {
-              // The window, stated. Saying "ended" alone would overstate what
-              // just happened: the refresh token is gone, and an access token
-              // already issued keeps working until it expires.
-              const minutes = Math.ceil(result.accessTokenTtlSeconds / 60)
-              message.textContent =
-                `${c.clientName} can no longer renew. A token it already holds stops working within ${minutes} minute${minutes === 1 ? '' : 's'}; ` +
-                'revoke the agent to end it now.'
-            }
-            await load()
-          } catch (error) {
-            message.textContent = explain(error)
-          } finally {
-            forget.disabled = false
-          }
-        })()
-      })
-
-      body.append(
-        h('tr', { class: ended ? 'muted' : '' },
-          h('td', {}, c.clientName),
-          // A delegation names no agent, so the cell names the *person*.
-          //
-          // It used to read "the person who approved it" on every row, which is
-          // a constant and therefore carries nothing: on an administrator's
-          // list, where every delegation is somebody else's, it withheld the
-          // one fact the column exists for, and on a person's own list it
-          // restated the question. The comment that stood here said the
-          // approver is named on an administrator's list — it was not, and a
-          // comment describing behaviour the code beside it does not have is
-          // the shape this repository keeps finding.
-          //
-          // "you" for your own, the address for anyone else's, and the id only
-          // where the row points at a user this organization no longer has.
-          h('td', {}, ...actsAs(c, me)),
-          agoCell(c.createdAt, ''),
-          // Renewal is the only thing the server sees: an access token is
-          // verified locally and its use touches nothing. `ago(null)` is
-          // already "never", so the ternary this replaced was saying it twice.
-          agoCell(c.lastRefreshedAt, ''),
-          h('td', {}, ended ? h('span', { class: 'muted' }, 'forgotten') : forget),
+    // Searched by the application and by who it acts as — the two columns a
+    // person scanning this list is looking for. The same page and the same
+    // box as every other list screen, through `listing`.
+    body.append(listing({
+      rows: listed.items,
+      fields: (c) => [c.clientName, c.serviceAccountName, c.approvedByEmail],
+      label: 'Search by application, agent or person',
+      render: (shown) => h('table', { class: 'table' },
+        h('thead', {},
+          h('tr', {},
+            h('th', {}, 'Application'),
+            h('th', {}, 'Acts as'),
+            h('th', {}, 'Approved'),
+            h('th', {}, 'Last renewed'),
+            h('th', {}, ''),
+          ),
         ),
-      )
-    }
+        h('tbody', {}, ...shown.map((c) => connectionRow(c, me, message, load))),
+      ),
+    }))
   }
 
   await load()
+}
+
+function connectionRow(
+  c: Connection,
+  me: string | undefined,
+  message: HTMLElement,
+  load: () => Promise<void>,
+): HTMLElement {
+  const ended = c.revokedAt !== null
+  const forget = h('button', { class: 'btn btn-quiet', type: 'button' }, 'Forget') as HTMLButtonElement
+  forget.addEventListener('click', () => {
+    void (async () => {
+      forget.disabled = true
+      try {
+        const result = await client().connections.end(c.id)
+        if (result === undefined) {
+          message.textContent = 'That connection is already gone.'
+        } else {
+          // The window, stated. Saying "ended" alone would overstate what
+          // just happened: the refresh token is gone, and an access token
+          // already issued keeps working until it expires.
+          const minutes = Math.ceil(result.accessTokenTtlSeconds / 60)
+          message.textContent =
+            `${c.clientName} can no longer renew. A token it already holds stops working within ${minutes} minute${minutes === 1 ? '' : 's'}; ` +
+            'revoke the agent to end it now.'
+        }
+        await load()
+      } catch (error) {
+        message.textContent = explain(error)
+      } finally {
+        forget.disabled = false
+      }
+    })()
+  })
+
+  return h('tr', { class: ended ? 'muted' : '' },
+    h('td', {}, c.clientName),
+    // A delegation names no agent, so the cell names the *person*.
+    //
+    // It used to read "the person who approved it" on every row, which is
+    // a constant and therefore carries nothing: on an administrator's
+    // list, where every delegation is somebody else's, it withheld the
+    // one fact the column exists for, and on a person's own list it
+    // restated the question. The comment that stood here said the
+    // approver is named on an administrator's list — it was not, and a
+    // comment describing behaviour the code beside it does not have is
+    // the shape this repository keeps finding.
+    //
+    // "you" for your own, the address for anyone else's, and the id only
+    // where the row points at a user this organization no longer has.
+    h('td', {}, ...actsAs(c, me)),
+    agoCell(c.createdAt, ''),
+    // Renewal is the only thing the server sees: an access token is
+    // verified locally and its use touches nothing. `ago(null)` is
+    // already "never", so the ternary this replaced was saying it twice.
+    agoCell(c.lastRefreshedAt, ''),
+    h('td', {}, ended ? h('span', { class: 'muted' }, 'forgotten') : forget),
+  )
 }
