@@ -91,13 +91,16 @@ a { color: var(--n-accent); }
 /* ─── Masthead ────────────────────────────────────────────────────────── */
 .masthead {
   display: flex; align-items: center; gap: 24px;
-  padding: 0 20px; height: 56px;
+  /* A minimum rather than a height: a console carrying extension screens can
+     have more sections than one line holds, and a fixed height let the nav
+     spill out of the bar while "Sign out" broke across two lines beside it. */
+  padding: 8px 20px; min-height: 56px;
   background: var(--n-surface);
   border-bottom: 1px solid var(--n-border-color);
   position: sticky; top: 0; z-index: 5;
 }
 
-.brand { display: flex; align-items: center; gap: 8px; font-family: var(--n-font-display); font-weight: 700; }
+.brand { display: flex; flex: none; align-items: center; gap: 8px; font-family: var(--n-font-display); font-weight: 700; }
 .brand .mark { width: 24px; height: 24px; flex: none; }
 .brand-sub {
   font-family: var(--n-font-mono); font-weight: 400;
@@ -108,7 +111,7 @@ a { color: var(--n-accent); }
 .brand-lg { font-size: 20px; margin-bottom: 20px; }
 .brand-lg .mark { width: 32px; height: 32px; }
 
-.nav { display: flex; gap: 2px; margin-right: auto; flex-wrap: wrap; }
+.nav { display: flex; gap: 2px; margin-right: auto; flex-wrap: wrap; flex: 1 1 0; min-width: 0; }
 .nav a {
   padding: 6px 10px; border-radius: var(--n-radius);
   color: var(--n-text-muted); text-decoration: none; font-size: 14px;
@@ -116,7 +119,7 @@ a { color: var(--n-accent); }
 .nav a:hover { background: var(--n-surface-sunk); color: var(--n-text); }
 .nav a.active { background: var(--n-surface-sunk); color: var(--n-text); font-weight: 600; }
 
-.masthead-right { display: flex; align-items: center; gap: 12px; }
+.masthead-right { display: flex; align-items: center; gap: 12px; flex: none; white-space: nowrap; }
 
 .status { font-size: 12px; color: var(--n-text-faint); display: flex; align-items: center; gap: 6px; }
 .status::before {
@@ -713,8 +716,11 @@ th.tick {
 .pager > .muted { margin-right: auto; font-size: 13px; }
 .pager:empty { display: none; }
 /* Turning a page scrolls the list's search box into view; this keeps it out
-   from under the sticky masthead (56px) with room to spare. */
-.searchbar { scroll-margin-top: 72px; }
+   from under the sticky masthead with room to spare. The masthead is 56px on
+   one line and grows when the sections wrap — two lines on a console carrying
+   extension screens, and the whole nav on a row of its own at phone width,
+   which the narrow block below answers. */
+.searchbar { scroll-margin-top: 112px; }
 /* A refusal above a line of prose — the access log's User field saying a name
    matched several accounts — sat flush against the hint under it. */
 .error + .hint { margin-top: 10px; }
@@ -777,7 +783,8 @@ th.tick {
 /* ─── Narrow ──────────────────────────────────────────────────────────── */
 @media (max-width: 720px) {
   .masthead { height: auto; flex-wrap: wrap; padding: 10px 14px; gap: 10px 16px; }
-  .nav { order: 3; width: 100%; }
+  .nav { order: 3; width: 100%; flex-basis: 100%; }
+  .searchbar { scroll-margin-top: 184px; }
   .base { display: none; }
   .view-head { flex-direction: column; gap: 12px; }
   .table { display: block; overflow-x: auto; }
