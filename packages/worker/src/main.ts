@@ -7,7 +7,9 @@ import {
   ConfigError,
   createPool,
   endpointReason,
+  egressFetch,
   embedInBatches,
+  endpointOrigin,
   endpointUrl,
   modelEndpointRefused,
   installGuards,
@@ -256,13 +258,28 @@ async function main(): Promise<void> {
     if (cached !== undefined) return cached
 
     const { rows } = await acrossOrganizations(pool, (client) =>
-      client.query<{ endpoint: string; model: string; name: string }>(
-        'SELECT endpoint, model, name FROM embedding_providers WHERE id = $1',
+      client.query<{ endpoint: string; model: string; name: string; operator_endpoints: string[] }>(
+        `SELECT endpoint, model, name,
+                ARRAY(SELECT g.endpoint FROM embedding_providers g WHERE g.org_id IS NULL)
+                  AS operator_endpoints
+           FROM embedding_providers WHERE id = $1`,
         [providerId],
       ),
     )
     const provider = rows[0]
     if (provider === undefined) throw new Error(`no embedding provider ${providerId}`)
+
+    // The installation's own embedders are fetched as written — they are
+    // internal hosts by design. A tenant's endpoint is judged at connect time
+    // by `egressFetch`, which is the half the create-time check cannot do: it
+    // sees the address the socket uses, so a rebinding name and a row written
+    // before that check existed both reach nothing internal.
+    const trustedOrigins = [
+      ...config.embedAllowedHosts,
+      ...provider.operator_endpoints
+        .map((e) => endpointOrigin(e))
+        .filter((o): o is string => o !== undefined),
+    ]
 
     // Bounded, and the bound is the endpoint's rather than a guess: TEI answers
     // **413** above `--max-client-batch-size`, which defaults to 32, and this
@@ -279,23 +296,20 @@ async function main(): Promise<void> {
 
       let response: Response
       try {
-        response = await fetch(endpoint, {
+        // A 3xx is refused, not followed, on both of `egressFetch`'s paths:
+        // following a redirect is how a validated public host reaches an
+        // internal one — `302 Location: http://169.254.169.254/…`.
+        response = await egressFetch(endpoint, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ model: provider.model, input: texts }),
-          // A 3xx is refused, not followed. The endpoint passed the egress
-          // guard when the provider row was written; following a redirect at
-          // fetch time is how a create-time-validated public host reaches an
-          // internal one — `302 Location: http://169.254.169.254/…`. Closing it
-          // here is the fetch-path half of that guard.
-          redirect: 'error',
           // Bounded, for the same reason the parser call is: this worker is
           // serial, so an embedder that accepts connections and never answers
           // stops indexing for every tenant until undici's 300 s default gives
           // up. Generous, because a batch on a CPU-only endpoint is genuinely
           // slow.
           signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
-        })
+        }, { trustedOrigins })
       } catch (cause) {
         // `TypeError: fetch failed` and nothing else is what an operator used to
         // get here, in the job's `error` column and in the log. It does not say

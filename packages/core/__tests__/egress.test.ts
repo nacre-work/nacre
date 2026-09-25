@@ -55,13 +55,46 @@ describe('isGlobalAddress', () => {
       '2001:db8::1', // documentation
       '64:ff9b::a9fe:a9fe', // NAT64 mapping of 169.254.169.254 — the metadata endpoint
       '64:ff9b::a00:1', // NAT64 mapping of 10.0.0.1
+      // The first version matched only the dotted mapped spelling; these are
+      // the same metadata address written the other ways.
+      '::ffff:a9fe:a9fe', // IPv4-mapped, hex
+      '0:0:0:0:0:ffff:a9fe:a9fe', // IPv4-mapped, uncompressed
+      '::FFFF:169.254.169.254', // case
+      '::169.254.169.254', // IPv4-compatible
+      '::a9fe:a9fe',
+      '2002:a9fe:a9fe::1', // 6to4 carrying the metadata address
+      '2002:7f00:1::', // 6to4 carrying loopback
+      '2001:0:4136:e378::1', // Teredo
+      '::', // unspecified
+      '::ffff:0.0.0.0',
+      'fec0::1', // site-local
+      'ff02::1', // multicast
+      '100::1', // discard-only
+      '3fff::1', // documentation
+      'fe80::1%eth0', // zone id
+      '255.255.255.255',
+      '224.0.0.1',
+      '198.18.0.1', // benchmarking
+      'not-an-address',
     ]) {
       expect(isGlobalAddress(addr), addr).toBe(false)
     }
   })
 
   it('admits genuinely public addresses', () => {
-    for (const addr of ['8.8.8.8', '1.1.1.1', '2606:4700:4700::1111', '172.15.0.1', '172.32.0.1', '93.184.216.34']) {
+    for (const addr of [
+      '8.8.8.8',
+      '1.1.1.1',
+      '2606:4700:4700::1111',
+      '172.15.0.1',
+      '172.32.0.1',
+      '93.184.216.34',
+      '::ffff:8.8.8.8', // mapped, and as public as the address inside it
+      '::ffff:808:808',
+      '2002:808:808::1', // 6to4 carrying a public address
+      '64:ff9b::808:808', // NAT64 of a public address
+      '2a00:1450:4001:82a::200e',
+    ]) {
       expect(isGlobalAddress(addr), addr).toBe(true)
     }
   })

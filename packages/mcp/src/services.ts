@@ -81,7 +81,7 @@ export function buildServices(
     ...(principalsCache === undefined ? {} : { principalsCache }),
     pool,
     vectors,
-    embedderFor: HttpEmbedder.pool(),
+    embedderFor: HttpEmbedder.pool(undefined, config.embedBatch, config.embedAllowedHosts),
     role: APP_ROLE,
     ...(reranker === undefined ? {} : { reranker }),
     rerankCandidates: config.rerankCandidates,

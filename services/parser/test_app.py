@@ -101,6 +101,64 @@ class RedirectTests(unittest.TestCase):
             )
 
 
+class RebindingTests(unittest.TestCase):
+    """
+    The check and the connection share one resolution.
+
+    A server on loopback stands in for everything internal. DNS answers the
+    check with a public address and the connection with loopback — a rebinding
+    name with a TTL of zero — and what is asserted is that the server is never
+    reached, which is the property rather than the message.
+    """
+
+    def setUp(self) -> None:
+        import http.server
+        import threading
+
+        self.hits = 0
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                outer.hits += 1
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"internal secret")
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_a_name_that_rebinds_to_loopback_never_reaches_it(self) -> None:
+        answers = iter(["93.184.216.34", "127.0.0.1", "127.0.0.1", "127.0.0.1"])
+
+        def rebinding(host, port, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ARG001
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (next(answers), port))]
+
+        with mock.patch.object(socket, "getaddrinfo", side_effect=rebinding):
+            with self.assertRaises(app.ParseError):
+                app.fetch(f"http://rebind.example:{self.port}/")
+        self.assertEqual(self.hits, 0)
+
+    def test_the_escape_hatch_still_reaches_a_private_address(self) -> None:
+        with mock.patch.object(app, "ALLOW_PRIVATE", True):
+            self.assertEqual(app.fetch(f"http://127.0.0.1:{self.port}/"), b"internal secret")
+        self.assertEqual(self.hits, 1)
+
+    def test_tls_still_verifies_against_the_name(self) -> None:
+        # The socket dials an address; the handshake presents the host.
+        conn = app._GuardedHTTPSConnection("example.com", 443)
+        self.assertEqual(conn.host, "example.com")
+        self.assertIs(conn._create_connection, app._guarded_connection)
+
+
 class ParseSourceTests(unittest.TestCase):
     def test_exactly_one_of_content_or_url(self) -> None:
         for source in ({}, {"content": "a", "url": "http://example.com"}):

@@ -1,5 +1,6 @@
 import {
   admitEmbeddingEndpoint,
+  egressFetch,
   endpointOrigin,
   type AddressResolver,
   buildFilter,
@@ -476,6 +477,12 @@ export interface EmbeddingProvider {
   readonly endpoint: string
   readonly model: string
   readonly dimensions: number
+  /**
+   * The installation's own embedder origins — the global provider rows — which
+   * are fetched as written. Every other origin goes through `egressFetch`,
+   * judged at connect time. See `packages/core/egress-fetch.ts`.
+   */
+  readonly operatorOrigins: readonly string[]
 }
 
 /** One dense branch's worth of the organization: a model and the layers on it. */
@@ -533,8 +540,11 @@ export class NacreSearchService implements SearchService {
           endpoint: string
           model: string
           dimensions: number
+          operator_endpoints: string[]
         }>(
-          `SELECT l.id, l.vector_name, p.id AS provider_id, p.endpoint, p.model, p.dimensions
+          `SELECT l.id, l.vector_name, p.id AS provider_id, p.endpoint, p.model, p.dimensions,
+                  ARRAY(SELECT g.endpoint FROM embedding_providers g WHERE g.org_id IS NULL)
+                    AS operator_endpoints
              FROM layers l
              JOIN embedding_providers p ON p.id = l.provider_id
             WHERE l.org_id = $1 AND l.deleted_at IS NULL`,
@@ -750,6 +760,7 @@ export class NacreSearchService implements SearchService {
       endpoint: string
       model: string
       dimensions: number
+      operator_endpoints?: readonly string[]
     }[],
     plan: QueryablePlan,
     narrow: Narrowing | undefined,
@@ -789,6 +800,9 @@ export class NacreSearchService implements SearchService {
           endpoint: layer.endpoint,
           model: layer.model,
           dimensions: layer.dimensions,
+          operatorOrigins: (layer.operator_endpoints ?? [])
+            .map((e) => endpointOrigin(e))
+            .filter((o): o is string => o !== undefined),
         },
         layerIds: [],
       }
@@ -1022,6 +1036,13 @@ export class HttpEmbedder implements Embedder {
     private readonly timeoutMs = 15_000,
     /** See `embedInBatches`. An endpoint refuses above its own limit. */
     private readonly batch: number = DEFAULT_EMBED_BATCH,
+    /**
+     * Origins fetched as written. Everything else is confined to the public
+     * network at connect time. Constructed directly, the endpoint is the
+     * caller's own; `pool` is what a tenant's row reaches, and it passes the
+     * installation's origins and nothing of the tenant's.
+     */
+    private readonly trustedOrigins: readonly string[] = [endpointOrigin(endpoint) ?? ''],
   ) {}
 
   /**
@@ -1035,6 +1056,8 @@ export class HttpEmbedder implements Embedder {
   static pool(
     timeoutMs?: number,
     batch: number = DEFAULT_EMBED_BATCH,
+    /** `NACRE_EMBED_ALLOWED_HOSTS`: the operator's other internal embedders. */
+    allowedOrigins: readonly string[] = [],
   ): (provider: EmbeddingProvider) => Embedder {
     const embedders = new Map<string, HttpEmbedder>()
     return (provider) => {
@@ -1046,6 +1069,7 @@ export class HttpEmbedder implements Embedder {
         provider.dimensions,
         timeoutMs ?? 15_000,
         batch,
+        [...allowedOrigins, ...provider.operatorOrigins],
       )
       embedders.set(provider.id, embedder)
       return embedder
@@ -1080,16 +1104,20 @@ export class HttpEmbedder implements Embedder {
     // undici's 300 s default, which exhausts the connection pool long before
     // anyone sees an error.
     const at = endpointUrl(this.endpoint, 'embeddings')
-    const response = await fetch(at, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: this.model, input: texts }),
-      signal: AbortSignal.timeout(this.timeoutMs),
-      // Refuse a redirect rather than follow it into the private network —
-      // the same fetch-path half of the egress guard the worker's embedder
-      // has, on the search path where a query's embedding is computed.
-      redirect: 'error',
-    })
+    // Through the egress guard: a tenant's endpoint is judged by the address
+    // the socket actually connects to, so a name that rebinds between the row
+    // being written and this request reaches nothing internal. Redirects are
+    // refused on either path.
+    const response = await egressFetch(
+      at,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: this.model, input: texts }),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      },
+      { trustedOrigins: this.trustedOrigins },
+    )
 
     if (!response.ok) {
       throw modelEndpointRefused('embedding', at, response.status, await endpointReason(response))

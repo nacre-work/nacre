@@ -385,7 +385,7 @@ async function main(): Promise<void> {
       vectors,
       // The batch bound travels with the pool: an endpoint refuses above its
       // own limit rather than splitting for you.
-      embedderFor: HttpEmbedder.pool(undefined, config.embedBatch),
+      embedderFor: HttpEmbedder.pool(undefined, config.embedBatch, config.embedAllowedHosts),
       role: APP_ROLE,
       ...(reranker === undefined ? {} : { reranker }),
       rerankCandidates: config.rerankCandidates,

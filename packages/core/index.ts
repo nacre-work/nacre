@@ -119,6 +119,7 @@ export {
   type AddressResolver,
   type EndpointVerdict,
 } from './egress.js'
+export { egressFetch, EgressRefused, publicOnlyLookup, type EgressPolicy, type LookupAll } from './egress-fetch.js'
 export { documentKey, S3, S3Error } from './s3.js'
 export type { S3Options } from './s3.js'
 export type { Hit, SearchRequest, VectorStoreOptions } from './vector/search.js'
