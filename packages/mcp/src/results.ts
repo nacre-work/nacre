@@ -46,7 +46,7 @@
  *   - **`ttlMs` and `cacheScope` on `tools/list` over both.** `server/discover`
  *     already carried them on both, which is what makes the asymmetry an
  *     oversight rather than a decision: the catalog depends on who is asking
- *     either way, and `cacheScope: 'user'` is that fact rather than a property
+ *     either way, and `cacheScope: 'private'` is that fact rather than a property
  *     of HTTP.
  */
 import { INSTRUCTIONS } from './instructions.js'
@@ -55,8 +55,25 @@ import { onTheWire, type ToolDefinition } from './tools.js'
 /** The revision this server prefers — the head of PROTOCOL_VERSIONS. */
 export const PROTOCOL_VERSION = '2026-07-28'
 
-/** tools/list is cached per user for five minutes — see cacheScope below. */
-export const TOOLS_TTL_MS = 300_000
+/**
+ * tools/list is never fresh: `0`, which the caching utility defines as
+ * "immediately stale, re-fetch every time it is needed".
+ *
+ * It was five minutes, and that stayed inert only while nothing honoured it.
+ * The hint went out on every tools/list without `resultType`, so a 2026-07-28
+ * client could not read the result as one of its own; 0.26.1 added the field
+ * and a client that now reads the hint — Claude's connectors did, on the day
+ * — served its cached catalog for five minutes after every fetch, and a manual
+ * refresh of the tool list did nothing. Every server that had never sent a
+ * hint was unaffected, since an absent `ttlMs` means `0`.
+ *
+ * `0` is also the correct value on its own terms rather than only the old
+ * behaviour: the catalog is per caller and names the layers they may see, so
+ * a grant or a revocation changes it, and this server sends no
+ * `list_changed` to say so. A client holding a fresh copy has no way to learn
+ * it went stale. Building the list costs one catalog read per call.
+ */
+export const TOOLS_TTL_MS = 0
 
 /**
  * `server/discover` is cached for an hour, and publicly.
@@ -182,7 +199,11 @@ export const toolsListResult = (tools: readonly ToolDefinition[]) => ({
   resultType: COMPLETE,
   tools: onTheWire(tools),
   ttlMs: TOOLS_TTL_MS,
-  cacheScope: 'user',
+  // `private`, the specification's word for "not shared across authorization
+  // contexts". This said `user`, which is not a value the caching utility
+  // defines — it has two, `public` and `private` — so a client validating the
+  // result had nothing it was allowed to do with it.
+  cacheScope: 'private',
 })
 
 /**

@@ -272,6 +272,17 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.26.5 — `tools/list` is never cached, and says so in a word clients know
+
+Nothing to do. `tools/list` answered `ttlMs: 300000, cacheScope: "user"`. The
+caching utility defines two scopes, `public` and `private`, so `user` was not a
+value a client could act on; and the five-minute TTL, inert while the result
+carried no `resultType`, took effect the day 0.26.1 added one — a client that
+honours it served its cached catalog through every manual refresh of the tool
+list for five minutes after each fetch. It is `ttlMs: 0, cacheScope:
+"private"` now: the catalog names the caller's layers, changes with a grant,
+and this server sends no `list_changed`, so no copy of it is ever fresh.
+
 ### 0.26.4 — the MCP server's registry name is the domain
 
 Nothing to do. `@nacre.work/mcp` declares `mcpName: work.nacre/nacre` rather

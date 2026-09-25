@@ -236,8 +236,14 @@ describe('baseline · the MCP surface', () => {
     const body = (await (await rpc('tools/list', {}, ORG_A)).json()) as ToolsListResult
     // If this ever becomes 'global', the test above starts failing in
     // production and passing here.
-    expect(body.result.cacheScope).toBe('user')
-    expect(body.result.ttlMs).toBe(TOOLS_TTL_MS)
+    expect(body.result.cacheScope).toBe('private')
+    // Literals, not the constants: this is the wire. `user` was here, which
+    // the caching utility does not define — `public` and `private` are all
+    // there is — and a TTL of five minutes left a client that honoured it
+    // serving a stale catalog through every manual refresh.
+    expect(['public', 'private']).toContain(body.result.cacheScope)
+    expect(body.result.ttlMs).toBe(0)
+    expect(TOOLS_TTL_MS).toBe(0)
   })
 
   it('a caller with no layers is told so, and told nothing else', () => {
