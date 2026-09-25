@@ -68,8 +68,11 @@ means to be reachable.
   result, and the model passes it as an argument to the next call. Hidden state
   in the transport is not allowed.
 - `server/discover` is supported but not required of clients.
-- `tools/list` returns `ttlMs: 300000` and `cacheScope: "user"` — the catalog
-  depends on the caller's permissions, so the cache is per user, never global.
+- `tools/list` returns `ttlMs: 0` and `cacheScope: "private"` — the catalog
+  depends on the caller's permissions, so it is never shared across
+  authorization contexts, and a grant can change it at any moment with no
+  `list_changed` to say so, so it is never fresh either. `public` and
+  `private` are the only two values the caching utility defines.
 
 ## The resource identifier, when the ports are split
 
@@ -562,7 +565,7 @@ What is under test is the part that carries the leak risk:
 
 - the catalog is built **per caller**, so one tenant cannot learn another's
   layer names through a shared `tools/list` — the same fact as
-  `cacheScope: "user"`, and there is a test for each;
+  `cacheScope: "private"`, and there is a test for each;
 - a caller with no layers is told exactly that and nothing about what exists
   elsewhere;
 - a failing tool call and an unknown tool return **byte-identical** answers,

@@ -84,7 +84,7 @@ export const onTheWire = (tools: readonly ToolDefinition[]): WireTool[] =>
  * an obvious choice.
  *
  * Because it depends on permissions, the catalog is per user. That is the same
- * fact as `cacheScope: "user"` on tools/list; changing one without the other
+ * fact as `cacheScope: "private"` on tools/list; changing one without the other
  * serves one caller's catalog to another.
  */
 /**
