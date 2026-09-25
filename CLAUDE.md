@@ -2898,6 +2898,23 @@ account a sufficient position from which to plant one, and that the delegation's
 permission ceiling is the control that bounds the damage — because it bounds
 what an agent can *do*, which is the half that is actually boundable.
 
+**Every tool call from a current client failed, and the catalog looked
+fine.** The 2026-07-28 revision makes `resultType` a MUST on every result and
+this server wrote it on `server/discover` alone — the one result the parity
+suite and the surface tests quoted. A client speaking that revision listed six
+tools and then refused every `tools/call` answer as malformed, so an agent saw
+its layers and could search none of them. Found by a real client (Claude Code)
+on the four sales agents' connectors, not by a suite: every case asserted the
+shape this server writes, which is the fixture-agrees-with-code defect again.
+`COMPLETE` is one constant the four builders use, and `result-type.test.ts`
+asks each builder. 0.26.1.
+
+The tools carry MCP `annotations` in the same release — the type requires them,
+because without them a client assumes the worst of every tool and confirms a
+search as carefully as a delete. And CI went red on `main` for a reason outside
+the tree: `minio/minio` left Docker Hub. The object store is Chainguard's build
+of the same server now, in the four workflows and the `full` profile alike.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
