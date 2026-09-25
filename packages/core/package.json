@@ -1,6 +1,6 @@
 {
   "name": "@nacre.work/core",
-  "version": "0.26.2",
+  "version": "0.26.3",
   "description": "Nacre core: data model, permission resolver, and shared types",
   "repository": {
     "type": "git",
@@ -31,14 +31,15 @@
     "NOTICE"
   ],
   "dependencies": {
-    "@qdrant/js-client-rest": "^1.18.0",
-    "nodemailer": "^9.0.5",
-    "pg": "^8.22.0"
+    "@qdrant/js-client-rest": "^1.19.0",
+    "nodemailer": "^10.0.10",
+    "pg": "^8.23.0",
+    "undici": "^8.11.2"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2",
-    "@types/nodemailer": "^8.0.1",
-    "jose": "^6.2.7"
+    "@types/node": "^26.6.2",
+    "@types/nodemailer": "^8.0.2",
+    "jose": "^6.2.12"
   },
   "keywords": [
     "nacre",
@@ -54,6 +55,6 @@
   },
   "author": "Nacre",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   }
 }

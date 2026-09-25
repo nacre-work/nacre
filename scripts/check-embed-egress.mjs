@@ -17,11 +17,26 @@
  * endpointUrl(...)` followed by `fetch(X, { … })` requires `redirect: 'error'`
  * in that options object. A new model client that forgets it fails here.
  *
+ * Since 0.26.3 the rule has a second half, and it is the stronger one. A
+ * redirect was never the only way in: the endpoint is resolved again at fetch
+ * time, so a tenant's name that rebinds to `169.254.169.254` after passing the
+ * create-time check reaches it on a plain `fetch` with `redirect: 'error'` set.
+ * So a model-endpoint request goes through `egressFetch`, which judges the
+ * address the socket connects to and refuses redirects on every path. A bare
+ * `fetch` is allowed only where the endpoint cannot come from a tenant — the
+ * reranker, which is `NACRE_RERANKER_ENDPOINT` and nothing else — and there it
+ * still needs `redirect: 'error'`. The first version of this check saw one
+ * fetch out of three after the move and reported green, which is why it now
+ * counts the guarded calls too and refuses when there are none.
+ *
  * Refuses if it finds no such fetch, because a check with nothing to hold must
  * not report green.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+
+/** Model clients whose endpoint is configuration only and never a tenant's row. */
+const OPERATOR_ONLY = new Set(['packages/api/src/rerank.ts'])
 
 const ROOTS = ['../packages/worker/src', '../packages/api/src'].map((r) =>
   fileURLToPath(new URL(r, import.meta.url)),
@@ -40,6 +55,7 @@ function sources(dir) {
 
 const problems = []
 let checked = 0
+let guarded = 0
 
 for (const root of ROOTS) {
   for (const file of sources(root)) {
@@ -51,6 +67,11 @@ for (const root of ROOTS) {
       bound.add(m[1])
     }
     if (bound.size === 0) continue
+    const rel = file.slice(file.indexOf('/packages/') + 1)
+
+    for (const m of text.matchAll(/\begressFetch\(\s*([A-Za-z_$][\w$]*)\s*,/g)) {
+      if (bound.has(m[1])) guarded += 1
+    }
 
     // Each `fetch(<var>, { … })` whose var is one of those must carry
     // redirect: 'error'. The options object holds nested braces (headers,
@@ -74,9 +95,14 @@ for (const root of ROOTS) {
       }
       const options = text.slice(open, end + 1)
       checked += 1
+      const line = text.slice(0, m.index).split('\n').length
+      if (!OPERATOR_ONLY.has(rel)) {
+        problems.push(
+          `${rel}:${String(line)}: fetch(${name}, …) to a model endpoint bypasses egressFetch — ` +
+            'a tenant endpoint that rebinds after the create-time check reaches the private network.',
+        )
+      }
       if (!/redirect:\s*'error'/.test(options)) {
-        const line = text.slice(0, m.index).split('\n').length
-        const rel = file.slice(file.indexOf('/packages/') + 1)
         problems.push(
           `${rel}:${String(line)}: fetch(${name}, …) to a model endpoint does not set ` +
             "redirect: 'error' — a redirect would follow into the private network.",
@@ -84,6 +110,14 @@ for (const root of ROOTS) {
       }
     }
   }
+}
+
+if (guarded === 0) {
+  console.error(
+    'check-embed-egress: found no egressFetch to an endpointUrl() target. The embedding ' +
+      'clients moved or this check stopped seeing them; a check with nothing to hold must not report green.',
+  )
+  process.exit(1)
 }
 
 if (checked === 0) {
@@ -97,8 +131,10 @@ if (checked === 0) {
 
 if (problems.length > 0) {
   for (const p of problems) console.error(`  ${p}`)
-  console.error(`check-embed-egress: ${String(problems.length)} model fetch(es) follow redirects.`)
+  console.error(`check-embed-egress: ${String(problems.length)} model-endpoint fetch problem(s).`)
   process.exit(1)
 }
 
-console.log(`check-embed-egress: ${String(checked)} model-endpoint fetch(es), each refusing redirects.`)
+console.log(
+  `check-embed-egress: ${String(guarded)} guarded model fetch(es), ${String(checked)} operator-only fetch(es) refusing redirects.`,
+)

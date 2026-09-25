@@ -38,6 +38,7 @@ indexing stopped for every tenant.
 
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import json
 import os
@@ -71,6 +72,28 @@ def _is_public(address: str) -> bool:
     return ip.is_global
 
 
+def _public_addresses(host: str, port: int) -> list[tuple]:
+    """
+    Every address `host` resolves to, if all of them are public.
+
+    Every answer and not the first: a name resolving to one public address and
+    one private one is the whole trick, and picking the public one would leave
+    which address a connection uses to the order a resolver returns them in.
+    """
+    try:
+        resolved = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as error:
+        raise ParseError("url does not resolve") from error
+
+    usable = [r for r in resolved if r[0] in (socket.AF_INET, socket.AF_INET6)]
+    if not usable:
+        raise ParseError("url does not resolve")
+    for _family, _type, _proto, _canon, sockaddr in usable:
+        if not _is_public(sockaddr[0]):
+            raise ParseError("url resolves to an address this service will not fetch")
+    return usable
+
+
 def _check_reachable(url: str) -> None:
     """
     Refuse a URL that resolves anywhere private.
@@ -84,11 +107,11 @@ def _check_reachable(url: str) -> None:
     Every hop is checked, not only the first: a public URL that answers with a
     302 to 169.254.169.254 is the same attack with one more step.
 
-    Not covered: DNS rebinding. This resolves, checks, and then lets urllib
-    resolve again to connect, so a name that answers differently twice can still
-    get through. Closing that means connecting to a validated address and
-    carrying the hostname in the Host header, which breaks TLS verification —
-    the trade is documented rather than made silently.
+    This is the early, readable refusal. It is not the guarantee: it resolves,
+    and the connection would resolve again, so a name that answers one way to
+    this and another to the socket — DNS rebinding — gets past a check that
+    stands alone. The guarantee is `_guarded_connection`, which the socket
+    itself goes through.
     """
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
@@ -102,34 +125,81 @@ def _check_reachable(url: str) -> None:
     if ALLOW_PRIVATE:
         return
 
-    try:
-        resolved = socket.getaddrinfo(host, parts.port or (443 if parts.scheme == "https" else 80))
-    except socket.gaierror as error:
-        raise ParseError("url does not resolve") from error
+    _public_addresses(host, parts.port or (443 if parts.scheme == "https" else 80))
 
-    for family, _type, _proto, _canon, sockaddr in resolved:
-        if family not in (socket.AF_INET, socket.AF_INET6):
-            continue
-        # Every address the name answers with, not the first: a name resolving
-        # to one public address and one private one is the whole trick.
-        if not _is_public(sockaddr[0]):
-            raise ParseError("url resolves to an address this service will not fetch")
+
+def _guarded_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, **_kw):  # noqa: ANN001, ANN201
+    """
+    `socket.create_connection`, connecting only to an address it has judged.
+
+    The name is resolved once, every answer is checked, and the socket connects
+    to one of those answers by address — so there is no second resolution for a
+    rebinding to land in. TLS is unaffected: `HTTPSConnection` wraps the socket
+    with `server_hostname` set to the name, so the certificate is still
+    verified against the host the URL named, not against an address. This file
+    used to say that closing rebinding "breaks TLS verification"; it does not,
+    because the name the handshake presents and the address the socket dials
+    are two separate arguments.
+    """
+    host, port = address[0], address[1]
+    last: OSError | None = None
+    for _family, _type, _proto, _canon, sockaddr in _public_addresses(host, port):
+        try:
+            return socket.create_connection((sockaddr[0], port), timeout, source_address)
+        except OSError as error:
+            last = error
+    assert last is not None
+    raise last
+
+
+class _GuardedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        super().__init__(*args, **kwargs)
+        self._create_connection = _guarded_connection
+
+
+class _GuardedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        super().__init__(*args, **kwargs)
+        self._create_connection = _guarded_connection
+
+
+class _GuardedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):  # noqa: ANN001, ANN201
+        return self.do_open(_GuardedHTTPConnection, req)
+
+
+class _GuardedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):  # noqa: ANN001, ANN201
+        return self.do_open(_GuardedHTTPSConnection, req, context=self._context)
 
 
 class _GuardedRedirects(urllib.request.HTTPRedirectHandler):
     """Re-check the destination of every redirect."""
+
+    max_redirections = MAX_REDIRECTS
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
         _check_reachable(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def _opener() -> urllib.request.OpenerDirector:
+    handlers: list = [_GuardedRedirects, urllib.request.ProxyHandler({})]
+    # The escape hatch keeps urllib's own connections, since it exists to reach
+    # private addresses; everywhere else the socket goes through the guard.
+    if not ALLOW_PRIVATE:
+        handlers += [_GuardedHTTPHandler, _GuardedHTTPSHandler]
+    return urllib.request.build_opener(*handlers)
+
+
 def fetch(url: str) -> bytes:
     _check_reachable(url)
-    opener = urllib.request.build_opener(_GuardedRedirects)
-    # No cookies, no proxy handler, no auth: this service holds no credentials
-    # and must not start borrowing the environment's.
-    with opener.open(url, timeout=FETCH_TIMEOUT_SECONDS) as response:
+    # No cookies, no auth, and no proxy — `ProxyHandler({})` rather than the
+    # default, which reads the environment's proxy variables: this service holds
+    # no credentials and must not start borrowing the environment's, and a proxy
+    # would be the one host the guard never sees.
+    with _opener().open(url, timeout=FETCH_TIMEOUT_SECONDS) as response:
         return response.read(MAX_BYTES + 1)
 
 

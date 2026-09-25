@@ -4,7 +4,7 @@
   "type": "module",
   "packageManager": "pnpm@10.34.5",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "build": "pnpm -r build",
@@ -59,15 +59,15 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@redocly/cli": "^2.43.2",
-    "@types/node": "^22.10.0",
-    "@types/pg": "^8.20.3",
-    "eslint": "^10.8.0",
-    "fast-check": "^4.9.0",
-    "tsx": "^4.23.1",
+    "@redocly/cli": "^2.54.3",
+    "@types/node": "^26.6.2",
+    "@types/pg": "^8.23.1",
+    "eslint": "^10.11.0",
+    "fast-check": "^4.10.2",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.65.0",
-    "vitest": "^4.1.10"
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.2"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

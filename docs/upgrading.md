@@ -272,6 +272,39 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.26.3 — Node 24, and the egress guard holds at connect time
+
+No migration, no new variable. **The server packages now require Node 24**
+(`@nacre.work/core`, `api`, `mcp`; the images were already the only supported
+way to run them and now ship `node:24-alpine`). Anyone running the packages
+outside the images needs Node 24 first. `@nacre.work/sdk` and
+`@nacre.work/cli` still run on Node 22 — they are client libraries and nothing
+in them moved. Every dependency was brought up to its latest release, with one
+held back: TypeScript stays on 6.x, because typescript-eslint does not yet
+support 7.
+
+The egress change: The guard 0.26.0 put on
+`POST /v1/embedding-providers` judged a tenant's endpoint when the row was
+written, and the worker and both search surfaces resolved the name again when
+they sent — so a name that rebinds to an internal address after the check, or
+any row written before 0.26.0, still reached it. Every embedding request to an
+endpoint that is not the installation's own now goes through `egressFetch`,
+which refuses at connect time if any address the name resolves to is not
+public, and dials the address it judged. The address classifier was rewritten
+on `net.BlockList` and now decodes every IPv6 form that carries an IPv4
+address — hex-mapped `::ffff:a9fe:a9fe`, IPv4-compatible, 6to4 and NAT64 —
+where it had matched only the dotted mapped spelling.
+
+What stays trusted is unchanged: the global provider rows and
+`NACRE_EMBED_ALLOWED_HOSTS`, matched by exact origin. A tenant provider that
+names an internal host and worked until now stops working, and its documents
+fail with `refused to connect … not a public address`; name its origin in
+`NACRE_EMBED_ALLOWED_HOSTS` if it is an embedder you run.
+
+The parser closes the same gap for `POST /v1/documents` with a `url`: the
+socket connects to the address that was checked, TLS still verifies the
+hostname, and the environment's proxy variables are no longer read.
+
 ### 0.26.2 — a tool that fails no longer drops the client's connection
 
 No migration, no new variable. A tool call that failed — a document that is

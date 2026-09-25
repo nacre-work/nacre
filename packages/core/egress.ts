@@ -53,19 +53,20 @@
  * A public name that resolves to a private address is the trick this exists
  * against, so every address the name answers with is checked, not the first.
  *
- * ## Not covered, and said rather than hidden
+ * ## The half this cannot do, and where it is done
  *
- * DNS rebinding, exactly as the parser documents it: this resolves at *create*
- * time and the worker resolves again at *fetch* time, so a name that answers
- * differently twice can still get through. The enforcement point is the stored
- * row — a row that cannot name a private host is a worker that cannot be pointed
- * at one — and closing the rebinding gap means the worker connecting to a
- * validated address while carrying the hostname for TLS, which is a change on
- * the fetch path and not here.
+ * DNS rebinding: this resolves at *create* time and the worker resolves again
+ * at *fetch* time, so a name that answers differently twice gets through a
+ * check that stands alone — and a row written before 0.26.0, when there was no
+ * check, needs no trick at all. Since 0.26.3 that half is `egressFetch`
+ * (`egress-fetch.ts`): every embedding request to an endpoint that is not the
+ * installation's own is judged at connect time, by the address the socket
+ * actually dials. This file is the early refusal with a readable message; that
+ * one is the guarantee.
  */
 
 import { lookup as dnsLookup } from 'node:dns/promises'
-import { isIP } from 'node:net'
+import { BlockList, isIP } from 'node:net'
 
 /** A resolver, so a test can answer without a network. Matches `dns.lookup`'s
  * `{ all: true }` shape: every address a name resolves to. */
@@ -96,66 +97,121 @@ export function endpointOrigin(endpoint: string): string | undefined {
 /**
  * Whether an IP literal is globally routable.
  *
- * This is the subset of Python's `ipaddress.is_global` that matters for egress
- * — the ranges a tenant must not be able to reach — rather than a re-derivation
- * of the whole table. The parser's header names the list as "the thing that
- * gets an entry missed", so the blocks here are the security-relevant ones and
- * they are pinned as tests: loopback, the cloud metadata address, every private
- * range, and their IPv6 equivalents including IPv4-mapped addresses.
+ * Two parts, and the split is the point. The ranges are a `BlockList` — the
+ * runtime's own prefix matcher, so a range is written once as CIDR and never
+ * as a hand-rolled comparison of octets. And every IPv6 form that *carries* an
+ * IPv4 address is decoded first and judged as that address, because each of
+ * them is a way to spell the metadata endpoint that a v6 range table does not
+ * see: IPv4-mapped (`::ffff:169.254.169.254` and `::ffff:a9fe:a9fe`, which are
+ * the same address — the first version of this matched only the dotted
+ * spelling), IPv4-compatible (`::169.254.169.254`), 6to4 (`2002:a9fe:a9fe::`)
+ * and NAT64 (`64:ff9b::a9fe:a9fe`). Decoding rather than refusing 6to4
+ * wholesale is deliberate: an address there is as public as the v4 inside it.
+ *
+ * The ranges are the security-relevant subset of IANA's special-purpose
+ * registries — every block a tenant must not reach — and they are pinned as
+ * tests, since the list is the thing that gets an entry missed.
  */
 export function isGlobalAddress(address: string): boolean {
   const kind = isIP(address)
-  if (kind === 4) return isGlobalV4(address)
-  if (kind === 6) return isGlobalV6(address)
-  // Not an IP literal at all — a name reached here would be unresolved, which
-  // the caller treats as a refusal rather than passing to this.
-  return false
-}
-
-function isGlobalV4(address: string): boolean {
-  const parts = address.split('.').map((p) => Number(p))
-  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+  if (kind === 4) return !NON_GLOBAL_V4.check(address, 'ipv4')
+  if (kind !== 6) {
+    // Not an IP literal at all — a name reached here would be unresolved,
+    // which the caller treats as a refusal rather than passing to this.
     return false
   }
-  const [a, b] = parts as [number, number, number, number]
-  if (a === 0) return false // 0.0.0.0/8 "this network"
-  if (a === 10) return false // private
-  if (a === 127) return false // loopback
-  if (a === 169 && b === 254) return false // link-local — the metadata endpoint
-  if (a === 172 && b >= 16 && b <= 31) return false // private
-  if (a === 192 && b === 168) return false // private
-  if (a === 100 && b >= 64 && b <= 127) return false // CGNAT 100.64/10
-  if (a === 192 && b === 0 && parts[2] === 0) return false // 192.0.0/24 IETF protocol
-  if (a === 192 && b === 0 && parts[2] === 2) return false // TEST-NET-1 192.0.2/24
-  if (a === 198 && b === 51 && parts[2] === 100) return false // TEST-NET-2
-  if (a === 203 && b === 0 && parts[2] === 113) return false // TEST-NET-3
-  if (a === 192 && b === 88 && parts[2] === 99) return false // 6to4 relay anycast
-  if (a === 198 && (b === 18 || b === 19)) return false // benchmarking 198.18/15
-  if (a >= 224) return false // multicast 224/4 and reserved 240/4, 255.255.255.255
-  return true
+  // A zone id (`fe80::1%eth0`) only ever qualifies a link-local address.
+  if (address.includes('%')) return false
+  const words = ipv6Words(address)
+  if (words === undefined) return false
+  const embedded = embeddedV4(words)
+  if (embedded !== undefined) return !NON_GLOBAL_V4.check(embedded, 'ipv4')
+  return !NON_GLOBAL_V6.check(address, 'ipv6')
 }
 
-function isGlobalV6(address: string): boolean {
-  const lower = address.toLowerCase()
-  // An IPv4-mapped address (::ffff:a.b.c.d or ::ffff:aabb:ccdd) is only as
-  // global as the v4 address inside it — mapping the metadata endpoint is the
-  // trick this catches.
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower)
-  if (mapped?.[1] !== undefined) return isGlobalV4(mapped[1])
-  // NAT64 (64:ff9b::/96 and 64:ff9b:1::/48) embeds a v4 address in its low
-  // bits — `64:ff9b::a9fe:a9fe` is the metadata endpoint by another spelling.
-  // Refused wholesale rather than decoded: a public host never resolves to a
-  // NAT64 address (it is an on-network translation prefix), and decoding the
-  // embedded v4 through IPv6 zero-compression is exactly the fragile parsing
-  // this guard avoids.
-  if (lower.startsWith('64:ff9b:')) return false
-  if (lower === '::1' || lower === '::') return false // loopback, unspecified
-  if (lower.startsWith('2001:db8')) return false // documentation 2001:db8::/32
-  if (lower.startsWith('fe8') || lower.startsWith('fe9') ||
-      lower.startsWith('fea') || lower.startsWith('feb')) return false // fe80::/10 link-local
-  if (lower.startsWith('fc') || lower.startsWith('fd')) return false // fc00::/7 unique-local
-  if (lower.startsWith('ff')) return false // ff00::/8 multicast
-  return true
+// Two lists and never one: a `BlockList` holding `::ffff:0:0/96` answers true
+// for *every* IPv4 address checked against it, because it matches v4 through
+// the mapped range — measured, and the first version of this refused 8.8.8.8.
+const NON_GLOBAL_V4 = (() => {
+  const list = new BlockList()
+  const v4: readonly [string, number][] = [
+    ['0.0.0.0', 8], // "this network"
+    ['10.0.0.0', 8], // private
+    ['100.64.0.0', 10], // carrier-grade NAT
+    ['127.0.0.0', 8], // loopback
+    ['169.254.0.0', 16], // link-local — the metadata endpoint
+    ['172.16.0.0', 12], // private
+    ['192.0.0.0', 24], // IETF protocol assignments
+    ['192.0.2.0', 24], // TEST-NET-1
+    ['192.88.99.0', 24], // 6to4 relay anycast
+    ['192.168.0.0', 16], // private
+    ['198.18.0.0', 15], // benchmarking
+    ['198.51.100.0', 24], // TEST-NET-2
+    ['203.0.113.0', 24], // TEST-NET-3
+    ['224.0.0.0', 4], // multicast
+    ['240.0.0.0', 4], // reserved, and 255.255.255.255
+  ]
+  for (const [net, prefix] of v4) list.addSubnet(net, prefix, 'ipv4')
+  return list
+})()
+
+const NON_GLOBAL_V6 = (() => {
+  const list = new BlockList()
+  const v6: readonly [string, number][] = [
+    ['::', 96], // unspecified, loopback, and IPv4-compatible (decoded above)
+    ['::ffff:0:0', 96], // IPv4-mapped (decoded above; here if decoding is ever skipped)
+    ['64:ff9b:1::', 48], // local-use NAT64
+    ['100::', 64], // discard-only
+    ['2001::', 23], // IETF protocol assignments, Teredo among them
+    ['2001:db8::', 32], // documentation
+    ['3fff::', 20], // documentation
+    ['5f00::', 16], // segment routing
+    ['fc00::', 7], // unique-local
+    ['fe80::', 10], // link-local
+    ['fec0::', 10], // site-local, deprecated and still routed by some stacks
+    ['ff00::', 8], // multicast
+  ]
+  for (const [net, prefix] of v6) list.addSubnet(net, prefix, 'ipv6')
+  return list
+})()
+
+/** The eight 16-bit words of an IPv6 literal, or `undefined` if it is not one. */
+function ipv6Words(address: string): number[] | undefined {
+  let text = address.toLowerCase()
+  // A trailing dotted quad is the last two words; rewritten as hex so there is
+  // one grammar below.
+  const dotted = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text)
+  if (dotted !== null) {
+    const octets = dotted.slice(1).map(Number)
+    if (octets.some((n) => n > 255)) return undefined
+    const [a, b, c, d] = octets as [number, number, number, number]
+    text = `${text.slice(0, dotted.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`
+  }
+  const halves = text.split('::')
+  if (halves.length > 2) return undefined
+  const parse = (part: string): number[] =>
+    part === '' ? [] : part.split(':').map((w) => (/^[0-9a-f]{1,4}$/.test(w) ? parseInt(w, 16) : NaN))
+  const head = parse(halves[0] ?? '')
+  const rest = halves.length === 2 ? parse(halves[1] ?? '') : []
+  const known = head.length + rest.length
+  if (halves.length === 1 ? known !== 8 : known > 7) return undefined
+  const words = [...head, ...new Array<number>(8 - known).fill(0), ...rest]
+  return words.some((w) => Number.isNaN(w)) ? undefined : words
+}
+
+/** The IPv4 address an IPv6 one carries, where its prefix says it carries one. */
+function embeddedV4(w: readonly number[]): string | undefined {
+  const quad = (hi: number, lo: number) => `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`
+  const zero = (from: number, to: number) => w.slice(from, to).every((x) => x === 0)
+  // ::ffff:a.b.c.d — IPv4-mapped
+  if (zero(0, 5) && w[5] === 0xffff) return quad(w[6]!, w[7]!)
+  // ::a.b.c.d — IPv4-compatible, except :: and ::1 themselves
+  if (zero(0, 6) && !(w[6] === 0 && (w[7] === 0 || w[7] === 1))) return quad(w[6]!, w[7]!)
+  // 64:ff9b::a.b.c.d — well-known NAT64
+  if (w[0] === 0x64 && w[1] === 0xff9b && zero(2, 6)) return quad(w[6]!, w[7]!)
+  // 2002:aabb:ccdd::/48 — 6to4
+  if (w[0] === 0x2002) return quad(w[1]!, w[2]!)
+  return undefined
 }
 
 /**

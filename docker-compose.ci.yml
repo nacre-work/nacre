@@ -30,7 +30,7 @@ services:
     profiles: [minimal, full]
 
   stub-embedder:
-    image: node:22-alpine
+    image: node:24-alpine
     restart: unless-stopped
     command: ["node", "/opt/stub/stub-embedder.mjs"]
     environment:

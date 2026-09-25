@@ -72,7 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+        with: { node-version: 24 }
       - id: plan
         run: node scripts/release-plan.mjs
 
@@ -148,7 +148,7 @@ jobs:
       # `404 Not Found - PUT .../@nacre.work%2fcore`. Publishing here is by OIDC
       # and there is no token, so there should be nothing that looks like one.
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
+        with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
@@ -268,8 +268,9 @@ jobs:
             exit 1
           }
 
-          # OIDC publishing landed in npm 11.5.0. The npm bundled with Node 22
-          # predates it and fails the same silent way pnpm 10 did.
+          # OIDC publishing landed in npm 11.5.0. Pinned rather than taken from
+          # whatever Node bundles, because an npm too old for OIDC fails the
+          # same silent way pnpm 10 did.
           npm install -g npm@11.19.0
           npm --version
 

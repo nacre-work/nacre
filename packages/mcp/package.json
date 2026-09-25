@@ -1,6 +1,6 @@
 {
   "name": "@nacre.work/mcp",
-  "version": "0.26.2",
+  "version": "0.26.3",
   "description": "Nacre MCP server: Streamable HTTP and STDIO",
   "mcpName": "io.github.nacre-work/nacre",
   "repository": {
@@ -39,7 +39,7 @@
     "@nacre.work/core": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2"
+    "@types/node": "^26.6.2"
   },
   "keywords": [
     "nacre",
@@ -55,6 +55,6 @@
   },
   "author": "Nacre",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   }
 }

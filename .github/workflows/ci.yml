@@ -103,7 +103,7 @@ jobs:
       # field is the single source of truth, and it pins an exact version.
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
+        with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       # The OpenAPI document is the contract and runs ahead of the code, so it
@@ -348,7 +348,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
+        with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       # The whole workspace, not `--filter admin`: the console's `tsc -b` needs
       # the SDK's declarations, and a filtered build leaves it with fifteen
@@ -740,7 +740,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
+        with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       # `HttpReranker` is imported from `dist`, so this drives the artifact the
       # source produces rather than the source — the rule the console's
