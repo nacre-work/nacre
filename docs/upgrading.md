@@ -272,6 +272,14 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.26.4 — the MCP server's registry name is the domain
+
+Nothing to do. `@nacre.work/mcp` declares `mcpName: work.nacre/nacre` rather
+than `io.github.nacre-work/nacre`, so the MCP Registry entry is verified by a
+DNS record on `nacre.work` instead of by membership of a GitHub organization.
+The name was changed before the first publish, which is the only moment
+changing it costs nothing.
+
 ### 0.26.3 — Node 24, and the egress guard holds at connect time
 
 No migration, no new variable. **The server packages now require Node 24**
