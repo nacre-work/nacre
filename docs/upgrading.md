@@ -272,9 +272,18 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
-### 0.26.3 — the egress guard holds at connect time
+### 0.26.3 — Node 24, and the egress guard holds at connect time
 
-No migration, no new variable. The guard 0.26.0 put on
+No migration, no new variable. **The server packages now require Node 24**
+(`@nacre.work/core`, `api`, `mcp`; the images were already the only supported
+way to run them and now ship `node:24-alpine`). Anyone running the packages
+outside the images needs Node 24 first. `@nacre.work/sdk` and
+`@nacre.work/cli` still run on Node 22 — they are client libraries and nothing
+in them moved. Every dependency was brought up to its latest release, with one
+held back: TypeScript stays on 6.x, because typescript-eslint does not yet
+support 7.
+
+The egress change: The guard 0.26.0 put on
 `POST /v1/embedding-providers` judged a tenant's endpoint when the row was
 written, and the worker and both search surfaces resolved the name again when
 they sent — so a name that rebinds to an internal address after the check, or

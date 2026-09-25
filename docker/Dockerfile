@@ -14,7 +14,7 @@
 # to disagree about, and running it under emulation would buy a slower build and
 # an identical result. The runtime stage stays on the target platform, which is
 # what makes the image actually arm64.
-FROM --platform=$BUILDPLATFORM node:22-alpine AS build
+FROM --platform=$BUILDPLATFORM node:24-alpine AS build
 WORKDIR /app
 RUN corepack enable
 
@@ -95,7 +95,7 @@ ENV NACRE_API_UPSTREAM=api:8080
 ENV NACRE_MCP_UPSTREAM=mcp:8081
 ENV NGINX_PORT=80
 
-FROM node:22-alpine AS runtime
+FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 

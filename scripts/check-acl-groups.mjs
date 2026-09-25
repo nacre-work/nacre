@@ -20,7 +20,7 @@ import { spawnSync } from 'node:child_process'
 
 import { ACL_GROUPS, UNGROUPED } from './acl-groups.mjs'
 
-const run = spawnSync('pnpm', ['exec', 'vitest', 'list', '--project', 'acl', '--json'], {
+const run = spawnSync('pnpm', ['exec', 'vitest', 'list', '--project', 'acl', '--json', '--staticParse=false'], {
   encoding: 'utf8',
   maxBuffer: 32 * 1024 * 1024,
 })
