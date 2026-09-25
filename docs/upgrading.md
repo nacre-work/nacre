@@ -282,6 +282,10 @@ inside their own box, and the brand and the right-hand controls keep their
 width. A console with the core's own sections alone renders exactly as before;
 all twenty screenshots are byte-identical.
 
+`.table td.fit` is new: an action cell that shrinks to its widest button, so
+stacked `btn-block` buttons in it are one width rather than stretching across
+a full-width table.
+
 ### 0.26.6 — the console's lists search and page, and a platform administrator no longer sees document fetches
 
 Nothing to do. Layers, Grants, People, Service accounts and Connected

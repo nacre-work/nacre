@@ -193,6 +193,14 @@ a { color: var(--n-accent); }
    service account name or a sentence wraps, and nowrapping those buys a row
    height with a horizontal scroll. See the note in CLAUDE.md. */
 .table td.nowrap { white-space: nowrap; }
+/* An action cell whose buttons stack, one per line, and should be one width.
+   `width: 1%` shrinks the column to its content, which is its widest label;
+   `btn-block` inside then fills exactly that. Without it a full-width table
+   hands its spare width to the column and every button stretches across it.
+   Stacked rather than side by side because a row carrying two actions made
+   the column two buttons wide, and at 390 the table cut both off. */
+.table td.fit { width: 1%; }
+.table td.fit .btn-block { margin-top: 0; }
 .table tr.revoked td { opacity: 0.55; }
 
 .slug {
