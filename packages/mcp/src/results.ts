@@ -108,6 +108,21 @@ export const PROTOCOL_VERSIONS = [PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS]
  */
 export const CAPABILITIES = { tools: { listChanged: false } } as const
 
+/**
+ * `resultType`, which 2026-07-28 makes a MUST on every result a server of that
+ * revision returns — not only on `server/discover`, which is the one place it
+ * was written.
+ *
+ * Its absence is read as "complete" only for a server of an **earlier**
+ * revision. This one advertises 2026-07-28 first, so a modern client holds it
+ * to the rule and refuses the result outright: `tools/call` answered every
+ * request with a body the client discarded as malformed, which is every tool
+ * unusable over the transport the product is for. The field is additive for a
+ * legacy client, which ignores a member it does not know, so it goes on every
+ * result both eras receive and a result cannot be built without it.
+ */
+export const COMPLETE = 'complete' as const
+
 /** The version a transport reports when its entry point passed none. */
 const versionOf = (serverVersion: string | undefined): string => serverVersion ?? '0.0.0'
 
@@ -146,7 +161,7 @@ export const initializeResult = (asked: unknown, serverVersion: string | undefin
  * nothing in this result depends on who is asking.
  */
 export const discoverResult = (serverVersion: string | undefined) => ({
-  resultType: 'complete',
+  resultType: COMPLETE,
   supportedVersions: [...PROTOCOL_VERSIONS],
   capabilities: CAPABILITIES,
   _meta: {
@@ -164,13 +179,15 @@ export const discoverResult = (serverVersion: string | undefined) => ({
  * it — to another.
  */
 export const toolsListResult = (tools: readonly ToolDefinition[]) => ({
+  resultType: COMPLETE,
   tools: onTheWire(tools),
   ttlMs: TOOLS_TTL_MS,
   cacheScope: 'user',
 })
 
 /**
- * `ping`'s result: the empty object, by specification.
+ * `ping`'s result: the empty object, by specification — plus `resultType`,
+ * which the 2026-07-28 revision requires of every result (see `COMPLETE`).
  *
  * Built here like the other three even though there is nothing to build,
  * because the method itself is what diverged: ping is a MUST-respond for both
@@ -181,7 +198,7 @@ export const toolsListResult = (tools: readonly ToolDefinition[]) => ({
  * to name to return, and the parity suite reads both dispatchers' method
  * lists now, so losing the arm again fails there.
  */
-export const pingResult = (): Record<string, never> => ({})
+export const pingResult = (): { resultType: typeof COMPLETE } => ({ resultType: COMPLETE })
 
 /**
  * `tools/call`'s envelope: a CallToolResult, never the bare value.
@@ -192,6 +209,7 @@ export const pingResult = (): Record<string, never> => ({})
  * to make one.
  */
 export const callToolResult = (result: unknown) => ({
+  resultType: COMPLETE,
   content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
   isError: false,
 })

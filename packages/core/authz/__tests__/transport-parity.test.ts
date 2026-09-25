@@ -157,7 +157,7 @@ const SHARED: readonly {
     // The old guard compared SHARED against a literal list, so a method one
     // dispatcher grew could never fail it; the guard reads both dispatchers'
     // own case arms now, which is what named this one.
-    name: 'ping answers the empty object on both',
+    name: 'ping answers the same (empty but for resultType) object on both',
     method: 'ping',
     params: {},
     compare: (r) => r,
