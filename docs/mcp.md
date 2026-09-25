@@ -307,6 +307,19 @@ that is the trade for a credential that does not expire on its own.
 
 ## Tools
 
+Every tool carries a `title` and MCP `annotations`, so a client can decide
+before calling whether to ask a person first and whether a retry is safe. They
+are hints, never a control — what a caller may do is still decided by the
+permission below and the resolver, on every call.
+
+| tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+|---|---|---|---|---|
+| `search`, `list_layers`, `get_document`, `ingest_status` | true | false | true | false |
+| `ingest_document` | false | **true** — an existing `external_id` is replaced | true | **true** — `url` fetches a page |
+| `delete_document` | false | **true** | true | false |
+
+`tool-annotations.test.ts` holds this table against the catalog.
+
 ### `search`
 
 ## Limits and metrics

@@ -35,7 +35,7 @@ deployment pulls and which were amd64-only until 0.5.2.
 | `qdrant/qdrant:v1.18.3` | amd64, **arm64** | native |
 | `redis:7-alpine` | 386, amd64, arm, **arm64**, ppc64le, riscv64, s390x | native |
 | `nginx:alpine` (the admin UI) | 386, amd64, arm, **arm64**, … | native |
-| `minio/minio`, `minio/mc` (`full`) | amd64, **arm64**, ppc64le | native |
+| `cgr.dev/chainguard/minio` (`full`: server and `mc`) | amd64, **arm64** | native |
 | `quay.io/keycloak/keycloak:26.0` (`airgapped`) | amd64, **arm64** | native |
 | `ghcr.io/huggingface/text-embeddings-inference:cpu-1.6` | amd64 | **emulated** |
 
