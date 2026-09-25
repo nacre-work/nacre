@@ -272,6 +272,20 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.26.7 — the console's masthead holds more sections than one line
+
+Nothing to do. The masthead had a fixed height of 56px. A console that loads
+extension screens has twelve sections, which is more than one line holds at
+1440, so the nav spilled out of the bar and "Sign out" broke across two lines
+beside it. The masthead now has a minimum height and grows: the sections wrap
+inside their own box, and the brand and the right-hand controls keep their
+width. A console with the core's own sections alone renders exactly as before;
+all twenty screenshots are byte-identical.
+
+`.table td.fit` is new: an action cell that shrinks to its widest button, so
+stacked `btn-block` buttons in it are one width rather than stretching across
+a full-width table.
+
 ### 0.26.6 — the console's lists search and page, and a platform administrator no longer sees document fetches
 
 Nothing to do. Layers, Grants, People, Service accounts and Connected
