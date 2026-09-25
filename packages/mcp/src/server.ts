@@ -27,7 +27,7 @@ import { CATALOG_SAMPLE, catalog, dispatchCatalog, type Layer, type ToolDefiniti
 // these, rather than each building its own object — which is how one server
 // came to declare two different capability sets, and to send a cache hint over
 // one transport and not the other. results.ts has the whole argument.
-import { discoverResult, initializeResult, PROTOCOL_VERSIONS, toolsListResult, pingResult, callToolResult } from './results.js'
+import { discoverResult, initializeResult, PROTOCOL_VERSIONS, toolsListResult, pingResult, callToolResult, callToolError } from './results.js'
 
 // Re-exported because this module is what the package's entry point and the
 // surface tests already import them from.
@@ -782,7 +782,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
       // to sit here made every tool call pay for a listing it never used.
       const definition = dispatchCatalog().find((t) => t.name === params.name)
       if (definition === undefined) {
-        send(res, 404, rpcError(id, -32601, 'Not found'))
+        // A result and not a 404: on this transport a 404 means "your session
+        // is gone" and a client drops the connection. See callToolError.
+        send(res, 200, { jsonrpc: '2.0', id, result: callToolError() })
         return
       }
 
@@ -862,11 +864,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
         // Nothing else is separated out. The moment an error is about what
         // exists, it goes back into the single answer above.
         if (error instanceof MetadataError) {
-          send(res, 400, rpcError(id, -32602, error.message))
+          send(res, 200, { jsonrpc: '2.0', id, result: callToolError(error.message) })
           return
         }
 
-        send(res, 404, rpcError(id, -32601, 'Not found'))
+        send(res, 200, { jsonrpc: '2.0', id, result: callToolError() })
       }
       return
     }

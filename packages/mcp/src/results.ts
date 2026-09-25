@@ -213,3 +213,26 @@ export const callToolResult = (result: unknown) => ({
   content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
   isError: false,
 })
+
+/**
+ * `tools/call`'s answer when the call did not succeed: a CallToolResult with
+ * `isError: true`, delivered as an ordinary result.
+ *
+ * It used to be a JSON-RPC error on an HTTP `404`, and on Streamable HTTP a
+ * `404` is not "not found" — it is the transport's signal that the *session*
+ * is gone. A client that follows the specification drops its connection and
+ * starts over, so one `get_document` for a missing id made a real client
+ * (Claude Code, and claude.ai's connectors behind it) report "session
+ * expired" and then fail to reload its tools. A tool that did not find
+ * something is the tool's answer, which is what `isError` is for; the
+ * protocol keeps JSON-RPC errors for the request itself being wrong.
+ *
+ * The message is one string for every failure — a missing document, a layer
+ * the caller may not read, an unknown tool, a database that is down — which is
+ * invariant 4 unchanged: the answer names nothing the caller did not send.
+ */
+export const callToolError = (message = 'Not found') => ({
+  resultType: COMPLETE,
+  content: [{ type: 'text', text: message }],
+  isError: true,
+})

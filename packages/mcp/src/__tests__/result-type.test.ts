@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  callToolError,
   callToolResult,
   COMPLETE,
   discoverResult,
@@ -45,5 +46,15 @@ describe('resultType on every modern-era result', () => {
     const result = callToolResult([1, 2])
     expect(result.isError).toBe(false)
     expect(result.content).toEqual([{ type: 'text', text: JSON.stringify([1, 2], null, 2) }])
+  })
+})
+
+describe('a failed tool call', () => {
+  it('is a result with isError, carrying resultType, and names nothing', () => {
+    expect(callToolError()).toEqual({
+      resultType: COMPLETE,
+      content: [{ type: 'text', text: 'Not found' }],
+      isError: true,
+    })
   })
 })

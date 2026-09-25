@@ -501,8 +501,9 @@ protocol rejects anything else, so this is not a stylistic point: the server
 returned raw arrays for its first several revisions, every test in the suite
 passed, and no compliant client could have read a single result.
 
-An error is the exception rather than a variant of the result: a failing tool
-and an unknown one both answer with a JSON-RPC error carrying nothing about
+A failing tool and an unknown one both answer with a `CallToolResult` whose
+`isError` is true and whose text is `Not found` — never an HTTP `404`, which
+on Streamable HTTP tells a client its session is gone — carrying nothing about
 which, because distinguishing them tells the caller whether a tool — and so a
 layer — exists. The reason is logged on the server, where an operator can see
 that a database is down rather than reading it as a tool that does not exist.
