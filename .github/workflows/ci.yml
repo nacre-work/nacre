@@ -81,11 +81,16 @@ jobs:
       # works and no longer publishes `latest` at all — checked by pulling it.
       # The bucket is made with the `mc` inside the image, because this client
       # deliberately has no create-bucket operation.
+      #
+      # Chainguard's build and not `minio/minio`: MinIO took its images off
+      # Docker Hub (the repository answers 404), which turned every job with
+      # this step red on `main` as well as on every pull request. Same server,
+      # same `mc` inside, entrypoint already `minio`.
       - name: a real object store to sign against
         run: |
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:latest server /data
+            cgr.dev/chainguard/minio:latest server /data
           for i in $(seq 1 30); do
             curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1 && break
             sleep 1

@@ -272,6 +272,21 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.26.1 — MCP tool results a current client accepts
+
+No migration, no new variable, nothing to do but upgrade — and upgrade soon if
+anything connects over MCP. The 2026-07-28 revision requires `resultType` on
+every result, and this server sent it on `server/discover` only; a client
+speaking that revision (Claude Code among them) listed the tools and then
+refused **every** tool result as malformed. `tools/list`, `tools/call` and
+`ping` carry it now. Every tool also carries MCP `annotations` — read-only,
+destructive, idempotent, open-world — so a client can tell `search` from
+`delete_document` before calling either.
+
+The `full` Compose profile's object store is `cgr.dev/chainguard/minio` rather
+than `minio/minio`, which is no longer published on Docker Hub. Same server,
+same data directory, same credentials; the volume carries over.
+
 ### 0.26.0 — an egress guard, and listings that page at scale
 
 No migration and no new variable. Two behaviour changes worth reading before

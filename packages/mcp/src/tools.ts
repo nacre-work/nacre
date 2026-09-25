@@ -19,10 +19,35 @@ export interface Layer {
   readonly documentCount: number
 }
 
+/**
+ * MCP's `ToolAnnotations`: what a client may assume about a tool before it
+ * calls one — whether to ask a person first, whether a retry is safe.
+ *
+ * Every tool carries them, and the type requires it. Without them a client has
+ * to assume the worst of every tool (the specification's defaults are "may
+ * modify, may destroy, not idempotent, reaches the open world"), which makes a
+ * careful client confirm every `search` and a careless one confirm nothing —
+ * the delete included. They are hints and never a control: what a caller may
+ * actually do is decided by `permission` and the resolver, on every call.
+ */
+export interface ToolAnnotations {
+  readonly title: string
+  /** Changes nothing anywhere. `ingest_status` qualifies: it reads a job. */
+  readonly readOnlyHint: boolean
+  /** May remove or replace what is already there. Meaningless when read-only. */
+  readonly destructiveHint: boolean
+  /** Calling twice with the same arguments leaves the same state as once. */
+  readonly idempotentHint: boolean
+  /** Reaches beyond this installation's own data. */
+  readonly openWorldHint: boolean
+}
+
 export interface ToolDefinition {
   readonly name: string
+  readonly title: string
   readonly description: string
   readonly inputSchema: Record<string, unknown>
+  readonly annotations: ToolAnnotations
   readonly permission: ToolPermission
 }
 
@@ -120,6 +145,14 @@ export function catalog(
   return [
     {
       name: 'search',
+      title: 'Search documents',
+      annotations: {
+        title: 'Search documents',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       description: searchDescription(layers, options),
       permission: 'read',
       inputSchema: {
@@ -171,6 +204,14 @@ export function catalog(
     },
     {
       name: 'list_layers',
+      title: 'List layers',
+      annotations: {
+        title: 'List layers',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       description:
         'The layers you can read, with descriptions and document counts. ' +
         'One page per call: pass next_cursor from the previous answer to continue.',
@@ -189,20 +230,47 @@ export function catalog(
     },
     {
       name: 'get_document',
-      description: 'Fetch one document by id, or by external id within a layer.',
+      title: 'Get a document',
+      annotations: {
+        title: 'Get a document',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      description:
+        'Fetch one document by id, or by external_id within a layer: its title, layer, status and ' +
+        'metadata. Read-only.',
       permission: 'read',
       inputSchema: {
         type: 'object',
         properties: {
-          document_id: { type: 'string' },
-          external_id: { type: 'string' },
-          layer: { type: 'string' },
+          document_id: {
+            type: 'string',
+            description: 'The document id, as search returns it.',
+          },
+          external_id: {
+            type: 'string',
+            description: 'The id the document was ingested under. Needs layer as well.',
+          },
+          layer: {
+            type: 'string',
+            description: 'Layer slug; required with external_id.',
+          },
         },
         additionalProperties: false,
       },
     },
     {
       name: 'ingest_status',
+      title: 'Check an ingest',
+      annotations: {
+        title: 'Check an ingest',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       /**
        * The tool an agent needs and did not have.
        *
@@ -233,21 +301,51 @@ export function catalog(
     },
     {
       name: 'ingest_document',
+      title: 'Add or update a document',
+      // Destructive because sending an external_id that already exists
+      // replaces that document's content; idempotent for the same reason.
+      // Open world because `url` makes the parser fetch somebody else's page.
+      annotations: {
+        title: 'Add or update a document',
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
       description:
-        'Add or update a document in a layer. Returns `queued`: the document is accepted, not ' +
-        'yet indexed. Check ingest_status with the job_id before treating it as searchable.',
+        'Add or update a document in a layer. An external_id that already exists is replaced. ' +
+        'Returns `queued`: the document is accepted, not yet indexed. Check ingest_status with ' +
+        'the job_id before treating it as searchable.',
       // write, and write does not imply read: a service account that only
       // uploads must not be able to search what it uploaded.
       permission: 'write',
       inputSchema: {
         type: 'object',
         properties: {
-          layer: { type: 'string' },
-          external_id: { type: 'string', description: 'Idempotency key' },
+          layer: {
+            type: 'string',
+            description: 'Slug of the layer to write into.',
+          },
+          external_id: {
+            type: 'string',
+            description:
+              'Your id for the document and the idempotency key: sending the same one again ' +
+              'replaces that document instead of adding a second.',
+          },
           title: { type: 'string' },
-          content: { type: 'string' },
-          url: { type: 'string' },
-          metadata: { type: 'object' },
+          content: {
+            type: 'string',
+            description: 'The text to index. One of content or url is required.',
+          },
+          url: {
+            type: 'string',
+            description: 'A public page to fetch and index instead of content.',
+          },
+          metadata: {
+            type: 'object',
+            description:
+              'Flat key/value tags (lower-case keys) that search can filter on with `filters`.',
+          },
         },
         required: ['layer'],
         additionalProperties: false,
@@ -255,14 +353,34 @@ export function catalog(
     },
     {
       name: 'delete_document',
-      description: 'Tombstone a document. It leaves search results immediately.',
+      title: 'Delete a document',
+      annotations: {
+        title: 'Delete a document',
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      description:
+        'Delete a document: it leaves search results immediately and its vectors are reclaimed ' +
+        'later. Destructive: there is no undelete; sending it again with ingest_document brings it ' +
+        'back. Identify it by document_id, or by external_id with layer.',
       permission: 'write',
       inputSchema: {
         type: 'object',
         properties: {
-          document_id: { type: 'string' },
-          external_id: { type: 'string' },
-          layer: { type: 'string' },
+          document_id: {
+            type: 'string',
+            description: 'The document id, as search returns it.',
+          },
+          external_id: {
+            type: 'string',
+            description: 'The id the document was ingested under. Needs layer as well.',
+          },
+          layer: {
+            type: 'string',
+            description: 'Layer slug; required with external_id.',
+          },
         },
         additionalProperties: false,
       },
