@@ -220,7 +220,7 @@ const FIXTURES = {
         actor: { type: 'user', id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', label: 'user:0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90' },
         surface: 'rest',
         client: null,
-        action: 'grant.issue',
+        action: 'issue_grant',
         target: { grant_id: '4f8b2d61-95ce-4a07-b3d2-1e6a8c05f7b4', scope: 'layer:handbook' },
         result: 'allow',
         detail: {},
@@ -232,7 +232,7 @@ const FIXTURES = {
         actor: { type: 'service_account', id: 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55', label: 'service_account:c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55' },
         surface: 'mcp',
         client: 'claude-desktop',
-        action: 'document.read',
+        action: 'get_document',
         target: { doc_id: 'e77a3c10-9d42-4b86-8f51-0a4c7e93b2d6' },
         result: 'allow',
         detail: {},
@@ -248,7 +248,7 @@ const FIXTURES = {
         actor: { type: 'user', id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', label: 'user:0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90' },
         surface: 'rest',
         client: null,
-        action: 'document.ingest',
+        action: 'ingest',
         target: { layer: 'handbook' },
         result: 'error',
         detail: {},
@@ -589,6 +589,47 @@ await shot('layers-empty', {
 })
 
 await shot('layers', { hash: '#/layers' })
+/*
+ * A list longer than a page, which is the state the search box and the pager
+ * exist for and the one no default fixture has. Generated rather than written
+ * out: what is under test is the pager — `1–50 of 120`, Previous disabled on
+ * the first page — and 120 hand-written layers would be a fixture nobody reads.
+ * Photographed on page two, because a pager that has only ever been seen on
+ * page one has not been seen to page.
+ */
+const MANY_LAYERS = Array.from({ length: 120 }, (_, i) => {
+  const n = String(i + 1).padStart(3, '0')
+  return {
+    id: `7d0e4b2a-51c6-4f38-9a07-3e8c1f5b${n}a0`.slice(0, 36),
+    slug: `team-${n}`,
+    name: `Team ${n}`,
+    workspace_id: WORKSPACE,
+    description: i % 3 === 0 ? 'Runbooks and on-call notes' : 'Design documents',
+    document_count: (i * 7) % 90,
+  }
+})
+await shot('layers-paged', {
+  hash: '#/layers',
+  fixtures: { 'GET /v1/layers': { items: MANY_LAYERS, next_cursor: null } },
+  prepare: async (page) => {
+    await page.getByRole('button', { name: 'Next' }).click()
+    // The pager scrolls the list back into view, which is right for a reader
+    // and wrong for a full-page picture: the sticky masthead would be painted
+    // at the scroll offset, halfway down the image.
+    await page.evaluate(() => globalThis.scrollTo(0, 0))
+    await page.waitForTimeout(100)
+  },
+})
+// The same list narrowed by the box, across pages: `on-call` is on every third
+// layer, so forty of them — one page, and no pager.
+await shot('layers-search', {
+  hash: '#/layers',
+  fixtures: { 'GET /v1/layers': { items: MANY_LAYERS, next_cursor: null } },
+  prepare: async (page) => {
+    await page.getByRole('searchbox').fill('on-call')
+    await page.waitForTimeout(100)
+  },
+})
 await shot('new-layer', {
   hash: '#/layers',
   prepare: async (page) => {
@@ -605,7 +646,23 @@ await shot('search', {
   },
 })
 await shot('grants', { hash: '#/grants' })
+// A query that empties the list says so, rather than drawing an empty table
+// under a box somebody may have forgotten they typed into.
+await shot('grants-no-match', {
+  hash: '#/grants',
+  prepare: async (page) => {
+    await page.getByRole('searchbox').fill('contractors')
+    await page.waitForTimeout(100)
+  },
+})
 await shot('people', { hash: '#/people' })
+await shot('people-search', {
+  hash: '#/people',
+  prepare: async (page) => {
+    await page.getByRole('searchbox', { name: 'Search users by email or role' }).fill('member')
+    await page.waitForTimeout(100)
+  },
+})
 await shot('new-user', {
   hash: '#/people',
   prepare: async (page) => {
@@ -694,6 +751,38 @@ await shot('audit-actor', {
     await page.waitForTimeout(150)
   },
 })
+/*
+ * The same narrowing reached by typing a name, which is what somebody does
+ * when the actor they are after is not on the first page. The field resolves
+ * the name to the id the endpoint takes; the fixture is again the filtered
+ * response, so the picture is of the filter applied.
+ */
+await shot('audit-user', {
+  hash: '#/audit',
+  fixtures: {
+    'GET /v1/audit': {
+      items: FIXTURES['GET /v1/audit'].items.filter(
+        (record) => record.actor.id === 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55',
+      ),
+      next_cursor: null,
+    },
+  },
+  prepare: async (page) => {
+    await page.getByRole('combobox', { name: 'User' }).fill('support')
+    await page.getByRole('button', { name: 'Filter' }).click()
+    await page.waitForTimeout(150)
+  },
+})
+// A name that means several accounts is refused with the candidates rather
+// than guessed — the log of the wrong person looks exactly like the right one.
+await shot('audit-user-ambiguous', {
+  hash: '#/audit',
+  prepare: async (page) => {
+    await page.getByRole('combobox', { name: 'User' }).fill('example')
+    await page.getByRole('button', { name: 'Filter' }).click()
+    await page.waitForTimeout(150)
+  },
+})
 // A platform administrator signing into a tenant's console.
 //
 // `administers(auth)` in the API is `org_admin` and nothing else — a
@@ -752,7 +841,13 @@ await shot('audit-platform-admin', {
     'GET /v1/groups': 404,
     'GET /v1/service-accounts': 404,
     'GET /v1/audit': {
-      items: FIXTURES['GET /v1/audit'].items.filter((record) => record.action !== 'document.read'),
+      // Both document-access actions, because that is what the server
+      // withholds: it filtered on `document.read`, a name nothing records, so
+      // this picture kept a `search` row the platform administrator is never
+      // sent. `lint:audit-actions` now holds every fixture action to the list.
+      items: FIXTURES['GET /v1/audit'].items.filter(
+        (record) => record.action !== 'get_document' && record.action !== 'search',
+      ),
       next_cursor: null,
     },
   },

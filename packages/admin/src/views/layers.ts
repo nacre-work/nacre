@@ -2,6 +2,7 @@ import type { Layer, Workspace } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { clear, h, shortId } from '../dom.js'
+import { listing } from '../listing.js'
 import { picker } from '../pick.js'
 import { migratePanel } from './migrate.js'
 
@@ -35,7 +36,14 @@ export async function layersView(root: HTMLElement): Promise<void> {
   try {
     const layers = await client().layers.list()
     clear(body)
-    body.append(layers.length === 0 ? empty(root) : table(layers, root))
+    body.append(layers.length === 0
+      ? empty(root)
+      : listing({
+          rows: layers,
+          fields: (l) => [l.slug, l.name, l.description],
+          label: 'Search layers by slug, name or description',
+          render: (shown) => table(shown, root),
+        }))
   } catch (error) {
     clear(body)
     body.append(h('div', { class: 'error' }, explain(error)))

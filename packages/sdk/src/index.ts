@@ -39,6 +39,7 @@
  * Contract: docs/api.md, machine-readable in docs/openapi.yaml.
  */
 
+export { AUDIT_ACTIONS, type AuditActionInfo } from './audit-actions.js'
 export { NacreClient, type ClientOptions } from './client.js'
 export { NacreError, NacreTransportError, type Problem } from './errors.js'
 export type {

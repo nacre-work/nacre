@@ -1,6 +1,6 @@
 {
   "name": "@nacre.work/mcp",
-  "version": "0.26.5",
+  "version": "0.26.6",
   "description": "Nacre MCP server: Streamable HTTP and STDIO",
   "mcpName": "work.nacre/nacre",
   "repository": {

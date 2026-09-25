@@ -272,6 +272,23 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.26.6 — the console's lists search and page, and a platform administrator no longer sees document fetches
+
+Nothing to do. Layers, Grants, People, Service accounts and Connected
+applications have a search box and pages of fifty, over the whole collection
+the SDK already loads — no API change. The Access log's Action box offers the
+action names as they are recorded, and a User field turns an address or a
+service account's name into the actor filter.
+
+Writing that list found the deny-list that keeps a `platform_admin` from being
+shown who read what naming `document.get`, `document.read` and `chunk.read` —
+names nothing records — while REST and MCP both record a fetch as
+`get_document`. A platform administrator's `GET /v1/audit` therefore included
+every document fetch. It is derived from one catalogue of actions now
+(`packages/core/audit-actions.ts`, copied into the SDK as `AUDIT_ACTIONS`), and
+`lint:audit-actions` holds every writer to it. Records already written are
+unchanged; what a platform administrator is *shown* of them changes on upgrade.
+
 ### 0.26.5 — `tools/list` is never cached, and says so in a word clients know
 
 Nothing to do. `tools/list` answered `ttlMs: 300000, cacheScope: "user"`. The

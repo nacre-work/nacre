@@ -149,7 +149,9 @@ multi-tenancy module, which inherits this endpoint and where a platform
 administrator spans tenants.
 
 The set of actions treated as document access is a **deny-list**, in
-`PostgresAuditReader.DOCUMENT_ACCESS`. That is the uncomfortable direction — a
+`PostgresAuditReader.DOCUMENT_ACCESS` — derived from the `documentAccess` flag
+in `packages/core/audit-actions.ts` rather than written out, since the list
+that stood there named three actions nothing records and missed `get_document`. That is the uncomfortable direction — a
 new action defaults to visible to a platform administrator rather than hidden —
 and it is chosen because the alternative fails worse. An allow-list of
 administrative actions means a new administrative action is invisible to the
@@ -157,7 +159,7 @@ operator who administers the installation until someone remembers to add it: a
 silent gap in an operational tool. This way a new *access* action is visible
 until someone adds it, which is a disclosure to an already highly-privileged
 role within one installation. Both are bugs; only one of them is quiet. Adding
-an action means updating that list, which the `audit-event` checklist says.
+an action means adding it to that catalogue, which the `audit-event` checklist says.
 
 Reading the log is itself recorded, as `audit.read`. It is the one action where
 leaving that out would be self-serving.
@@ -183,12 +185,22 @@ the `audit` module.
 
 ![The access log](./assets/admin/audit.png)
 
-`action`, `result`, `from` and `to` are on the screen as controls. `actor_id` is
-**not a field**, because nobody knows a uuid and a wrong one comes back as an
-empty log — which reads as "nothing happened" rather than as "you typed it
-wrong", and on this screen those are opposite answers. The list is the picker:
-pressing an actor narrows the log to that actor, and a chip beside the filters
-clears it.
+`action`, `result`, `from` and `to` are on the screen as controls. The Action
+box offers every action the core records, from the catalogue in
+`packages/core/audit-actions.ts` — the same list the platform administrator's
+deny-list is derived from, held against every writer by `lint:audit-actions` —
+and still takes free text, because a failed request is recorded under its path
+and a commercial module records names of its own. `actor_id` is **not a
+field**, because nobody knows a uuid and a wrong one comes back as an empty log
+— which reads as "nothing happened" rather than as "you typed it wrong", and on
+this screen those are opposite answers. The list is the picker: pressing an
+actor narrows the log to that actor, and a chip beside the filters clears it.
+The **User** field is the other way in: it takes an address or a service
+account's name, offers the accounts the console can resolve, and turns the
+choice into `actor_id` — refusing, rather than sending, a name that matches
+nobody or several.
+
+![The log narrowed by typing a name](./assets/admin/audit-user.png)
 
 ![The log narrowed to one actor](./assets/admin/audit-actor.png)
 

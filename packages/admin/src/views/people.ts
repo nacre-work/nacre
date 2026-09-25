@@ -2,6 +2,7 @@ import type { Group, GroupMember, User } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { agoCell, clear, copyableId, copyText, h, shortId } from '../dom.js'
+import { listing } from '../listing.js'
 import { picker } from '../pick.js'
 
 /**
@@ -42,9 +43,23 @@ export async function peopleView(root: HTMLElement): Promise<void> {
     clear(body)
     body.append(
       h('h2', { class: 'section' }, 'Users'),
-      users.length === 0 ? noUsers() : userTable(users, root),
+      users.length === 0
+        ? noUsers()
+        : listing({
+            rows: users,
+            fields: (u) => [u.email, u.role],
+            label: 'Search users by email or role',
+            render: (shown) => userTable(shown, root),
+          }),
       h('h2', { class: 'section' }, 'Groups'),
-      groups.length === 0 ? noGroups(root) : groupTable(groups, root),
+      groups.length === 0
+        ? noGroups(root)
+        : listing({
+            rows: groups,
+            fields: (g) => [g.name],
+            label: 'Search groups by name',
+            render: (shown) => groupTable(shown, root),
+          }),
     )
   } catch (error) {
     clear(body)

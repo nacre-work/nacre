@@ -186,6 +186,7 @@ jobs:
       - run: pnpm lint:endpoint-errors
       - run: pnpm lint:sparse
       - run: pnpm lint:audit-target
+      - run: pnpm lint:audit-actions
       # Four spellings of "act on this person" — demote, disable, delete,
       # reset the password — each of which had to remember that a
       # `platform_admin` is not administered from inside an organization, with

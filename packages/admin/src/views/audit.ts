@@ -1,8 +1,9 @@
-import type { AuditRecord, AuditQuery } from '@nacre.work/sdk'
+import { AUDIT_ACTIONS, type AuditRecord, type AuditQuery } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { agoCell, clear, h, shortId } from '../dom.js'
-import { type Names, names } from '../names.js'
+import { matchActor } from '../listing.js'
+import { type Directory, type Names, directory } from '../names.js'
 
 /**
  * The access log.
@@ -53,6 +54,28 @@ import { type Names, names } from '../names.js'
  * The wrong id therefore cannot be asked for. It also cannot be *typed*, which
  * is the one thing lost: somebody arriving with an id from elsewhere uses the
  * export, which the lede names.
+ *
+ * ## A name can be typed, though
+ *
+ * Pressing an actor needs the actor to be on the page already, and on a busy
+ * log the person being investigated may be three hundred records down. So
+ * there is a **User** field that takes what a person knows — an address, or a
+ * service account's name — offers the accounts the console can resolve as a
+ * list, and turns the choice into the `actor_id` the endpoint takes. A name
+ * matching nobody, or several, is said so and not sent: an empty log would
+ * read as "they did nothing", and the log of the wrong one looks exactly like
+ * the right one. Absent where no account can be resolved — a platform
+ * administrator, whom the listings refuse — because a field that can only ever
+ * answer "no match" is a control that does not work.
+ *
+ * ## The action names are offered, not guessed
+ *
+ * The Action box's example was `grant.issue`, which nothing records — the
+ * handler writes `issue_grant` — and the filter is an exact match, so the
+ * example was an empty log. It offers `AUDIT_ACTIONS` now, the SDK's copy of
+ * the core's catalogue that `lint:audit-actions` holds against every writer.
+ * Still free text: a request that failed is recorded under its path, and a
+ * commercial module records names this list cannot know.
  *
  * ## Reading it is recorded
  *
@@ -107,7 +130,30 @@ const endOf = (day: string): string => new Date(`${day}T23:59:59.999`).toISOStri
 export async function auditView(root: HTMLElement, isPlatformAdmin = false): Promise<void> {
   clear(root)
 
-  const action = h('input', { class: 'input', placeholder: 'grant.issue', 'aria-label': 'Action' }) as HTMLInputElement
+  // Once per visit rather than per filter: the names are what the Actor column
+  // and the User field both read, and they do not change while somebody is
+  // narrowing a log.
+  const known: Promise<Directory> = directory()
+
+  const actions = h('datalist', { id: 'audit-actions' },
+    ...AUDIT_ACTIONS.map((a) => h('option', { value: a.name, label: a.summary })),
+  )
+  const action = h('input', {
+    class: 'input',
+    list: 'audit-actions',
+    placeholder: 'Any action',
+    autocomplete: 'off',
+    'aria-label': 'Action',
+  }) as HTMLInputElement
+  const people = h('datalist', { id: 'audit-actors' })
+  const who = h('input', {
+    class: 'input',
+    list: 'audit-actors',
+    placeholder: 'Email or service account',
+    autocomplete: 'off',
+    'aria-label': 'User',
+  }) as HTMLInputElement
+  const whoField = h('label', { class: 'field grow' }, h('span', {}, 'User'), who, people)
   const result = h('select', { class: 'input', 'aria-label': 'Result' },
     h('option', { value: '' }, 'Any result'),
     h('option', { value: 'allow' }, 'allow'),
@@ -116,12 +162,25 @@ export async function auditView(root: HTMLElement, isPlatformAdmin = false): Pro
   ) as HTMLSelectElement
   const from = h('input', { class: 'input', type: 'date', 'aria-label': 'From' }) as HTMLInputElement
   const to = h('input', { class: 'input', type: 'date', 'aria-label': 'To' }) as HTMLInputElement
+  // `.error` draws a box, so this is hidden while it has nothing to say.
+  const problem = h('div', { class: 'error', hidden: true })
 
   const scope = h('div', {})
   const body = h('div', {})
 
-  /** Set by pressing an actor in the log, cleared by the chip beside it. */
+  /**
+   * Set by pressing an actor in the log or by the User field, cleared by the
+   * chip beside it. `actorLabel` is what the field shows for it — undefined
+   * for an actor the console cannot name, so an empty field does not clear a
+   * filter that was set by a press.
+   */
   let actorId: string | undefined
+  let actorLabel: string | undefined
+
+  void known.then((found) => {
+    whoField.hidden = found.actors.length === 0
+    people.append(...found.actors.map((a) => h('option', { value: a.label })))
+  })
 
   // Narrowed rather than cast. `exactOptionalPropertyTypes` is on here, so a
   // cast to `AuditQuery['result']` widens to include `undefined` and a spread of
@@ -145,18 +204,60 @@ export async function auditView(root: HTMLElement, isPlatformAdmin = false): Pro
     }
   }
 
-  const apply = (): void => {
-    clear(scope)
-    if (actorId !== undefined) {
-      scope.append(
-        h('div', { class: 'row' },
-          h('span', { class: 'muted' }, 'Only this actor:'),
-          shortId(actorId),
-          h('button', { class: 'btn btn-quiet', onclick: () => { actorId = undefined; apply() } }, 'Clear'),
-        ),
-      )
+  const setActor = (id: string | undefined, label: string | undefined): void => {
+    actorId = id
+    actorLabel = label
+    who.value = label ?? ''
+  }
+
+  /**
+   * What the User field means, or a sentence saying why it means nothing.
+   *
+   * Refused rather than sent when it names nobody or several: see the header.
+   */
+  const resolveWho = async (): Promise<string | undefined> => {
+    const typed = who.value.trim()
+    if (typed === '') {
+      if (actorLabel !== undefined) setActor(undefined, undefined)
+      return undefined
     }
-    void load(body, query(), (id) => { actorId = id; apply() })
+    if (actorLabel !== undefined && typed.toLocaleLowerCase() === actorLabel.toLocaleLowerCase()) return undefined
+    const match = matchActor(typed, (await known).actors)
+    if (match.kind === 'none') return `No user or service account matches “${typed}”.`
+    if (match.kind === 'many') {
+      const some = match.actors.slice(0, 3).map((a) => a.label).join(', ')
+      return `“${typed}” matches ${String(match.actors.length)} accounts (${some}${match.actors.length > 3 ? ', …' : ''}). Type more of it.`
+    }
+    setActor(match.actor.id, match.actor.label)
+    return undefined
+  }
+
+  const apply = (): void => {
+    void (async () => {
+      problem.hidden = true
+      const refused = await resolveWho()
+      if (refused !== undefined) {
+        problem.textContent = refused
+        problem.hidden = false
+        return
+      }
+      const resolved = await known
+      clear(scope)
+      if (actorId !== undefined) {
+        const id = actorId
+        scope.append(
+          h('div', { class: 'row' },
+            h('span', { class: 'muted' }, 'Only this actor:'),
+            resolved.names.get(id) === undefined ? shortId(id) : h('span', { class: 'named', title: id }, resolved.names.get(id) as string),
+            h('button', { class: 'btn btn-quiet', onclick: () => { setActor(undefined, undefined); apply() } }, 'Clear'),
+          ),
+        )
+      }
+      void load(body, query(), resolved.names, (id) => {
+        setActor(id, resolved.actors.find((a) => a.id === id)?.label)
+        apply()
+      })
+    })()
   }
 
   root.append(
@@ -172,21 +273,36 @@ export async function auditView(root: HTMLElement, isPlatformAdmin = false): Pro
           'The same endpoint serves JSONL and CSV by content negotiation, for anything larger than a screen.'),
       ),
     ),
+    actions,
+    // Two rows rather than one: six controls do not fit a phone's width on one
+    // line, and the two text fields are the ones that want the room.
     h('div', { class: 'row' },
       h('label', { class: 'field grow' }, h('span', {}, 'Action'), action),
+      whoField,
+    ),
+    h('div', { class: 'row wrap' },
       h('label', { class: 'field' }, h('span', {}, 'Result'), result),
       h('label', { class: 'field' }, h('span', {}, 'From'), from),
       h('label', { class: 'field' }, h('span', {}, 'To'), to),
       h('button', { class: 'btn', onclick: apply }, 'Filter'),
     ),
+    problem,
     // The one interaction on this screen that nothing else announces. A
     // pressable actor looks like an actor until a pointer is over it, and on a
     // phone there is no pointer at all — so the affordance is a sentence rather
     // than a decoration on fifty rows.
-    h('p', { class: 'hint' }, 'Press an actor to see only what they did.'),
+    h('p', { class: 'hint' }, 'Press an actor to see only what they did, or type their address above.'),
     scope,
     body,
   )
+
+  // Enter in either text field is Filter, which is what a person typing into
+  // a filter box expects and what the date and select controls do not need.
+  for (const field of [action, who]) {
+    field.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') apply()
+    })
+  }
 
   apply()
 }
@@ -198,21 +314,23 @@ export async function auditView(root: HTMLElement, isPlatformAdmin = false): Pro
  * has — and it has it because a journal grows while you read it, so an offset
  * would skip a record between one page and the next.
  *
- * The names are asked for beside the page rather than after it: they are what
- * the Actor column reads, so serialising the two would show a table of uuids
- * that then rewrote itself. `names` refuses nothing — every list it asks for is
+ * The names arrive already resolved — the view asks for them once per visit,
+ * before the first page, so the table is never a column of uuids that then
+ * rewrites itself. `directory` refuses nothing — every list it asks for is
  * settled separately — so a `platform_admin`, whom `GET /v1/users` does not
  * answer, gets an empty map and every actor falls back to its kind.
  */
-async function load(body: HTMLElement, query: AuditQuery, onActor: (id: string) => void): Promise<void> {
+async function load(
+  body: HTMLElement,
+  query: AuditQuery,
+  resolved: Names,
+  onActor: (id: string) => void,
+): Promise<void> {
   clear(body)
   body.append(h('p', { class: 'muted' }, 'Loading…'))
 
   try {
-    const [page, resolved] = await Promise.all([
-      client().audit.read({ ...query, limit: PAGE }),
-      names(),
-    ])
+    const page = await client().audit.read({ ...query, limit: PAGE })
     clear(body)
     if (page.items.length === 0) {
       body.append(empty(query))
@@ -269,7 +387,7 @@ const empty = (query: AuditQuery) =>
     h('p', {},
       Object.keys(query).length === 0
         ? 'Requires org_admin or platform_admin to read. Anyone else gets the same answer as an organization with an empty log — the endpoint answers 404 rather than 403, so "not permitted" and "nothing here" are deliberately the same answer.'
-        : 'No record matches those filters. They are exact rather than a search: an action is the whole action name.'),
+        : 'No record matches those filters. They are exact rather than a search: an action is the whole action name, as the Action box lists it.'),
   )
 
 /**

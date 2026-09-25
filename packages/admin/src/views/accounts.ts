@@ -2,6 +2,7 @@ import type { ServiceAccount } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { agoCell, clear, copyableId, copyText, h } from '../dom.js'
+import { listing } from '../listing.js'
 
 /**
  * Service accounts.
@@ -33,7 +34,14 @@ export async function accountsView(root: HTMLElement): Promise<void> {
   try {
     const accounts = await client().serviceAccounts.list()
     clear(body)
-    body.append(accounts.length === 0 ? empty() : table(accounts, root))
+    body.append(accounts.length === 0
+      ? empty()
+      : listing({
+          rows: accounts,
+          fields: (a) => [a.name, a.keyPrefix],
+          label: 'Search service accounts by name or key prefix',
+          render: (shown) => table(shown, root),
+        }))
   } catch (error) {
     clear(body)
     body.append(h('div', { class: 'error' }, explain(error)))

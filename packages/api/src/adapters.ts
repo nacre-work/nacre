@@ -38,6 +38,7 @@ import {
   type ReindexState,
   classifyIngestFailure,
   withoutHosts,
+  DOCUMENT_ACCESS_ACTIONS,
 } from '@nacre.work/core'
 import { createHash } from 'node:crypto'
 
@@ -2851,9 +2852,14 @@ export class PostgresAuditReader implements AuditReader {
    * adds it here, which is a disclosure to an already highly-privileged role
    * within one installation. Both are bugs; only one of them is quiet.
    *
-   * The `audit-event` skill's checklist is where this list is kept in step.
+   * It is `documentAccess` on the core's action catalogue rather than a list of
+   * its own. The list that stood here named `document.get`, `document.read` and
+   * `chunk.read`, none of which anything records — while the REST route and the
+   * MCP tool both record a fetch as `get_document`, so every document fetch was
+   * on a platform administrator's log. `lint:audit-actions` holds the catalogue
+   * against every writer, which is what keeps this derivation honest.
    */
-  private static readonly DOCUMENT_ACCESS = ['search', 'document.read', 'document.get', 'chunk.read']
+  private static readonly DOCUMENT_ACCESS = DOCUMENT_ACCESS_ACTIONS
 
   async read(auth: AuthContext, query: AuditQuery, page: Page): Promise<PageResult<AuditRecord>> {
     return withOrg(

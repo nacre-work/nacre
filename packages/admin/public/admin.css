@@ -458,6 +458,10 @@ a { color: var(--n-accent); }
    rather than the property. `lint:admin-layout` requires this reset on every
    edge-aligned container now. */
 .row > * { margin-bottom: 0; }
+/* A row of several controls that may not fit a phone: the access log's
+   Result, From, To and Filter overflowed 390px and pushed the button off the
+   screen. Wrapping keeps each control whole; the gap spaces the lines. */
+.row.wrap { flex-wrap: wrap; }
 
 /* One control's worth of space, whichever of the four things is in it — a
    select, a name, a sentence, or the id field that appears only when the list
@@ -697,6 +701,23 @@ th.tick {
 .searchbar { display: flex; gap: 10px; align-items: center; margin-bottom: 20px; }
 .searchbar .input[type='search'] { flex: 1; }
 .count { font-size: 14px; color: var(--n-text); margin: 0 0 14px; }
+
+/* ─── Lists ───────────────────────────────────────────────────────────── */
+/* Every list screen puts `.searchbar` above its table and this under it —
+   `listing.ts`, one module, so the five screens cannot drift apart. The range
+   sits at the start and the two buttons at the end, where a thumb finds them
+   without reading. `margin-top` is the headroom a control needs under the
+   table's last row, and the pager is empty — and takes no room — while
+   everything fits on one page. */
+.pager { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.pager > .muted { margin-right: auto; font-size: 13px; }
+.pager:empty { display: none; }
+/* Turning a page scrolls the list's search box into view; this keeps it out
+   from under the sticky masthead (56px) with room to spare. */
+.searchbar { scroll-margin-top: 72px; }
+/* A refusal above a line of prose — the access log's User field saying a name
+   matched several accounts — sat flush against the hint under it. */
+.error + .hint { margin-top: 10px; }
 
 .results { display: flex; flex-direction: column; gap: 12px; }
 .hit {

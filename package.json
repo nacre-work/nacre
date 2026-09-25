@@ -55,6 +55,7 @@
     "lint:image-packages": "node scripts/check-image-packages.mjs",
     "lint:published": "node scripts/check-published-manifests.mjs",
     "lint:audit-target": "node scripts/check-audit-target.mjs",
+    "lint:audit-actions": "node scripts/check-audit-actions.mjs",
     "lint:platform-admin-target": "node scripts/check-platform-admin-target.mjs"
   },
   "devDependencies": {
