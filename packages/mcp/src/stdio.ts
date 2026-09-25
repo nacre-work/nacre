@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto'
 import { createInterface } from 'node:readline'
 
 import { authenticate, Problem, type AuthContext, type VerifyOptions } from '@nacre.work/api'
-import { logger } from '@nacre.work/core'
+import { logger, MetadataError } from '@nacre.work/core'
 
 import { CATALOG_SAMPLE, catalog, dispatchCatalog } from './tools.js'
 // The same three results the HTTP transport answers with, built once. Each was
 // hand-built in both files until a capability set and a cache hint diverged.
-import { discoverResult, initializeResult, toolsListResult, pingResult, callToolResult } from './results.js'
+import { discoverResult, initializeResult, toolsListResult, pingResult, callToolResult, callToolError } from './results.js'
 import { PROTOCOL_VERSION } from './server.js'
 import type { Layers, ToolRunner } from './server.js'
 
@@ -175,17 +175,25 @@ async function dispatch(
       // Names and permissions only — dispatch reads no description, so it
       // pays for no listing. Same reasoning, same function, as Streamable HTTP.
       const visible = dispatchCatalog()
-      if (!visible.some((t) => t.name === call.name)) throw new Error('unknown tool')
+      // A tool that failed answers with a result carrying isError, exactly as
+      // Streamable HTTP does — see callToolError. The reason goes to stderr.
+      if (!visible.some((t) => t.name === call.name)) return callToolError()
 
-      const result = await options.tools.call(
-        call.name,
-        (call.arguments ?? {}) as Record<string, unknown>,
-        auth,
-        // One id per call here too. STDIO has no transport-level request id, so
-        // this is the only thing tying an audit row to one invocation.
-        randomUUID(),
-      )
-      return callToolResult(result)
+      try {
+        const result = await options.tools.call(
+          call.name,
+          (call.arguments ?? {}) as Record<string, unknown>,
+          auth,
+          // One id per call here too. STDIO has no transport-level request id, so
+          // this is the only thing tying an audit row to one invocation.
+          randomUUID(),
+        )
+        return callToolResult(result)
+      } catch (error) {
+        log('tool call failed', { tool: call.name, error: String(error) })
+        if (error instanceof MetadataError) return callToolError(error.message)
+        return callToolError()
+      }
     }
 
     default:

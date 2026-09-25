@@ -279,18 +279,31 @@ describe('baseline · the MCP surface', () => {
       { name: 'search', arguments: { query: 'x', filters: { 'Bad.Key': 'v' } } },
       ORG_A,
     )
-    expect(bad.status).toBe(400)
-    const body = (await bad.json()) as { error: { code: number; message: string } }
-    expect(body.error.code).toBe(-32602)
-    expect(body.error.message).toContain('Bad.Key')
+    // A tool error is a CallToolResult with isError, on a 200. Never a 404:
+    // on Streamable HTTP that is "your session is gone", and a real client
+    // dropped its connection over one missing document.
+    type ToolError = { result: { isError: boolean; content: { text: string }[] } }
+    expect(bad.status).toBe(200)
+    const body = (await bad.json()) as ToolError
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0]?.text).toContain('Bad.Key')
 
     // An unknown tool is still indistinguishable from one the caller may not
     // reach. If this ever starts naming things, the carve-out above grew.
     const unknown = await rpc('tools/call', { name: 'nope', arguments: {} }, ORG_A)
-    expect(unknown.status).toBe(404)
-    const other = (await unknown.json()) as { error: { code: number; message: string } }
-    expect(other.error.code).toBe(-32601)
-    expect(other.error.message).toBe('Not found')
+    expect(unknown.status).toBe(200)
+    const other = (await unknown.json()) as ToolError
+    expect(other.result.isError).toBe(true)
+    expect(other.result.content[0]?.text).toBe('Not found')
+
+    // And a tool that fails on what is stored answers the same bytes.
+    const missing = await rpc(
+      'tools/call',
+      { name: 'get_document', arguments: { document_id: '00000000-0000-4000-8000-000000000000' } },
+      ORG_A,
+    )
+    expect(missing.status).toBe(200)
+    expect(((await missing.json()) as ToolError).result).toEqual(other.result)
   })
 
   it('a successful call answers with a CallToolResult, not the bare value', async () => {

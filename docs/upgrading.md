@@ -272,6 +272,18 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.26.2 — a tool that fails no longer drops the client's connection
+
+No migration, no new variable. A tool call that failed — a document that is
+not there, a layer the caller may not read, an unknown tool — answered with a
+JSON-RPC error on an HTTP `404`. On Streamable HTTP a `404` means the session
+is gone, so a client following the specification dropped its connection and
+re-initialized; claude.ai surfaced it as "Couldn't reload tools from the
+server". It is now a `CallToolResult` with `isError: true` on a `200`, and the
+text is still the single `Not found` for every failure, so nothing about which
+object exists leaks through it. STDIO answers the same way. An unknown
+*method* is still a `404`, as the 2026-07-28 revision requires.
+
 ### 0.26.1 — MCP tool results a current client accepts
 
 No migration, no new variable, nothing to do but upgrade — and upgrade soon if
