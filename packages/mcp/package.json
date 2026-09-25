@@ -1,8 +1,8 @@
 {
   "name": "@nacre.work/mcp",
-  "version": "0.26.3",
+  "version": "0.26.4",
   "description": "Nacre MCP server: Streamable HTTP and STDIO",
-  "mcpName": "io.github.nacre-work/nacre",
+  "mcpName": "work.nacre/nacre",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nacre-work/nacre.git",
