@@ -1000,8 +1000,8 @@ it to `indexed`, and asserts the extracted phrase comes back out of a search —
 with a constant-vector stub embedder, so relevance decides nothing and the
 phrase is there only if it came out of the PDF.
 
-**Word, OpenDocument, EPUB and RTF files are accepted, and the table that
-admits them is one table.** The PDF path was one format with the string
+**Office and OpenDocument files — text, presentations and spreadsheets —
+EPUB and RTF are accepted, and the table that admits them is one table.** The PDF path was one format with the string
 `application/pdf` written in three processes — the edge that admits a file
 part, the worker that decides whether a stored object is bytes or text, and
 the sidecar that dispatches on it — which agreed exactly as long as there was

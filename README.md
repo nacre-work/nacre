@@ -112,8 +112,9 @@ reference query set is scored against the new model and a migration that lost
 recall stops instead of going live — that gate is off until you write a set,
 because it needs documents only you can pick.
 
-A document can be uploaded as a form as well as sent as JSON, and a **PDF, a
-Word, OpenDocument, EPUB or RTF file** is extracted by the parser sidecar. Both
+A document can be uploaded as a form as well as sent as JSON, and a **PDF, an
+Office or OpenDocument file (text, presentation or spreadsheet), an EPUB or an
+RTF** is extracted by the parser sidecar. Both
 signals have to agree — the part declares the format's type and the bytes begin
 with its signature — because a declared type the bytes contradict is a
 disagreement, and sniffing alone would make the declared type decoration. Any

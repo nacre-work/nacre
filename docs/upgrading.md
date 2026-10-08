@@ -272,7 +272,7 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
-### 0.27.0 — Word, OpenDocument, EPUB and RTF files are accepted
+### 0.27.0 — Office and OpenDocument files, EPUB and RTF are accepted
 
 Nothing to do, unless you upload binary files: the parser image carries a
 second extractor and the formats a multipart upload may declare grew from one
