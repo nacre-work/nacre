@@ -18,19 +18,20 @@ import { protectedResourceMetadata, PROTECTED_RESOURCE_PATH } from '../../oauth.
  * HTTP and *announced* one on STDIO, so a local client was handed a version it
  * could not speak and gave up before reaching a tool. `server/discover` — a MUST
  * in the current revision — was added to one and not the other. Both were fixed
- * by hand, in two places, which is the arrangement that produced them.
+ * by hand, in two places, which is the arrangement that produced them. Then
+ * `ping` was answered on STDIO and 404'd on Streamable HTTP for the whole life
+ * of both, while this file was green — its table guard compared a literal.
  *
  * The shape of the defect is worth naming, because it is the one this repository
  * keeps finding: **a rule applied in one place and not in its sibling.** The
- * same day produced three more — `$http_host` in four nginx locations,
- * `NACRE_MCP_CANONICAL_URL` set in `.env.example` while `docker-compose.yml`
- * explained at length that its absence was the fix, and `workflow_dispatch` on
- * three workflows out of four. Every one was found by running something, never
- * by reading, and each was repaired one instance at a time.
+ * repair that finally closed it is structural: both transports are handed the
+ * same `McpServer` from one factory (`packages/mcp/src/factory.ts`), and the
+ * protocol's results are the SDK's rather than either transport's. A divergence
+ * now needs a second factory, which is what the last case here refuses.
  *
- * So this is not a test of `initialize`. It is a test that **the two dispatchers
+ * So this is not a test of `initialize`. It is a test that **the two transports
  * agree**, driven from one table, so a case added here is asked of both and a
- * method implemented on one is a failure rather than an omission.
+ * method answered on one is a failure rather than an omission.
  *
  * What it deliberately does *not* assert is transport mechanics. HTTP
  * authenticates per request, carries mirrored headers and answers `405` on a
@@ -72,7 +73,18 @@ const ports = {
 }
 
 /**
- * Every method both transports implement, and what has to match.
+ * The 2026-07-28 envelope, which every modern-era request carries in
+ * `params._meta`. Both transports classify a request by it: a frame with one
+ * is served by the modern era, a frame without one by the legacy era.
+ */
+const ENVELOPE = {
+  'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+  'io.modelcontextprotocol/clientInfo': { name: 'parity', version: '0' },
+  'io.modelcontextprotocol/clientCapabilities': {},
+}
+
+/**
+ * Every method both transports answer, in both eras, and what has to match.
  *
  * `expect` reads the two results and returns the slice being compared. Returning
  * a slice rather than asserting inside keeps the failure message useful: vitest
@@ -80,26 +92,30 @@ const ports = {
  */
 const SHARED: readonly {
   readonly name: string
+  readonly era: 'legacy' | 'modern'
   readonly method: string
   readonly params?: Record<string, unknown>
   readonly compare: (result: Record<string, unknown>) => unknown
 }[] = [
   {
     name: 'initialize echoes a revision both speak',
+    era: 'legacy',
     method: 'initialize',
-    params: { protocolVersion: '2025-11-25', capabilities: {} },
+    params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'parity', version: '0' } },
     compare: (r) => r.protocolVersion,
   },
   {
     name: 'initialize counter-offers the same revision for one neither speaks',
+    era: 'legacy',
     method: 'initialize',
-    params: { protocolVersion: '1999-01-01', capabilities: {} },
+    params: { protocolVersion: '1999-01-01', capabilities: {}, clientInfo: { name: 'parity', version: '0' } },
     compare: (r) => r.protocolVersion,
   },
   {
     name: 'initialize reports the same server name',
+    era: 'legacy',
     method: 'initialize',
-    params: { protocolVersion: '2025-11-25', capabilities: {} },
+    params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'parity', version: '0' } },
     compare: (r) => (r.serverInfo as { name?: string } | undefined)?.name,
   },
   {
@@ -108,8 +124,9 @@ const SHARED: readonly {
     // agreeing on nothing is still agreement, so the case asserts it is
     // *present* as well as identical.
     name: 'initialize carries the same instructions',
+    era: 'legacy',
     method: 'initialize',
-    params: { protocolVersion: '2025-11-25', capabilities: {} },
+    params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'parity', version: '0' } },
     compare: (r) => {
       const text = r.instructions
       if (typeof text !== 'string' || text.length === 0) {
@@ -120,20 +137,20 @@ const SHARED: readonly {
   },
   {
     name: 'server/discover advertises the same versions',
+    era: 'modern',
     method: 'server/discover',
-    params: {},
     compare: (r) => r.supportedVersions,
   },
   {
     name: 'server/discover reports the same result type and cache scope',
+    era: 'modern',
     method: 'server/discover',
-    params: {},
     compare: (r) => ({ resultType: r.resultType, cacheScope: r.cacheScope }),
   },
   {
     name: 'tools/list offers the same catalog',
+    era: 'modern',
     method: 'tools/list',
-    params: {},
     // Names *and* the shape of each entry. Comparing names alone let the two
     // transports answer with different objects for the whole life of both:
     // Streamable HTTP stripped the internal `permission` field and STDIO
@@ -150,16 +167,20 @@ const SHARED: readonly {
     },
   },
   {
-    // A MUST-respond for both parties in every revision, and the divergence
-    // the rewritten table guard was built against: STDIO answered `{}` and
-    // Streamable HTTP fell through to its 404 arm for the whole life of both
-    // — a client's keep-alive dropping the very connection it was checking.
-    // The old guard compared SHARED against a literal list, so a method one
-    // dispatcher grew could never fail it; the guard reads both dispatchers'
-    // own case arms now, which is what named this one.
-    name: 'ping answers the same (empty but for resultType) object on both',
+    name: 'tools/list offers the same catalog to a legacy client',
+    era: 'legacy',
+    method: 'tools/list',
+    compare: (r) => (r.tools as { name: string }[]).map((t) => t.name).sort(),
+  },
+  {
+    // A MUST-respond for both parties in the legacy revisions, and the
+    // divergence the old table guard was built against: STDIO answered `{}`
+    // and Streamable HTTP fell through to its 404 arm for the whole life of
+    // both — a client's keep-alive dropping the very connection it was
+    // checking. 2026-07-28 removed it, so it is a legacy case.
+    name: 'ping answers the same object on both',
+    era: 'legacy',
     method: 'ping',
-    params: {},
     compare: (r) => r,
   },
   {
@@ -169,6 +190,14 @@ const SHARED: readonly {
     // the arrangement this file exists against. One builder in results.ts
     // now, and this case is what notices a second one appearing.
     name: 'tools/call answers the same envelope',
+    era: 'modern',
+    method: 'tools/call',
+    params: { name: 'list_layers', arguments: {} },
+    compare: (r) => r,
+  },
+  {
+    name: 'tools/call answers the same envelope to a legacy client',
+    era: 'legacy',
     method: 'tools/call',
     params: { name: 'list_layers', arguments: {} },
     compare: (r) => r,
@@ -209,23 +238,61 @@ afterEach(() => {
   process.stdout.write = stdout
 })
 
-async function overHttp(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const res = await fetch(`${base}/mcp`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${await token()}` },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  })
-  const body = (await res.json()) as { result?: Record<string, unknown>; error?: unknown }
-  if (body.result === undefined) throw new Error(`HTTP ${method}: ${JSON.stringify(body.error)}`)
-  return body.result
+/** The frame as a client of that era sends it, and the headers HTTP mirrors beside it. */
+function framed(
+  era: 'legacy' | 'modern',
+  method: string,
+  params: Record<string, unknown>,
+): { body: Record<string, unknown>; headers: Record<string, string> } {
+  if (era === 'legacy') return { body: { jsonrpc: '2.0', id: 1, method, params }, headers: {} }
+  const name = params.name
+  return {
+    body: { jsonrpc: '2.0', id: 1, method, params: { ...params, _meta: ENVELOPE } },
+    headers: {
+      'mcp-protocol-version': '2026-07-28',
+      'mcp-method': method,
+      ...(typeof name === 'string' ? { 'mcp-name': name } : {}),
+    },
+  }
 }
 
-async function overStdio(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+/**
+ * The result with the SDK's per-transport stamp removed.
+ *
+ * `_meta["io.modelcontextprotocol/serverInfo"]` is written onto every
+ * modern-era result by the SDK, and it is the same object on both — so it is
+ * compared like everything else and stripped nowhere. Listed here so the next
+ * person looking for an exemption knows there still is none.
+ */
+const whole = (r: Record<string, unknown>): Record<string, unknown> => r
+
+async function overHttp(
+  era: 'legacy' | 'modern',
+  method: string,
+  params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const { body, headers } = framed(era, method, params)
+  const res = await fetch(`${base}/mcp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${await token()}`, ...headers },
+    body: JSON.stringify(body),
+  })
+  const answer = (await res.json()) as { result?: Record<string, unknown>; error?: unknown }
+  if (answer.result === undefined) throw new Error(`HTTP ${method}: ${JSON.stringify(answer.error)}`)
+  return whole(answer.result)
+}
+
+async function overStdio(
+  era: 'legacy' | 'modern',
+  method: string,
+  params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const { body } = framed(era, method, params)
   await serveStdio({
     verify,
     serviceKey: await token(),
     serverVersion: '9.9.9',
-    input: Readable.from([`${JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })}\n`]),
+    input: Readable.from([`${JSON.stringify(body)}\n`]),
     ...ports,
   })
   const frames = written
@@ -233,46 +300,43 @@ async function overStdio(method: string, params: Record<string, unknown>): Promi
     .map((l) => JSON.parse(l) as { result?: Record<string, unknown>; error?: unknown })
   const frame = frames[0]
   if (frame?.result === undefined) throw new Error(`STDIO ${method}: ${JSON.stringify(frame?.error)}`)
-  return frame.result
+  return whole(frame.result)
 }
 
 describe('baseline · the two MCP transports answer alike', () => {
   for (const shared of SHARED) {
-    it(shared.name, async () => {
-      const http = await overHttp(shared.method, shared.params ?? {})
-      const stdio = await overStdio(shared.method, shared.params ?? {})
+    it(`${shared.name} (${shared.era})`, async () => {
+      const http = await overHttp(shared.era, shared.method, shared.params ?? {})
+      const stdio = await overStdio(shared.era, shared.method, shared.params ?? {})
       expect(shared.compare(stdio), `${shared.method} over STDIO`).toEqual(shared.compare(http))
     })
   }
 
   /**
-   * The whole result, for every method in the table.
+   * The whole result, for every method and era in the table.
    *
    * The cases above each compare a *slice*, which is what makes their failures
-   * readable — and it is also how two more divergences sat here unseen while
-   * this file was green. `capabilities` was compared by no case at all, so
+   * readable — and it is also how two divergences sat here unseen while this
+   * file was green. `capabilities` was compared by no case at all, so
    * Streamable HTTP answered `{ tools: {} }` and STDIO
    * `{ tools: { listChanged: false } }`: one server telling two clients two
    * different things about what it supports. And `tools/list` was projected to
    * `r.tools`, so the *wrapper* around it went unasked — HTTP carried `ttlMs`
    * and `cacheScope` and STDIO carried neither.
    *
-   * Both are the same defect as the `permission` field this file was written
-   * against, and both survived it, because a projection narrow enough is a
-   * comparison that cannot fail. So the projections stay for their messages and
-   * this asks the question they cannot: **everything, deep, with nothing left
-   * out.**
+   * A projection narrow enough is a comparison that cannot fail. So the
+   * projections stay for their messages and this asks the question they
+   * cannot: **everything, deep, with nothing left out.**
    *
    * A field that must genuinely differ between transports belongs in an
    * exemption here with its reason written beside it. There is none today —
-   * these three results are the protocol's, and the transport is not one of
-   * their inputs.
+   * these results are the protocol's, and the transport is not one of their
+   * inputs.
    */
-  for (const method of new Set(SHARED.map((s) => s.method))) {
-    const params = SHARED.find((s) => s.method === method)?.params ?? {}
-    it(`${method} answers with the same object, field for field`, async () => {
-      expect(await overStdio(method, params), `${method} over STDIO`).toEqual(
-        await overHttp(method, params),
+  for (const { era, method, params } of SHARED) {
+    it(`${method} answers with the same object, field for field (${era})`, async () => {
+      expect(await overStdio(era, method, params ?? {}), `${method} over STDIO`).toEqual(
+        await overHttp(era, method, params ?? {}),
       )
     })
   }
@@ -282,49 +346,41 @@ describe('baseline · the two MCP transports answer alike', () => {
     // so both transports told every client they were `0.0.0`. A field carried,
     // threaded through an option and never given a value is the same shape as a
     // variable validated at startup and read by nothing.
+    const hello = { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'parity', version: '0' } }
     for (const [where, result] of [
-      ['HTTP', await overHttp('initialize', { protocolVersion: '2025-11-25', capabilities: {} })],
-      ['STDIO', await overStdio('initialize', { protocolVersion: '2025-11-25', capabilities: {} })],
+      ['HTTP', await overHttp('legacy', 'initialize', hello)],
+      ['STDIO', await overStdio('legacy', 'initialize', hello)],
     ] as const) {
       expect((result.serverInfo as { version?: string }).version, `${where} serverInfo.version`).toBe('9.9.9')
     }
   })
 
-  it('a method one transport gains is a failure here, not an omission', () => {
-    // The guard on the table itself, asked of the dispatchers rather than of
-    // a literal. Its first version compared SHARED's method set against a
-    // list written here — so nothing in this file ever read either
-    // dispatcher, a method added to one transport could never fail it, and
-    // one already had: `ping` was answered on STDIO and 404'd on Streamable
-    // HTTP with every case green. Worse, the literal pinned the table shut —
-    // adding `ping` to SHARED, the fix, made this very case red until the
-    // literal was edited too.
-    //
-    // So the sets are read out of the two dispatch switches themselves. The
-    // one asymmetry is notifications: they are one-way by definition, STDIO
-    // routes `notifications/initialized` through an arm and Streamable HTTP
-    // accepts the whole prefix before its switch — asserted as the prefix
-    // check rather than an arm, because that is what the code does.
-    const methodsOf = (relative: string): Set<string> => {
-      const source = readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
-      const arms = [...source.matchAll(/case '([^']+)':/g)].map((m) => m[1] as string)
-      if (arms.length === 0) {
-        throw new Error(`${relative} has no case arms; the dispatcher moved and this guard reads nothing`)
-      }
-      return new Set(arms)
+  it('both transports are built from the one factory, and nothing else registers a tool', () => {
+    // The guard on the structure itself. The table above can only ask what
+    // somebody wrote into it; what makes a divergence impossible rather than
+    // merely untested is that there is one `McpServer` builder and both entry
+    // points call it. Its first version read the two dispatch switches' case
+    // arms, which was right for two hand-written dispatchers and reads
+    // nothing now that there are none — so it asks the thing that replaced
+    // them: `buildServer` is imported by both transports, and `registerTool`
+    // appears in the factory and nowhere else under `packages/mcp/src`.
+    const source = (relative: string): string =>
+      readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
+    const http = source('../../../mcp/src/server.ts')
+    const stdio = source('../../../mcp/src/stdio.ts')
+    const factory = source('../../../mcp/src/factory.ts')
+
+    expect(http, 'HTTP builds its server from the factory').toMatch(/import \{[^}]*\bbuildServer\b[^}]*\} from '\.\/factory\.js'/)
+    expect(stdio, 'STDIO builds its server from the factory').toMatch(/import \{[^}]*\bbuildServer\b[^}]*\} from '\.\/factory\.js'/)
+    expect(factory, 'the factory registers the tools').toContain('registerTool(')
+    for (const [name, text] of [
+      ['server.ts', http],
+      ['stdio.ts', stdio],
+    ] as const) {
+      expect(text, `${name} registers no tool of its own`).not.toContain('registerTool(')
+      expect(text, `${name} sets no request handler of its own`).not.toContain('setRequestHandler(')
+      expect(text, `${name} builds no McpServer of its own`).not.toMatch(/new McpServer\(/)
     }
-    const http = methodsOf('../../../mcp/src/server.ts')
-    const stdio = methodsOf('../../../mcp/src/stdio.ts')
-
-    expect(stdio.delete('notifications/initialized'), 'STDIO routes notifications through an arm').toBe(true)
-    expect(
-      readFileSync(fileURLToPath(new URL('../../../mcp/src/server.ts', import.meta.url)), 'utf8'),
-    ).toMatch(/startsWith\('notifications\/'\)/)
-
-    expect([...http].sort(), 'the two dispatchers answer the same methods').toEqual([...stdio].sort())
-    // And every method both answer is compared above — a method in the
-    // dispatchers and not in the table is a method nobody is comparing.
-    expect(new Set(SHARED.map((s) => s.method))).toEqual(http)
-    expect(SHARED.length).toBeGreaterThanOrEqual(8)
+    expect(SHARED.length).toBeGreaterThanOrEqual(10)
   })
 })

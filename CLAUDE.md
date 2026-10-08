@@ -2964,6 +2964,41 @@ search as carefully as a delete. And CI went red on `main` for a reason outside
 the tree: `minio/minio` left Docker Hub. The object store is Chainguard's build
 of the same server now, in the four workflows and the `full` profile alike.
 
+**The MCP server is `@modelcontextprotocol/server` 2.x now, and the parity
+argument is structural.** Both transports hand-built every result — and
+diverged on `permission`, on the capability set, on a cache hint, on `ping`,
+on `initialize` negotiating versus announcing — because two dispatchers each
+remembered the protocol separately. `factory.ts` builds one `McpServer` for the
+caller the token names; Streamable HTTP builds one per request and STDIO one
+per connection, and the protocol — the two eras, the `_meta` envelope, the
+mirrored headers, `resultType`, the cache hints, `-32020`/`-32022`, the legacy
+counter-offer — is the SDK's. What stays this repository's is everything
+before a frame is read (`Origin`, CORS, the RFC 9728 document, the `401`,
+authentication through the same `authenticate` as REST, the tenant-override
+refusal, the rate limit) and the one wrapper that keeps a thrown error's
+message off the wire. The parity suite's last case refuses a second factory,
+because that is now the only way to diverge.
+
+Three things the spike found, each of which the hand-written server read the
+other way. A 2026-07-28 request **must** carry the envelope and the mirrored
+headers, and the SDK's own client does; the lenient reading was right about
+the legacy era and wrong about the modern one, and the conformance page says
+which is which. The SDK answers `406` to a POST that does not name
+`text/event-stream`, which `curl`, `fetch` and every hand-written check here
+do not — so `Accept` is filled in when the client asked for no stream, since
+this server answers JSON either way. And the SDK's stdio transport closes
+itself the moment its stdin ends and refuses to write afterwards, while a
+script and the parity suite close the pipe with the answers still in flight:
+the wrapper feeds it a stream that never ends and forwards the close only once
+every request has been answered. Found by running it — the first version
+answered nothing and resolved never.
+
+What the SDK does **not** do, measured rather than assumed: `resultType:
+"task"` from a tool is refused and `tasks/get` is not routed in the 2026-07-28
+era, so the tasks extension is not a registration away; `ext-tasks` is the
+client half. An unknown tool is its JSON-RPC `-32602` naming the tool, which
+`docs/mcp.md` argues is not a leak; a failing tool is still one answer.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

@@ -25,21 +25,25 @@ means to be reachable.
 ## Transport
 
 - Streamable HTTP, one endpoint: `POST /mcp`.
-- Request headers: `MCP-Protocol-Version` and `Mcp-Method` on every request;
-  `Mcp-Name` **only** on `tools/call`, `resources/read` and `prompts/get` — the
-  three that name something. Requiring `Mcp-Name` everywhere is a server that
-  refuses `tools/list`, which no client can make any other way, and that is what
-  this did until it was pointed at a real one.
-- **The headers are validated against the body**, which is the whole reason
-  they exist: an intermediary routes and rate-limits on the header while the
-  server executes the body, so a request whose halves disagree is one where the
-  two acted on different instructions. A missing or contradicting header is
-  `400` with JSON-RPC code **`-32020` (`HeaderMismatch`)**, the code the
-  specification allocates. It used to answer `-32600`, which a client reads as
-  "not a modern server" and follows into a fallback this transport does not
-  speak.
+- **Two eras, one server.** The protocol is `@modelcontextprotocol/server`
+  2.x's since 0.28.0. A request carrying the 2026-07-28 `_meta` envelope in
+  `params` is a **modern** client and is held to that revision's rules: the
+  mirrored headers `MCP-Protocol-Version` and `Mcp-Method` on every request,
+  `Mcp-Name` on `tools/call`, `resources/read` and `prompts/get`, each
+  compared against the body, and a missing or contradicting one is `400` with
+  JSON-RPC **`-32020` (`HeaderMismatch`)**. A frame with no envelope is a
+  **legacy** client — everything that opens with `initialize`, which is every
+  shipping client today — and is served the way those revisions specify, with
+  no mirrored headers at all. The two are built from one `McpServer` factory
+  (`packages/mcp/src/factory.ts`), so a method or a field cannot differ
+  between them; `transport-parity.test.ts` compares every method of both eras
+  over both transports, field for field.
 - `Mcp-Name` may arrive Base64-encoded in the `=?base64?…?=` sentinel when the
   value is not header-safe, and is decoded before it is compared.
+- Every answer is `application/json`. A caller that did not name
+  `text/event-stream` in `Accept` — `curl`, an uptime check, `fetch`'s default
+  — is handed the JSON it was going to get anyway rather than a `406` about a
+  header that would not have changed the reply.
 - **`Origin` is validated.** A present origin that is not in
   `NACRE_MCP_ALLOWED_ORIGINS` is `403`; an absent one is allowed, because an
   agent sends none and the attack the rule exists for — DNS rebinding — is by
@@ -67,7 +71,11 @@ means to be reachable.
 - A tool that needs state between calls returns an explicit descriptor in its
   result, and the model passes it as an argument to the next call. Hidden state
   in the transport is not allowed.
-- `server/discover` is supported but not required of clients.
+- `server/discover` is the modern era's opening move and advertises the
+  modern revisions; `initialize` is the legacy era's and negotiates from the
+  legacy ones. A legacy proposal this server does not speak is answered with
+  the newest legacy revision, never the modern one, because a legacy client
+  cannot fall forward.
 - `tools/list` returns `ttlMs: 0` and `cacheScope: "private"` — the catalog
   depends on the caller's permissions, so it is never shared across
   authorization contexts, and a grant can change it at any moment with no
@@ -504,12 +512,18 @@ protocol rejects anything else, so this is not a stylistic point: the server
 returned raw arrays for its first several revisions, every test in the suite
 passed, and no compliant client could have read a single result.
 
-A failing tool and an unknown one both answer with a `CallToolResult` whose
-`isError` is true and whose text is `Not found` — never an HTTP `404`, which
-on Streamable HTTP tells a client its session is gone — carrying nothing about
-which, because distinguishing them tells the caller whether a tool — and so a
-layer — exists. The reason is logged on the server, where an operator can see
-that a database is down rather than reading it as a tool that does not exist.
+A failing tool answers with a `CallToolResult` whose `isError` is true and
+whose text is `Not found` — never an HTTP `404`, which on Streamable HTTP tells
+a client its session is gone — carrying nothing about why: a document that is
+absent, one the caller may not read and a database that is down are the same
+bytes. The reason is logged on the server, where an operator can see that a
+database is down rather than reading it as a tool that does not exist. A tool
+that does not **exist** is the SDK's JSON-RPC `-32602`, naming the tool the
+caller asked for and nothing else; that is not a leak, because the catalog's
+names are the same for every caller — only `search`'s description is per
+caller — so it says what `tools/list` already said. Arguments that do not
+match the tool's schema are an `isError` result naming the argument, before
+the tool runs.
 
 ## What tools may not do
 
@@ -568,16 +582,18 @@ What is under test is the part that carries the leak risk:
   `cacheScope: "private"`, and there is a test for each;
 - a caller with no layers is told exactly that and nothing about what exists
   elsewhere;
-- a failing tool call and an unknown tool return **byte-identical** answers,
-  because a tool error naming a layer is the same leak as a `403` naming a
-  document;
+- a failing tool call answers the same bytes whatever it failed on, because a
+  tool error naming a layer is the same leak as a `403` naming a document —
+  the SDK would put the thrown message on the wire, and the factory is what
+  stops it;
 - no tool schema accepts an organization at any depth, and `params` carrying
-  one is refused before dispatch;
-- there is no `initialize` and no `Mcp-Session-Id` to be had over HTTP — a test
-  asserts the session cannot be established, because state creeping into the
-  transport is what quietly ends the round-robin deployment. STDIO answers
-  `initialize` because a pipe is a session by construction: there is one client,
-  one process, and nothing to route.
+  one is refused before dispatch, on both transports;
+- `initialize` is answered over HTTP and establishes nothing — no
+  `Mcp-Session-Id` comes back in either era, and a test asserts it, because
+  state creeping into the transport is what quietly ends the round-robin
+  deployment;
+- the SDK's own client connects in both eras and calls a tool, which is the
+  case every hand-written frame in the suite could not stand in for.
 
 Both transports answer a successful call with a `CallToolResult`, and stdout in
 local mode carries protocol frames and nothing else — a stray log line lands

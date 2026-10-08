@@ -1,6 +1,6 @@
 {
   "name": "@nacre.work/mcp",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "description": "Nacre MCP server: Streamable HTTP and STDIO",
   "mcpName": "work.nacre/nacre",
   "repository": {
@@ -35,10 +35,12 @@
     "NOTICE"
   ],
   "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
     "@nacre.work/api": "workspace:*",
     "@nacre.work/core": "workspace:*"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
     "@types/node": "^26.6.2"
   },
   "keywords": [

@@ -1,15 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { createInterface } from 'node:readline'
+import { PassThrough, type Readable } from 'node:stream'
 
-import { authenticate, Problem, type AuthContext, type VerifyOptions } from '@nacre.work/api'
-import { logger, MetadataError } from '@nacre.work/core'
+import { serveStdio as serveWithSdk, StdioServerTransport } from '@modelcontextprotocol/server/stdio'
+import type { JSONRPCMessage, MessageExtraInfo, Transport } from '@modelcontextprotocol/server'
+import { authenticate, findTenantOverride, Problem, type VerifyOptions } from '@nacre.work/api'
+import { logger } from '@nacre.work/core'
 
-import { CATALOG_SAMPLE, catalog, dispatchCatalog } from './tools.js'
-// The same three results the HTTP transport answers with, built once. Each was
-// hand-built in both files until a capability set and a cache hint diverged.
-import { discoverResult, initializeResult, toolsListResult, pingResult, callToolResult, callToolError } from './results.js'
-import { PROTOCOL_VERSION } from './server.js'
-import type { Layers, ToolRunner } from './server.js'
+import { buildServer, type Layers, type ToolRunner } from './factory.js'
+import { PROTOCOL_VERSION } from './results.js'
 
 /**
  * MCP over STDIO, for a developer agent on a laptop.
@@ -17,40 +15,20 @@ import type { Layers, ToolRunner } from './server.js'
  * The transport differs from Streamable HTTP in two ways and no others: the
  * caller is authenticated once from `NACRE_SERVICE_KEY` instead of per request,
  * and messages arrive as newline-delimited JSON on stdin. Everything behind
- * that — the catalog, the tools, the resolver — is the same objects the HTTP
- * server uses.
+ * that — the catalog, the tools, the resolver — is the same `McpServer` the
+ * HTTP transport builds, from the same factory.
  *
  * **Local mode gets no relaxation of any kind.** The permissions are exactly
  * the service account's, computed by the same code, and there is no
  * developer-convenience path that skips the layer bound because the process
  * happens to be on the same machine as the operator. docs/mcp.md says so and
  * this is where it would be tempting to differ.
- */
-
-/**
- * stdout carries the protocol and nothing else.
  *
- * A stray `console.log` — a startup banner, a debug line left in — lands in the
- * middle of the message stream and the client fails to parse a frame it did not
- * ask for. Diagnostics go to stderr, which is what a terminal shows anyway.
+ * stdout carries the protocol and nothing else. The SDK's transport writes
+ * frames there; diagnostics go through the process logger, which `stdio-main`
+ * has pointed at stderr — a stray line in the middle of the stream is a frame
+ * the client cannot parse.
  */
-function write(message: unknown): void {
-  process.stdout.write(`${JSON.stringify(message)}\n`)
-}
-
-/**
- * Through the process logger, which `stdio-main` has pointed at stderr for the
- * reason stated above. Writing here directly worked and ignored
- * `NACRE_LOG_LEVEL` and `NACRE_LOG_FORMAT` — a local client run with `text` got
- * JSON from this one file.
- */
-const log = (msg: string, extra: Record<string, unknown> = {}): void => {
-  logger.info(msg, extra)
-}
-
-function rpcError(id: unknown, code: number, message: string): Record<string, unknown> {
-  return { jsonrpc: '2.0', id: id ?? null, error: { code, message } }
-}
 
 export interface StdioOptions {
   readonly verify: VerifyOptions
@@ -63,10 +41,102 @@ export interface StdioOptions {
 }
 
 /**
+ * The one check this transport makes on every frame before the SDK sees it.
+ *
+ * The organization comes from the token. A params object naming one is not a
+ * malformed call, it is an attempt to act as another tenant — the same rule as
+ * the REST surface and the HTTP transport, and it is checked before dispatch
+ * on all three. The SDK has no seam for it, so the transport is wrapped: a
+ * frame carrying an override is answered here and never forwarded.
+ *
+ * The wrapper is also what lets `serveStdio` know when it is finished. The
+ * SDK's handle closes when stdin does, but a response may still be in flight
+ * at that moment; this counts the requests it has forwarded against the
+ * responses it has written, and resolves only when stdin has ended **and**
+ * nothing is outstanding — which is what the parity suite, feeding one frame
+ * and reading the answer, depends on.
+ */
+class GuardedStdio implements Transport {
+  onclose?: (() => void) | undefined
+  onerror?: ((error: Error) => void) | undefined
+  onmessage?: (<T extends JSONRPCMessage>(message: T, extra?: MessageExtraInfo) => void) | undefined
+
+  readonly #inner: StdioServerTransport
+  readonly #pending = new Set<string | number>()
+  #ended = false
+  #closed = false
+  #settle: (() => void) | undefined
+  readonly done = new Promise<void>((resolve) => {
+    this.#settle = resolve
+  })
+
+  constructor(inner: StdioServerTransport, input: Readable) {
+    this.#inner = inner
+    // stdin ending is not the connection ending. A client that writes its
+    // frames and closes the pipe — a script, the parity suite — has closed
+    // the input while the answers are still being computed; the SDK's
+    // transport closes itself the moment its stdin does and refuses to write
+    // afterwards, and the SDK drops every queued message the moment it hears
+    // `onclose`. So the SDK's transport is fed a stream that never ends (see
+    // `serveStdio`), the end is watched here, and it is forwarded only once
+    // every request on the wire has been answered — which is also when
+    // `done` settles.
+    input.once('end', () => {
+      this.#ended = true
+      this.#maybeDone()
+    })
+  }
+
+  async start(): Promise<void> {
+    this.#inner.onerror = (error) => this.onerror?.(error)
+    this.#inner.onclose = () => {
+      this.#ended = true
+      this.#maybeDone()
+    }
+    this.#inner.onmessage = (message: JSONRPCMessage) => {
+      const frame = message as { id?: unknown; params?: unknown; method?: unknown }
+      const hasId = typeof frame.id === 'string' || typeof frame.id === 'number'
+      if (typeof frame.method === 'string' && findTenantOverride(frame.params) !== undefined) {
+        if (hasId) {
+          void this.send({
+            jsonrpc: '2.0',
+            id: frame.id as string | number,
+            error: { code: -32602, message: 'The organization comes from the token.' },
+          })
+        }
+        return
+      }
+      if (hasId && typeof frame.method === 'string') this.#pending.add(frame.id as string | number)
+      this.onmessage?.(message)
+    }
+    await this.#inner.start()
+  }
+
+  async send(message: JSONRPCMessage): Promise<void> {
+    const id = (message as { id?: unknown }).id
+    if (typeof id === 'string' || typeof id === 'number') this.#pending.delete(id)
+    await this.#inner.send(message)
+    this.#maybeDone()
+  }
+
+  close(): Promise<void> {
+    return this.#inner.close()
+  }
+
+  #maybeDone(): void {
+    if (!this.#ended || this.#pending.size !== 0 || this.#closed) return
+    this.#closed = true
+    this.#settle?.()
+    this.onclose?.()
+  }
+}
+
+/**
  * Serve until stdin closes.
  *
- * Resolves when the stream ends, so a caller can shut its pool down afterwards
- * rather than guessing when the client went away.
+ * Resolves when the stream has ended and every request on it has been
+ * answered, so a caller can shut its pool down afterwards rather than guessing
+ * when the client went away.
  */
 export async function serveStdio(options: StdioOptions): Promise<void> {
   // Once, at startup, and the process refuses to run without it. A transport
@@ -81,122 +151,48 @@ export async function serveStdio(options: StdioOptions): Promise<void> {
     )
   }
 
-  log('mcp stdio ready', {
+  logger.info('mcp stdio ready', {
     principal: `${auth.principal.type}:${auth.principal.id}`,
     protocol: PROTOCOL_VERSION,
   })
 
-  const lines = createInterface({ input: options.input ?? process.stdin, crlfDelay: Infinity })
+  // Through a PassThrough, which turns whatever the input yields into bytes
+  // and is never ended. The SDK's reader slices Buffers; `process.stdin`
+  // hands it those, and a test's `Readable.from([...strings])` hands it
+  // strings — which is a TypeError on every chunk, re-raised forever, and the
+  // process out of memory within a second. Found by running it. The end of
+  // the input is `GuardedStdio`'s to notice, for the reason given there.
+  const input = (options.input ?? process.stdin) as Readable
+  const bytes = new PassThrough()
+  input.pipe(bytes, { end: false })
+  const transport = new GuardedStdio(new StdioServerTransport(bytes, process.stdout), input)
 
-  for await (const line of lines) {
-    const trimmed = line.trim()
-    if (trimmed.length === 0) continue
+  // One server for the connection, from the same factory the HTTP transport
+  // uses per request. The SDK serves both eras over it: a legacy client's
+  // `initialize` and a modern client's `server/discover` probe alike.
+  const handle = serveWithSdk(
+    () =>
+      buildServer({
+        auth,
+        // One id per call. STDIO has no transport-level request id, so this is
+        // the only thing tying an audit row to one invocation.
+        requestId: () => randomUUID(),
+        layers: options.layers,
+        tools: options.tools,
+        ...(options.serverVersion === undefined ? {} : { serverVersion: options.serverVersion }),
+      }),
+    {
+      transport,
+      legacy: 'serve',
+      onerror: (error) => {
+        logger.warn('mcp stdio', { error: String(error).slice(0, 200) })
+      },
+    },
+  )
 
-    let rpc: { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: unknown }
-    try {
-      rpc = JSON.parse(trimmed) as typeof rpc
-    } catch {
-      write(rpcError(null, -32700, 'Parse error'))
-      continue
-    }
-
-    const id = rpc.id ?? null
-    if (rpc.jsonrpc !== '2.0' || typeof rpc.method !== 'string') {
-      write(rpcError(id, -32600, 'Invalid request'))
-      continue
-    }
-
-    // A notification has no id and takes no reply, per JSON-RPC. `initialized`
-    // is the one that arrives in practice; answering it puts an unexpected
-    // frame on the stream.
-    const isNotification = rpc.id === undefined
-
-    try {
-      const result = await dispatch(rpc.method, rpc.params, auth, options)
-      if (!isNotification) write({ jsonrpc: '2.0', id, result })
-    } catch (error) {
-      // Same rule as the HTTP transport: nothing about which tool failed, or
-      // why, reaches the caller — that would say whether a tool, and so a
-      // layer, exists. The reason goes to stderr for whoever is running this.
-      log('call failed', { method: rpc.method, error: String(error) })
-      if (!isNotification) write(rpcError(id, -32601, 'Not found'))
-    }
-  }
-}
-
-async function dispatch(
-  method: string,
-  params: unknown,
-  auth: AuthContext,
-  options: StdioOptions,
-): Promise<unknown> {
-  switch (method) {
-    // The same negotiation the HTTP transport makes, and it was wrong here in
-    // the same way and one step further: this answered `PROTOCOL_VERSION`
-    // unconditionally, so a client proposing anything at all was told
-    // `2026-07-28` and threw `Server's protocol version is not supported`
-    // before it ever reached a tool.
-    //
-    // `initialize` is the legacy era's opening move by definition, and a legacy
-    // client cannot fall forward — so what it hears back has to be a revision
-    // its own generation knows. Echo the proposal when this server speaks it;
-    // counter-offer the newest legacy revision otherwise.
-    case 'initialize':
-      return initializeResult(
-        ((params ?? {}) as { protocolVersion?: unknown }).protocolVersion,
-        options.serverVersion,
-      )
-
-    // The modern era's opening move, which 2026-07-28 makes a MUST. On stdio it
-    // is also the probe a dual-era client uses to tell the two apart, so a
-    // server without it reads as legacy and the client silently drops a
-    // revision.
-    case 'server/discover':
-      return discoverResult(options.serverVersion)
-
-    case 'notifications/initialized':
-      return undefined
-
-    case 'ping':
-      return pingResult()
-
-    case 'tools/list': {
-      const page = await options.layers.forCaller(auth, { limit: CATALOG_SAMPLE })
-      return toolsListResult([...catalog(page.layers, { more: page.nextCursor !== null })])
-    }
-
-    case 'tools/call': {
-      const call = (params ?? {}) as { name?: unknown; arguments?: unknown }
-      if (typeof call.name !== 'string') throw new Error('name is required')
-
-      // The catalog is per caller, so a tool this service account cannot see is
-      // indistinguishable from one that does not exist — the same property the
-      // HTTP surface has, reached the same way.
-      // Names and permissions only — dispatch reads no description, so it
-      // pays for no listing. Same reasoning, same function, as Streamable HTTP.
-      const visible = dispatchCatalog()
-      // A tool that failed answers with a result carrying isError, exactly as
-      // Streamable HTTP does — see callToolError. The reason goes to stderr.
-      if (!visible.some((t) => t.name === call.name)) return callToolError()
-
-      try {
-        const result = await options.tools.call(
-          call.name,
-          (call.arguments ?? {}) as Record<string, unknown>,
-          auth,
-          // One id per call here too. STDIO has no transport-level request id, so
-          // this is the only thing tying an audit row to one invocation.
-          randomUUID(),
-        )
-        return callToolResult(result)
-      } catch (error) {
-        log('tool call failed', { tool: call.name, error: String(error) })
-        if (error instanceof MetadataError) return callToolError(error.message)
-        return callToolError()
-      }
-    }
-
-    default:
-      throw new Error(`unknown method: ${method}`)
+  try {
+    await transport.done
+  } finally {
+    await handle.close()
   }
 }

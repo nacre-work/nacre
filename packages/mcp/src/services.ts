@@ -34,7 +34,7 @@ import {
 import { postgresVerification } from '@nacre.work/api'
 import type { Pool } from 'pg'
 
-import type { Layers, ToolRunner } from './server.js'
+import type { Layers, ToolRunner } from './factory.js'
 import type { Layer } from './tools.js'
 
 /**

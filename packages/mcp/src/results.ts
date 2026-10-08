@@ -1,59 +1,52 @@
 /**
- * The three results both transports answer with, built in one place.
+ * What is still this repository's to say about a result, now that the
+ * protocol's own results are the SDK's.
  *
- * ## The defect
+ * ## What used to be here
  *
- * `permission` was the first instance: this repository's own bookkeeping, on
- * MCP's `Tool`, returned by STDIO and stripped by Streamable HTTP for the whole
- * life of both. `onTheWire` fixed that and `transport-parity.test.ts` was added
- * against it.
+ * `initialize`, `server/discover`, `tools/list` and `ping` were built in this
+ * file, by hand, because the two transports had each built their own and
+ * diverged — `permission` on one and not the other, two capability sets, a
+ * cache hint on one. One builder per result closed that, and the parity suite
+ * compared the whole object afterwards.
  *
- * Two more were sitting beside it the whole time, and the parity suite could not
- * see either, because each of its cases compares a *projection*:
- *
- *   - `initialize` and `server/discover` declared different capability sets.
- *     `{ tools: {} }` over HTTP, `{ tools: { listChanged: false } }` over
- *     STDIO — one server telling two clients two different things about what it
- *     supports. No case compared `capabilities` at all.
- *
- *   - `tools/list` carried `ttlMs` and `cacheScope` over HTTP and neither over
- *     STDIO, so a STDIO client had no cache hint for the one result here that
- *     is per caller and expensive. The case projected `r.tools`, which is
- *     exactly the part that agreed.
- *
- * A parity case whose projection is narrow enough is a parity case that cannot
- * fail. That is the same defect as reading `location.hash` from a router that
- * never rewrites it, and the same one the first `lint:admin-layout` had —
- * a check that learned the shape of the edit rather than the property.
- *
- * ## The repair
- *
- * Not a third fix in two files. These are results, they belong to the protocol
- * rather than to a transport, and there is exactly one right answer for each —
- * so they are built here and both transports return what they are given. A
- * divergence is then not a thing anybody can write by accident: it needs a
- * second call site, and the parity suite compares the **whole result** now
- * rather than a slice of it.
- *
- * Which way each one was unified:
- *
- *   - **`listChanged: false`**, explicitly. It is a statement about
- *     notifications this server never sends, and both readings are correct in
- *     the specification — but only one of them is a statement. An absent field
- *     leaves a client inferring the default, and the transport that already
- *     said it out loud was saying the truer thing.
- *
- *   - **`ttlMs` and `cacheScope` on `tools/list` over both.** `server/discover`
- *     already carried them on both, which is what makes the asymmetry an
- *     oversight rather than a decision: the catalog depends on who is asking
- *     either way, and `cacheScope: 'private'` is that fact rather than a property
- *     of HTTP.
+ * Those four are `@modelcontextprotocol/server`'s now. The version
+ * negotiation, the `_meta` envelope, `resultType`, the cache hints on every
+ * cacheable result, the `-32020`/`-32022` refusals and the legacy era's
+ * `initialize` are all one implementation that both transports are handed
+ * through one factory (`factory.ts`), so a divergence needs a second factory
+ * rather than a second call site. What survives here is the part the SDK has
+ * no opinion on: how a tool's answer is wrapped, and what a failure says.
  */
-import { INSTRUCTIONS } from './instructions.js'
-import { onTheWire, type ToolDefinition } from './tools.js'
 
-/** The revision this server prefers — the head of PROTOCOL_VERSIONS. */
+import { SUPPORTED_PROTOCOL_VERSIONS } from '@modelcontextprotocol/server'
+
+/**
+ * The revision this server prefers — the head of PROTOCOL_VERSIONS.
+ *
+ * A literal, because the SDK keeps the two eras apart: its
+ * `LATEST_PROTOCOL_VERSION` is the newest **legacy** revision (`2025-11-25`,
+ * the one every `initialize` negotiates against), and the modern revision is
+ * what `server/discover` advertises. `mcp-surface.test.ts` holds this literal
+ * against what `server/discover` actually says, so the two cannot drift.
+ */
 export const PROTOCOL_VERSION = '2026-07-28'
+
+/**
+ * The revisions reachable through `initialize`, newest first.
+ *
+ * The SDK's own list rather than one written here, because the SDK is what
+ * negotiates `initialize` — a list kept beside it would be a second answer to
+ * "which revisions", which is the shape that left `2025-11-25` out of the
+ * hand-written one while it was the revision every shipping client proposed.
+ * A client arriving on `initialize` is legacy by definition and cannot fall
+ * forward, so the counter-offer comes from this list and never from the
+ * modern head.
+ */
+export const LEGACY_PROTOCOL_VERSIONS: readonly string[] = [...SUPPORTED_PROTOCOL_VERSIONS]
+
+/** Every revision this server can speak, newest first. */
+export const PROTOCOL_VERSIONS: readonly string[] = [PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS]
 
 /**
  * tools/list is never fresh: `0`, which the caching utility defines as
@@ -64,14 +57,12 @@ export const PROTOCOL_VERSION = '2026-07-28'
  * client could not read the result as one of its own; 0.26.1 added the field
  * and a client that now reads the hint — Claude's connectors did, on the day
  * — served its cached catalog for five minutes after every fetch, and a manual
- * refresh of the tool list did nothing. Every server that had never sent a
- * hint was unaffected, since an absent `ttlMs` means `0`.
+ * refresh of the tool list did nothing.
  *
- * `0` is also the correct value on its own terms rather than only the old
- * behaviour: the catalog is per caller and names the layers they may see, so
- * a grant or a revocation changes it, and this server sends no
- * `list_changed` to say so. A client holding a fresh copy has no way to learn
- * it went stale. Building the list costs one catalog read per call.
+ * `0` is also the correct value on its own terms: the catalog is per caller
+ * and names the layers they may see, so a grant or a revocation changes it,
+ * and this server sends no `list_changed` to say so. A client holding a fresh
+ * copy has no way to learn it went stale.
  */
 export const TOOLS_TTL_MS = 0
 
@@ -82,36 +73,6 @@ export const TOOLS_TTL_MS = 0
  * capability set change when this process is replaced, not when a grant moves.
  */
 export const DISCOVER_TTL_MS = 3_600_000
-
-/**
- * The revisions reachable through `initialize`, newest first.
- *
- * 2026-07-28 splits clients into two eras, and this list is the older one:
- * a **legacy** client opens with `initialize` and negotiates a version in the
- * result, while a **modern** one carries the version on every request in
- * `_meta` and never sends `initialize` at all. Both transports serve both,
- * which the specification calls dual-era and its compatibility matrix says
- * works.
- *
- * The list matters because of one asymmetry the matrix states outright:
- * **legacy clients have no fall-forward mechanism.** A modern client that
- * hears a version it does not know retries with one from `supported`; a legacy
- * client can only fail. So whatever `initialize` answers has to be a version
- * that generation of client actually speaks.
- */
-export const LEGACY_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'] as const
-
-/**
- * Every revision this server can speak, newest first — what `server/discover`
- * advertises and what the `MCP-Protocol-Version` header is checked against.
- *
- * The list is short because the surface is: `tools/list` and `tools/call` are
- * shaped the same in all of them, and nothing here uses a feature that moved.
- * `2025-11-25` was missing and that was not a small omission — it is the
- * newest revision any shipping client knows, so it is the one every real
- * client proposes. See the note on the `initialize` handler.
- */
-export const PROTOCOL_VERSIONS = [PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS] as const
 
 /**
  * Tools and nothing else, which is the whole surface: no resources, no
@@ -126,100 +87,18 @@ export const PROTOCOL_VERSIONS = [PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS]
 export const CAPABILITIES = { tools: { listChanged: false } } as const
 
 /**
- * `resultType`, which 2026-07-28 makes a MUST on every result a server of that
- * revision returns — not only on `server/discover`, which is the one place it
- * was written.
- *
- * Its absence is read as "complete" only for a server of an **earlier**
- * revision. This one advertises 2026-07-28 first, so a modern client holds it
- * to the rule and refuses the result outright: `tools/call` answered every
- * request with a body the client discarded as malformed, which is every tool
- * unusable over the transport the product is for. The field is additive for a
- * legacy client, which ignores a member it does not know, so it goes on every
- * result both eras receive and a result cannot be built without it.
+ * `resultType`, which 2026-07-28 makes a MUST on every result. The SDK stamps
+ * it on every modern-era result it encodes, so a builder here does not have to
+ * — `result-type.test.ts` asks the wire rather than these functions now.
  */
 export const COMPLETE = 'complete' as const
 
-/** The version a transport reports when its entry point passed none. */
-const versionOf = (serverVersion: string | undefined): string => serverVersion ?? '0.0.0'
-
-/**
- * The revision to answer a legacy client with.
- *
- * Echo the proposal when this server speaks it; counter-offer the newest
- * **legacy** revision otherwise, never the newest overall — a client arriving
- * on `initialize` is legacy by definition, and it cannot fall forward to a
- * revision its own generation has never heard of.
- */
-export const agreedVersion = (asked: unknown): string =>
-  typeof asked === 'string' && (PROTOCOL_VERSIONS as readonly string[]).includes(asked)
-    ? asked
-    : LEGACY_PROTOCOL_VERSIONS[0]
-
-/** `initialize`'s result: the legacy handshake. */
-export const initializeResult = (asked: unknown, serverVersion: string | undefined) => ({
-  protocolVersion: agreedVersion(asked),
-  capabilities: CAPABILITIES,
-  serverInfo: { name: 'nacre', version: versionOf(serverVersion) },
-  // The specification's field for "how to use this server", which we sent
-  // nothing in until it existed. One string shared by both transports — see
-  // instructions.ts.
-  instructions: INSTRUCTIONS,
-})
-
-/**
- * `server/discover`'s result, a MUST for any server claiming this revision.
- *
- * It is `initialize` with the handshake taken out. A modern client sends no
- * `initialize` and negotiates nothing — it names a version on every request —
- * so what it needs up front is the list of versions to pick from and the
- * capabilities to expect. Both are static, which is why this answers without
- * touching a dependency and why `cacheScope` is `public`: unlike `tools/list`,
- * nothing in this result depends on who is asking.
- */
-export const discoverResult = (serverVersion: string | undefined) => ({
-  resultType: COMPLETE,
-  supportedVersions: [...PROTOCOL_VERSIONS],
-  capabilities: CAPABILITIES,
-  _meta: {
-    'io.modelcontextprotocol/serverInfo': { name: 'nacre', version: versionOf(serverVersion) },
-  },
-  ttlMs: DISCOVER_TTL_MS,
-  cacheScope: 'public',
-})
-
-/**
- * `tools/list`'s result.
- *
- * The catalog depends on this caller's permissions, so the cache is per user. A
- * global cache would serve one caller's catalog — and the layer names inside
- * it — to another.
- */
-export const toolsListResult = (tools: readonly ToolDefinition[]) => ({
-  resultType: COMPLETE,
-  tools: onTheWire(tools),
-  ttlMs: TOOLS_TTL_MS,
-  // `private`, the specification's word for "not shared across authorization
-  // contexts". This said `user`, which is not a value the caching utility
-  // defines — it has two, `public` and `private` — so a client validating the
-  // result had nothing it was allowed to do with it.
-  cacheScope: 'private',
-})
-
-/**
- * `ping`'s result: the empty object, by specification — plus `resultType`,
- * which the 2026-07-28 revision requires of every result (see `COMPLETE`).
- *
- * Built here like the other three even though there is nothing to build,
- * because the method itself is what diverged: ping is a MUST-respond for both
- * parties in every revision, and STDIO answered it while Streamable HTTP fell
- * through to its 404 arm for the whole life of both — a client's keep-alive
- * dropping the very connection it was checking, over the transport the
- * product is for. A result the transports share is a result a dispatcher has
- * to name to return, and the parity suite reads both dispatchers' method
- * lists now, so losing the arm again fails there.
- */
-export const pingResult = (): { resultType: typeof COMPLETE } => ({ resultType: COMPLETE })
+/** The shape a tool answers in: MCP's `CallToolResult`, with the payload in a text block. */
+export interface ToolResult {
+  readonly [extra: string]: unknown
+  readonly content: { readonly type: 'text'; readonly text: string }[]
+  readonly isError: boolean
+}
 
 /**
  * `tools/call`'s envelope: a CallToolResult, never the bare value.
@@ -229,8 +108,7 @@ export const pingResult = (): { resultType: typeof COMPLETE } => ({ resultType: 
  * spell this object out by hand — two copies of the shape this module exists
  * to make one.
  */
-export const callToolResult = (result: unknown) => ({
-  resultType: COMPLETE,
+export const callToolResult = (result: unknown): ToolResult => ({
   content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
   isError: false,
 })
@@ -249,11 +127,10 @@ export const callToolResult = (result: unknown) => ({
  * protocol keeps JSON-RPC errors for the request itself being wrong.
  *
  * The message is one string for every failure — a missing document, a layer
- * the caller may not read, an unknown tool, a database that is down — which is
- * invariant 4 unchanged: the answer names nothing the caller did not send.
+ * the caller may not read, a database that is down — which is invariant 4
+ * unchanged: the answer names nothing the caller did not send.
  */
-export const callToolError = (message = 'Not found') => ({
-  resultType: COMPLETE,
+export const callToolError = (message = 'Not found'): ToolResult => ({
   content: [{ type: 'text', text: message }],
   isError: true,
 })

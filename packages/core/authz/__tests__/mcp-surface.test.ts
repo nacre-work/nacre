@@ -2,6 +2,7 @@ import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
 import type { AuthContext } from '@nacre.work/api'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import {
   createMcpServer,
   LEGACY_PROTOCOL_VERSIONS,
@@ -82,11 +83,29 @@ const serviceKeys = {
       : undefined,
 }
 
+/**
+ * The 2026-07-28 envelope every modern-era request carries in `params._meta`.
+ *
+ * The SDK classifies a request by it and by the mirrored headers beside it:
+ * a frame with both is served by the modern era and held to its rules — the
+ * headers are required and compared — and a frame with neither is a legacy
+ * client and served by `initialize`'s era, where no mirrored header exists.
+ * A frame with one and not the other is the disagreement `-32020` names.
+ */
+const ENVELOPE = {
+  'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+  'io.modelcontextprotocol/clientInfo': { name: 'surface', version: '0' },
+  'io.modelcontextprotocol/clientCapabilities': {},
+}
+
 const MCP_HEADERS = {
   'mcp-protocol-version': '2026-07-28',
   'mcp-method': 'tools/list',
   'content-type': 'application/json',
 }
+
+/** A modern-era `tools/list` body: the method and the envelope, nothing else. */
+const LIST_BODY = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: { _meta: ENVELOPE } })
 
 /** The three methods that name something, and where the name lives. */
 const NAMED: Record<string, 'name' | 'uri'> = {
@@ -96,13 +115,12 @@ const NAMED: Record<string, 'name' | 'uri'> = {
 }
 
 /**
- * The mirrored headers for a call, derived from it.
+ * The mirrored headers for a modern-era call, derived from it.
  *
  * The harness used to send a fixed `mcp-method: tools/list` whatever it was
  * calling, and an `mcp-name` on every request — which is what a client does
- * *not* do, and is why the transport requiring one everywhere went unnoticed.
- * Deriving them is the point: a header that does not describe the body is
- * exactly what the server now refuses.
+ * *not* do. Deriving them is the point: a header that does not describe the
+ * body is exactly what the server refuses.
  */
 function mirrored(method: string, params: unknown): Record<string, string> {
   const field = NAMED[method]
@@ -115,18 +133,35 @@ function mirrored(method: string, params: unknown): Record<string, string> {
   }
 }
 
+/**
+ * A request as a client of either era sends it.
+ *
+ * Modern (the default): the envelope in `params._meta` and the mirrored
+ * headers. Legacy: the bare JSON-RPC frame with no headers but the content
+ * type, which is what every client that opens with `initialize` sends.
+ * `headers` overrides what is mirrored, for the cases about headers that lie.
+ */
 async function rpc(
   method: string,
   params: unknown,
   orgId: string,
   headers?: Record<string, string>,
+  era: 'modern' | 'legacy' = 'modern',
 ): Promise<Response> {
+  const body =
+    era === 'legacy'
+      ? { jsonrpc: '2.0', id: 1, method, params }
+      : { jsonrpc: '2.0', id: 1, method, params: { ...((params ?? {}) as Record<string, unknown>), _meta: ENVELOPE } }
+  const defaults = era === 'legacy' ? { 'content-type': 'application/json' } : mirrored(method, params)
   return fetch(`${base}/mcp`, {
     method: 'POST',
-    headers: { ...(headers ?? mirrored(method, params)), authorization: `Bearer ${await token(orgId)}` },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    headers: { ...(headers ?? defaults), authorization: `Bearer ${await token(orgId)}` },
+    body: JSON.stringify(body),
   })
 }
+
+const legacy = (method: string, params: unknown, orgId: string): Promise<Response> =>
+  rpc(method, params, orgId, undefined, 'legacy')
 
 /**
  * A request with a `Host` this test chooses.
@@ -212,7 +247,7 @@ describe('baseline · the MCP surface', () => {
     const res = await fetch(`${base}/mcp`, {
       method: 'POST',
       headers: { ...MCP_HEADERS, authorization: `Bearer ${AGENT_KEY}` },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+      body: LIST_BODY,
     })
 
     // 200, not 401. An agent holding a working key over REST and STDIO getting
@@ -227,7 +262,7 @@ describe('baseline · the MCP surface', () => {
     const res = await fetch(`${base}/mcp`, {
       method: 'POST',
       headers: { ...MCP_HEADERS, authorization: `Bearer nacre_sk_${'z'.repeat(32)}` },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+      body: LIST_BODY,
     })
     expect(res.status).toBe(401)
   })
@@ -294,22 +329,38 @@ describe('baseline · the MCP surface', () => {
     expect(body.result.isError).toBe(true)
     expect(body.result.content[0]?.text).toContain('Bad.Key')
 
-    // An unknown tool is still indistinguishable from one the caller may not
-    // reach. If this ever starts naming things, the carve-out above grew.
+    // An unknown tool is the SDK's answer: a JSON-RPC `-32602` naming the
+    // tool the caller asked for and nothing else. It used to be the same
+    // `isError` result a failing tool gets; the two differ now, and that is
+    // not a leak — every caller sees every tool *name* (the catalog's names
+    // are static, only `search`'s description is per caller), so saying a
+    // name is not in it tells the caller what `tools/list` already did.
+    // Still a 200, never a 404: on Streamable HTTP a 404 is "your session is
+    // gone", and a real client dropped its connection over one.
     const unknown = await rpc('tools/call', { name: 'nope', arguments: {} }, ORG_A)
     expect(unknown.status).toBe(200)
-    const other = (await unknown.json()) as ToolError
-    expect(other.result.isError).toBe(true)
-    expect(other.result.content[0]?.text).toBe('Not found')
+    const other = (await unknown.json()) as { error: { code: number; message: string } }
+    expect(other.error.code).toBe(-32602)
+    expect(other.error.message).toContain('nope')
+    for (const layer of [...LAYERS[ORG_A]!, ...LAYERS[ORG_B]!]) {
+      expect(other.error.message).not.toContain(layer.name)
+    }
 
-    // And a tool that fails on what is stored answers the same bytes.
+    // And a tool that fails on what is stored answers "Not found" and
+    // nothing about which — a missing document and a document the caller
+    // may not read are the same bytes.
     const missing = await rpc(
       'tools/call',
       { name: 'get_document', arguments: { document_id: '00000000-0000-4000-8000-000000000000' } },
       ORG_A,
     )
     expect(missing.status).toBe(200)
-    expect(((await missing.json()) as ToolError).result).toEqual(other.result)
+    expect(((await missing.json()) as ToolError).result).toEqual({
+      resultType: 'complete',
+      content: [{ type: 'text', text: 'Not found' }],
+      isError: true,
+      _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'nacre', version: '0.0.0' } },
+    })
   })
 
   it('a successful call answers with a CallToolResult, not the bare value', async () => {
@@ -332,12 +383,17 @@ describe('baseline · the MCP surface', () => {
     expect(() => JSON.parse(body.result?.content?.[0]?.text ?? '')).not.toThrow()
   })
 
-  it('T8 · a failing tool and an unknown tool answer identically', async () => {
-    const unknown = await rpc('tools/call', { name: 'no_such_tool', arguments: {} }, ORG_A)
-    const failing = await rpc('tools/call', { name: 'get_document', arguments: { document_id: 'x' } }, ORG_A)
-
-    expect(unknown.status).toBe(failing.status)
-    expect(await unknown.json()).toEqual(await failing.json())
+  it('T8 · a failing tool names nothing, whichever reason it failed for', async () => {
+    // A document that is absent, one the caller may not read, and a database
+    // that is down all answer the same bytes. The SDK would put the thrown
+    // error's own message on the wire; `factory.ts` is what stops it, and
+    // this is the case that notices if that wrapper goes.
+    const missing = await rpc('tools/call', { name: 'get_document', arguments: { document_id: 'x' } }, ORG_A)
+    const denied = await rpc('tools/call', { name: 'delete_document', arguments: { document_id: 'y' } }, ORG_A)
+    expect(missing.status).toBe(200)
+    expect(await missing.json()).toEqual(await denied.json())
+    const text = JSON.stringify(await (await rpc('tools/call', { name: 'get_document', arguments: { document_id: 'x' } }, ORG_A)).json())
+    expect(text).not.toContain('nope')
   })
 
   it('no tool schema accepts an organization', async () => {
@@ -360,8 +416,13 @@ describe('baseline · the MCP surface', () => {
    */
   it('completes the handshake a real client performs, with no mirrored headers', async () => {
     const plain = { 'content-type': 'application/json' }
-
-    const hello = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {} }, ORG_A, plain)
+    const hello = await rpc(
+      'initialize',
+      { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'surface', version: '0' } },
+      ORG_A,
+      plain,
+      'legacy',
+    )
     expect(hello.status, 'initialize with no MCP-Protocol-Version').toBe(200)
     const greeting = (await hello.json()) as {
       result: { protocolVersion: string; capabilities: Record<string, unknown>; serverInfo: { name: string } }
@@ -385,13 +446,13 @@ describe('baseline · the MCP surface', () => {
     expect(await ack.text()).toBe('')
 
     // Leg three, still with no mirrored headers, and it has to answer.
-    const listed = await rpc('tools/list', {}, ORG_A, plain)
+    const listed = await legacy('tools/list', {}, ORG_A)
     expect(listed.status, 'tools/list with no mirrored headers').toBe(200)
     const tools = (await listed.json()) as { result: { tools: { name: string }[] } }
     expect(tools.result.tools.length).toBeGreaterThan(0)
 
     // And a tool actually runs, which is the thing the whole transport is for.
-    const called = await rpc('tools/call', { name: 'search', arguments: { query: 'anything' } }, ORG_A, plain)
+    const called = await legacy('tools/call', { name: 'search', arguments: { query: 'anything' } }, ORG_A)
     expect(called.status, 'tools/call with no mirrored headers').toBe(200)
   })
 
@@ -400,9 +461,22 @@ describe('baseline · the MCP surface', () => {
     // one is a proposal and gets a counter-offer; this one says which
     // revision's transport rules framed the request, and a revision we cannot
     // read means nothing below it can be trusted to mean what it looks like.
-    const res = await rpc('tools/list', {}, ORG_A, {
-      'mcp-protocol-version': '1999-01-01',
-      'content-type': 'application/json',
+    // Header and envelope agree here, so the refusal is about the revision
+    // and not about the two disagreeing.
+    const res = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'mcp-protocol-version': '1999-01-01',
+        'mcp-method': 'tools/list',
+        'content-type': 'application/json',
+        authorization: `Bearer ${await token(ORG_A)}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/list',
+        params: { _meta: { ...ENVELOPE, 'io.modelcontextprotocol/protocolVersion': '1999-01-01' } },
+      }),
     })
     expect(res.status).toBe(400)
     const body = (await res.json()) as {
@@ -411,8 +485,10 @@ describe('baseline · the MCP surface', () => {
     expect(body.error.code).toBe(-32022)
     expect(body.error.data.requested).toBe('1999-01-01')
     // Naming what we do speak is the point: a bare refusal leaves the client
-    // with nothing to retry.
-    expect(body.error.data.supported).toEqual([...PROTOCOL_VERSIONS])
+    // with nothing to retry. The *modern* revisions, because a client framing
+    // a request this way is a modern one and the legacy ones are reached
+    // through `initialize`, not through this header.
+    expect(body.error.data.supported).toEqual([PROTOCOL_VERSION])
   })
 
   it('refuses a header revision that disagrees with the one in _meta', async () => {
@@ -430,26 +506,17 @@ describe('baseline · the MCP surface', () => {
         jsonrpc: '2.0',
         id: 1,
         method: 'tools/list',
-        _meta: { 'io.modelcontextprotocol/protocolVersion': '2025-06-18' },
+        params: { _meta: { ...ENVELOPE, 'io.modelcontextprotocol/protocolVersion': '2025-06-18' } },
       }),
     })
     expect(res.status).toBe(400)
     expect(((await res.json()) as { error: { code: number } }).error.code).toBe(-32020)
 
-    // Agreeing is fine, and so is a body that carries no version at all.
+    // Agreeing is fine.
     const agreeing = await fetch(`${base}/mcp`, {
       method: 'POST',
-      headers: {
-        'mcp-protocol-version': '2026-07-28',
-        'content-type': 'application/json',
-        authorization: `Bearer ${await token(ORG_A)}`,
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/list',
-        _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
-      }),
+      headers: { ...MCP_HEADERS, authorization: `Bearer ${await token(ORG_A)}` },
+      body: LIST_BODY,
     })
     expect(agreeing.status).toBe(200)
   })
@@ -461,11 +528,10 @@ describe('baseline · the MCP surface', () => {
     // counter-offer branch and the client was handed 2026-07-28, which its
     // `SUPPORTED_PROTOCOL_VERSIONS` does not contain. Every connection died on
     // `Server's protocol version is not supported: 2026-07-28`.
-    const res = await rpc(
+    const res = await legacy(
       'initialize',
-      { protocolVersion: '2025-11-25', capabilities: {} },
+      { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'surface', version: '0' } },
       ORG_A,
-      { 'content-type': 'application/json' },
     )
     expect(res.status).toBe(200)
     const body = (await res.json()) as { result: { protocolVersion: string } }
@@ -473,11 +539,10 @@ describe('baseline · the MCP surface', () => {
   })
 
   it('counter-offers a legacy revision, never the newest one', async () => {
-    const res = await rpc(
+    const res = await legacy(
       'initialize',
-      { protocolVersion: '1999-01-01', capabilities: {} },
+      { protocolVersion: '1999-01-01', capabilities: {}, clientInfo: { name: 'surface', version: '0' } },
       ORG_A,
-      { 'content-type': 'application/json' },
     )
     expect(res.status).toBe(200)
     const body = (await res.json()) as { result: { protocolVersion: string } }
@@ -500,7 +565,7 @@ describe('baseline · the MCP surface', () => {
   it('server/discover advertises every revision, for anybody', async () => {
     // A MUST in 2026-07-28, and the modern era's opening move: a client that
     // sends no `initialize` learns the version list here instead.
-    const res = await rpc('server/discover', {}, ORG_A, { 'content-type': 'application/json' })
+    const res = await rpc('server/discover', {}, ORG_A)
     expect(res.status).toBe(200)
     const body = (await res.json()) as {
       result: {
@@ -512,7 +577,12 @@ describe('baseline · the MCP surface', () => {
       }
     }
     expect(body.result.resultType).toBe('complete')
-    expect(body.result.supportedVersions).toEqual([...PROTOCOL_VERSIONS])
+    // The modern revisions only. A legacy client never sends this — it opens
+    // with `initialize` and negotiates there, from LEGACY_PROTOCOL_VERSIONS —
+    // so listing those here would offer a modern client revisions it cannot
+    // frame a request in.
+    expect(body.result.supportedVersions).toEqual([PROTOCOL_VERSION])
+    expect(PROTOCOL_VERSIONS).toEqual([PROTOCOL_VERSION, ...LEGACY_PROTOCOL_VERSIONS])
     // The literal rather than the constant, deliberately. This is what goes on
     // the wire to a client, so a change to `CAPABILITIES` should stop here and
     // be looked at — a test that imported the value would agree with whatever
@@ -567,59 +637,51 @@ describe('baseline · the MCP surface', () => {
     expect(res.status).toBe(202)
   })
 
-  it('accepts a request with no mirrored headers and still refuses one that lies', async () => {
-    // Absent is fine: no shipping client sends these, and demanding them is
-    // what made the transport unreachable.
-    for (const missing of ['mcp-protocol-version', 'mcp-method', 'mcp-name']) {
+  it('a legacy client sends no mirrored headers and a modern one sends all of them', async () => {
+    // The legacy era has no mirrored headers at all — they arrived in
+    // 2026-07-28 — so a frame without the envelope is served whatever is or
+    // is not beside it. That is the branch the binding sanctions for a
+    // server supporting clients older than 2025-06-18, and it is the one
+    // every shipping `initialize` client takes.
+    for (const extra of [{}, { 'mcp-method': 'tools/list' }, { 'mcp-method': 'tools/call' }]) {
+      const res = await rpc('tools/list', {}, ORG_A, { 'content-type': 'application/json', ...extra }, 'legacy')
+      expect(res.status, JSON.stringify(extra)).toBe(200)
+    }
+
+    // A modern frame is held to the modern rules: the envelope names a
+    // revision, so the header that mirrors it has to be there and agree, and
+    // so does `Mcp-Method` — an intermediary routes on the header while the
+    // server executes the body, and a request with one and not the other is
+    // the disagreement the code names.
+    for (const missing of ['mcp-protocol-version', 'mcp-method']) {
       const headers: Record<string, string> = { ...mirrored('tools/list', {}) }
       delete headers[missing]
       const res = await rpc('tools/list', {}, ORG_A, headers)
-      expect(res.status, `without ${missing}`).toBe(200)
+      expect(res.status, `without ${missing}`).toBe(400)
+      expect(((await res.json()) as { error: { code: number } }).error.code).toBe(-32020)
     }
 
-    // Present and disagreeing is still refused, because the comparison is the
-    // entire reason the headers exist: an intermediary routes on the header
-    // while this server executes the body, and two different instructions is
-    // the thing to stop.
-    const lying = await rpc('tools/list', {}, ORG_A, {
-      ...mirrored('tools/list', {}),
-      'mcp-method': 'tools/call',
-    })
+    // Present and disagreeing is refused with the same code. -32600 read as
+    // "not a modern server" and sent a client into a fallback this transport
+    // does not speak.
+    const lying = await rpc('tools/list', {}, ORG_A, { ...mirrored('tools/list', {}), 'mcp-method': 'tools/call' })
     expect(lying.status, 'mcp-method disagreeing with the body').toBe(400)
-    const body = (await lying.json()) as { error: { code: number } }
-    // -32020 HeaderMismatch, the code the specification allocates. -32600
-    // read as "not a modern server" and sent a client into a fallback this
-    // transport does not speak.
-    expect(body.error.code).toBe(-32020)
+    expect(((await lying.json()) as { error: { code: number } }).error.code).toBe(-32020)
 
-    // `Mcp-Name` is required only on the three methods that name something.
-    // Demanding it on `tools/list` refused a request no client can make any
-    // other way, which is how this was found: a real client could not list
-    // tools at all.
-    const listed = await rpc('tools/list', {}, ORG_A, {
-      'mcp-protocol-version': '2026-07-28',
-      'mcp-method': 'tools/list',
-      'content-type': 'application/json',
-    })
-    expect(listed.status).toBe(200)
-
-    // And on one that does name something it is **still not demanded**, because
-    // no shipping client sends it — that requirement is what made this
-    // transport unreachable in the first place, one method further along.
+    // `Mcp-Name` is required only on the three methods that name something,
+    // and on those it is required: a modern `tools/call` without one is the
+    // same disagreement. The SDK's own client sends it on every call.
     const unnamed = await rpc('tools/call', { name: 'search', arguments: { query: 'x' } }, ORG_A, {
       'mcp-protocol-version': '2026-07-28',
       'mcp-method': 'tools/call',
       'content-type': 'application/json',
     })
-    expect(unnamed.status).toBe(200)
+    expect(unnamed.status).toBe(400)
+    expect(((await unnamed.json()) as { error: { code: number } }).error.code).toBe(-32020)
 
-    // Sent and wrong is a different thing, and is refused: that comparison is
-    // the whole protection the header buys.
     const misnamed = await rpc('tools/call', { name: 'search', arguments: { query: 'x' } }, ORG_A, {
-      'mcp-protocol-version': '2026-07-28',
-      'mcp-method': 'tools/call',
+      ...mirrored('tools/call', { name: 'search' }),
       'mcp-name': 'delete_document',
-      'content-type': 'application/json',
     })
     expect(misnamed.status).toBe(400)
     expect(((await misnamed.json()) as { error: { code: number } }).error.code).toBe(-32020)
@@ -681,7 +743,7 @@ describe('baseline · the MCP surface', () => {
     const fromBrowser = await fetch(`${base}/mcp`, {
       method: 'POST',
       headers: { ...mirrored('tools/list', {}), origin: 'https://evil.test' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      body: LIST_BODY,
     })
     expect(fromBrowser.status).toBe(403)
 
@@ -690,7 +752,7 @@ describe('baseline · the MCP surface', () => {
     const fromAgent = await fetch(`${base}/mcp`, {
       method: 'POST',
       headers: mirrored('tools/list', {}),
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      body: LIST_BODY,
     })
     expect(fromAgent.status).toBe(401)
   })
@@ -699,7 +761,7 @@ describe('baseline · the MCP surface', () => {
     const res = await fetch(`${base}/mcp`, {
       method: 'POST',
       headers: MCP_HEADERS,
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      body: LIST_BODY,
     })
     expect(res.status).toBe(401)
     // RFC 9728. Without this the client has nowhere to start.
@@ -816,7 +878,11 @@ describe('baseline · the MCP surface', () => {
     // it still holds: the transport is stateless, so no session id comes back
     // and nothing about this request is kept. If `Mcp-Session-Id` ever appears
     // here, state has crept in and the round-robin deployment stops being safe.
-    const res = await rpc('initialize', {}, ORG_A)
+    const res = await legacy(
+      'initialize',
+      { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'surface', version: '0' } },
+      ORG_A,
+    )
     expect(res.status).toBe(200)
     expect(res.headers.get('mcp-session-id')).toBeNull()
   })
@@ -825,7 +891,7 @@ describe('baseline · the MCP surface', () => {
     // The default, and the whole of what an existing deployment sees. An empty
     // list admits no browser, so no CORS header is emitted and a preflight is
     // refused — which is what this server did before it could admit one at all.
-    const res = await rpc('initialize', {}, ORG_A)
+    const res = await rpc('tools/list', {}, ORG_A)
     expect(res.headers.get('access-control-allow-origin')).toBeNull()
     expect(res.headers.get('access-control-expose-headers')).toBeNull()
 
@@ -849,6 +915,43 @@ describe('baseline · the MCP surface', () => {
     // able to search what it uploaded.
     expect(permission('ingest_document')).toBe('write')
     expect(permission('delete_document')).toBe('write')
+  })
+  /**
+   * The SDK's own client, in both eras, against the real transport.
+   *
+   * Every raw case above spells its frames by hand, which is the shape that let
+   * a transport nobody could connect to stay green for months: the suite never
+   * sent what a client sends. This is the client — version negotiation, the
+   * envelope, the mirrored headers, result validation — and it is what an agent
+   * actually runs.
+   */
+  describe('a real MCP client connects, in both eras', () => {
+    for (const era of ['modern', 'legacy'] as const) {
+      it(`lists the catalog and calls a tool (${era})`, async () => {
+        const client = new Client(
+          { name: 'surface', version: '0' },
+          era === 'modern' ? { versionNegotiation: { mode: 'auto' } } : {},
+        )
+        await client.connect(
+          new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
+            requestInit: { headers: { authorization: `Bearer ${await token(ORG_A)}` } },
+          }),
+        )
+        try {
+          const list = await client.listTools()
+          expect(list.tools.map((t) => t.name)).toContain('search')
+          expect(list.tools.find((t) => t.name === 'search')?.description).toContain('Contracts')
+          const called = (await client.callTool({ name: 'search', arguments: { query: 'x' } })) as {
+            isError?: boolean
+            content: { text: string }[]
+          }
+          expect(called.isError).toBe(false)
+          expect(called.content[0]?.text).toContain('items')
+        } finally {
+          await client.close()
+        }
+      })
+    }
   })
 })
 
@@ -927,7 +1030,7 @@ describe('baseline · a browser this transport allows can actually reach it', ()
     const res = await fetch(`${corsBase}/mcp`, {
       method: 'POST',
       headers: { ...MCP_HEADERS, origin: ALLOWED },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      body: LIST_BODY,
     })
     expect(res.status).toBe(401)
     expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED)
@@ -953,7 +1056,7 @@ describe('baseline · a browser this transport allows can actually reach it', ()
     const ok = await fetch(`${corsBase}/mcp`, {
       method: 'POST',
       headers: { ...MCP_HEADERS, origin: ALLOWED },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      body: LIST_BODY,
     })
     // A bearer token in a header, never a cookie. Credentialed CORS would buy
     // nothing and would make somebody else's page able to act as a signed-in

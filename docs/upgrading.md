@@ -272,6 +272,35 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.28.0 — the MCP server on the reference SDK
+
+No schema change and no new configuration, and 0.27.0 runs unchanged against
+this database — so rolling back is safe. What changed is the wire, and only for
+one kind of client.
+
+**The MCP server is `@modelcontextprotocol/server` 2.x**, the reference
+implementation of the 2026-07-28 revision, on both transports. Everything a
+client does today keeps working: `initialize`, the negotiation, `tools/list`,
+`tools/call`, `ping`, the RFC 9728 walk, service account keys and delegations
+— every shipping client is a legacy-era client and that era is served as it
+was. The SDK's own client was driven against the transport in both eras, and
+so was every hand-written frame the suite had.
+
+**A 2026-07-28 client is held to that revision now.** A request that carries
+the `_meta` envelope must also carry `MCP-Protocol-Version` and `Mcp-Method`,
+and `Mcp-Name` on `tools/call`; a missing one is refused with `-32020` where
+0.27.0 let it through. The SDK's client sends all of them, so the only caller
+this reaches is one that was hand-writing modern frames without the headers.
+
+**An unknown tool is a JSON-RPC `-32602` naming the tool**, where it used to
+be the same `isError` result a failing tool gets. A failing tool still answers
+`Not found` and nothing about why. Anything that matched on the old `Not found`
+for a mistyped tool name should match on the error code instead.
+
+**`Accept` is no longer something a caller can get wrong.** A POST that does
+not name `text/event-stream` is answered in JSON, which is what every POST is
+answered in; a `curl` or a check script needs no header it did not have.
+
 ### 0.27.0 — Office and OpenDocument files, EPUB and RTF are accepted
 
 One migration, 0035, which widens the `CHECK` on `documents.content_type`
