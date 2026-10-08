@@ -1,6 +1,6 @@
-# The one dependency, pinned exactly. This process runs hostile input through
-# whatever it depends on, so the extractor is chosen for dependency surface
-# first. Anything added here is a decision about that surface, not a
+# Two dependencies, each pinned exactly. This process runs hostile input
+# through whatever it depends on, so an extractor is chosen for dependency
+# surface first. Anything added here is a decision about that surface, not a
 # convenience; see the module docstring in app.py.
 #
 # Pinning it exactly means the pin has to be *moved*, and a security release
@@ -40,4 +40,24 @@
 # which is what keeps the `airgapped` profile honest. Wheels are published for
 # manylinux x86_64 and aarch64, so both architectures this project ships install
 # a binary rather than compiling one.
-pdf-inspector==0.2.6
+pdf-inspector==1.25.2
+#
+# ## The second one, and why it is not the only one
+#
+# `anydoc` is the same publisher's converter for Word, PowerPoint, Excel,
+# OpenDocument, RTF and EPUB: one Rust wheel, no Python dependencies of its
+# own, no models and no network unless asked for hosted OCR — which this
+# sidecar never asks for, by a literal argument a test holds. It carries a
+# PDF path too, built on the crate above, and that path is deliberately not
+# used: measured over the three hostile shapes, it calls two of them scans,
+# it refuses a partly-scanned document outright where `pdf-inspector`
+# extracts the pages that have text and names the ones that do not, and it
+# reports no page count on success. Those are three promises `parse_pdf`
+# already makes to an operator, so PDF keeps the extractor that keeps them.
+#
+# Its limits are its own: decompression, nesting depth, node count, repeat
+# expansion and retained bytes each have a fixed ceiling and cross as a
+# refusal naming the limit, never as memory. A 7 MB `.docx` of two hundred
+# thousand paragraphs converts in two seconds; an archive that is not the
+# format it was declared as is refused by its missing parts.
+firecrawl-anydoc==0.2.4

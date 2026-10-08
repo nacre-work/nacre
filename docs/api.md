@@ -38,8 +38,10 @@ POST   /v1/auth/login    /v1/auth/refresh        /v1/auth/logout
 
 Everything the contract describes is implemented, with one limit that is a
 property of the product rather than of the handler: an uploaded file must be
-UTF-8 text or a PDF, and any other binary format is refused at the edge. The
-section on multipart below says what the PDF path requires and why the line
+UTF-8 text or one of the binary formats in the table — PDF, the Office and
+OpenDocument formats, EPUB, RTF — and any other binary format is refused at
+the edge. The section on multipart below says what a binary upload requires
+and why the line
 is drawn there.
 
 ## Errors — RFC 9457 (`application/problem+json`)
@@ -837,32 +839,54 @@ path should be: nested multipart, `Content-Transfer-Encoding` other than
 header block over 8 KiB are all refusals rather than branches. `413` is the
 size limit, `400` is everything else, and neither is configurable.
 
-### Binary upload — PDF, and the rules it carries
+### Binary upload — the table, and the rules it carries
 
-**A binary file must be a PDF, and a PDF must carry both signals**: the file
-part declares `application/pdf` **and** the bytes begin with the `%PDF-`
-magic. Either alone is a `400` naming the other — a declared type the bytes
-contradict is the disagreement the envelope's strictness exists to refuse, and
-sniffing alone would turn the declared type into decoration. Other formats are
-added by extending that table, never by falling through to a guess; anything
-else binary is refused with `400` at the edge, where the caller learns on the
-request and nothing is queued. It used not to be: the sidecar decoded with
-`errors="replace"`, so a PDF became a string of replacement characters that
-was chunked, embedded, stored as the document body, and reported as `indexed`.
+**A binary file must be in the table, and must carry both signals**: the file
+part declares the format's media type **and** the bytes begin with its
+family's signature. Either alone is a `400` naming the other — a declared type
+the bytes contradict is the disagreement the envelope's strictness exists to
+refuse, and sniffing alone would turn the declared type into decoration. The
+table is `BINARY_FORMATS` in `packages/core/formats.ts`, read by the edge, the
+worker and the parser sidecar alike:
+
+| declared | signature | read as |
+|---|---|---|
+| `application/pdf` | `%PDF-` | PDF |
+| `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | ZIP | `.docx` |
+| `application/vnd.openxmlformats-officedocument.presentationml.presentation` | ZIP | `.pptx` |
+| `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | ZIP | `.xlsx` |
+| `application/vnd.oasis.opendocument.text` | ZIP | `.odt` |
+| `application/vnd.oasis.opendocument.presentation` | ZIP | `.odp` |
+| `application/vnd.oasis.opendocument.spreadsheet` | ZIP | `.ods` |
+| `application/epub+zip` | ZIP | `.epub` |
+| `application/rtf` (or `text/rtf`) | `{\rtf` | RTF |
+
+A signature names a family and not a format — every Office and OpenDocument
+file is a ZIP archive — so what the edge holds is "a ZIP-based document,
+declared as one". Which one is the declaration's job, and the sidecar names
+that format to its extractor rather than letting it sniff: a `.docx`
+declaration over an `.odt` archive fails the document on the parts the
+extractor then cannot find. Other formats are added by extending the table,
+never by falling through to a guess; anything else binary — an image, a plain
+archive, a legacy `.doc` — is refused with `400` at the edge, where the caller
+learns on the request and nothing is queued. It used not to be: the sidecar
+decoded with `errors="replace"`, so a PDF became a string of replacement
+characters that was chunked, embedded, stored as the document body, and
+reported as `indexed`.
 
 **Binary upload requires `NACRE_S3_*`.** `documents.source_ref` is text and
-stays text, so the bytes' only home is the bucket — a PDF on a deployment
-without object storage is `400` naming the variables. The bytes go up with
-their real `Content-Type`, before the row, in the write order the text path
-already uses.
+stays text, so the bytes' only home is the bucket — a binary file on a
+deployment without object storage is `400` naming the variables. The bytes go
+up with their real `Content-Type`, before the row, in the write order the text
+path already uses.
 
 **Idempotency for a binary document is defined on the uploaded bytes**:
 `content_hash` is `sha256:` over them, computed the same way by the API and
 the worker, so re-sending the same file is a no-op and a changed file
 re-indexes — the same semantics text sources get from hashing the text.
-`documents.content_type` records which of the two the row is, and the worker
-dispatches on it: `text/plain` decodes UTF-8 with `fatal: true`,
-`application/pdf` passes the bytes to the parser sidecar untouched.
+`documents.content_type` records what the row is, and the worker dispatches
+on it: `text/plain` decodes UTF-8 with `fatal: true`, a type in the table
+passes the bytes to the parser sidecar untouched.
 
 The URL ingest path stays text-only: a response's declared type is an
 attacker's field, and extending the magic check to fetched bytes is its own

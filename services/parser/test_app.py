@@ -417,3 +417,143 @@ class ParsePdfTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _zip(parts: dict[str, str]) -> bytes:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, body in parts.items():
+            archive.writestr(name, body)
+    return buffer.getvalue()
+
+
+def minimal_docx(text: str) -> bytes:
+    """A real Word document carrying `text`: the three parts a reader needs and nothing else."""
+    return _zip(
+        {
+            "[Content_Types].xml": (
+                '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                '<Default Extension="xml" ContentType="application/xml"/>'
+                '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                "</Types>"
+            ),
+            "_rels/.rels": (
+                '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+                "</Relationships>"
+            ),
+            "word/document.xml": (
+                '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                f"<w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>"
+            ),
+        }
+    )
+
+
+def minimal_odt(text: str) -> bytes:
+    """A real OpenDocument text: the mimetype entry and a content part."""
+    return _zip(
+        {
+            "mimetype": "application/vnd.oasis.opendocument.text",
+            "content.xml": (
+                '<?xml version="1.0"?><office:document-content '
+                'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+                'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">'
+                f"<office:body><office:text><text:p>{text}</text:p></office:text></office:body>"
+                "</office:document-content>"
+            ),
+        }
+    )
+
+
+DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+ODT = "application/vnd.oasis.opendocument.text"
+
+
+class ParseDocumentTests(unittest.TestCase):
+    """The office formats, through `anydoc`, and the rules every one of them is held to."""
+
+    def test_a_word_document_yields_its_text_and_names_its_format(self) -> None:
+        parsed = app.parse_document(minimal_docx("The word deltaleave appears here."), DOCX)
+        self.assertIn("deltaleave", parsed["text"])
+        self.assertEqual(parsed["metadata"]["format"], "docx")
+        self.assertEqual(parsed["blocks"], [])
+
+    def test_an_opendocument_text_and_an_rtf_are_read_too(self) -> None:
+        self.assertIn("epsilon", app.parse_document(minimal_odt("epsilon leave"), ODT)["text"])
+        rtf = b"{\\rtf1\\ansi The word zetaleave is in this RTF.}"
+        self.assertIn("zetaleave", app.parse_document(rtf, "application/rtf")["text"])
+        # The spelling IANA registered first is the same format.
+        self.assertIn("zetaleave", app.parse_document(rtf, "text/rtf")["text"])
+
+    def test_pdf_still_goes_through_the_pdf_extractor(self) -> None:
+        # One table dispatches both, and the PDF row keeps the promises
+        # `parse_pdf` makes: the page count is one of them.
+        parsed = app.parse_document(minimal_pdf("through the table"), "application/pdf")
+        self.assertEqual(parsed["metadata"]["pages"], 1)
+
+    def test_bytes_without_the_format_s_signature_are_refused_by_name(self) -> None:
+        with self.assertRaises(app.ParseError) as caught:
+            app.parse_document(minimal_pdf("a pdf"), DOCX)
+        self.assertIn("docx", str(caught.exception))
+        self.assertIn("signature", str(caught.exception))
+
+    def test_a_declaration_the_archive_contradicts_is_refused_without_quoting_it(self) -> None:
+        # An `.odt` archive declared as `.docx` has the ZIP signature, so the
+        # edge cannot tell them apart; the extractor, told the format, can.
+        with self.assertRaises(app.ParseError) as caught:
+            app.parse_document(minimal_odt("not a word file"), DOCX)
+        reason = str(caught.exception)
+        self.assertIn("docx", reason)
+        # The part name the extractor complained about must not travel.
+        self.assertNotIn("word/document.xml", reason)
+
+    def test_a_document_with_no_text_is_refused_rather_than_indexed_as_nothing(self) -> None:
+        with self.assertRaises(app.ParseError) as caught:
+            app.parse_document(minimal_docx(""), DOCX)
+        self.assertIn("no text", str(caught.exception))
+
+    def test_a_type_outside_the_table_is_refused(self) -> None:
+        with self.assertRaises(app.ParseError):
+            app.parse_document(b"PK\x03\x04", "application/zip")
+
+    def test_the_extractor_is_never_asked_for_hosted_ocr(self) -> None:
+        # `ocr="reject"` is the library's default and is passed anyway: the
+        # other value sends the document to a hosted service, and the
+        # `airgapped` profile rests on this process reaching nothing.
+        import anydoc
+
+        with mock.patch.object(anydoc, "to_markdown_bytes", return_value="x") as convert:
+            app.parse_document(minimal_docx("x"), DOCX)
+        self.assertEqual(convert.call_args.kwargs.get("ocr"), "reject")
+        self.assertEqual(convert.call_args.kwargs.get("format"), "docx")
+        self.assertNotIn("api_key", convert.call_args.kwargs)
+
+    def test_the_table_is_the_core_s_table(self) -> None:
+        """`FORMATS` against `packages/core/formats.ts`, both directions.
+
+        Read from the TypeScript rather than restated: the edge admits what
+        that file lists and the worker dispatches on it, so a row here the
+        edge refuses is dead code and a row there this table lacks is a
+        document accepted, queued and failed.
+        """
+        import pathlib
+        import re
+
+        source = pathlib.Path(__file__).resolve().parents[2] / "packages" / "core" / "formats.ts"
+        rows = re.findall(
+            r"\{ contentType: '([^']+)', format: '([^']+)', family: '([^']+)', extension: '[^']+' \}",
+            source.read_text(encoding="utf-8"),
+        )
+        self.assertGreater(len(rows), 1, "the core's table could not be read; the row shape moved")
+        core = {content_type: fmt for content_type, fmt, _family in rows}
+        self.assertEqual({k: v[0] for k, v in app.FORMATS.items()}, core)
+        families = {"pdf": b"%PDF-", "zip": b"PK\x03\x04", "rtf": b"{\\rtf"}
+        for content_type, _fmt, family in rows:
+            self.assertEqual(app.FORMATS[content_type][1], families[family], content_type)
+        aliases = dict(re.findall(r"'([^']+)': '([^']+)',", source.read_text(encoding="utf-8").split("ALIASES")[1].split("}")[0]))
+        self.assertEqual(app.FORMAT_ALIASES, aliases)

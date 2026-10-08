@@ -24,6 +24,7 @@ interface Call {
   readonly method: string
   readonly headers: Record<string, string>
   readonly body: unknown
+  readonly form?: FormData | undefined
 }
 
 /** A fetch that answers from a script and records what it was asked. */
@@ -38,6 +39,8 @@ function stub(...answers: (Response | (() => Response))[]) {
       method: init?.method ?? 'GET',
       headers,
       body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
+      // The raw form, for the one request that is not JSON.
+      form: init?.body instanceof FormData ? init.body : undefined,
     })
     const answer = answers[Math.min(i++, answers.length - 1)]
     // Cloned, never the original: the last answer repeats for every call past
@@ -320,6 +323,45 @@ describe('NacreClient', () => {
 
     expect(calls).toHaveLength(2)
     expect(outcome).toEqual({ documentId: 'd', jobId: 'j', unchanged: false })
+  })
+
+  it('sends bytes as the multipart form the contract describes', async () => {
+    const { fetchImpl, calls } = stub(json(202, { document_id: 'd', job_id: 'j', status: 'queued' }))
+    const bytes = new TextEncoder().encode('%PDF-1.4\n')
+
+    await client(fetchImpl).documents.add({
+      layer: 'handbook',
+      externalId: 'q3.pdf',
+      title: 'Q3',
+      bytes,
+      contentType: 'application/pdf',
+      metadata: { source: 'drive' },
+    })
+
+    expect(calls[0]?.form).toBeInstanceOf(FormData)
+    // No content-type of ours: fetch writes the one carrying its boundary.
+    expect(Object.keys(calls[0]?.headers ?? {})).not.toContain('content-type')
+    const form = calls[0]?.form as FormData
+    expect(form.get('layer')).toBe('handbook')
+    expect(form.get('external_id')).toBe('q3.pdf')
+    expect(form.get('title')).toBe('Q3')
+    // Every multipart field is a string; metadata travels as JSON text.
+    expect(form.get('metadata')).toBe('{"source":"drive"}')
+    const file = form.get('file') as File
+    expect(file.type).toBe('application/pdf')
+    expect(file.name).toBe('q3.pdf')
+    expect(new Uint8Array(await file.arrayBuffer())).toEqual(bytes)
+  })
+
+  it('refuses bytes without a type, and two sources, before sending anything', async () => {
+    const { fetchImpl, calls } = stub()
+    await expect(
+      client(fetchImpl).documents.add({ layer: 'l', externalId: 'x', bytes: new Uint8Array(4) }),
+    ).rejects.toThrow(/contentType/)
+    await expect(
+      client(fetchImpl).documents.add({ layer: 'l', externalId: 'x', content: 'y', url: 'https://a' }),
+    ).rejects.toThrow(/exactly one/)
+    expect(calls).toHaveLength(0)
   })
 
   it('reports an unchanged repeat rather than a queued job', async () => {

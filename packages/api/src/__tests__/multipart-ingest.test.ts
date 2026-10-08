@@ -46,6 +46,11 @@ const typedFile = (filename: string, contentType: string, content: string | Buff
 // checks the magic and object storage and queues; extraction is the worker's
 // and the sidecar's problem, each with their own tests.
 const PDF = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from([0xff, 0xfe, 0x00, 0x01])])
+// The first bytes of every Office and OpenDocument file, and nothing a UTF-8
+// decoder would take: the edge judges the family here and the sidecar the
+// format, so what the archive holds is not this test's business.
+const ZIP = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from([0xff, 0xfe, 0x00, 0x01])])
+const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
 const token = async () =>
   new SignJWT({ org: ORG, principal_type: 'user', role: 'org_admin' })
@@ -118,8 +123,8 @@ describe('multipart ingest', () => {
   })
 
   it('refuses a binary format outside the table, and queues nothing', async () => {
-    // PDF is the one binary format in the table; everything else must still be
-    // UTF-8 text. The sidecar used to decode with errors="replace", so a
+    // Outside the table everything must still be UTF-8 text. The sidecar
+    // used to decode with errors="replace", so a
     // binary file became replacement characters that were chunked, embedded,
     // stored as the body and reported as indexed. Refusing here means the
     // caller learns immediately instead of from a failed row minutes later,
@@ -157,6 +162,42 @@ describe('multipart ingest', () => {
 
     expect(res.status).toBe(400)
     expect(res.body?.detail).toMatch(/application\/pdf/)
+    expect(queued).toBeUndefined()
+  })
+
+  it('refuses a ZIP-based document declared as text, naming the family and the types it takes', async () => {
+    // Every Office and OpenDocument file begins with the same four bytes, so
+    // the edge knows "a ZIP-based document" and not which one — and a part
+    // declaring text/plain over one is the same disagreement as PDF magic
+    // without application/pdf.
+    const res = await upload(
+      Buffer.concat([field('layer', 'contracts'), typedFile('a.docx', 'text/plain', ZIP), closing()]),
+    )
+
+    expect(res.status).toBe(400)
+    expect(res.body?.detail).toMatch(/ZIP signature/)
+    expect(res.body?.detail).toMatch(/wordprocessingml/)
+    expect(queued).toBeUndefined()
+  })
+
+  it('refuses a declared Word document whose bytes are not an archive', async () => {
+    const res = await upload(
+      Buffer.concat([field('layer', 'contracts'), typedFile('a.docx', DOCX, 'just text'), closing()]),
+    )
+
+    expect(res.status).toBe(400)
+    expect(res.body?.detail).toMatch(/ZIP signature/)
+    expect(queued).toBeUndefined()
+  })
+
+  it('refuses a Word document when the deployment has no object storage, like a PDF', async () => {
+    const res = await upload(
+      Buffer.concat([field('layer', 'contracts'), typedFile('a.docx', DOCX, ZIP), closing()]),
+    )
+
+    expect(res.status).toBe(400)
+    expect(res.body?.detail).toMatch(/docx/)
+    expect(res.body?.detail).toMatch(/NACRE_S3_/)
     expect(queued).toBeUndefined()
   })
 
@@ -338,6 +379,33 @@ describe('multipart ingest with object storage', () => {
     // field that sometimes held one would be an invitation to log it.
     expect(queued?.content).toBeUndefined()
     expect(Buffer.from(queued?.bytes ?? [])).toEqual(PDF)
+  })
+
+  it('accepts a Word document whose declared type and signature agree, and queues the bytes', async () => {
+    // The parameters a client's multipart library adds are not part of the
+    // type, and the type reaches the port canonical.
+    const res = await uploadTo(
+      Buffer.concat([
+        field('layer', 'contracts'),
+        typedFile('q3-plan.docx', `${DOCX}; charset=binary`, ZIP),
+        closing(),
+      ]),
+    )
+
+    expect(res.status).toBe(202)
+    expect(queued).toMatchObject({ externalId: 'q3-plan.docx', contentType: DOCX })
+    expect(queued?.content).toBeUndefined()
+    expect(Buffer.from(queued?.bytes ?? [])).toEqual(ZIP)
+  })
+
+  it('accepts RTF under the alias IANA registered, canonicalised', async () => {
+    const rtf = Buffer.from('{\\rtf1\\ansi Hello}')
+    const res = await uploadTo(
+      Buffer.concat([field('layer', 'contracts'), typedFile('memo.rtf', 'text/rtf', rtf), closing()]),
+    )
+
+    expect(res.status).toBe(202)
+    expect(queued).toMatchObject({ contentType: 'application/rtf' })
   })
 
   it('still refuses the signals disagreeing, storage or not', async () => {

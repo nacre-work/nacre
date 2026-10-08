@@ -120,10 +120,22 @@ export interface ClientOptions {
   readonly onSignInGate?: (outcome: SecondFactorEnrolmentRequired) => void
 }
 
+/**
+ * A multipart body: the fields, as strings, and one file part. Built fresh on
+ * every attempt rather than once, because a `FormData` is consumed by the
+ * request that sends it and a retry must not replay an empty one.
+ */
+interface MultipartBody {
+  readonly fields: Readonly<Record<string, string>>
+  readonly file: { readonly bytes: Uint8Array; readonly contentType: string; readonly filename: string }
+}
+
 interface RequestOptions {
   readonly method: string
   readonly path: string
   readonly body?: unknown
+  /** Instead of `body`: the request goes up as `multipart/form-data`. */
+  readonly multipart?: MultipartBody
   readonly signal?: AbortSignal
   /** Safe or idempotent, so a transient failure may be retried. */
   readonly retryable?: boolean
@@ -133,6 +145,19 @@ interface RequestOptions {
    * that itself `401`s means the session is over, not that it should recurse.
    */
   readonly noAuthRefresh?: boolean
+}
+
+function formData(multipart: MultipartBody): FormData {
+  const form = new FormData()
+  for (const [name, value] of Object.entries(multipart.fields)) form.append(name, value)
+  // A copy, so the Blob holds bytes of its own: a caller's buffer may be a
+  // view over something reused before the request is sent.
+  form.append(
+    'file',
+    new Blob([new Uint8Array(multipart.file.bytes)], { type: multipart.file.contentType }),
+    multipart.file.filename,
+  )
+  return form
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -180,6 +205,9 @@ export class NacreClient {
 
     let response: Response
     try {
+      // No `content-type` for a multipart body: `fetch` writes it with the
+      // boundary it chose, and a header set here would name a boundary that
+      // is not the one in the body.
       response = await this.#fetch(`${this.#base}${options.path}`, {
         method: options.method,
         headers: {
@@ -188,6 +216,7 @@ export class NacreClient {
           accept: 'application/json',
         },
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        ...(options.multipart === undefined ? {} : { body: formData(options.multipart) }),
         signal: controller.signal,
       })
     } catch (cause) {
@@ -455,17 +484,54 @@ export class NacreClient {
      * the same bytes are already indexed.
      */
     add: async (request: IngestRequest): Promise<IngestOutcome> => {
+      // Exactly one source, refused here rather than by the server: the three
+      // travel in two different envelopes, so a request carrying two would
+      // otherwise be sent in whichever one this method picked and refused for
+      // a reason about the wrong field.
+      const sources = [request.content, request.url, request.bytes].filter((s) => s !== undefined)
+      if (sources.length !== 1) {
+        throw new TypeError('exactly one of content, url or bytes is required')
+      }
+      if (request.bytes !== undefined && request.contentType === undefined) {
+        throw new TypeError('bytes need a contentType: the server refuses to sniff a binary file')
+      }
+
+      // A binary document goes up as the multipart form the contract
+      // describes — the bytes under their real type on the file part, every
+      // other field as a string, `metadata` as JSON text. Text and URL keep
+      // the JSON body they always had.
+      const options =
+        request.bytes === undefined
+          ? {
+              body: {
+                layer: request.layer,
+                external_id: request.externalId,
+                ...(request.title === undefined ? {} : { title: request.title }),
+                ...(request.content === undefined ? {} : { content: request.content }),
+                ...(request.url === undefined ? {} : { url: request.url }),
+                ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
+              },
+            }
+          : {
+              multipart: {
+                fields: {
+                  layer: request.layer,
+                  external_id: request.externalId,
+                  ...(request.title === undefined ? {} : { title: request.title }),
+                  ...(request.metadata === undefined ? {} : { metadata: JSON.stringify(request.metadata) }),
+                },
+                file: {
+                  bytes: request.bytes,
+                  contentType: request.contentType as string,
+                  filename: request.filename ?? request.externalId,
+                },
+              },
+            }
+
       const body = (await this.#request({
         method: 'POST',
         path: '/v1/documents',
-        body: {
-          layer: request.layer,
-          external_id: request.externalId,
-          ...(request.title === undefined ? {} : { title: request.title }),
-          ...(request.content === undefined ? {} : { content: request.content }),
-          ...(request.url === undefined ? {} : { url: request.url }),
-          ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
-        },
+        ...options,
         // Idempotent on (layer, external_id) and the content hash, so a retry
         // after a timeout cannot produce a second document or a second version.
         retryable: true,

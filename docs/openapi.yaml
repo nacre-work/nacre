@@ -1468,13 +1468,22 @@ paths:
         bucket.
 
 
-        **The file is UTF-8 text, or a PDF.** A PDF must carry both signals:
-        the part declares `application/pdf` **and** the bytes begin with the
-        `%PDF-` magic — either alone is `400`, naming the other. Binary bytes
-        live only in object storage, so a PDF on a deployment without
+        **The file is UTF-8 text, or one of the binary formats in the
+        table.** A binary file must carry both signals: the part declares the
+        format's media type **and** the bytes begin with its family's
+        signature — either alone is `400`, naming the other. The table is
+        PDF (`application/pdf`, `%PDF-`); Word, PowerPoint and Excel
+        (`application/vnd.openxmlformats-officedocument.*`), OpenDocument
+        text, presentation and spreadsheet
+        (`application/vnd.oasis.opendocument.*`) and EPUB
+        (`application/epub+zip`), all ZIP archives; and RTF
+        (`application/rtf`, or `text/rtf`). A ZIP signature says which
+        family and not which format, so the declaration decides and the
+        parser refuses an archive whose parts contradict it. Binary bytes
+        live only in object storage, so a binary file on a deployment without
         `NACRE_S3_*` is `400` naming the variables, on the request rather
         than from a `failed` row. Any other binary format is `400`: the
-        parser extracts PDF and nothing else, and the alternative is a
+        parser extracts the table and nothing else, and the alternative is a
         document stored as replacement characters and reported as indexed.
       requestBody:
         required: true
@@ -1490,12 +1499,12 @@ paths:
                 # one. `metadata` therefore carries a JSON object as text — the
                 # same value the JSON body sends as an object.
                 layer:       { type: string }
-                file:        { type: string, format: binary, description: "UTF-8 text, or a PDF declaring application/pdf whose bytes carry the %PDF- magic. Any other binary file is refused with 400." }
+                file:        { type: string, format: binary, description: "UTF-8 text, or a binary document whose declared type is in the table (PDF, Office, OpenDocument, EPUB, RTF) and whose bytes carry that family's signature. Any other binary file is refused with 400." }
                 external_id: { type: string, description: "Defaults to the file part's filename." }
                 title:       { type: string }
                 metadata:    { type: string, description: "A JSON object, as text." }
             encoding:
-              file: { contentType: 'text/plain, text/markdown, application/pdf, application/octet-stream' }
+              file: { contentType: 'text/plain, text/markdown, application/pdf, application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/vnd.openxmlformats-officedocument.presentationml.presentation, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.oasis.opendocument.text, application/vnd.oasis.opendocument.presentation, application/vnd.oasis.opendocument.spreadsheet, application/epub+zip, application/rtf, application/octet-stream' }
       responses:
         '200': { description: Idempotent repeat; the document is unchanged }
         '202':
@@ -1505,11 +1514,11 @@ paths:
               schema: { $ref: '#/components/schemas/Job' }
         '400':
           description: >
-            A malformed multipart envelope, a binary file that is not a PDF, a
-            declared PDF without the `%PDF-` magic or the magic without the
-            declaration, a PDF on a deployment without object storage, a file
-            alongside `content` or `url`, a second file part, or a repeated
-            field.
+            A malformed multipart envelope, a binary file outside the table,
+            a declared binary type without its signature or a signature
+            without the declaration, a binary file on a deployment without
+            object storage, a file alongside `content` or `url`, a second
+            file part, or a repeated field.
         '413': { description: Document exceeds NACRE_MAX_DOCUMENT_BYTES }
         '429': { $ref: '#/components/responses/RateLimited' }
   /documents/{id}:

@@ -112,12 +112,13 @@ reference query set is scored against the new model and a migration that lost
 recall stops instead of going live — that gate is off until you write a set,
 because it needs documents only you can pick.
 
-A document can be uploaded as a form as well as sent as JSON, and a **PDF** is
-extracted by the parser sidecar. Both signals have to agree — the part declares
-`application/pdf` and the bytes begin with `%PDF-` — because a declared type the
-bytes contradict is a disagreement, and sniffing alone would make the declared
-type decoration. Any other binary format is still refused at the edge, and a
-scanned PDF with no text layer is refused rather than indexed as nothing.
+A document can be uploaded as a form as well as sent as JSON, and a **PDF, a
+Word, OpenDocument, EPUB or RTF file** is extracted by the parser sidecar. Both
+signals have to agree — the part declares the format's type and the bytes begin
+with its signature — because a declared type the bytes contradict is a
+disagreement, and sniffing alone would make the declared type decoration. Any
+other binary format is still refused at the edge, and a scanned PDF with no
+text layer is refused rather than indexed as nothing.
 
 Tokens can be signed with an Ed25519 key instead of a shared secret, in which
 case the public half is published at `/.well-known/jwks.json` and only the

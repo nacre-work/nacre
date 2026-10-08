@@ -272,6 +272,44 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.27.0 — Word, OpenDocument, EPUB and RTF files are accepted
+
+Nothing to do, unless you upload binary files: the parser image carries a
+second extractor and the formats a multipart upload may declare grew from one
+to nine. Pull `nacre-parser:0.27.0` with the rest; an API at 0.27.0 in front
+of a parser at 0.26.x accepts a Word document at the edge and fails it in the
+worker with `unsupported content type`, which is the mixed-version window and
+not a defect — the document retries on its own once the parser moves.
+
+**The table.** `application/pdf`; the Office formats
+(`application/vnd.openxmlformats-officedocument.wordprocessingml.document`,
+`…presentationml.presentation`, `…spreadsheetml.sheet`); OpenDocument
+(`application/vnd.oasis.opendocument.text`, `…presentation`,
+`…spreadsheet`); `application/epub+zip`; and `application/rtf` (`text/rtf`
+is accepted as the same thing). It lives in `packages/core/formats.ts` and the
+edge, the worker and the sidecar all read it. The rules are the PDF path's:
+the part declares the type **and** the bytes carry the family's signature, a
+binary upload needs `NACRE_S3_*`, and `content_hash` is over the bytes.
+Legacy `.doc`, `.xls` and `.ppt` are deliberately not in it — the extractor
+does not recognise their signature and nothing has watched one convert. CSV
+is unchanged: it is text and is indexed as `text/plain`.
+
+**The parser sidecar has two dependencies now.** `anydoc`, Firecrawl's
+converter, pinned at 0.2.4 — one Rust wheel, no Python dependencies, no
+models, and no network: its only mode that reaches anything is hosted OCR,
+which this sidecar never requests, by a literal argument a test holds. The
+`airgapped` profile is unchanged. `pdf-inspector` moves from 0.2.6 to 1.25.2
+in the same change; PDF stays on it rather than on `anydoc`'s own PDF path,
+and `services/parser/requirements.txt` says why in terms that were measured.
+The one visible change from the bump: a PDF that declares no pages is still
+refused with "the PDF declares no pages", through a different error from the
+library.
+
+**The SDK uploads files.** `documents.add` takes `bytes` and `contentType`
+(and an optional `filename`) as a third source beside `content` and `url`,
+and sends them as the multipart form the contract describes. `nacre ingest`
+still reads text only.
+
 ### 0.26.7 — the console's masthead holds more sections than one line
 
 Nothing to do. The masthead had a fixed height of 56px. A console that loads

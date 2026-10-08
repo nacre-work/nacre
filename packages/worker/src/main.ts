@@ -4,6 +4,7 @@ import { QdrantClient } from '@qdrant/js-client-rest'
 import {
   configureLogging,
   acrossOrganizations,
+  isBinaryFormat,
   ConfigError,
   createPool,
   endpointReason,
@@ -804,9 +805,10 @@ async function main(): Promise<void> {
         if (bytes === undefined) {
           throw new Error(`object ${claim.sourceRef} is missing from the bucket`)
         }
-        if (claim.contentType === 'application/pdf') {
+        if (isBinaryFormat(claim.contentType)) {
           // Binary goes to the parser as bytes under its real type; extraction
-          // is the sidecar's job and the text never exists on this side.
+          // is the sidecar's job and the text never exists on this side. The
+          // table is the core's, which the edge admitted the row by.
           source = { bytes, contentType: claim.contentType }
         } else {
           // Text objects were validated as UTF-8 at the edge, so a decode
