@@ -274,12 +274,16 @@ nothing says so.
 
 ### 0.27.0 — Office and OpenDocument files, EPUB and RTF are accepted
 
-Nothing to do, unless you upload binary files: the parser image carries a
-second extractor and the formats a multipart upload may declare grew from one
-to nine. Pull `nacre-parser:0.27.0` with the rest; an API at 0.27.0 in front
-of a parser at 0.26.x accepts a Word document at the edge and fails it in the
-worker with `unsupported content type`, which is the mixed-version window and
-not a defect — the document retries on its own once the parser moves.
+One migration, 0035, which widens the `CHECK` on `documents.content_type`
+to the new list — run the migrator first, as always; an API at 0.27.0 against
+a schema at 0034 accepts a Word document at the edge and answers `500` on the
+row insert. Otherwise nothing to do unless you upload binary files: the parser
+image carries a second extractor and the formats a multipart upload may
+declare grew from one to nine. Pull `nacre-parser:0.27.0` with the rest; an
+API at 0.27.0 in front of a parser at 0.26.x accepts a Word document at the
+edge and fails it in the worker with `unsupported content type`, which is the
+mixed-version window and not a defect — the document retries on its own once
+the parser moves.
 
 **The table.** `application/pdf`; the Office formats
 (`application/vnd.openxmlformats-officedocument.wordprocessingml.document`,

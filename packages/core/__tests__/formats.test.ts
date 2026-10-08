@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -46,6 +49,24 @@ describe('the binary format table', () => {
     expect(signatureFamily(new TextEncoder().encode('%PD'))).toBeUndefined()
     expect(signatureFamily(new TextEncoder().encode('# a heading\n'))).toBeUndefined()
     expect(signatureFamily(new Uint8Array())).toBeUndefined()
+  })
+
+  it('is the list the schema admits, in the newest migration that spells it', () => {
+    // `documents.content_type` carries a CHECK naming every accepted value —
+    // 0020 said extending it is a migration, deliberately — so the schema is
+    // the one copy of this table the code cannot read. The e2e found the gap
+    // the first time a second row existed: the edge admitted a Word document
+    // and the row insert refused it with a 500. The newest migration spelling
+    // the constraint decides, which is what a forward-only tree needs.
+    const dir = join(import.meta.dirname, '..', 'migrations')
+    const spelled = readdirSync(dir)
+      .filter((f) => f.endsWith('.sql'))
+      .sort()
+      .map((f) => readFileSync(join(dir, f), 'utf8'))
+      .flatMap((sql) => [...sql.matchAll(/content_type IN \(([\s\S]*?)\)\)/g)].map((m) => m[1] as string))
+    expect(spelled.length).toBeGreaterThan(0)
+    const latest = new Set([...(spelled.at(-1) as string).matchAll(/'([^']+)'/g)].map((m) => m[1]))
+    expect(latest).toEqual(new Set(['text/plain', ...BINARY_FORMATS.map((f) => f.contentType)]))
   })
 
   it('maps a file extension to the type a client should declare', () => {

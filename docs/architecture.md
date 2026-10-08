@@ -495,7 +495,12 @@ are unchanged: re-sending the same file is a no-op, a changed file re-indexes.
 `documents.content_type text NOT NULL DEFAULT 'text/plain'` — Postgres is the
 source of truth, and inferring the type from object metadata would make a
 bucket restore load-bearing for correctness. Forward-only, no RLS change: it is
-a column on a table whose policies already exist.
+a column on a table whose policies already exist. Its `CHECK` names every
+accepted value, and 0035 widened it to the table — the one copy of the table
+the code cannot reach, so a core test holds the newest migration spelling it
+against `BINARY_FORMATS`. The compose e2e is what found the constraint: a
+Word document the edge admitted and the sidecar could read was refused on the
+row insert with a `500`.
 
 **The worker dispatches on it.** The `s3` branch reads `content_type`:
 `text/plain` decodes UTF-8 with `fatal: true`, exactly as today; a type in
