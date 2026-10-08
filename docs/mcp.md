@@ -437,6 +437,14 @@ deployment stores document bytes in object storage. Absent otherwise, and
 absent for a document ingested inline or by URL. Permission: `read`. No
 permission → `404`, not `403`.
 
+Where there is a `source_url`, the result carries it twice: in the JSON, and
+as a **`resource_link`** content block beside it — `{ type: "resource_link",
+uri, name }` — which is what the 2026-07-28 revision has a server say when a
+result is somewhere else. A client that knows the block fetches the original
+bytes directly, out of band, the whole file and never through the
+conversation; a client that does not reads the JSON as before. `search`
+deliberately carries no such link (below).
+
 ### `ingest_document`
 
 ```jsonc
@@ -576,7 +584,9 @@ conversation it is in rather than like this product's console.
 ## What a call answers with
 
 A `CallToolResult`, always — `{ content: [...], isError }` — with the payload
-JSON-encoded into a text block. Not the bare value. A client that follows the
+JSON-encoded into a text block, and for `get_document` a `resource_link`
+block beside it when the document has a presigned `source_url`. Not the bare
+value. A client that follows the
 protocol rejects anything else, so this is not a stylistic point: the server
 returned raw arrays for its first several revisions, every test in the suite
 passed, and no compliant client could have read a single result.

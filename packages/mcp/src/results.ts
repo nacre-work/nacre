@@ -96,9 +96,14 @@ export const CAPABILITIES = { tools: { listChanged: false }, resources: { listCh
 export const COMPLETE = 'complete' as const
 
 /** The shape a tool answers in: MCP's `CallToolResult`, with the payload in a text block. */
+/** A text block carrying JSON, or a link to bytes somewhere else. */
+export type ToolContent =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'resource_link'; readonly uri: string; readonly name: string; readonly description?: string }
+
 export interface ToolResult {
   readonly [extra: string]: unknown
-  readonly content: { readonly type: 'text'; readonly text: string }[]
+  readonly content: ToolContent[]
   readonly isError: boolean
 }
 

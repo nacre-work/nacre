@@ -163,7 +163,7 @@ DCR.
 |---|---|
 | `tools/list` returns name, description, input schema | holds — the schemas in `tools.ts`, served verbatim |
 | Arguments are validated against the input schema before the tool runs | holds — the SDK's validator; a mismatch is an `isError` result naming the argument |
-| `tools/call` returns `content` | holds |
+| `tools/call` returns `content` | holds — a text block with the JSON, plus a `resource_link` block on `get_document` where a presigned `source_url` exists |
 | An error in a tool is reported in the result, not as a JSON-RPC error | holds |
 | `annotations` on every tool | holds — `tool-annotations.test.ts` |
 | `x-mcp-header` annotations on tool parameters | not used — optional for servers |

@@ -252,6 +252,46 @@ const VIEW_ABOUT: Readonly<Record<View, string>> = {
 }
 
 /**
+ * The document's bytes as a `resource_link`, beside the JSON.
+ *
+ * `get_document` carries `source_url` — a presigned link to the original
+ * bytes, minted after the permission check and only where the deployment
+ * keeps bytes in object storage. In the JSON it is a string the model would
+ * have to notice; as a `resource_link` content block it is what the 2026-07-28
+ * revision has a server say when a result *is* somewhere else, and a client
+ * that knows the block fetches it directly — the whole file, out of band,
+ * without the text passing through the conversation. The JSON block stays,
+ * for every client that reads that and nothing else.
+ *
+ * `search` deliberately carries none: a presigned URL is a bearer capability
+ * that outlives the check which minted it, and ten per search is ten
+ * capabilities where the caller wanted an ordering. docs/mcp.md says so.
+ */
+function withResourceLink(tool: string, result: unknown, wrapped: ToolResult): ToolResult {
+  if (tool !== 'get_document' || typeof result !== 'object' || result === null) return wrapped
+  const document = result as { source_url?: unknown; title?: unknown; external_id?: unknown; document_id?: unknown }
+  if (typeof document.source_url !== 'string') return wrapped
+  const name =
+    typeof document.title === 'string' && document.title !== ''
+      ? document.title
+      : typeof document.external_id === 'string' && document.external_id !== ''
+        ? document.external_id
+        : String(document.document_id ?? 'document')
+  return {
+    ...wrapped,
+    content: [
+      ...wrapped.content,
+      {
+        type: 'resource_link',
+        uri: document.source_url,
+        name,
+        description: 'The original bytes, as a presigned link that expires. Fetch it directly.',
+      },
+    ],
+  }
+}
+
+/**
  * One tool call, wrapped the way both transports used to wrap it separately.
  *
  * The SDK would turn a thrown error into an `isError` result carrying the
@@ -293,7 +333,7 @@ async function runTool(
       build.observe?.aclDenials.inc({ reason: 'search_empty' })
     }
 
-    return callToolResult(result)
+    return withResourceLink(definition.name, result, callToolResult(result))
   } catch (error) {
     build.observe?.toolDuration.observe(elapsed(), { tool: definition.name })
     build.observe?.toolCalls.inc({ tool: definition.name, result: 'error' })

@@ -100,6 +100,11 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      # Built, because the unit suite reads what the build writes — the MCP
+      # App views under packages/mcp/apps/build — and the release job builds
+      # before it tests; a job that tests the tree without building it is
+      # not running the combination the release runs.
+      - run: pnpm build
       - run: pnpm migrate
 
       # The unit suite first, against the same database the acl suite is about

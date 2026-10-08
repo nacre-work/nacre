@@ -323,6 +323,12 @@ capability. The upload view's CSP names `NACRE_CANONICAL_URL`'s origin, which
 is where the bytes go; nothing to configure beyond what every deployment
 already sets.
 
+**`get_document` links the original bytes.** Where a document lives in
+object storage, the tool's result carries a `resource_link` content block
+beside the JSON, pointing at the same presigned `source_url` — a client that
+knows the block fetches the file directly. Clients that read the JSON see
+what they saw before.
+
 ### 0.27.0 — Office and OpenDocument files, EPUB and RTF are accepted
 
 One migration, 0035, which widens the `CHECK` on `documents.content_type`

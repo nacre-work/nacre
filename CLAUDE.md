@@ -3050,6 +3050,12 @@ CSP per view, and the catalog with and without the declaration. Each view is
 ~600 kB because the extension's client carries the protocol with it; it is
 read once per render, through the host.
 
+`get_document` carries its presigned `source_url` twice now: in the JSON, and
+as a `resource_link` block, which is the revision's word for "the result is
+somewhere else" and what lets a client fetch the whole file out of band. One
+block per call and only there — `search` still carries none, for the reason
+already written: ten bearer capabilities where the caller wanted an ordering.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
