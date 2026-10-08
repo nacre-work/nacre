@@ -55,6 +55,7 @@ import {
 } from './oauth-store.js'
 import { rerankerFor } from './rerank.js'
 import { RateLimiter, type LimitPolicy, type Resource } from './limits.js'
+import { RedisUploadTickets } from './uploads.js'
 import { PostgresGroups, PostgresUsers } from './principals.js'
 import { PostgresServiceAccounts } from './service-keys.js'
 import { postgresVerification } from './verification.js'
@@ -397,6 +398,11 @@ async function main(): Promise<void> {
         logger.warn('reranking failed; results are in fusion order', { error: String(error).slice(0, 200) })
       },
     }),
+    // Upload tickets, on the same Redis: a store that is not there refuses to
+    // mint rather than failing open, and `NACRE_CANONICAL_URL` is the origin
+    // a ticket's URL names, since it is redeemed from wherever the bytes are.
+    uploads: new RedisUploadTickets(redis),
+    uploadBaseUrl: config.canonicalUrl,
     ingest: new NacreIngest({
       pool,
       principalsCache,

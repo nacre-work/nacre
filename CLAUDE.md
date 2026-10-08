@@ -852,7 +852,7 @@ authority over the organization holding it, so `administers` reads the
 connection's ceiling and never a layer's.
 
 `admin` is a ceiling value and is deliberately **not** on the consent screen.
-The MCP surface has no administrative tool at all — its six tools resolve with
+The MCP surface has no administrative tool at all — its seven tools resolve with
 `read` or `write` — so the box would do nothing where the person is looking and
 a great deal through REST, where they are not, which is worse than a control
 that does nothing. It stays reachable through the API because it is not an
@@ -2998,6 +2998,39 @@ What the SDK does **not** do, measured rather than assumed: `resultType:
 era, so the tasks extension is not a registration away; `ext-tasks` is the
 client half. An unknown tool is its JSON-RPC `-32602` naming the tool, which
 `docs/mcp.md` argues is not a leak; a failing tool is still one answer.
+
+**A file reaches the index without passing through a model.** An agent that
+holds a file cannot put it into `ingest_document`: a tool argument is a string
+the model has to emit, which is the file retyped through the context window —
+paid for twice, and for anything a model cannot faithfully reproduce, not the
+same bytes. `request_upload` (MCP) and `POST /v1/uploads` (REST) mint a
+**ticket** instead, and whoever holds the bytes — a shell handed the `curl`
+line, an MCP App's file input, a script — sends them to
+`POST /v1/uploads/{ticket}` as the raw body. The ticket is the capability:
+minted on `write` with the same `404` for unwritable and absent, single-use
+by `GETDEL`, five minutes, queued **as the minter** with the write checked
+again on arrival, and **failing closed** on a Redis that does not answer —
+against the grain of the rate limiter beside it, because this one is an
+authorization control.
+
+The redeem is the one door on the API answering `Access-Control-Allow-Origin:
+*`, and that is a decision rather than a relaxation: an MCP App's file input
+runs in a host's sandboxed iframe whose origin no deployment can list, and
+admitting `*` adds nothing there — no cookie, no `Authorization`, and a page
+that holds no ticket gets what a stranger gets. Everything else stays on exact
+match. The bytes get the multipart part's admission through the **same
+function**, and the outcome goes through the same answer, because the second
+door arriving is exactly when two copies of "what is a document" start to
+disagree. The descriptor is shaped after SEP-2631's, so the proposal becomes a
+second door onto this store when it lands.
+
+Two things were decided against on the way. URL-mode elicitation — the tool
+answering `input_required` with a console page to open — was built as far as
+a diagram and dropped: it takes the person out of the agent and into a
+browser, and the MCP App widget does the same job inside it. And the tasks
+extension was measured rather than planned: SDK 2.3.1's server refuses
+`resultType: "task"` from a tool and does not route `tasks/get` in the
+2026-07-28 era, and `ext-tasks` is the client half, so it is not built.
 
 ## Conventions
 

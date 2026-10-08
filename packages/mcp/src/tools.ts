@@ -262,6 +262,55 @@ export function catalog(
       },
     },
     {
+      name: 'request_upload',
+      title: 'Request an upload ticket',
+      // Not read-only: a ticket is a promise of a write, counted like one.
+      // Not destructive and not idempotent — every call mints a fresh,
+      // single-use ticket, and nothing already there is replaced by it.
+      annotations: {
+        title: 'Request an upload ticket',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+      /**
+       * The way a file reaches the index without passing through the model.
+       *
+       * `ingest_document` takes `content`, which is the file retyped through
+       * the context window — paid for twice, and for anything a model cannot
+       * reproduce faithfully, not the same bytes. This mints a single-use,
+       * five-minute ticket for a layer the caller may write to; whoever holds
+       * the bytes — a shell, an MCP App's file input, a script — sends them to
+       * the ticket's URL, and the index sees exactly what was on disk.
+       */
+      description:
+        'Get a single-use upload ticket (valid 5 minutes) for sending a file to a layer without ' +
+        'putting its contents through this conversation. Returns a URL to POST the file to as ' +
+        'the raw body under its own media type, and the same request as a curl line — hand that ' +
+        'to a shell or to the person. Then check ingest_status with the job_id the upload answers with.',
+      permission: 'write',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          layer: { type: 'string', description: 'Slug of the layer to write into.' },
+          external_id: {
+            type: 'string',
+            description:
+              "Your id for the document and the idempotency key. Absent, the uploader's filename " +
+              'decides, then a generated id.',
+          },
+          title: { type: 'string' },
+          metadata: {
+            type: 'object',
+            description: 'Flat key/value tags (lower-case keys) that search can filter on with `filters`.',
+          },
+        },
+        required: ['layer'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'ingest_status',
       title: 'Check an ingest',
       annotations: {

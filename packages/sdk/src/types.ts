@@ -86,6 +86,32 @@ export interface IngestRequest {
   readonly metadata?: Readonly<Record<string, string | number | boolean | readonly (string | number | boolean)[]>>
 }
 
+/** What a ticket fixes about the document it will carry. */
+export interface UploadTicketRequest {
+  readonly layer: string
+  /** Fixed at minting. Absent, the redeem's `filename` decides, then a generated id. */
+  readonly externalId?: string
+  readonly title?: string
+  readonly metadata?: IngestRequest['metadata']
+}
+
+/**
+ * Where to send the bytes. Shaped after the descriptor the MCP file-transfer
+ * proposal (SEP-2631) has a server mint for an upload: `url`, `method`,
+ * `headers`, `expiresAt`, `maxSize` — plus the ticket itself and the request
+ * as a `curl` line, which is what a model hands to a person or a shell.
+ */
+export interface UploadDescriptor {
+  readonly ticket: string
+  readonly url: string
+  readonly method: 'POST'
+  readonly headers: Readonly<Record<string, string>>
+  readonly expiresAt: string
+  readonly maxSize: number
+  readonly accepts: readonly string[]
+  readonly curl: string
+}
+
 export interface IngestOutcome {
   readonly documentId: string
   readonly jobId: string

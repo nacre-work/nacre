@@ -17,7 +17,7 @@ import {
   RedisCache,
   Registry,
 } from '@nacre.work/core'
-import { RateLimiter, type LimitPolicy, type Resource } from '@nacre.work/api'
+import { RateLimiter, RedisUploadTickets, type LimitPolicy, type Resource } from '@nacre.work/api'
 
 import { createMcpServer } from './server.js'
 import { buildServices } from './services.js'
@@ -59,6 +59,14 @@ async function main(): Promise<void> {
 
   const { pool, layers, tools, verification } = buildServices(config, {
     principalsCache: { store: new RedisCache(redis), ttlSeconds: config.aclCacheTtl },
+    // The same ticket store the API redeems from, over the same Redis. The
+    // URL names the API — `NACRE_CANONICAL_URL` — because that is where the
+    // bytes go, from wherever they are; this transport never sees them.
+    uploads: {
+      store: new RedisUploadTickets(redis),
+      baseUrl: config.canonicalUrl,
+      maxBytes: config.maxDocumentBytes,
+    },
   })
 
   // The same Redis, the same policies, the same keys the REST surface uses.

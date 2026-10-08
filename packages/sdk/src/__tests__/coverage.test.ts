@@ -123,6 +123,8 @@ const COVERAGE: Record<string, string | null> = {
   'PATCH /documents/{id}': 'documents.setMetadata',
   'DELETE /documents/{id}': 'documents.remove',
   'POST /documents/{id}/retry': 'documents.retry',
+  'POST /uploads': 'uploads.create',
+  'POST /uploads/{ticket}': 'uploads.send',
 
   'GET /me': 'me',
   'POST /oauth/consent': 'consent',

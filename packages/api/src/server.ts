@@ -58,6 +58,7 @@ import {
 import { badRequest, internal, notAdministeredHere, notFound, Problem, tooBusy } from './errors.js'
 import { passwordChangedMessage, secondFactorMessage } from './messages.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
+import { TICKET_SHAPE, TICKET_TTL_SECONDS, uploadDescriptor, type UploadTicketStore } from './uploads.js'
 import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
 import type { Login, SecondFactorProof, SessionOutcome, Tokens, WebAuthnProof } from './login.js'
 import { MIN_PASSWORD_LENGTH, type PasswordRecovery } from './recovery.js'
@@ -332,6 +333,15 @@ export interface Ingest {
    * different answer and carries its own 4xx.
    */
   queue(auth: AuthContext, request: IngestRequest): Promise<IngestOutcome | IngestRefused | undefined>
+  /**
+   * Whether the caller may write to the layer, by the same resolve `queue`
+   * makes and with the same answer for a layer that does not exist. An upload
+   * ticket is minted on this and nothing else, so it carries no document.
+   * Optional on the port because a fixture that never mints needs none; the
+   * Postgres adapter always has it, and a deployment whose ingest lacks it
+   * cannot mint a ticket at all.
+   */
+  writable?(auth: AuthContext, layer: string): Promise<boolean>
   /** Tombstone. `false` for absent and for not-permitted alike. */
   remove(auth: AuthContext, documentId: string): Promise<boolean>
 }
@@ -1030,6 +1040,18 @@ export interface ApiOptions {
   readonly documents: Documents
   readonly search: SearchService
   readonly ingest: Ingest
+  /**
+   * Upload tickets, from `uploads.ts`. Absent means `/v1/uploads` is not
+   * served: a ticket is a bearer of somebody's `write`, and a store that is
+   * not there is not a store that fails open.
+   */
+  readonly uploads?: UploadTicketStore
+  /**
+   * The origin a ticket's URL names — `NACRE_CANONICAL_URL`. A ticket is
+   * redeemed by whoever holds the bytes, from wherever they are, so the URL
+   * has to be the one this API is reachable at from outside.
+   */
+  readonly uploadBaseUrl?: string
   readonly audit: AuditWriter
   readonly jobs?: Jobs
   readonly layers?: Layers
@@ -1530,6 +1552,10 @@ function decorate(
 function resourceFor(method: string, instance: string): Resource | undefined {
   if (method === 'POST' && instance === '/v1/search') return 'search'
   if (method === 'POST' && instance === '/v1/documents') return 'ingest'
+  // Minting a ticket is the promise of an ingest, counted like one — or a
+  // caller out of budget mints a thousand tickets and redeems them from
+  // elsewhere, where the redeem counts again anyway.
+  if (method === 'POST' && instance === '/v1/uploads') return 'ingest'
   return undefined
 }
 
@@ -1560,7 +1586,7 @@ function resourceFor(method: string, instance: string): Resource | undefined {
  * from what one caller in particular may read, it does not go in a store with a
  * 24-hour TTL and no access control of its own.
  */
-const NEVER_CACHED: readonly string[] = ['/v1/service-accounts', '/v1/documents', '/v1/search']
+const NEVER_CACHED: readonly string[] = ['/v1/service-accounts', '/v1/documents', '/v1/search', '/v1/uploads']
 
 /** Prefix rather than exact match, so `/v1/service-accounts/{id}` is covered too. */
 const neverCached = (instance: string): boolean =>
@@ -2602,6 +2628,407 @@ export function createApi(options: ApiOptions): Server {
   })
 }
 
+
+/**
+ * What the edge decides about a file's bytes before anything is queued, for
+ * the multipart file part and for an upload ticket alike — one function,
+ * because the second door arrived and a second copy of these rules is how the
+ * two doors stop agreeing about what a document is.
+ *
+ * Both signals must agree: the caller declares a type in the table AND the
+ * bytes carry that family's signature. Either alone is a refusal that names
+ * the other — a declared type the bytes contradict is exactly the disagreement
+ * the multipart parser's strictness doctrine exists to refuse, and sniffing
+ * alone would turn the declared type into decoration. The table is
+ * `BINARY_FORMATS` in the core, which the worker and the sidecar read too; a
+ * new format is a row there, and nothing falls through to a guess.
+ *
+ * A signature names a family and not a format — every Office and OpenDocument
+ * file is a ZIP archive — so what the edge can hold is "a ZIP-based document
+ * declared as one". Which one is the sidecar's half.
+ *
+ * Binary requires object storage, at the edge: the bytes' only home is the
+ * bucket, so a deployment without one learns on the request, naming the
+ * variables, not from a `failed` row minutes later. Anything else is decoded
+ * as UTF-8 and refused here if it is not — until this check existed the
+ * sidecar decoded with `errors="replace"`, so a binary file became a string of
+ * replacement characters that was chunked, embedded, stored as the document
+ * body and reported as indexed.
+ */
+function admitBytes(
+  bytes: Uint8Array,
+  declaredType: string,
+  objectStorage: boolean,
+): { content: string } | { binary: { bytes: Uint8Array; contentType: string } } | { refusal: string } {
+  const declared = declaredType.split(';')[0]?.trim().toLowerCase() ?? ''
+  const format = binaryFormat(declared)
+  const family = signatureFamily(bytes)
+
+  if (format !== undefined && family !== format.family) {
+    return {
+      refusal:
+        `The file declares '${format.contentType}' but the bytes do not begin with the ${SIGNATURE_NAMES[format.family]}. ` +
+        'Both must agree; a declared type the bytes contradict is refused rather than trusted.',
+    }
+  }
+  if (format === undefined && family !== undefined) {
+    return {
+      refusal:
+        `The bytes begin with the ${SIGNATURE_NAMES[family]} but the file declares '${declared || 'nothing'}'. ` +
+        "Both must agree; declare the document's type rather than relying on sniffing. " +
+        `Accepted: ${BINARY_FORMATS.map((f) => f.contentType).join(', ')}.`,
+    }
+  }
+  if (format !== undefined) {
+    if (!objectStorage) {
+      return {
+        refusal:
+          `A ${format.format} upload needs object storage, and this deployment has none configured. ` +
+          'Set NACRE_S3_* (endpoint, bucket, access key, secret key) to enable binary ingest.',
+      }
+    }
+    return { binary: { bytes, contentType: format.contentType } }
+  }
+  try {
+    return { content: new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
+  } catch {
+    return {
+      refusal:
+        'The uploaded file is not UTF-8 text and declares no binary format this installation extracts. ' +
+        `Accepted, each declared on the file: ${BINARY_FORMATS.map((f) => f.contentType).join(', ')}. ` +
+        'An image, an archive or a legacy .doc needs an extractor the parser deliberately does not carry.',
+    }
+  }
+}
+
+/**
+ * The answer to a queue outcome, for both doors into ingest: the audit event
+ * and the status. One function, so a ticket upload leaves the same journal
+ * entry a multipart or a JSON ingest leaves.
+ */
+async function answerIngest(
+  res: ServerResponse,
+  instance: string,
+  requestId: string,
+  auth: AuthContext,
+  layer: string,
+  outcome: Awaited<ReturnType<Ingest['queue']>>,
+  options: ApiOptions,
+): Promise<void> {
+  if (outcome === undefined) {
+    options.observe?.aclDenials.inc({ reason: 'ingest_layer' })
+    // Not 403. A caller without write access must not learn which layers
+    // exist by seeing which ones refuse differently from which ones are
+    // absent.
+    await options.audit.write({
+      orgId: auth.orgId,
+      actor: `${auth.principal.type}:${auth.principal.id}`,
+      action: 'ingest',
+      result: 'deny',
+      target: { layer },
+      detail: { layer },
+      requestId,
+    })
+    const problem = notFound(instance, requestId)
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+  if ('refused' in outcome) {
+    // A module's ingest gate declined a document the caller may write — a
+    // quota, a suspension. Not a 404: the layer is not being hidden, the
+    // caller was allowed to write against it. Recorded as a denial so an
+    // operator can see quota-refused ingests; the gate's reason is the
+    // detail, and the gate chose the status.
+    await options.audit.write({
+      orgId: auth.orgId,
+      actor: `${auth.principal.type}:${auth.principal.id}`,
+      action: 'ingest',
+      result: 'deny',
+      target: { layer },
+      detail: { layer, reason: outcome.reason },
+      requestId,
+    })
+    const problem = new Problem({
+      type: 'https://nacre.work/errors/ingest-refused',
+      title: outcome.status === 429 ? 'Too many requests' : 'Forbidden',
+      status: outcome.status,
+      detail: outcome.reason,
+      instance,
+      requestId,
+    })
+    send(res, outcome.status, problem.toJSON(), requestId)
+    return
+  }
+
+  await options.audit.write({
+    orgId: auth.orgId,
+    actor: `${auth.principal.type}:${auth.principal.id}`,
+    action: 'ingest',
+    result: 'allow',
+    target: { layer, document_id: outcome.documentId },
+    detail: { document_id: outcome.documentId, unchanged: outcome.unchanged },
+    requestId,
+  })
+
+  // 200 for an idempotent repeat, 202 for work actually queued. The
+  // difference is what lets a client tell "already indexed" from "wait for
+  // the job" without polling to find out.
+  send(
+    res,
+    outcome.unchanged ? 200 : 202,
+    { document_id: outcome.documentId, job_id: outcome.jobId, status: outcome.unchanged ? 'indexed' : 'queued' },
+    requestId,
+  )
+}
+
+
+/** The origin this request arrived on, when the deployment named none for tickets. */
+function reachedOrigin(req: IncomingMessage): string | undefined {
+  const host = req.headers.host
+  if (typeof host !== 'string' || host === '') return undefined
+  const forwarded = req.headers['x-forwarded-proto']
+  const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim()
+  return `${first === 'https' ? 'https' : 'http'}://${host}`
+}
+
+/** The store did not answer. Closed, by name — see uploads.ts. */
+function ticketsUnavailable(instance: string, requestId: string): Problem {
+  return new Problem({
+    type: 'https://nacre.work/errors/unavailable',
+    title: 'Service unavailable',
+    status: 503,
+    detail: 'Upload tickets cannot be checked right now. Try again shortly.',
+    instance,
+    requestId,
+  })
+}
+
+/**
+ * `POST /v1/uploads`: a ticket for a document the caller will send later,
+ * from wherever the bytes are.
+ *
+ * Minted on `write` to the layer and nothing else, with the same answer for
+ * a layer the caller may not write to and one that does not exist — a ticket
+ * endpoint that said "not writable" would be the cheapest layer-name oracle
+ * in the system. The document is queued as this caller when the bytes
+ * arrive, and the write is checked again then.
+ */
+async function mintTicket(
+  req: IncomingMessage,
+  res: ServerResponse,
+  instance: string,
+  requestId: string,
+  auth: AuthContext,
+  body: unknown,
+  options: ApiOptions,
+): Promise<void> {
+  // Absent store or absent check: the surface does not exist here, and says
+  // so the way every absent surface does.
+  if (options.uploads === undefined || options.ingest.writable === undefined) {
+    const problem = notFound(instance, requestId)
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+  const body_ = (body ?? {}) as Record<string, unknown>
+  const layer = body_.layer
+  if (typeof layer !== 'string' || layer === '') {
+    const problem = badRequest(instance, requestId, "'layer' is required.")
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+  for (const field of ['external_id', 'title'] as const) {
+    if (body_[field] !== undefined && typeof body_[field] !== 'string') {
+      const problem = badRequest(instance, requestId, `'${field}' must be a string.`)
+      send(res, problem.status, problem.toJSON(), requestId)
+      return
+    }
+  }
+  // Validated now, so a ticket never carries tags the upload would refuse
+  // minutes later with nobody there to read the refusal.
+  let metadata
+  try {
+    metadata = parseMetadata(body_.metadata)
+  } catch (error) {
+    const problem = badRequest(
+      instance,
+      requestId,
+      error instanceof MetadataError ? error.message : "'metadata' is not usable.",
+    )
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+  if (!(await options.ingest.writable(auth, layer))) {
+    options.observe?.aclDenials.inc({ reason: 'ingest_layer' })
+    await options.audit.write({
+      orgId: auth.orgId,
+      actor: `${auth.principal.type}:${auth.principal.id}`,
+      action: 'ingest',
+      result: 'deny',
+      target: { layer },
+      detail: { layer, ticket: 'refused' },
+      requestId,
+    })
+    const problem = notFound(instance, requestId)
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+  const expiresAt = Math.floor(Date.now() / 1000) + TICKET_TTL_SECONDS
+  let ticket: string
+  try {
+    ticket = await options.uploads.mint({
+      auth,
+      layer,
+      ...(typeof body_.external_id === 'string' ? { externalId: body_.external_id } : {}),
+      ...(typeof body_.title === 'string' ? { title: body_.title } : {}),
+      metadata,
+      expiresAt,
+    })
+  } catch {
+    const problem = ticketsUnavailable(instance, requestId)
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+  const base = options.uploadBaseUrl ?? reachedOrigin(req) ?? 'http://localhost'
+  send(
+    res,
+    201,
+    uploadDescriptor(ticket, expiresAt, base, options.maxBodyBytes ?? MAX_BODY_BYTES),
+    requestId,
+    { 'cache-control': 'no-store' },
+  )
+}
+
+/** The headers the ticket door answers with, to every origin. */
+const OPEN_CORS: Readonly<Record<string, string>> = {
+  'access-control-allow-origin': '*',
+  'access-control-expose-headers': 'RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, Retry-After',
+}
+
+/**
+ * `POST /v1/uploads/{ticket}`: the bytes, from whoever holds them.
+ *
+ * No credential, because the ticket is one: single-use, five minutes, minted
+ * by a caller holding `write`. An unknown, spent or expired ticket is the one
+ * `404` for all three. The body is the file as it is on disk, under its own
+ * media type — the same admission a multipart file part gets, through the
+ * same function — and the document is queued as the caller who minted the
+ * ticket, with their write checked again now.
+ */
+async function redeemTicket(
+  req: IncomingMessage,
+  res: ServerResponse,
+  instance: string,
+  requestId: string,
+  ticketId: string,
+  options: ApiOptions,
+): Promise<void> {
+  for (const [name, value] of Object.entries(OPEN_CORS)) res.setHeader(name, value)
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'access-control-allow-methods': 'POST, OPTIONS',
+      'access-control-allow-headers': 'content-type',
+      'access-control-max-age': '600',
+    })
+    res.end()
+    return
+  }
+
+  // The shape first, so a path that is not a ticket never reaches the store.
+  if (options.uploads === undefined || !TICKET_SHAPE.test(ticketId)) {
+    const problem = notFound(instance, requestId)
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+  let ticket
+  try {
+    ticket = await options.uploads.redeem(ticketId)
+  } catch {
+    const problem = ticketsUnavailable(instance, requestId)
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+  if (ticket === undefined) {
+    const problem = notFound(instance, requestId)
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+  // The ticket is spent whatever happens below. A refusal is the caller's to
+  // read and a fresh ticket is one request away; a ticket that survived its
+  // own refusal would be a capability that outlives the check that used it.
+  const limit = options.maxBodyBytes ?? MAX_BODY_BYTES
+  let bytes: Buffer
+  try {
+    bytes = await readRaw(req, limit)
+  } catch (error) {
+    const problem =
+      error instanceof BodyTooLarge
+        ? new Problem({
+            type: 'https://nacre.work/errors/payload-too-large',
+            title: 'Payload too large',
+            status: 413,
+            detail: `The request body is over the ${limit} byte limit set by NACRE_MAX_DOCUMENT_BYTES.`,
+            instance,
+            requestId,
+          })
+        : badRequest(instance, requestId, 'The request body could not be read.')
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+  if (bytes.length === 0) {
+    const problem = badRequest(instance, requestId, 'The request body is empty; send the file as the body.')
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+  const admitted = admitBytes(bytes, req.headers['content-type'] ?? '', options.objectStorage === true)
+  if ('refusal' in admitted) {
+    const problem = badRequest(instance, requestId, admitted.refusal)
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
+  // The same bucket the minting spent from, counted again: the mint was the
+  // promise and this is the ingest.
+  if (options.limits !== undefined && options.limitPolicies !== undefined) {
+    const decision = await options.limits.check(ticket.auth.orgId, 'ingest')
+    if (!decision.allowed) {
+      const problem = new Problem({
+        type: 'https://nacre.work/errors/rate-limited',
+        title: 'Too many requests',
+        status: 429,
+        detail: `Rate limit exceeded for ingest. Try again in ${decision.reset} seconds.`,
+        instance,
+        requestId,
+      })
+      send(res, 429, problem.toJSON(), requestId, limitHeaders(decision, options.limitPolicies.ingest, 'ingest'))
+      return
+    }
+  }
+
+  // The name the document gets: what the ticket said, or what the sender
+  // says now, or nothing anybody chose. Query rather than header, so a
+  // `curl` line can carry it without a second flag.
+  const filename = new URL(req.url ?? '/', 'http://localhost').searchParams.get('filename')
+  const externalId = ticket.externalId ?? (filename !== null && filename !== '' ? filename : randomUUID())
+
+  const outcome = await options.ingest.queue(ticket.auth, {
+    layer: ticket.layer,
+    externalId,
+    ...(ticket.title === undefined ? {} : { title: ticket.title }),
+    ...('binary' in admitted ? { bytes: admitted.binary.bytes, contentType: admitted.binary.contentType } : { content: admitted.content }),
+    metadata: parseMetadata(ticket.metadata),
+  })
+  await answerIngest(res, instance, requestId, ticket.auth, ticket.layer, outcome, options)
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOptions): Promise<void> {
   const requestId = randomUUID()
   const url = new URL(req.url ?? '/', 'http://localhost')
@@ -2616,6 +3043,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   //
   // Empty is the default: no header is emitted and a preflight is a `404` like
   // any other unrouted method, which is exactly what this API did before.
+  // The one door that admits every origin. A ticket's URL is redeemed by
+  // whoever holds the bytes — an MCP App's file input in a host's sandboxed
+  // iframe is the case that matters, and its `Origin` is `null` or the host's,
+  // neither of which a deployment can put on an allow-list. Admitting `*`
+  // here adds nothing to what the allow-list guards: the request carries no
+  // cookie and no `Authorization`, the capability is the ticket itself, and a
+  // page that does not hold one gets the `404` a stranger gets. Everything
+  // else on this API stays on exact match. uploads.ts has the argument.
+  const ticketMatch = pathMatch(/^\/v1\/uploads\/([^/]+)$/, instance)
+  if (ticketMatch !== null && (req.method === 'POST' || req.method === 'OPTIONS')) {
+    await redeemTicket(req, res, instance, requestId, ticketMatch[1] as string, options)
+    return
+  }
+
   const allowedOrigins = options.allowedOrigins ?? []
   const cors = corsHeaders(req.headers.origin, allowedOrigins)
   for (const [name, value] of Object.entries(cors)) res.setHeader(name, value)
@@ -3518,6 +3959,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       return
     }
 
+    if (req.method === 'POST' && instance === '/v1/uploads') {
+      await mintTicket(req, res, instance, requestId, auth, body, options)
+      return
+    }
+
     if (req.method === 'POST' && instance === '/v1/documents') {
       const body_ = (body ?? {}) as Record<string, unknown>
       const layer = body_.layer
@@ -3562,76 +4008,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         // "a ZIP-based document declared as one". Which one is the sidecar's
         // half: it names the declared format to the extractor and refuses an
         // archive whose parts say otherwise.
-        const declared = (uploaded.contentType ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
-        const format = binaryFormat(declared)
-        const family = signatureFamily(uploaded.bytes)
-
-        if (format !== undefined && family !== format.family) {
-          const problem = badRequest(
-            instance,
-            requestId,
-            `The file part declares '${format.contentType}' but the bytes do not begin with the ${SIGNATURE_NAMES[format.family]}. ` +
-              'Both must agree; a declared type the bytes contradict is refused rather than trusted.',
-          )
+        const admitted = admitBytes(uploaded.bytes, uploaded.contentType ?? '', options.objectStorage === true)
+        if ('refusal' in admitted) {
+          const problem = badRequest(instance, requestId, admitted.refusal)
           send(res, problem.status, problem.toJSON(), requestId)
           return
         }
-        if (format === undefined && family !== undefined) {
-          const problem = badRequest(
-            instance,
-            requestId,
-            `The bytes begin with the ${SIGNATURE_NAMES[family]} but the file part declares '${declared || 'nothing'}'. ` +
-              'Both must agree; declare the document\'s type rather than relying on sniffing. ' +
-              `Accepted: ${BINARY_FORMATS.map((f) => f.contentType).join(', ')}.`,
-          )
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-
-        if (format !== undefined) {
-          // Binary requires object storage, at the edge. The bytes' only home
-          // is the bucket — `documents.source_ref` is text and stays text — so
-          // a deployment without one learns on the request, naming the
-          // variables, not from a `failed` row minutes later.
-          if (options.objectStorage !== true) {
-            const problem = badRequest(
-              instance,
-              requestId,
-              `A ${format.format} upload needs object storage, and this deployment has none configured. ` +
-                'Set NACRE_S3_* (endpoint, bucket, access key, secret key) to enable binary ingest.',
-            )
-            send(res, problem.status, problem.toJSON(), requestId)
-            return
-          }
-          binary = { bytes: uploaded.bytes, contentType: format.contentType }
-        } else {
-          // Decoded here, and refused here, rather than queued and failed
-          // later.
-          //
-          // The parser extracts exactly the formats in the table — nothing
-          // else binary. Until this check existed the sidecar decoded with
-          // `errors="replace"`, so a binary file became a string of
-          // replacement characters that was chunked, embedded, stored as the
-          // document body and reported as indexed.
-          //
-          // At the edge the caller learns immediately and nothing is queued.
-          // Deep in the worker they would have learned from a `failed` row
-          // minutes later, if they looked.
-          const decoder = new TextDecoder('utf-8', { fatal: true })
-          try {
-            content = decoder.decode(uploaded.bytes)
-          } catch {
-            const problem = badRequest(
-              instance,
-              requestId,
-              'The uploaded file is not UTF-8 text and declares no binary format this installation extracts. ' +
-                `Accepted, each declared on the file part: ${BINARY_FORMATS.map((f) => f.contentType).join(', ')}. ` +
-                'An image, an archive or a legacy .doc needs an extractor the parser deliberately does not carry.',
-            )
-            send(res, problem.status, problem.toJSON(), requestId)
-            return
-          }
-        }
+        if ('binary' in admitted) binary = admitted.binary
+        else content = admitted.content
       }
       const url_ = body_.url
 
@@ -3709,71 +4093,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         stage: 'accept',
       })
 
-      if (outcome === undefined) {
-        options.observe?.aclDenials.inc({ reason: 'ingest_layer' })
-        // Not 403. A caller without write access must not learn which layers
-        // exist by seeing which ones refuse differently from which ones are
-        // absent.
-        await options.audit.write({
-          orgId: auth.orgId,
-          actor: `${auth.principal.type}:${auth.principal.id}`,
-          action: 'ingest',
-          result: 'deny',
-          target: { layer },
-          detail: { layer },
-          requestId,
-        })
-        const problem = notFound(instance, requestId)
-        send(res, problem.status, problem.toJSON(), requestId)
-        return
-      }
-
-      if ('refused' in outcome) {
-        // A module's ingest gate declined a document the caller may write — a
-        // quota, a suspension. Not a 404: the layer is not being hidden, the
-        // caller was allowed to write against it. Recorded as a denial so an
-        // operator can see quota-refused ingests; the gate's reason is the
-        // detail, and the gate chose the status.
-        await options.audit.write({
-          orgId: auth.orgId,
-          actor: `${auth.principal.type}:${auth.principal.id}`,
-          action: 'ingest',
-          result: 'deny',
-          target: { layer },
-          detail: { layer, reason: outcome.reason },
-          requestId,
-        })
-        const problem = new Problem({
-          type: 'https://nacre.work/errors/ingest-refused',
-          title: outcome.status === 429 ? 'Too many requests' : 'Forbidden',
-          status: outcome.status,
-          detail: outcome.reason,
-          instance,
-          requestId,
-        })
-        send(res, outcome.status, problem.toJSON(), requestId)
-        return
-      }
-
-      await options.audit.write({
-        orgId: auth.orgId,
-        actor: `${auth.principal.type}:${auth.principal.id}`,
-        action: 'ingest',
-        result: 'allow',
-        target: { layer, document_id: outcome.documentId },
-        detail: { document_id: outcome.documentId, unchanged: outcome.unchanged },
-        requestId,
-      })
-
-      // 200 for an idempotent repeat, 202 for work actually queued. The
-      // difference is what lets a client tell "already indexed" from "wait for
-      // the job" without polling to find out.
-      send(
-        res,
-        outcome.unchanged ? 200 : 202,
-        { document_id: outcome.documentId, job_id: outcome.jobId, status: outcome.unchanged ? 'indexed' : 'queued' },
-        requestId,
-      )
+      await answerIngest(res, instance, requestId, auth, layer, outcome, options)
       return
     }
 

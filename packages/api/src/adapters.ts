@@ -1221,6 +1221,20 @@ export class NacreIngest implements Ingest {
     return plan.layers.includes(id) ? id : undefined
   }
 
+  /**
+   * The write check alone, for an upload ticket: the same resolve `queue`
+   * makes, and the same `false` for a layer that is not writable and one that
+   * does not exist.
+   */
+  async writable(auth: AuthContext, layer: string): Promise<boolean> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => (await this.writableLayer(client, auth, layer)) !== undefined,
+      this.deps.role === undefined ? {} : { role: this.deps.role },
+    )
+  }
+
   async queue(auth: AuthContext, request: IngestRequest): Promise<IngestOutcome | IngestRefused | undefined> {
     return withOrg(
       this.pool,

@@ -467,6 +467,30 @@ embedding all happen afterwards in the worker, and a document that fails there
 is left in `failed`, which nothing retries. Check `ingest_status` before
 treating the document as searchable.
 
+### `request_upload`
+
+`{ layer, external_id?, title?, metadata? }`. Returns the upload descriptor
+`POST /v1/uploads` answers with — a URL to `POST` the file to as the raw body
+under its own media type, when the ticket expires, the size limit, and the same
+request as a `curl` line. Permission: **`write`**, resolved exactly as
+`ingest_document` resolves it, and a layer the caller may not write to is
+`Not found` like one that does not exist.
+
+This is how a file reaches the index **without passing through the model**.
+`ingest_document` takes `content`, which is the file retyped through the
+context window — paid for twice, and for anything a model cannot faithfully
+reproduce, not the same bytes. A ticket is single-use and lives five minutes;
+whoever holds the bytes — a shell handed the `curl` line, an MCP App's file
+input, a script — sends them to the URL, and the upload answers with the
+`job_id` that `ingest_status` then reads. The document is queued as the caller
+who minted the ticket, with their write checked again when the bytes arrive.
+The whole of it is in [api.md](./api.md#uploading-by-ticket--a-file-that-never-passes-through-a-model).
+
+Both transports mint into the same store — local mode opens the same Redis
+for exactly this — and the URL names the API's canonical origin on both,
+because that is where the bytes go. Without a store the tool answers
+`Not found`, as a tool that cannot do its job here.
+
 ### `ingest_status`
 
 `{ job_id }`, from `ingest_document`. Returns

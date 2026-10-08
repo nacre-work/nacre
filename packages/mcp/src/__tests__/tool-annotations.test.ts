@@ -19,6 +19,7 @@ const EXPECTED: Record<
   list_layers: [true, false, true, false],
   get_document: [true, false, true, false],
   ingest_status: [true, false, true, false],
+  request_upload: [false, false, false, false],
   ingest_document: [false, true, true, true],
   delete_document: [false, true, true, false],
 }

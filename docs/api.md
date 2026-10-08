@@ -9,6 +9,8 @@ Implemented:
 
 ```
 POST   /v1/documents                 ingest (json or multipart/form-data; text — see below)
+POST   /v1/uploads                   mint an upload ticket (write on the layer)
+POST   /v1/uploads/{ticket}          redeem it with the file as the body (no credential; see below)
 GET    /v1/documents/{id}
 PATCH  /v1/documents/{id}            metadata only; no re-embed
 DELETE /v1/documents/{id}            tombstone
@@ -838,6 +840,67 @@ path should be: nested multipart, `Content-Transfer-Encoding` other than
 `binary`, a boundary outside RFC 2046's grammar, more than 16 parts, and a
 header block over 8 KiB are all refusals rather than branches. `413` is the
 size limit, `400` is everything else, and neither is configurable.
+
+### Uploading by ticket — a file that never passes through a model
+
+```
+POST /v1/uploads
+{ "layer": "contracts", "external_id": "q3-plan.pdf" }
+
+201
+{ "ticket": "…", "url": "https://api.example/v1/uploads/…", "method": "POST",
+  "headers": { "content-type": "<the file's media type>" },
+  "expires_at": "…", "max_size": 52428800, "accepts": [ … ],
+  "curl": "curl --fail --data-binary @FILE -H 'content-type: TYPE' 'https://api.example/v1/uploads/…'" }
+
+POST /v1/uploads/{ticket}?filename=q3-plan.pdf
+Content-Type: application/pdf
+<the bytes>
+
+202  { "document_id": "…", "job_id": "…", "status": "queued" }
+```
+
+An agent that holds a file cannot put it into an ingest call: a tool argument
+is a string the model has to emit, which is the file retyped through the
+context window — paid for twice, and for anything a model cannot faithfully
+reproduce, not the same bytes. So the agent asks for a **ticket** instead,
+here or over MCP with `request_upload`, and whoever holds the bytes — a shell
+with the `curl` line, an MCP App's file input, a script — sends them to the
+ticket's URL. The index sees exactly what was on disk.
+
+The ticket is the capability, and the rules follow from that:
+
+- **Minted on `write`** to the layer, with `404` for a layer the caller may not
+  write to and for one that does not exist — the same answer, so the endpoint
+  is not a layer-name oracle. The document is queued **as the minter** when the
+  bytes arrive and the write is checked again then; a grant revoked in between
+  refuses the upload.
+- **Single-use.** The store takes the ticket out in the same command that reads
+  it, so two uploads racing on one ticket produce one document and one `404`.
+  A refused upload spends it too.
+- **Five minutes**, the server's number and not a field. Long enough to open a
+  terminal; short enough that a ticket in a transcript is worth little.
+- **No credential on the redeem**, and the one door on this API that admits
+  every origin (`Access-Control-Allow-Origin: *`): an MCP App's file input runs
+  in a host's sandboxed iframe whose origin no deployment can list, and
+  admitting `*` here adds nothing — there is no cookie and no `Authorization`,
+  so a page that holds no ticket gets what a stranger gets. Everything else
+  stays on `NACRE_API_ALLOWED_ORIGINS`.
+- **Fails closed.** The store is Redis, and a Redis that does not answer is a
+  `503` on both ends. Against the grain of the rate limiter beside it, which
+  fails open, because this *is* an authorization control.
+
+The bytes get the same admission a multipart file part gets — the section
+below — through the same function, and the outcome is the one `POST
+/v1/documents` answers with. `external_id`, `title` and `metadata` are fixed at
+minting; `external_id` falls back to the `filename` query parameter on the
+redeem, then to a generated id. Both operations spend the `ingest` budget: the
+mint is the promise and the redeem is the ingest.
+
+The descriptor is shaped after the one the MCP file-transfer proposal
+(SEP-2631) has a server mint for an upload — `url`, `method`, `headers`,
+`expiresAt`, `maxSize` — so that when the proposal lands, `files/authorizeUpload`
+is a second door onto the same store rather than a second implementation.
 
 ### Binary upload — the table, and the rules it carries
 

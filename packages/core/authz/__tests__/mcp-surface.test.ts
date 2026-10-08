@@ -915,6 +915,8 @@ describe('baseline · the MCP surface', () => {
     // able to search what it uploaded.
     expect(permission('ingest_document')).toBe('write')
     expect(permission('delete_document')).toBe('write')
+    // A ticket is a promise of a write and is minted on nothing less.
+    expect(permission('request_upload')).toBe('write')
   })
   /**
    * The SDK's own client, in both eras, against the real transport.

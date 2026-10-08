@@ -301,6 +301,17 @@ for a mistyped tool name should match on the error code instead.
 not name `text/event-stream` is answered in JSON, which is what every POST is
 answered in; a `curl` or a check script needs no header it did not have.
 
+**A file can reach the index without passing through a model.** `POST
+/v1/uploads` mints a single-use, five-minute ticket for a layer the caller may
+write to, and `POST /v1/uploads/{ticket}` takes the file as the raw body with
+no credential — the ticket is one. Over MCP the same ticket comes from the new
+`request_upload` tool, which hands the model a `curl` line. The ticket store
+is the Redis every deployment already has; nothing to configure. The redeem
+endpoint is the one path on the API answering `Access-Control-Allow-Origin:
+*`, and the reason it is safe is stated in `docs/api.md`. The MCP STDIO
+process now opens Redis too, for exactly this — `NACRE_REDIS_URL` was already
+required of it.
+
 ### 0.27.0 — Office and OpenDocument files, EPUB and RTF are accepted
 
 One migration, 0035, which widens the `CHECK` on `documents.content_type`

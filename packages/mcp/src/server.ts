@@ -160,7 +160,7 @@ export interface McpOptions {
  */
 function resourceForTool(tool: string): Resource | undefined {
   if (tool === 'search') return 'search'
-  if (tool === 'ingest_document' || tool === 'delete_document') return 'ingest'
+  if (tool === 'ingest_document' || tool === 'delete_document' || tool === 'request_upload') return 'ingest'
   return undefined
 }
 
