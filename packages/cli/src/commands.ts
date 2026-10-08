@@ -340,7 +340,7 @@ export async function ingest(context: Context): Promise<Outcome> {
   if (files.length === 0) {
     throw new UsageError(
       `Nothing to ingest: no text files under ${targets.join(', ')}. ` +
-        `Read as text: ${[...TEXT].sort().join(' ')}. A PDF goes through POST /v1/documents as multipart, which this command does not do yet.`,
+        `Read as text: ${[...TEXT].sort().join(' ')}. A PDF or an office document goes through POST /v1/documents as multipart, which this command does not do yet.`,
     )
   }
 

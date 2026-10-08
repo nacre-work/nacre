@@ -455,8 +455,9 @@ Built, in the four stages this section was written to order. It stays here in
 the same words rather than being rewritten as a description: the design was
 settled before the code, every stage landed against it, and the last of them
 is what turned the argument below into something that has been run rather than
-reasoned about. An uploaded file is UTF-8 text or a PDF; any other binary
-format is still refused at the edge.
+reasoned about. An uploaded file is UTF-8 text or one of the binary formats
+in `packages/core/formats.ts` — PDF, the Office and OpenDocument formats,
+EPUB, RTF; any other binary format is still refused at the edge.
 
 **Binary enters through the multipart upload only.** The file part is already
 held outside the JSON-shaped body — a document's bytes do not belong in the
@@ -465,13 +466,21 @@ stays. A base64 field in the JSON body is deliberately not offered: it would
 carry the same bytes at four-thirds the size through every intermediary that
 handles the body as text.
 
-**PDF first, and both signals must agree.** The part must declare
-`application/pdf` **and** the bytes must begin with the `%PDF-` magic; either
-alone is a refusal that names the other. A declared type the bytes contradict
-is exactly the disagreement the multipart parser's strictness doctrine exists
-to refuse, and sniffing alone would turn the declared type into decoration.
-Other formats are added by extending this table, never by falling through to a
-guess.
+**Both signals must agree.** The part must declare a type in the table
+**and** the bytes must begin with that family's signature; either alone is a
+refusal that names the other. A declared type the bytes contradict is exactly
+the disagreement the multipart parser's strictness doctrine exists to refuse,
+and sniffing alone would turn the declared type into decoration. PDF was the
+table's first and only row for twenty releases; the Office and OpenDocument
+formats, EPUB and RTF joined it in 0.27.0, and the table moved into the core
+the day there was a second row — three processes had agreed on the string
+`application/pdf` written in each of them, which held exactly as long as
+there was one format. A signature names a family and not a format, since
+every Office and OpenDocument file is a ZIP archive: the edge holds "a
+ZIP-based document declared as one", and the sidecar, which names the
+declared format to its extractor rather than letting it sniff, refuses an
+archive whose parts contradict the declaration. Other formats are added by
+extending the table, never by falling through to a guess.
 
 **Binary requires object storage, at the edge.** The bytes' only home is the
 bucket: `documents.source_ref` is text and stays text. A binary upload on a
@@ -486,11 +495,16 @@ are unchanged: re-sending the same file is a no-op, a changed file re-indexes.
 `documents.content_type text NOT NULL DEFAULT 'text/plain'` — Postgres is the
 source of truth, and inferring the type from object metadata would make a
 bucket restore load-bearing for correctness. Forward-only, no RLS change: it is
-a column on a table whose policies already exist.
+a column on a table whose policies already exist. Its `CHECK` names every
+accepted value, and 0035 widened it to the table — the one copy of the table
+the code cannot reach, so a core test holds the newest migration spelling it
+against `BINARY_FORMATS`. The compose e2e is what found the constraint: a
+Word document the edge admitted and the sidecar could read was refused on the
+row insert with a `500`.
 
 **The worker dispatches on it.** The `s3` branch reads `content_type`:
-`text/plain` decodes UTF-8 with `fatal: true`, exactly as today;
-`application/pdf` passes the bytes through the parser port untouched. The port
+`text/plain` decodes UTF-8 with `fatal: true`, exactly as today; a type in
+the table passes the bytes through the parser port untouched. The port
 grows a third mutually exclusive form —
 `parse({ content } | { url } | { bytes, contentType })` — and the sidecar
 transport for the third form is a raw body with the real `Content-Type` header
@@ -505,7 +519,16 @@ a compiled Rust extension and therefore a reversal of the "no native parsers"
 half of that sentence. It was made deliberately and the argument is in
 `services/parser/requirements.txt`: a memory-safe parser fails by panicking
 rather than by corrupting a heap, and it answers a question pypdf structurally
-cannot — whether a PDF has a text layer at all.
+cannot — whether a PDF has a text layer at all. Since 0.27.0 there is a
+second, `anydoc`, the same publisher's converter for the Office and
+OpenDocument formats, RTF and EPUB — one Rust wheel with no dependencies of
+its own, no models and no network, because the one mode of it that reaches
+anything is hosted OCR and this sidecar never asks for it, by a literal a
+test holds. It carries a PDF path too and that path is deliberately unused:
+measured over the three hostile shapes, it calls two of them scans, it
+refuses a partly-scanned document outright, and it reports no page count —
+three promises `parse_pdf` already makes. So the extractor is chosen per
+format, and `anydoc` is always told the format rather than left to sniff it.
 
 **A PDF with no text layer is refused, not indexed as nothing.** A scan
 extracted to `""`, chunked to nothing and was reported `indexed`: accepted,

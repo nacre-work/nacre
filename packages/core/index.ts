@@ -170,6 +170,16 @@ export type {
 } from './webauthn.js'
 export type { SparseVector } from './text/bm25.js'
 export { classifyIngestFailure, isRetryable, withoutHosts } from './ingest-failure.js'
+export {
+  BINARY_FORMATS,
+  SIGNATURES,
+  SIGNATURE_NAMES,
+  binaryFormat,
+  binaryFormatForExtension,
+  isBinaryFormat,
+  signatureFamily,
+} from './formats.js'
+export type { BinaryFormat, SignatureFamily } from './formats.js'
 export type { IngestFailure, IngestFailureReason } from './ingest-failure.js'
 export {
   DEFAULT_EMBED_MAX_TOKENS,

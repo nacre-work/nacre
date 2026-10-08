@@ -6,9 +6,13 @@ import { URL } from 'node:url'
 
 import {
   logger,
+  BINARY_FORMATS,
+  binaryFormat,
   MetadataError,
   MultipartError,
   multipartBoundary,
+  SIGNATURE_NAMES,
+  signatureFamily,
   parseMultipart,
   queryAudit,
   parseFilters,
@@ -3544,40 +3548,47 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           return
         }
 
-        // PDF first, and both signals must agree: the part must declare
-        // `application/pdf` AND the bytes must begin with `%PDF-`. Either
-        // alone is a refusal that names the other — a declared type the bytes
-        // contradict is exactly the disagreement the multipart parser's
-        // strictness doctrine exists to refuse, and sniffing alone would turn
-        // the declared type into decoration. Other formats extend this table;
-        // nothing falls through to a guess.
+        // Both signals must agree: the part declares a type in the table AND
+        // the bytes carry that family's signature. Either alone is a refusal
+        // that names the other — a declared type the bytes contradict is
+        // exactly the disagreement the multipart parser's strictness doctrine
+        // exists to refuse, and sniffing alone would turn the declared type
+        // into decoration. The table is `BINARY_FORMATS` in the core, which
+        // the worker and the sidecar read too; a new format is a row there,
+        // and nothing falls through to a guess.
+        //
+        // A signature names a family and not a format — every Office and
+        // OpenDocument file is a ZIP archive — so what the edge can hold is
+        // "a ZIP-based document declared as one". Which one is the sidecar's
+        // half: it names the declared format to the extractor and refuses an
+        // archive whose parts say otherwise.
         const declared = (uploaded.contentType ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
-        const MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d] // %PDF-
-        const magic =
-          uploaded.bytes.length >= MAGIC.length && MAGIC.every((b, i) => uploaded.bytes[i] === b)
+        const format = binaryFormat(declared)
+        const family = signatureFamily(uploaded.bytes)
 
-        if (declared === 'application/pdf' && !magic) {
+        if (format !== undefined && family !== format.family) {
           const problem = badRequest(
             instance,
             requestId,
-            "The file part declares 'application/pdf' but the bytes do not begin with the %PDF- magic. " +
+            `The file part declares '${format.contentType}' but the bytes do not begin with the ${SIGNATURE_NAMES[format.family]}. ` +
               'Both must agree; a declared type the bytes contradict is refused rather than trusted.',
           )
           send(res, problem.status, problem.toJSON(), requestId)
           return
         }
-        if (declared !== 'application/pdf' && magic) {
+        if (format === undefined && family !== undefined) {
           const problem = badRequest(
             instance,
             requestId,
-            "The bytes begin with the %PDF- magic but the file part does not declare 'application/pdf'. " +
-              'Both must agree; declare the type rather than relying on sniffing.',
+            `The bytes begin with the ${SIGNATURE_NAMES[family]} but the file part declares '${declared || 'nothing'}'. ` +
+              'Both must agree; declare the document\'s type rather than relying on sniffing. ' +
+              `Accepted: ${BINARY_FORMATS.map((f) => f.contentType).join(', ')}.`,
           )
           send(res, problem.status, problem.toJSON(), requestId)
           return
         }
 
-        if (declared === 'application/pdf' && magic) {
+        if (format !== undefined) {
           // Binary requires object storage, at the edge. The bytes' only home
           // is the bucket — `documents.source_ref` is text and stays text — so
           // a deployment without one learns on the request, naming the
@@ -3586,23 +3597,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             const problem = badRequest(
               instance,
               requestId,
-              'A PDF upload needs object storage, and this deployment has none configured. ' +
+              `A ${format.format} upload needs object storage, and this deployment has none configured. ` +
                 'Set NACRE_S3_* (endpoint, bucket, access key, secret key) to enable binary ingest.',
             )
             send(res, problem.status, problem.toJSON(), requestId)
             return
           }
-          binary = { bytes: uploaded.bytes, contentType: 'application/pdf' }
+          binary = { bytes: uploaded.bytes, contentType: format.contentType }
         } else {
           // Decoded here, and refused here, rather than queued and failed
           // later.
           //
-          // The parser extracts exactly the formats in the table above — it
-          // took its first dependency for PDF and nothing else. Until this
-          // check existed the sidecar decoded with `errors="replace"`, so a
-          // binary file became a string of replacement characters that was
-          // chunked, embedded, stored as the document body and reported as
-          // indexed.
+          // The parser extracts exactly the formats in the table — nothing
+          // else binary. Until this check existed the sidecar decoded with
+          // `errors="replace"`, so a binary file became a string of
+          // replacement characters that was chunked, embedded, stored as the
+          // document body and reported as indexed.
           //
           // At the edge the caller learns immediately and nothing is queued.
           // Deep in the worker they would have learned from a `failed` row
@@ -3614,9 +3624,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             const problem = badRequest(
               instance,
               requestId,
-              'The uploaded file is not UTF-8 text. This installation extracts PDF and nothing else — ' +
-                'a Word file or an image needs an extractor the parser deliberately does not carry, ' +
-                'and a PDF must declare application/pdf on the file part.',
+              'The uploaded file is not UTF-8 text and declares no binary format this installation extracts. ' +
+                `Accepted, each declared on the file part: ${BINARY_FORMATS.map((f) => f.contentType).join(', ')}. ` +
+                'An image, an archive or a legacy .doc needs an extractor the parser deliberately does not carry.',
             )
             send(res, problem.status, problem.toJSON(), requestId)
             return
@@ -3630,7 +3640,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
-      // A PDF file part is the third source and already excludes the other
+      // A binary file part is the third source and already excludes the other
       // two: `content` and `url` beside a file were refused above, before the
       // bytes were even looked at.
       if (binary === undefined && (typeof content === 'string') === (typeof url_ === 'string')) {

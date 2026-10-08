@@ -60,8 +60,20 @@ export interface IngestRequest {
    */
   readonly externalId: string
   readonly title?: string
+  /** The document as UTF-8 text. One of `content`, `url` or `bytes`. */
   readonly content?: string
   readonly url?: string
+  /**
+   * The document as a file — a PDF, a Word, OpenDocument, RTF or EPUB file —
+   * sent as a multipart upload. Needs `contentType`, which the server holds
+   * against the bytes' own signature: both must agree, and a deployment
+   * without object storage refuses every binary upload, naming `NACRE_S3_*`.
+   */
+  readonly bytes?: Uint8Array
+  /** The declared media type of `bytes`, e.g. `application/pdf`. */
+  readonly contentType?: string
+  /** The file part's name. Defaults to `externalId`; it reaches no path and no object key. */
+  readonly filename?: string
   /**
    * Tags the document is filterable by, key to value.
    *

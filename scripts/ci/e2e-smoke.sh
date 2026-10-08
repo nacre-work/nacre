@@ -336,6 +336,63 @@ req GET "/v1/documents/${PDF_DOC}" "$TOKEN" \
   | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('source_url') else 1)" \
   || die "an s3-stored document carried no source_url"
 
+# ── a Word document, the same way through ─────────────────────────────────
+# The second row of the binary table, driven over the same chain the PDF was:
+# the edge holds the declaration against the ZIP signature, the bucket holds
+# the bytes, the worker hands them to the sidecar as a raw body under their
+# real type, and `anydoc` — told the format, never left to sniff it — pulls the
+# paragraph out. Every stage was tested against a mock of the next one; this
+# is the first time they are asked to agree on a format that is not PDF.
+DOCX_TEXT="Quarterly budget reviews are held on the first Monday"
+DOCX_TYPE="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+say "build a real Word document"
+python3 scripts/ci/make-docx.py /tmp/budget.docx "$DOCX_TEXT"
+head -c 2 /tmp/budget.docx | grep -q 'PK' || die "the generated file is not a ZIP archive"
+
+upload_docx() {
+  local declared="$1" file="$2" out status body
+  out=$(curl -sS -X POST "${API}/v1/documents" \
+    -H "authorization: Bearer ${TOKEN}" -H 'accept: application/json' \
+    -F 'layer=handbook' -F 'external_id=budget-policy' -F 'title=Budget policy' \
+    -F "file=@${file};type=${declared}" \
+    -w $'\n%{http_code}')
+  status=${out##*$'\n'}
+  body=${out%$'\n'*}
+  printf '%s\n%s' "$status" "$body"
+}
+
+# The refusal first: PDF bytes declared as a Word document. The edge knows the
+# ZIP signature is missing before anything is queued, and names it.
+say "upload the PDF declared as a Word document — expect a refusal"
+RESULT=$(upload_docx "$DOCX_TYPE" /tmp/coffee.pdf)
+[ "$(printf '%s' "$RESULT" | head -1)" = "400" ] || die "a PDF declared as docx was not refused: ${RESULT}"
+printf '%s' "$RESULT" | tail -n +2 | grep -q 'ZIP signature' || die "the refusal did not name the signature: ${RESULT}"
+say "  refused, naming the signature"
+
+say "upload the Word document properly declared"
+RESULT=$(upload_docx "$DOCX_TYPE" /tmp/budget.docx)
+[ "$(printf '%s' "$RESULT" | head -1)" = "202" ] || die "the Word upload was not accepted: ${RESULT}"
+DOCX_JOB=$(printf '%s' "$RESULT" | tail -n +2 | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+say "docx job ${DOCX_JOB}"
+
+for i in $(seq 1 60); do
+  DOCX_BODY=$(req GET "/v1/jobs/${DOCX_JOB}" "$TOKEN")
+  STATUS=$(printf '%s' "$DOCX_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  say "  docx job status: ${STATUS}"
+  case "$STATUS" in
+    indexed) break ;;
+    failed) die "the Word ingest failed: ${DOCX_BODY}" ;;
+  esac
+  if [ "$i" = 60 ]; then die "the docx job never reached indexed"; fi
+  sleep 2
+done
+
+say "search, and expect the Word document's own text in a hit"
+BODY=$(req POST /v1/search "$TOKEN" '{"query":"budget","top_k":10}')
+printf '%s' "$BODY" | hit_texts | grep -qF "$DOCX_TEXT" \
+  || die "the Word document's text never reached the index — search returned: ${BODY}"
+say "  the extracted text came back from the index"
+
 # ── a scan, which must fail rather than succeed at nothing ────────────────
 # The other half of extraction, and the one that used to pass silently. A PDF
 # whose only content is an image extracted to `""`, chunked to nothing, wrote no

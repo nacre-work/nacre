@@ -1000,6 +1000,55 @@ it to `indexed`, and asserts the extracted phrase comes back out of a search —
 with a constant-vector stub embedder, so relevance decides nothing and the
 phrase is there only if it came out of the PDF.
 
+**Office and OpenDocument files — text, presentations and spreadsheets —
+EPUB and RTF are accepted, and the table that admits them is one table.** The PDF path was one format with the string
+`application/pdf` written in three processes — the edge that admits a file
+part, the worker that decides whether a stored object is bytes or text, and
+the sidecar that dispatches on it — which agreed exactly as long as there was
+one format. `packages/core/formats.ts` is the table now: a declared type, the
+signature its family begins with, and the name the sidecar converts it under.
+The edge and the worker read it, and the sidecar's own suite holds its Python
+copy against the file, both directions, because a row the edge refuses is
+dead code and a row the sidecar lacks is a document accepted, queued and
+failed.
+
+A signature names a family and not a format. Every Office and OpenDocument
+file is a ZIP archive and begins with the same four bytes, so what the edge
+can hold is "a ZIP-based document, declared as one" — which one is the
+declaration's job, and the sidecar names that format to the extractor rather
+than letting it sniff, so a `.docx` declaration over an `.odt` archive fails on
+the parts the extractor then cannot find. That is "both signals must agree"
+enforced where the archive is actually opened, and it is why `anydoc` is never
+handed bytes without a format.
+
+The sidecar has two dependencies now and the second was **not** allowed to
+replace the first, on measurement rather than on preference. `anydoc` carries
+a PDF path built on the same crate `pdf-inspector` is, and over the three
+hostile shapes `requirements.txt` names it calls two of them scans — a stream
+declaring four gigabytes and a truncated inline image both come back as
+"needs OCR", which is the wrong thing to tell an operator about a broken
+file. It refuses a partly-scanned document outright where `pdf-inspector`
+extracts the pages that have text and names the ones that do not, and it
+reports no page count on success. Three promises `parse_pdf` already makes.
+So PDF keeps its extractor and the choice is per format. `pdf-inspector`
+moved twenty releases in the same change, and the one thing that moved with
+it is where a page-less document is refused — in `classify` now, with the
+library's own words, which `_pdf_failure` maps to the sentence the suite
+already expected.
+
+`ocr="reject"` is passed although it is the default, and a case asks the
+mock for it: the extractor's other mode sends the document to a hosted
+service, the `airgapped` profile rests on this process reaching nothing, and
+a default is a thing a release of somebody else's library can move. Legacy
+`.doc`, `.xls` and `.ppt` are deliberately not in the table — the extractor
+does not sniff their signature and nothing here has watched one convert — and
+CSV stays text, because it is.
+
+The SDK gained the multipart upload it never had: `documents.add` takes
+`bytes` and `contentType` as a third source and builds the form on **every
+attempt**, because a `FormData` is consumed by the request that sends it and
+a retry replaying a consumed one would send an empty body under a `202`.
+
 **A generated password comes from one list, and the number is computed.** There
 were two implementations of the same six-words-and-a-number generator, each with
 its own word list — 60 words beside `init` and 28 beside the user endpoints — so

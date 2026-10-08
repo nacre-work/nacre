@@ -6,11 +6,23 @@ separate process because this is the one component that runs untrusted input
 through a large C dependency tree. It holds no credentials and reaches no
 database. If it is compromised, there is nothing here to reach.
 
-One dependency, taken deliberately: `pdf-inspector`, pinned in
-requirements.txt. This service was stdlib-only until the binary-ingest work,
-and the bar for adding anything here is dependency surface first — it runs
-hostile input through whatever it depends on, which is why there is still no
-web framework and why everything else stays standard library.
+Two dependencies, each taken deliberately and pinned in requirements.txt:
+`pdf-inspector` reads PDF, and `anydoc` — the same publisher's converter —
+reads the Office and OpenDocument formats, RTF and EPUB. This service was
+stdlib-only until the binary-ingest work, and the bar for adding anything here
+is dependency surface first — it runs hostile input through whatever it
+depends on, which is why there is still no web framework and why everything
+else stays standard library.
+
+PDF stays on `pdf-inspector` although `anydoc` carries a PDF path of its own,
+and that was measured rather than assumed: over the three hostile shapes in
+requirements.txt, `anydoc` calls two of them scans — a stream declaring four
+gigabytes and a truncated inline image both come back as "needs OCR", which
+is the wrong thing to tell an operator about a broken file — it refuses a
+document whose pages are *partly* scanned rather than extracting the rest,
+and it reports no page count on success. Each of those is a property this
+sidecar's PDF contract already promises. So the extractor is chosen per
+format, and `anydoc` is always told the format rather than left to sniff it.
 
 That dependency was `pypdf` and is not, and the swap is a judgement worth
 stating rather than a version bump. pypdf is pure Python, which was the whole
@@ -60,6 +72,31 @@ ALLOW_PRIVATE = os.environ.get("NACRE_PARSER_ALLOW_PRIVATE_URLS", "").strip().lo
 
 class ParseError(Exception):
     """Something about the input, not about us."""
+
+
+# The binary formats this sidecar reads: declared media type -> (the format
+# named to the extractor, the signature the bytes must begin with). This is the
+# Python copy of `packages/core/formats.ts`, and `test_app.py` holds the two
+# against each other — an entry here that the edge does not admit is dead code,
+# and an entry there that this table lacks is a document queued and failed.
+#
+# Only the ZIP-based families and RTF beside PDF. The legacy OLE formats
+# (`.doc`, `.xls`, `.ppt`) are deliberately absent: the extractor does not
+# sniff their signature and nothing here has watched one convert.
+_ZIP = b"PK\x03\x04"
+FORMATS: dict[str, tuple[str, bytes]] = {
+    "application/pdf": ("pdf", b"%PDF-"),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ("docx", _ZIP),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ("pptx", _ZIP),
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ("xlsx", _ZIP),
+    "application/vnd.oasis.opendocument.text": ("odt", _ZIP),
+    "application/vnd.oasis.opendocument.presentation": ("odp", _ZIP),
+    "application/vnd.oasis.opendocument.spreadsheet": ("ods", _ZIP),
+    "application/epub+zip": ("epub", _ZIP),
+    "application/rtf": ("rtf", b"{\\rtf"),
+}
+# A second spelling a client may send for the same format, as the edge admits it.
+FORMAT_ALIASES = {"text/rtf": "application/rtf"}
 
 
 def _is_public(address: str) -> bool:
@@ -303,6 +340,67 @@ def parse_pdf(raw: bytes) -> dict:
     }
 
 
+def parse_document(raw: bytes, declared: str) -> dict:
+    """Bytes of a declared binary format to text, or a refusal that says why.
+
+    The signature is checked here as well as at the API edge, for the reason
+    `parse_pdf` gives: this process holds its own line. The format is *named*
+    to the extractor and never sniffed — a `.docx` declaration over an `.odt`
+    archive is refused by the parts the extractor then fails to find, which is
+    the second half of "both signals must agree", enforced where the archive is
+    actually opened.
+
+    `ocr="reject"` is passed explicitly although it is the default: the
+    extractor's other mode sends the document to a hosted service, and this
+    sidecar reaches nothing — the `airgapped` profile rests on that, so it is
+    pinned here and asked by a test rather than inherited from a default that
+    a release of the library could move.
+
+    Failure text never carries the exception message. The extractor's errors
+    quote what they choked on — a part name, a decoder's complaint — and the
+    failure path is part of the attack surface; the class says what kind of
+    failure it was, and `limit` names one of the extractor's fixed limits
+    rather than anything out of the file.
+    """
+    entry = FORMATS.get(FORMAT_ALIASES.get(declared, declared))
+    if entry is None:
+        raise ParseError("unsupported content type")
+    fmt, signature = entry
+    if not raw.startswith(signature):
+        raise ParseError(f"the body does not start with the signature of a {fmt}; it is not one")
+    if fmt == "pdf":
+        return parse_pdf(raw)
+
+    try:
+        import anydoc
+    except ImportError as error:  # pragma: no cover - an install problem, not input
+        raise ParseError(
+            "the document extractor is not installed; the parser image is missing anydoc"
+        ) from error
+
+    try:
+        text = anydoc.to_markdown_bytes(raw, format=fmt, ocr="reject")
+    except anydoc.EncryptedError as error:
+        raise ParseError(f"the {fmt} is encrypted, and this parser holds no passwords") from error
+    except anydoc.ResourceLimitError as error:
+        limit = getattr(error, "limit", None)
+        raise ParseError(
+            f"the {fmt} crossed the extractor's {limit} limit" if limit else f"the {fmt} crossed an extractor limit"
+        ) from error
+    except anydoc.ConvertError as error:
+        # MissingPartError and MalformedError — the archive is not the format
+        # it was declared as, or is broken. One sentence for both, because the
+        # part name the extractor quotes is exactly what must not travel.
+        raise ParseError(f"the {fmt} could not be read ({type(error).__name__})") from error
+    except Exception as error:  # noqa: BLE001 - hostile input, reason class only
+        raise ParseError(f"the {fmt} could not be parsed ({type(error).__name__})") from error
+
+    if text.strip() == "":
+        raise ParseError(f"no text could be extracted from the {fmt}")
+
+    return {"text": text, "blocks": [], "metadata": {"bytes": len(raw), "format": fmt}}
+
+
 def _pdf_failure(error: Exception) -> str:
     """Our wording for a parser failure, never the parser's.
 
@@ -315,6 +413,9 @@ def _pdf_failure(error: Exception) -> str:
     known = {
         "encrypted": "the PDF is encrypted, and this parser holds no passwords",
         "invalid pdf": "the PDF structure could not be read",
+        # 1.25 refuses a page-less document in `classify_pdf_bytes` where 0.2
+        # classified it as a scan with zero pages; the same refusal either way.
+        "no readable pages": "the PDF declares no pages",
     }
     lowered = str(error).lower()
     for marker, reason in known.items():
@@ -382,17 +483,17 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # The body's declared type decides the branch. JSON carries the
-        # {content|url} contract the deployed callers already speak; a PDF
-        # arrives as its own raw bytes, because base64-in-JSON would carry the
-        # same bytes at four-thirds the size. Anything else is refused by name
-        # — new binary formats extend this dispatch, they never fall through
-        # to a guess.
+        # {content|url} contract the deployed callers already speak; a binary
+        # document arrives as its own raw bytes under its real type, because
+        # base64-in-JSON would carry the same bytes at four-thirds the size.
+        # Anything else is refused by name — a new binary format is a row in
+        # FORMATS, and nothing falls through to a guess.
         declared = (self.headers.get("content-type") or "").split(";")[0].strip().lower()
 
-        if declared == "application/pdf":
+        if FORMAT_ALIASES.get(declared, declared) in FORMATS:
             raw = self.rfile.read(length)
             try:
-                self._reply(200, parse_pdf(raw))
+                self._reply(200, parse_document(raw, declared))
             except ParseError as error:
                 self._reply(422, {"error": str(error)})
             except Exception:  # noqa: BLE001
@@ -402,7 +503,10 @@ class Handler(BaseHTTPRequestHandler):
         if declared not in ("", "application/json"):
             self._reply(
                 415,
-                {"error": "unsupported content type; this parser takes application/json or application/pdf"},
+                {
+                    "error": "unsupported content type; this parser takes application/json or one of: "
+                    + ", ".join(sorted(FORMATS))
+                },
             )
             return
 
