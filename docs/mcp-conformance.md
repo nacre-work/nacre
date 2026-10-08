@@ -168,9 +168,19 @@ DCR.
 | `annotations` on every tool | holds — `tool-annotations.test.ts` |
 | `x-mcp-header` annotations on tool parameters | not used — optional for servers |
 
+## Resources
+
+| Requirement | Status |
+|---|---|
+| `resources/list` and `resources/read` for every declared resource | holds — the three MCP App views, `ui://nacre/*`, read from the package's built `apps/` |
+| The MCP Apps extension's media type and `_meta.ui` on tools and resources | holds — `apps.test.ts` reads both off the wire |
+| `_meta.ui.csp` on each view names only what it reaches | holds — the upload view names the API's origin; the other two name nothing |
+
 ## What this audit did not cover
 
-Elicitation, sampling, resources, prompts, completion, logging, tasks and
-subscriptions: none is declared, and a capability that is not declared is one
-a client will not call. Declaring one we do not serve is the failure this table
-exists to prevent.
+Elicitation, sampling, prompts, completion, logging, tasks and subscriptions:
+none is declared, and a capability that is not declared is one a client will
+not call. Declaring one we do not serve is the failure this table exists to
+prevent. Tasks in particular were measured rather than declined by preference:
+the SDK server refuses `resultType: "task"` from a tool and does not route
+`tasks/get` in the 2026-07-28 era.

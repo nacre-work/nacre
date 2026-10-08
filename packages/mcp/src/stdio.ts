@@ -38,6 +38,8 @@ export interface StdioOptions {
   readonly input?: NodeJS.ReadableStream
   /** What `initialize` and `server/discover` report. See the note in main.ts. */
   readonly serverVersion?: string
+  /** The API's canonical origin, for the views. See `ServerBuild.apiOrigin`. */
+  readonly apiOrigin?: string
 }
 
 /**
@@ -180,6 +182,7 @@ export async function serveStdio(options: StdioOptions): Promise<void> {
         layers: options.layers,
         tools: options.tools,
         ...(options.serverVersion === undefined ? {} : { serverVersion: options.serverVersion }),
+        ...(options.apiOrigin === undefined ? {} : { apiOrigin: options.apiOrigin }),
       }),
     {
       transport,

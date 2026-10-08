@@ -12,7 +12,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && tsc -p apps/tsconfig.json && node scripts/build-apps.mjs",
     "dev": "tsx watch src/index.ts"
   },
   "publishConfig": {
@@ -31,17 +31,20 @@
   },
   "files": [
     "dist",
+    "apps/build",
     "LICENSE",
     "NOTICE"
   ],
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "2.0.3",
     "@modelcontextprotocol/server": "2.3.1",
     "@nacre.work/api": "workspace:*",
     "@nacre.work/core": "workspace:*"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.3.1",
-    "@types/node": "^26.6.2"
+    "@types/node": "^26.6.2",
+    "esbuild": "^0.28.2"
   },
   "keywords": [
     "nacre",

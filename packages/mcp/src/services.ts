@@ -451,6 +451,17 @@ export function buildServices(
             status: outcome.unchanged ? 'indexed' : 'queued',
           }
         }
+        case 'upload_file': {
+          // The host renders the panel; the model gets a sentence. A layer
+          // that is not writable is not refused here — the panel lists what
+          // the person may write to, and the ticket refuses the rest.
+          return {
+            opened: true,
+            note:
+              'The upload panel is open in the conversation. The person picks the file there; ' +
+              'the outcome arrives as context when the upload settles.',
+          }
+        }
         case 'request_upload': {
           const layer = args.layer
           if (typeof layer !== 'string' || layer === '') throw new Error('layer is required')

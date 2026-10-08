@@ -491,6 +491,17 @@ for exactly this — and the URL names the API's canonical origin on both,
 because that is where the bytes go. Without a store the tool answers
 `Not found`, as a tool that cannot do its job here.
 
+### `upload_file`
+
+`{ layer? }`. Permission: **`write`**. Opens the upload **view** in a host
+that renders MCP Apps — the person picks the file in the conversation, the
+view mints a ticket through the host with `request_upload` and sends the bytes
+itself, then reads `ingest_status` until the document settles and tells the
+model the outcome. Offered only to a client that can render it: a modern-era
+client that declares no `io.modelcontextprotocol/ui` extension does not see
+this tool, and a deployment whose MCP process names no API origin serves no
+view at all. See **MCP Apps** below.
+
 ### `ingest_status`
 
 `{ job_id }`, from `ingest_document`. Returns
@@ -527,6 +538,40 @@ document, because it is written into the payload of every chunk.
 
 `{ document_id }` or `{ external_id, layer }`. Writes a tombstone; the document
 leaves results immediately. Permission: `write`.
+
+## MCP Apps
+
+Three views, served as resources under `ui://nacre/` with the extension's
+media type `text/html;profile=mcp-app`, each a single HTML file carrying its
+own script — a host renders one in a sandboxed iframe whose CSP admits no
+script from anywhere, so nothing can be loaded and everything is inlined at
+build time (`packages/mcp/apps/`, bundled by the package build).
+
+| View | Opened by | What it shows |
+|---|---|---|
+| `ui://nacre/search.html` | `search` | every hit with its layer, document id and score — the permitted set, filtered inside the index — and a box to re-run a query through the host, against exactly the access the model has |
+| `ui://nacre/layers.html` | `list_layers` | the layers this principal may read, paged through the host |
+| `ui://nacre/upload.html` | `upload_file` | a layer picker and a file input; the bytes go to a ticket URL and never through the conversation |
+
+A view reaches the server **through the host** (`callServerTool`), so every
+permission check runs where it always runs and the view holds no credential.
+The upload view makes the one request a view makes on its own — the bytes to
+the ticket URL on the API — and its resource's CSP names that origin and
+nothing else; the other two declare no network at all, which the extension
+reads as the secure default. That origin is `NACRE_CANONICAL_URL`'s, and it is
+also why `POST /v1/uploads/{ticket}` admits every origin: a host's sandbox
+origin is not one a deployment can list.
+
+A client that does not render apps loses nothing: `_meta.ui` on a tool is a
+member it ignores, the resources are a list it never reads, and `upload_file`
+— the one tool that is nothing without a panel — is hidden from a client that
+said so. The hosts rendering apps today (Claude, VS Code, Goose and others)
+open with `initialize` and say nothing per request, so a legacy-era client is
+offered it.
+
+The styling is the host's: a view applies the theme and style variables the
+host hands over and declares no colour of its own, so it looks like the
+conversation it is in rather than like this product's console.
 
 ## What a call answers with
 

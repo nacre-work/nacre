@@ -311,6 +311,42 @@ export function catalog(
       },
     },
     {
+      name: 'upload_file',
+      title: 'Open the upload panel',
+      // Read-only from the index's point of view: opening the panel changes
+      // nothing. The upload the person then makes goes through
+      // `request_upload` and the ticket, where the write is checked.
+      annotations: {
+        title: 'Open the upload panel',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      /**
+       * The MCP App half of `request_upload`.
+       *
+       * A host that renders MCP Apps shows `ui://nacre/upload.html` when this
+       * is called: the person picks the file in the conversation, the view
+       * mints a ticket through the host and sends the bytes itself, and the
+       * model learns the outcome. A client that declares no UI support does
+       * not see this tool at all (see `factory.ts`), because a panel nobody
+       * can render is a tool that does nothing.
+       */
+      description:
+        'Open a panel in the conversation where the person picks a file to add to a layer. The file ' +
+        'never passes through this conversation; the panel reports the document id and the outcome. ' +
+        'Use request_upload instead when the person will send the file from a shell or a script.',
+      permission: 'write',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          layer: { type: 'string', description: 'Slug of the layer to preselect in the panel.' },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'ingest_status',
       title: 'Check an ingest',
       annotations: {

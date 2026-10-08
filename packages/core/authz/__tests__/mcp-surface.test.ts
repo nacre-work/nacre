@@ -433,7 +433,7 @@ describe('baseline · the MCP surface', () => {
     expect(greeting.result.capabilities).toHaveProperty('tools')
     // Nothing this server does not serve: a declared capability is a promise a
     // client will come back and call.
-    expect(Object.keys(greeting.result.capabilities)).toEqual(['tools'])
+    expect(Object.keys(greeting.result.capabilities).sort()).toEqual(['resources', 'tools'])
     expect(greeting.result.serverInfo.name).toBe('nacre')
 
     // Leg two. A notification: no id, no result, and 202 with an empty body.
@@ -595,7 +595,7 @@ describe('baseline · the MCP surface', () => {
     // false` is the statement both make now — this server sends no
     // `notifications/tools/list_changed`, and saying so beats leaving a client
     // to infer it from an absent field.
-    expect(body.result.capabilities).toEqual({ tools: { listChanged: false } })
+    expect(body.result.capabilities).toEqual({ tools: { listChanged: false }, resources: { listChanged: false } })
     // Nothing in it depends on who asked — unlike tools/list, which is scoped
     // to the caller's layers and is `private` for exactly that reason.
     expect(body.result.cacheScope).toBe('public')
@@ -917,6 +917,7 @@ describe('baseline · the MCP surface', () => {
     expect(permission('delete_document')).toBe('write')
     // A ticket is a promise of a write and is minted on nothing less.
     expect(permission('request_upload')).toBe('write')
+    expect(permission('upload_file')).toBe('write')
   })
   /**
    * The SDK's own client, in both eras, against the real transport.

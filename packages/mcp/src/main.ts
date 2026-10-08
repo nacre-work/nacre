@@ -159,6 +159,9 @@ async function main(): Promise<void> {
     layers,
     tools,
     serverVersion: packageVersion(),
+    // The views reach the API at its canonical origin — the upload one for
+    // the ticket URL — and that origin is the one their CSP admits.
+    apiOrigin: new URL(config.canonicalUrl).origin,
     // Discovery lives on the API host, never on the apex — static hosting there
     // intercepts /.well-known/* before the API sees it.
     // This transport's own URL, which is the canonical one unless a deployment

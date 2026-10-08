@@ -96,6 +96,8 @@ export interface McpOptions {
    * the built package once already.
    */
   readonly serverVersion?: string
+  /** The API's canonical origin, for the MCP App views. See `ServerBuild.apiOrigin`. */
+  readonly apiOrigin?: string
   /**
    * Build the discovery document from the origin the client actually reached,
    * rather than from one baked in at startup.
@@ -185,6 +187,14 @@ const MAX_BODY_BYTES = 1_000_000
 interface Verified {
   readonly auth: AuthContext
   readonly requestId: string
+  /**
+   * Whether this client renders MCP Apps, read from the envelope's client
+   * capabilities on a modern-era request. A legacy request carries none per
+   * request, and the hosts that render apps today are legacy-era clients, so
+   * "unknown" is `true`: the tool a view needs is hidden only from a client
+   * that said it cannot render one.
+   */
+  readonly ui: boolean
 }
 
 function authInfoFor(verified: Verified, token: string): AuthInfo {
@@ -202,6 +212,23 @@ function verifiedOf(ctx: McpRequestContext): Verified {
   // first; a factory call without a caller is a wiring error, not a request.
   if (verified === undefined) throw new Error('an unauthenticated request reached the MCP factory')
   return verified
+}
+
+/**
+ * Whether the request's client declared the MCP Apps extension.
+ *
+ * Only a modern-era request says: its envelope carries the client's
+ * capabilities, and `extensions["io.modelcontextprotocol/ui"]` is the
+ * declaration. Anything else — a legacy frame, an envelope without the key
+ * — is "unknown", and unknown is admitted; see `Verified.ui`.
+ */
+function rendersApps(params: unknown): boolean {
+  const meta = (params as { _meta?: Record<string, unknown> } | undefined)?._meta
+  const capabilities = meta?.['io.modelcontextprotocol/clientCapabilities'] as
+    | { extensions?: Record<string, unknown> }
+    | undefined
+  if (capabilities === undefined) return true
+  return capabilities.extensions?.['io.modelcontextprotocol/ui'] !== undefined
 }
 
 async function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -331,9 +358,11 @@ function faces(options: McpOptions): Faces {
     return buildServer({
       auth: verified.auth,
       requestId: () => verified.requestId,
+      ui: verified.ui,
       layers: options.layers,
       tools: options.tools,
       ...(options.serverVersion === undefined ? {} : { serverVersion: options.serverVersion }),
+      ...(options.apiOrigin === undefined ? {} : { apiOrigin: options.apiOrigin }),
       ...(options.observe === undefined ? {} : { observe: options.observe }),
     })
   }
@@ -639,7 +668,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   }
 
   const token = presented?.startsWith('Bearer ') === true ? presented.slice(7) : ''
-  const authInfo = authInfoFor({ auth, requestId }, token)
+  const authInfo = authInfoFor({ auth, requestId, ui: rendersApps(rpc.params) }, token)
   const request = webRequest(req, body)
 
   // The era decides the face, and the SDK decides the era — from the `_meta`

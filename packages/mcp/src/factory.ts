@@ -25,6 +25,9 @@
  * and takes it back as an argument.
  */
 
+import { readFile } from 'node:fs/promises'
+
+import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server'
 import { fromJsonSchema, McpServer, type CallToolResult } from '@modelcontextprotocol/server'
 import type { AuthContext } from '@nacre.work/api'
 import { logger, MetadataError } from '@nacre.work/core'
@@ -105,6 +108,49 @@ export interface ServerBuild {
   /** What `initialize` and `server/discover` report as `serverInfo.version`. */
   readonly serverVersion?: string
   readonly observe?: McpMetrics
+  /**
+   * Whether the client renders MCP Apps. `false` hides `upload_file`, the one
+   * tool that does nothing without a panel; the views and the `_meta.ui` on
+   * `search` and `list_layers` stay, because a client that does not render
+   * them ignores them. Absent is `true` — see `Verified.ui` in server.ts.
+   */
+  readonly ui?: boolean
+  /**
+   * The origin the upload view sends bytes to — the API's canonical URL —
+   * which is the one origin a view's CSP has to admit. Absent, the upload
+   * view is not served and `upload_file` is not offered: a panel that cannot
+   * reach the ticket endpoint is a panel that cannot do its job.
+   */
+  readonly apiOrigin?: string
+}
+
+/**
+ * The three views, by the name the tool metadata and the resource list use.
+ *
+ * `upload` is the only one that makes a network request of its own — the
+ * bytes to the ticket URL — so it is the only one whose CSP names an origin.
+ * The other two reach the server through the host and nothing else, and a
+ * CSP admitting nothing is the secure default the extension specifies.
+ */
+export const VIEWS = ['upload', 'search', 'layers'] as const
+export type View = (typeof VIEWS)[number]
+
+export const viewUri = (view: View): string => `ui://nacre/${view}.html`
+
+/**
+ * A view's HTML, read from `apps/build/` — one directory above this module
+ * whether it runs from `src/` under the test runner or from `dist/` in the
+ * package, which is why the path is relative to the module and not to the
+ * working directory. Built by `scripts/build-apps.mjs`; a missing file is a
+ * build that did not run, and says so.
+ */
+async function viewHtml(view: View): Promise<string> {
+  const at = new URL(`../apps/build/${view}.html`, import.meta.url)
+  try {
+    return await readFile(at, 'utf8')
+  } catch (error) {
+    throw new Error(`the ${view} view is not built (${at.pathname}); run the package build`, { cause: error })
+  }
 }
 
 /** The version a transport reports when its entry point passed none. */
@@ -135,24 +181,74 @@ export async function buildServer(build: ServerBuild): Promise<McpServer> {
     },
   )
 
+  const views = build.apiOrigin === undefined ? false : build.ui !== false
   for (const definition of definitions) {
-    server.registerTool(
-      definition.name,
-      {
-        title: definition.title,
-        description: definition.description,
-        // The schema as `tools.ts` writes it — JSON Schema, which the SDK
-        // validates arguments against before the callback runs. A schema
-        // written once and served verbatim is what keeps `mcp-surface.test.ts`'s
-        // "no tool schema accepts an organization" a statement about the wire.
-        inputSchema: fromJsonSchema(definition.inputSchema),
-        annotations: definition.annotations,
-      },
-      async (args): Promise<CallToolResult> => runTool(build, definition, args as Record<string, unknown>),
-    )
+    // The panel tool is offered only where a panel can be rendered and can
+    // reach the ticket endpoint. Dropped from the catalog, not refused: a
+    // tool a client cannot use is noise in its catalog and a wasted call.
+    if (definition.name === 'upload_file' && !views) continue
+
+    const config = {
+      title: definition.title,
+      description: definition.description,
+      // The schema as `tools.ts` writes it — JSON Schema, which the SDK
+      // validates arguments against before the callback runs. A schema
+      // written once and served verbatim is what keeps `mcp-surface.test.ts`'s
+      // "no tool schema accepts an organization" a statement about the wire.
+      inputSchema: fromJsonSchema(definition.inputSchema),
+      annotations: definition.annotations,
+    }
+    const callback = async (args: unknown): Promise<CallToolResult> =>
+      runTool(build, definition, args as Record<string, unknown>)
+
+    // Three tools carry a view: a host that renders MCP Apps shows it when
+    // the tool is called, and a client that does not ignores `_meta`. The
+    // helper writes the metadata under both the current and the legacy key,
+    // which is what the hosts shipping today read.
+    const view = VIEW_OF[definition.name]
+    if (view !== undefined && build.apiOrigin !== undefined) {
+      registerAppTool(server, definition.name, { ...config, _meta: { ui: { resourceUri: viewUri(view) } } }, callback)
+    } else {
+      server.registerTool(definition.name, config, callback)
+    }
+  }
+
+  if (build.apiOrigin !== undefined) {
+    for (const view of VIEWS) {
+      registerAppResource(
+        server,
+        `Nacre ${view}`,
+        viewUri(view),
+        {
+          mimeType: RESOURCE_MIME_TYPE,
+          description: VIEW_ABOUT[view],
+          // `connectDomains` is the one origin the upload view fetches — the
+          // ticket URL on the API. The other views declare none, which the
+          // extension reads as "no network", and that is the point: they
+          // reach the server through the host and nothing else.
+          _meta: { ui: { csp: { connectDomains: view === 'upload' ? [build.apiOrigin] : [] } } },
+        },
+        async (uri) => ({
+          contents: [{ uri: uri.href, mimeType: RESOURCE_MIME_TYPE, text: await viewHtml(view) }],
+        }),
+      )
+    }
   }
 
   return server
+}
+
+/** Which tool opens which view. */
+const VIEW_OF: Readonly<Record<string, View | undefined>> = {
+  search: 'search',
+  list_layers: 'layers',
+  upload_file: 'upload',
+}
+
+const VIEW_ABOUT: Readonly<Record<View, string>> = {
+  upload: 'Pick a file to add to a layer; the bytes go to the index and never through the conversation.',
+  search: 'The results of a search, with the layer, the document id and the score of every hit — the permitted set.',
+  layers: 'The layers this principal may read, with their document counts.',
 }
 
 /**

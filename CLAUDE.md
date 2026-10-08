@@ -3032,6 +3032,24 @@ extension was measured rather than planned: SDK 2.3.1's server refuses
 `resultType: "task"` from a tool and does not route `tasks/get` in the
 2026-07-28 era, and `ext-tasks` is the client half, so it is not built.
 
+**Three MCP App views ship with the server, and they are the half of the
+upload that happens inside the agent.** `packages/mcp/apps/` is `upload`,
+`search` and `layers`: single HTML files, script inlined by the package build
+because a host's sandbox loads nothing from anywhere, served as `ui://nacre/*`
+resources under the extension's media type. A view reaches the server through
+the host and holds no credential; the upload view makes the one request a
+view makes itself — the bytes to the ticket URL — and is the only one whose
+CSP names an origin. `upload_file` is the tool that opens it, and it is
+dropped from the catalog of a modern-era client that declared no
+`io.modelcontextprotocol/ui` extension, because a panel nobody can render is a
+tool that does nothing; a legacy-era client says nothing per request and is
+offered it, since the hosts rendering apps today are legacy-era clients. A
+host is not in the suite — a stub host agrees with whatever it was written to
+— so `apps.test.ts` asks the wire: the listing, the media type, the HTML, the
+CSP per view, and the catalog with and without the declaration. Each view is
+~600 kB because the extension's client carries the protocol with it; it is
+read once per render, through the host.
+
 ## Conventions
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

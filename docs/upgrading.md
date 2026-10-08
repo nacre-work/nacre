@@ -312,6 +312,17 @@ endpoint is the one path on the API answering `Access-Control-Allow-Origin:
 process now opens Redis too, for exactly this — `NACRE_REDIS_URL` was already
 required of it.
 
+**The MCP server carries three MCP App views.** `search`, `list_layers` and
+the new `upload_file` tool open a panel in a host that renders MCP Apps —
+Claude, VS Code, Goose and others — showing the permitted result set with
+layers, ids and scores, the layer catalog, and a file input whose bytes go to
+a ticket and never through the conversation. A client that does not render
+apps is unaffected and does not see `upload_file`. The views are served as
+`ui://nacre/*` resources, so the server now declares a `resources`
+capability. The upload view's CSP names `NACRE_CANONICAL_URL`'s origin, which
+is where the bytes go; nothing to configure beyond what every deployment
+already sets.
+
 ### 0.27.0 — Office and OpenDocument files, EPUB and RTF are accepted
 
 One migration, 0035, which widens the `CHECK` on `documents.content_type`

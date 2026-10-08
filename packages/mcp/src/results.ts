@@ -75,16 +75,18 @@ export const TOOLS_TTL_MS = 0
 export const DISCOVER_TTL_MS = 3_600_000
 
 /**
- * Tools and nothing else, which is the whole surface: no resources, no
- * prompts, no sampling. Declaring a capability this server does not serve is
- * how a client comes back with a call that 404s.
+ * Tools and resources, and nothing else: no prompts, no sampling, no
+ * subscriptions. Declaring a capability this server does not serve is how a
+ * client comes back with a call that 404s. The resources are the three MCP
+ * App views (`ui://nacre/*`), which is what makes a host render a panel for
+ * `search`, `list_layers` and `upload_file`.
  *
  * `listChanged: false` is said rather than left out. This server sends no
- * `notifications/tools/list_changed` — the catalog is per caller and computed
- * on the request — and a client reading an absent field has to know the
- * default to reach the same conclusion.
+ * `list_changed` of either kind — the catalog is per caller and computed on
+ * the request, and the views are fixed at build time — and a client reading
+ * an absent field has to know the default to reach the same conclusion.
  */
-export const CAPABILITIES = { tools: { listChanged: false } } as const
+export const CAPABILITIES = { tools: { listChanged: false }, resources: { listChanged: false } } as const
 
 /**
  * `resultType`, which 2026-07-28 makes a MUST on every result. The SDK stamps

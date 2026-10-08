@@ -87,6 +87,7 @@ async function main(): Promise<void> {
       layers,
       tools,
       serverVersion: packageVersion(),
+      apiOrigin: new URL(config.canonicalUrl).origin,
     })
   } finally {
     // stdin closed: the client is gone. Releasing the pool here rather than on
