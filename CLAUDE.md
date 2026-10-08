@@ -2993,6 +2993,22 @@ the wrapper feeds it a stream that never ends and forwards the close only once
 every request has been answered. Found by running it — the first version
 answered nothing and resolved never.
 
+**And the STDIO suite had been written to the dispatcher it replaced.** Five
+of its ten cases went red on the SDK and every one was the fixture: a bare
+`initialize` carrying only `protocolVersion`, which no client sends and the
+schema refuses; a `server/discover` with no envelope, which is a legacy frame
+and is rightly `-32601` from the legacy server; a `search` with no `query`,
+answered `isError: false` because nothing on that path had ever validated
+arguments — a relaxation of exactly the kind the file's own header says the
+local surface must not have; and a `-32700` frame with `id: null`, which MCP
+says is not a response at all, asserted onto a stream the same file promises
+carries nothing else. The SDK's reader skips an unparseable line and reads
+on, so the property that survives is the session, and the case says so. The
+e2e went red once beside it for a race the rewrite made visible: `web` starts
+after `mcp` is *started*, not after it listens, and the front door's first
+request landed on a 502 and was read as "not proxied". It waits now, as it
+already did for the API and the console.
+
 What the SDK does **not** do, measured rather than assumed: `resultType:
 "task"` from a tool is refused and `tasks/get` is not routed in the 2026-07-28
 era, so the tasks extension is not a registration away; `ext-tasks` is the
