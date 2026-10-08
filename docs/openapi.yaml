@@ -442,9 +442,9 @@ components:
           additionalProperties: { type: string }
           description: What to send beside the body — `content-type` is the file's own media type.
         expires_at: { type: string, format: date-time }
-        max_size:   { type: integer, description: Bytes, from NACRE_MAX_DOCUMENT_BYTES. }
+        max_size:   { type: integer, description: "Bytes, from NACRE_MAX_DOCUMENT_BYTES." }
         accepts:    { type: array, items: { type: string }, description: Media types the redeem admits. }
-        curl:       { type: string, description: The same request as a shell line, with FILE and TYPE to fill in. }
+        curl:       { type: string, description: "The same request as a shell line, with FILE and TYPE to fill in." }
     IngestRequest:
       type: object
       required: [layer]
@@ -3346,7 +3346,7 @@ paths:
               schema: { $ref: '#/components/schemas/UploadDescriptor' }
         '404': { description: The layer is absent or not writable by the caller — indistinguishably }
         '429': { $ref: '#/components/responses/RateLimited' }
-        '503': { description: The ticket store did not answer. Closed, deliberately — a ticket is a bearer of somebody's write. }
+        '503': { description: "The ticket store did not answer. Closed, deliberately — a ticket is a bearer of somebody's write." }
   /uploads/{ticket}:
     post:
       summary: Redeem an upload ticket
@@ -3393,8 +3393,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Job' }
-        '400': { description: An empty body, a binary file outside the table, a declared type and a signature that disagree, or a binary file on a deployment without object storage }
-        '404': { description: No such ticket — unknown, spent or expired }
+        '400': { description: "An empty body, a binary file outside the table, a declared type and a signature that disagree, or a binary file on a deployment without object storage" }
+        '404': { description: "No such ticket — unknown, spent or expired" }
         '413': { description: Document exceeds NACRE_MAX_DOCUMENT_BYTES }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { description: The ticket store did not answer }
