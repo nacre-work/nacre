@@ -628,6 +628,13 @@ export interface Connection {
    * verb its person holds.
    */
   readonly permissions: readonly CeilingValue[]
+  /**
+   * Which resource the connection is for. `admin` is the administrative MCP
+   * (docs/mcp-admin.md): its tokens reach `/mcp/admin` and nothing else, and
+   * only an organization administrator approves one. An API older than that
+   * surface sends nothing, which is `default`.
+   */
+  readonly surface: 'default' | 'admin'
   readonly createdAt: string
   readonly lastRefreshedAt: string | null
   readonly revokedAt: string | null

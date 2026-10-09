@@ -327,8 +327,10 @@ Specified in [skills.md](./skills.md) and [mcp-admin.md](./mcp-admin.md).
 T26, T27, T28, T33 and T34 run against a real PostgreSQL in `skills.test.ts`,
 and T29 and T30 in `delegation.test.ts`, where the `skill` value goes through the
 consent table and back through authentication rather than being handed in as a
-literal. T31, T32, T35 and T39 wait for the administrative MCP. `test-plan.ts`
-says which.
+literal. T31 and T39 run in `admin-mcp.test.ts`, over real sockets to the API
+and to both MCP resources, with tokens minted by the function the API mints
+with. T32 and T35 wait for the administrative surface's writes and
+notifications, which are specified and not built. `test-plan.ts` says which.
 
 T39 is the injection case. A layer's skill is written by that layer's
 administrator, and the administrative surface acts for an `org_admin` — so a
@@ -351,7 +353,12 @@ one.
 
 T31 is the one the whole administrative surface rests on. One audience for both
 surfaces would put `admin` in a token that REST accepts, which is exactly why the
-ordinary consent screen does not offer it.
+ordinary consent screen does not offer it. It is held twice and each half was
+measured on its own: the audience, which the API and `/mcp` compare exactly, and
+the connection the token names, which says which resource it is for — so a token
+carrying the administrative audience minted from an ordinary connection is
+refused too, as is an agent's key, and the person's own token stops on the next
+request once they are no longer an `org_admin`.
 
 T36–T38 are numbered after the skills cases because they ran in the suite
 before this table had rows for them, under the labels T26–T28 — the numbers the

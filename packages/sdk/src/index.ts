@@ -42,6 +42,7 @@
 export { AUDIT_ACTIONS, type AuditActionInfo } from './audit-actions.js'
 export { NacreClient, type ClientOptions } from './client.js'
 export { NacreError, NacreTransportError, type Problem } from './errors.js'
+export { ADMINISTRATIVE_PATH, isAdministrativeResource } from './resources.js'
 export type {
   BegunSecondFactor,
   SecondFactor,

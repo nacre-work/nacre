@@ -1393,7 +1393,7 @@ requiredness — are narrow enough to be defeated by rewording, which is the
 shape of check this repository keeps deleting. `grep` found the other three
 copies, and they were correct.
 
-**Every case of T1–T41 in docs/authz.md that describes what is built runs** — thirty-six; T31, T32, T35 and T39, for the administrative MCP, are specified and pending — against real services, plus the truth
+**Every case of T1–T41 in docs/authz.md that describes what is built runs** — thirty-nine; T32 and T35, for the administrative MCP's writes and notifications, are specified and pending — against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
 round trip that puts the worker and the search path against each other.
 `acl-invariants` is a gate on what that document specifies — and only on that.
@@ -3177,15 +3177,57 @@ conventions and never how permissions work. `instructions.test.ts` holds every
 tool in the catalog against the guide — dropping one sentence names the tool —
 and writes an organization's own skill to ask that the mechanics survive it.
 
-[docs/mcp-admin.md](./docs/mcp-admin.md) — a separate resource with its own
-token audience, so `admin` can be on its consent screen without reaching REST,
-every write a proposal a person applies in a panel, and notifications to user
-ids in the caller's organization and never to an address — is specified and not
-built. It follows **no skill**: its `instructions` carry its own text alone, and a
-skill its tools read comes back marked as text under review, because a layer's
-skill is written by somebody with less authority than the `org_admin` that
-surface acts for, and following one there would be an escalation written in
-prose. T39 holds it, pending with the surface.
+**The administrative MCP reads, and nothing on it writes yet** —
+[docs/mcp-admin.md](./docs/mcp-admin.md). `/mcp/admin` is a second resource on
+the MCP process with its own audience, `${NACRE_JWT_AUDIENCE}/admin`, chosen when
+a token is minted from the connection's `surface` (migration 0038) rather than
+from the request, because a renewal has no request. Its consent is an RFC 8707
+indicator naming that path: an `org_admin` only, as the person, no layers and no
+permissions. Thirteen read tools — people, groups, layers, grants by principal or
+scope, what anybody can reach computed by the active resolver, skills, connections,
+the access log and counts over it — and four prompts. Every write is specified as
+a proposal a person applies in a panel, so until the panel exists there is no
+write at all: one that skipped it would be the write the design exists to stop.
+
+T31 is held **twice, and each half was measured alone**: the audience, which the
+API and `/mcp` compare exactly, and the connection the token names. Removing the
+connection check lets a token minted with the administrative audience from an
+*ordinary* connection through; removing the role check admits a person demoted
+since consent; using the ordinary audience on `/mcp/admin` turns all four cases
+red. It follows **no skill** — its `instructions` are its own text, and a skill
+read through `get_skill` comes back under a notice saying it is under review,
+because a layer's skill is written by somebody with less authority than the
+`org_admin` that surface acts for. T39 holds both, and each was red with its rule
+removed.
+
+**`audit_events.client` was in the schema from 0001 and written by nothing.** It
+is the connection now, `connection:<id>`, on every delegated request on every
+surface — set once per request in an `AsyncLocalStorage` scope that every write
+inside reads, rather than at fifty-nine call sites with nothing that knows there
+are fifty-nine. The question 0.31.1's note had to send to the Connections screen
+— did an application approve something with its own token — is answerable from
+the log for anything after it.
+
+Writing the summaries found the access log's own shapes disagreeing: an
+administrative write names `layer_id`, an ingest the `layer` slug, and a search
+the `layers` and `returned_docs` it answered with. A filter on one shape answers
+"who read this document" with the fetches and none of the searches that
+returned it. The filters and the counts read all three now, and the live case
+was red with the array expansion removed.
+
+**The parity suite's "nowhere else" was two files.** Its comment said
+`registerTool` appears in the factory and nowhere else under `packages/mcp/src`,
+and it read `server.ts` and `stdio.ts`. It reads every file now, names the
+administrative factory as the one exemption with its reason, and refuses STDIO
+importing it.
+
+The renders found three things no check could. The administrative consent
+screen drew itself **twice**, one copy under the other: it awaited `me()` before
+appending, and the router renders twice, so two overlapping renders each cleared
+an empty page and both appended. The log fixture had an agent's key acting
+"through Claude", which no server writes — only a delegation carries a
+connection, and a delegation is a person. And "through Claude" rendered at 15px
+under a 12px action, which `columnValuesAgree` named before anybody looked.
 
 **A connected application is listed only what its ceiling admits.** A person who
 approved a read-only connection approved a search client, and that client was

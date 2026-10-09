@@ -11,7 +11,16 @@ export {
 } from './metadata.js'
 export type { Metadata } from './metadata.js'
 export { loadConfig, loadJwtKeys, loadJwtVerification, loadMailConfig, loadSecondFactorKey, keyFingerprint, ConfigError } from './config.js'
-export { protectedResourceMetadata, PROTECTED_RESOURCE_PATH, JWKS_PATH } from './oauth.js'
+export {
+  ADMIN_MCP_PATH,
+  ADMIN_PROTECTED_RESOURCE_PATH,
+  adminAudience,
+  adminResourceMetadata,
+  JWKS_PATH,
+  namesAdminResource,
+  protectedResourceMetadata,
+  PROTECTED_RESOURCE_PATH,
+} from './oauth.js'
 export { allowedRequestHeaders, corsHeaders, isPreflight, mcpWalkHeaders, preflightHeaders } from './cors.js'
 export {
   AUTHORIZATION_SERVER_PATH,
@@ -84,7 +93,14 @@ export {
   VectorStore,
   vectorStoreOptions,
 } from './vector/search.js'
-export { MAX_AUDITED_QUERY, queryAudit } from './audit.js'
+export {
+  auditClient,
+  connectionClient,
+  inAuditScope,
+  MAX_AUDITED_QUERY,
+  queryAudit,
+  setAuditClient,
+} from './audit.js'
 export { AUDIT_ACTIONS, DOCUMENT_ACCESS_ACTIONS } from './audit-actions.js'
 export type { AuditActionInfo } from './audit-actions.js'
 export {

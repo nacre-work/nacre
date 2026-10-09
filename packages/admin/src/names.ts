@@ -76,6 +76,13 @@ export async function directory(): Promise<Directory> {
     client().layers.list().then((rows: readonly Layer[]) => {
       for (const l of rows) found.set(l.id, l.slug)
     }),
+    // Connections, so a delegated row in the access log can say which
+    // application it came through rather than a uuid. An administrator lists
+    // the organization's; anybody else is refused, and that kind is simply
+    // left unnamed.
+    client().connections.list().then(({ items }) => {
+      for (const c of items) found.set(c.id, c.surface === 'admin' ? `${c.clientName} (administrative)` : c.clientName)
+    }),
     client().workspaces.list().then((rows: readonly Workspace[]) => {
       for (const w of rows) found.set(w.id, w.slug)
     }),

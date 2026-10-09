@@ -207,6 +207,9 @@ a { color: var(--n-accent); }
    has to stay readable at 390. */
 .table td.cell-stack { font-size: 14px; overflow-wrap: break-word; }
 .cell-note { margin-top: 6px; }
+/* The application a delegated log row came through: an annotation on the action,
+   no larger than the action it annotates, which the column check holds. */
+.via { font-size: 12px; color: var(--n-text-muted); }
 .table tr.revoked td { opacity: 0.55; }
 
 .slug {
@@ -845,6 +848,10 @@ th.tick {
    colour: written by an agent is information, and scripts is the one that asks
    to be read before it is trusted. */
 .tag-agent { border-color: var(--n-accent); color: var(--n-text); }
+/* A connection to the administrative MCP. Violet because it is the `admin`
+   permission's colour and this connection carries that authority — the same
+   information, not a new use for it. */
+.tag-admin { border-color: var(--n-admin); color: var(--n-text); }
 .tag-warn { border-color: var(--n-warn); color: var(--n-text); }
 
 .skill-body {

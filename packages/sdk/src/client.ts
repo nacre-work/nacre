@@ -1339,6 +1339,12 @@ export class NacreClient {
      */
     permissions?: readonly CeilingValue[]
     state?: string
+    /**
+     * The RFC 8707 resource indicator the client sent. One naming `…/mcp/admin`
+     * makes this the administrative consent: an organization administrator
+     * only, as the signed-in person, with no `layers` and no `permissions` —
+     * the server fixes what that connection may do.
+     */
     resource?: string
   }): Promise<string> => {
     const body = (await this.#request({
@@ -1406,6 +1412,7 @@ export class NacreClient {
             // is what an API older than per-layer ceilings sends.
             layers: Array.isArray(c.layers) ? c.layers.map(narrowingEntry) : [],
             permissions: Array.isArray(c.permissions) ? c.permissions.filter(isCeilingValue) : [],
+            surface: c.surface === 'admin' ? ('admin' as const) : ('default' as const),
             createdAt: String(c.created_at),
             lastRefreshedAt: c.last_refreshed_at === null ? null : String(c.last_refreshed_at),
             revokedAt: c.revoked_at === null ? null : String(c.revoked_at),

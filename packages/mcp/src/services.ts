@@ -34,6 +34,7 @@ import {
 import { postgresVerification, TICKET_TTL_SECONDS, uploadDescriptor, type UploadTicketStore } from '@nacre.work/api'
 import type { Pool } from 'pg'
 
+import { adminTools } from './admin-services.js'
 import { ToolArgumentError, type Layers, type SkillSource, type ToolRunner } from './factory.js'
 import type { Layer } from './tools.js'
 
@@ -70,6 +71,8 @@ export interface Services {
   readonly layers: Layers
   readonly tools: ToolRunner
   readonly skills: SkillSource
+  /** The administrative MCP's tools. Served on Streamable HTTP only. */
+  readonly admin: ToolRunner
 }
 
 /**
@@ -688,6 +691,10 @@ export function buildServices(
     layers,
     tools,
     skills: { base: (auth) => skills.base(auth) },
+    // The administrative surface's tools, over the same pool, audit writer and
+    // principals cache — docs/mcp-admin.md. STDIO never serves them: it
+    // authenticates with a service account key, which cannot hold the role.
+    admin: adminTools({ pool, audit, ...(principalsCache === undefined ? {} : { principalsCache }) }),
     verification: postgresVerification(pool, APP_ROLE),
   }
 }

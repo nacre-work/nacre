@@ -797,10 +797,20 @@ components:
             always `member`; anything it reaches, it reaches through a grant.
     Connection:
       type: object
-      required: [id, client_id, client_name, acts_as, service_account_id, service_account_name, approved_by, approved_by_email, approver_disabled, created_at, layers, permissions]
+      required: [id, client_id, client_name, acts_as, service_account_id, service_account_name, approved_by, approved_by_email, approver_disabled, created_at, layers, permissions, surface]
       properties:
         id: { type: string, format: uuid }
         client_id: { type: string }
+        surface:
+          type: string
+          enum: [default, admin]
+          description: |
+            Which resource the connection is for. `admin` is the administrative
+            MCP (docs/mcp-admin.md): its tokens carry the administrative
+            audience and reach `/mcp/admin` and nothing else, it acts as the
+            person who approved it, and it works only while they are an
+            `org_admin`. The same application connected both ways is two
+            connections, and forgetting one leaves the other.
         client_name:
           type: string
           description: Self-asserted at registration. The redirect URI is what decides where a code goes.
@@ -987,7 +997,16 @@ components:
         resource:
           type: string
           format: uri
-          description: RFC 8707. What the resulting token is bound to.
+          description: |
+            RFC 8707. What the resulting token is bound to.
+
+            One whose path is `/mcp/admin` makes this the **administrative**
+            consent (docs/mcp-admin.md): approved by an `org_admin` only — a
+            member gets `404`, as every endpoint that role gates answers — as
+            the signed-in person and never as an agent, and with no `layers`
+            and no `permissions`, each of which is a `400`. What that
+            connection may do is fixed by the server, and its tokens carry the
+            administrative audience, which the REST API and `/mcp` refuse.
     User:
       type: object
       required: [id, email, role, created_at, disabled_at, has_password, shared]
@@ -1804,6 +1823,36 @@ paths:
                         alg: { type: string, enum: [EdDSA] }
         '404':
           description: This deployment signs with a shared secret; there is nothing to publish.
+  /.well-known/oauth-protected-resource/mcp/admin:
+    servers:
+      - url: https://nacre.work
+    get:
+      summary: >
+        Protected resource metadata (RFC 9728) for the administrative MCP.
+        Unauthenticated, like the document beside it.
+      description: |
+        RFC 9728 puts a resource's document at the well-known path with the
+        resource's own path appended, so `…/mcp/admin` has its own, naming
+        `…/mcp/admin` as the resource. A client that read the root document
+        instead would be told the ordinary resource, ask for a token
+        `/mcp/admin` refuses, and never connect — which is why that path's
+        `401` names this one. Served by the MCP transport and by the API, since
+        a front door routes `/.well-known/` to the API.
+      security: []
+      responses:
+        '200':
+          description: The ordinary document's fields, with this resource and its documentation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [resource, bearer_methods_supported, resource_documentation, scopes_supported]
+                properties:
+                  resource: { type: string, format: uri, description: 'Ends in `/mcp/admin`.' }
+                  authorization_servers: { type: array, items: { type: string, format: uri } }
+                  bearer_methods_supported: { type: array, items: { type: string } }
+                  resource_documentation: { type: string, format: uri }
+                  scopes_supported: { type: array, items: { type: string } }
   /.well-known/oauth-protected-resource:
     # At the origin, for the reason above and one more: this is the document a
     # client reads *because* it got a 401, so reaching it must not need the
@@ -1821,12 +1870,10 @@ paths:
             The resource identifier every token is audience-bound to, and the
             authorization server when the deployment has one.
 
-            `authorization_servers` is absent unless
-            `NACRE_OAUTH_AUTHORIZATION_SERVER` names one, and is deliberately
-            never pointed at Nacre itself: this is a resource server. Sign-in is
-            email and password and a service account key is a random string
-            matched against a hash — neither is an OAuth grant, so a client sent
-            here for a token endpoint would find nothing.
+            `authorization_servers` names this installation's API, where the
+            consent flow lives, or whatever `NACRE_OAUTH_AUTHORIZATION_SERVER`
+            names. This said it was absent and never pointed at Nacre, which
+            stopped being true when the API grew `/oauth/authorize`.
           content:
             application/json:
               schema:

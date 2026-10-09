@@ -14,6 +14,7 @@ export type {
   AuditWriter,
   DocumentView,
   Documents,
+  GrantFilter,
   GrantInput,
   GrantRecord,
   Grants,
@@ -43,6 +44,7 @@ export {
 } from './auth.js'
 export type { AuthContext, Delegations, VerifyOptions } from './auth.js'
 export { postgresVerification } from './verification.js'
+export { oauthMinter } from './oauth-mint.js'
 export {
   PostgresDelegations,
   PostgresOAuthAuthorizations,
@@ -59,10 +61,15 @@ export type {
   OAuthConsents,
   OAuthRefreshTokens,
   PendingAuthorization,
+  RedeemedAuthorization,
+  ConsentSurface,
   RegisteredClient,
 } from './oauth-store.js'
 export { Problem, badRequest, forbidden, internal, notFound, unauthorized } from './errors.js'
+export { MAX_REACH_LAYERS, PostgresAccess } from './access.js'
+export type { AccessSubject, EffectiveAccess, Reach } from './access.js'
 export {
+  AUDIT_GROUPINGS,
   contextFor,
   HttpEmbedder,
   NacreIngest,
@@ -79,6 +86,8 @@ export {
   PostgresReindex,
 } from './adapters.js'
 export type {
+  AuditBucket,
+  AuditGrouping,
   DocumentTombstone,
   Embedder,
   IngestDeps,

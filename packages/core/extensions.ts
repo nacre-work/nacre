@@ -1,6 +1,7 @@
 import type { OrgRole, Permission, Principal } from './types.js'
 import type { AccessPlan, ResolveInput } from './authz/resolve.js'
 import { resolve as builtInResolve } from './authz/resolve.js'
+import { auditClient } from './audit.js'
 
 /**
  * The points a commercial module plugs into, and the loader that lets one do so
@@ -113,8 +114,18 @@ export interface AuditEvent {
   readonly result: 'allow' | 'deny' | 'error'
   readonly detail: Record<string, unknown>
   readonly requestId: string
-  /** Which surface the call came in on. Defaults to `api` at the writer. */
-  readonly surface?: 'api' | 'mcp' | 'admin' | 'system'
+  /**
+   * Which surface the call came in on. Defaults to `api` at the writer.
+   * `mcp-admin` is the administrative MCP, docs/mcp-admin.md.
+   */
+  readonly surface?: 'api' | 'mcp' | 'mcp-admin' | 'admin' | 'system'
+  /**
+   * The connection the call came through, as `connection:<id>`. Usually not
+   * set by the caller: `withAuditSinks` and the Postgres writer take it from
+   * the request's audit scope, which the surface sets once after
+   * authentication. See `inAuditScope` in audit.ts.
+   */
+  readonly client?: string
   /** What the call was about, as `docs/audit.md` specifies it. */
   readonly target?: Record<string, unknown>
 }
@@ -604,7 +615,12 @@ export function withAuditSinks<T extends AuditWriter>(
 ): T {
   if ((port as Record<symbol, unknown>)[FANNED_OUT] === true) return port
   const wrapped: AuditWriter = {
-    write: async (event) => {
+    write: async (given) => {
+      // Stamped here so a sink receives what the table receives: the
+      // connection is a fact about the request, and a SIEM reading a
+      // delegated read without it has the same hole the table had.
+      const client = given.client ?? auditClient()
+      const event = client === undefined || given.client !== undefined ? given : { ...given, client }
       await port.write(event)
       for (const sink of auditSinks()) {
         try {

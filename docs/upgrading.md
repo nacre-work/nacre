@@ -285,6 +285,29 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.32.0 — the administrative MCP reads, and the access log names the connection
+
+**Migration 0038, and nothing to configure.** It adds `oauth_consents.surface`,
+puts it in the one-connection-per-application key so the same application can
+be connected to both resources, and admits `mcp-admin` in the access log's
+`surface`. Every existing connection is `default` and keeps working unchanged.
+
+The MCP process now also serves `/mcp/admin`, and both it and the API serve
+`/.well-known/oauth-protected-resource/mcp/admin`. Nothing reaches the new
+resource until an organization administrator approves a connection to it on the
+new consent screen, so serving the path admits nobody by itself. **A front door
+or ingress that routes `/mcp` by exact match** rather than by prefix will not
+reach it — the Compose front door and the chart both route by prefix, and need
+nothing.
+
+**`audit_events.client` is written now**, as `connection:<id>`, for every
+request made through a connected application. Rows written before this release
+have none; a query filtering on it reaches back only to the upgrade.
+
+And the question 0.31.1 could not answer from the log is answerable for anything
+after it: an approval an application tried to make with its own token would
+carry its connection.
+
 ### 0.31.1 — a connected application can no longer approve a wider connection
 
 **A security fix; upgrade.** The consent endpoint checked that the caller was a

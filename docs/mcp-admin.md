@@ -1,7 +1,10 @@
 # The administrative MCP
 
-> **Specified, not built.** Everything below is the contract the implementation
-> is written to.
+> **Reads are built; writes are specified.** Since 0.32.0 the resource, its
+> audience and consent, the guide, every read tool, the access log and the four
+> prompts are served. Proposals, the change panel, the write tools, the other
+> panels, notifications and the extension point are the contract the rest is
+> written to. "Current state" at the end says exactly which is which.
 
 An organization's administrator does their work in the console: people, groups,
 layers, grants, skills, the access log. An agent can do most of it from a
@@ -242,8 +245,43 @@ applied is what an injection attempt looks like from the outside.
 
 ## Current state
 
-Specified, with the authorization cases in `docs/authz.md` marked pending. Built
-after skills, in this order: the resource, audience and consent; the guide, the
-read tools and the access log, with its prompts; proposals and the change panel;
-the write tools; the other panels; notifications and alert rules; the extension
-point.
+**Built in 0.32.0** — the half every write will rest on:
+
+- `/mcp/admin` on the MCP process, its RFC 9728 document at
+  `/.well-known/oauth-protected-resource/mcp/admin` (served by the transport and
+  by the API, because a front door sends `/.well-known/` to the API), and a `401`
+  naming that document.
+- The audience `${NACRE_JWT_AUDIENCE}/admin`, chosen when a token is minted from
+  the connection's `surface` (migration 0038) — on the first exchange and on
+  every renewal, since a renewal has no request to read a resource from.
+  Authentication refuses an administrative connection anywhere else and an
+  ordinary one here, refuses an agent's key and an identity provider's
+  assertion here, and requires `org_admin` on every request; renewal suspends a
+  connection whose person has lost the role. T31.
+- The consent: an RFC 8707 indicator naming `/mcp/admin` makes the request the
+  administrative one — `org_admin` only, as the person, no layers, no
+  permissions — and the console draws it as one decision with what it may and
+  may not do. Connections label every row **MCP** or **admin MCP**.
+- `instructions` are the built-in guide and nothing else; `get_skill` returns a
+  skill under a notice saying it is under review; every result carrying text
+  somebody wrote opens with a notice saying it is data. T39.
+- Thirteen read tools: `list_people`, `list_service_accounts`, `list_groups`,
+  `get_group`, `list_workspaces`, `list_layers`, `list_grants` (by principal or
+  scope, in SQL), `effective_access` (computed by the active resolver, with the
+  groups and grants that decide it), `list_skills`, `get_skill`,
+  `list_connections`, `query_audit` and `summarize_audit` (grouped in the
+  database, over a window of at most 366 days, counting a search that *returned*
+  a document as well as a fetch of it).
+- The four prompts.
+- Every call recorded with `surface: "mcp-admin"` and the connection —
+  `audit_events.client`, in the schema since 0001 and written by nothing until
+  now, carries `connection:<id>` for **every** delegated request on every
+  surface, because the scope is entered once per request rather than at
+  fifty-nine call sites.
+
+**Specified, not built:** proposals and the change panel, the write tools,
+`proposal.expired` and `proposal.cancelled`, the other panels, notifications and
+alert rules (T32, T35), and `registerMcpTools`. Until proposals exist there is
+no write on this surface at all, and the guide tells an agent where a change is
+made instead — a write that skipped the panel would be the one the design exists
+to prevent.

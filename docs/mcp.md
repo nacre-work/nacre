@@ -24,7 +24,12 @@ means to be reachable.
 
 ## Transport
 
-- Streamable HTTP, one endpoint: `POST /mcp`.
+- Streamable HTTP, one endpoint: `POST /mcp`. The same process serves a second,
+  separate resource at `POST /mcp/admin` — the administrative MCP, with its own
+  token audience, its own consent and its own tools, for an organization
+  administrator. Everything in this document is about `/mcp`;
+  [mcp-admin.md](./mcp-admin.md) is about the other one. A token for either is
+  refused by the other, and by the REST API in the administrative direction.
 - **Two eras, one server.** The protocol is `@modelcontextprotocol/server`
   2.x's since 0.28.0. A request carrying the 2026-07-28 `_meta` envelope in
   `params` is a **modern** client and is held to that revision's rules: the

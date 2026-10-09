@@ -123,15 +123,15 @@ export const TEST_PLAN: readonly TestCase[] = [
     scenario: 'Without skill in L\u2019s ceiling a layer admin\u2019s delegation cannot write L\u2019s skill; with it, it can, and still cannot rename, delete or grant' },
   { id: 'T30', group: 'delegation', status: 'implemented',
     scenario: 'skill in L\u2019s ceiling while the person holds only write on L: the skill write is refused' },
-  { id: 'T31', group: 'delegation', status: 'pending', blockedBy: 'the administrative MCP is specified in docs/mcp-admin.md and not built yet',
+  { id: 'T31', group: 'delegation', status: 'implemented',
     scenario: 'An administrative-resource token is refused by the API and /mcp, and an ordinary token by /mcp/admin' },
-  { id: 'T32', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP is specified in docs/mcp-admin.md and not built yet',
+  { id: 'T32', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP reads only; its proposals and writes are specified in docs/mcp-admin.md and not built yet',
     scenario: 'An administrative write called and never applied changes nothing, and the expired proposal is recorded' },
   { id: 'T33', group: 'baseline', status: 'implemented',
     scenario: 'platform_admin never reads an organization\u2019s skill; only that role writes the installation skill' },
   { id: 'T34', group: 'baseline', status: 'implemented',
     scenario: 'An organization\u2019s skill never reaches a caller from another organization, including through instructions' },
-  { id: 'T35', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP is specified in docs/mcp-admin.md and not built yet',
+  { id: 'T35', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP reads only; its proposals and writes are specified in docs/mcp-admin.md and not built yet',
     scenario: 'A notification to anything but an active user of the caller\u2019s organization is refused before composing' },
   // The catalog is permission data. A delegation narrowed to L used to be
   // listed M — its name, description and document count — on both surfaces,
@@ -145,7 +145,7 @@ export const TEST_PLAN: readonly TestCase[] = [
   // A layer skill is written by a layer's administrator, who has less authority
   // than the org_admin the administrative surface acts for — so a layer skill
   // followed there is an escalation written in prose.
-  { id: 'T39', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP is specified in docs/mcp-admin.md and not built yet',
+  { id: 'T39', group: 'adversarial', status: 'implemented',
     scenario: 'The administrative surface\u2019s instructions carry no skill, and a skill read through it is marked as text under review, never guidance' },
 ]
 

@@ -87,6 +87,13 @@ const sentence = (words: readonly string[]): string =>
  */
 function mayLine(c: Connection, names: ReadonlyMap<string, string>): string | undefined {
   if (c.actsAs !== 'user') return undefined
+  // The administrative connection's reach is fixed by the server rather than
+  // chosen, so the line says what it is rather than reading out a ceiling of
+  // `read` and `admin` that would suggest it can read documents and change
+  // things — it can do neither. docs/mcp-admin.md.
+  if (c.surface === 'admin') {
+    return 'Administrative: may read how the organization is set up and its access log, and change nothing.'
+  }
   const verbs = (values: readonly CeilingValue[]): string =>
     values.length === 0 ? 'do anything its person can' : sentence(values.map((v) => VERB[v]))
   if (c.layers.length === 0) return `May ${verbs(c.permissions)}, in every layer its person reaches.`
@@ -222,7 +229,14 @@ function connectionRow(
     // it is a sentence of unbounded length, and a table that is five columns
     // at 1440 has to stay readable at 390. The same treatment the Skills
     // screen gives a skill's description.
-    h('td', { class: 'cell-stack' }, c.clientName, ...(may === undefined ? [] : [h('div', { class: 'cell-note' }, may)])),
+    // Which server it is connected to, on every row and not only the
+    // administrative ones. The same application is often connected to both,
+    // as two rows with one name, and a label on one of them leaves the reader
+    // to infer the other — which is the row they are about to forget.
+    h('td', { class: 'cell-stack' },
+      c.clientName, ' ', h('span', { class: c.surface === 'admin' ? 'tag tag-admin' : 'tag' }, c.surface === 'admin' ? 'admin MCP' : 'MCP'),
+      ...(may === undefined ? [] : [h('div', { class: 'cell-note' }, may)]),
+    ),
     // A delegation names no agent, so the cell names the *person*.
     //
     // It used to read "the person who approved it" on every row, which is

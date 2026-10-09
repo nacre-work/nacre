@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   // one.
   const redis = new Redis({ url: config.redisUrl })
 
-  const { pool, layers, tools, skills, verification } = buildServices(config, {
+  const { pool, layers, tools, skills, admin, verification } = buildServices(config, {
     principalsCache: { store: new RedisCache(redis), ttlSeconds: config.aclCacheTtl },
     // The same ticket store the API redeems from, over the same Redis. The
     // URL names the API — `NACRE_CANONICAL_URL` — because that is where the
@@ -159,6 +159,10 @@ async function main(): Promise<void> {
     layers,
     skills,
     tools,
+    // `/mcp/admin`, docs/mcp-admin.md. A token for it is minted only from an
+    // administrative connection an organization administrator approved, so
+    // serving the path admits nobody by itself.
+    admin: { tools: admin },
     serverVersion: packageVersion(),
     // The views reach the API at its canonical origin — the upload one for
     // the ticket URL — and that origin is the one their CSP admits.
