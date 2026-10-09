@@ -3,9 +3,24 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["dist", "src/__tests__/**"],
-  "references": [{ "path": "../core" }, { "path": "../api" }]
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "dist",
+    "src/__tests__/**",
+    "apps/**"
+  ],
+  "references": [
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../api"
+    }
+  ]
 }

@@ -415,6 +415,36 @@ components:
           - type: array
             maxItems: 32
             items: { type: [string, number, boolean] }
+    UploadTicketRequest:
+      type: object
+      required: [layer]
+      properties:
+        layer:       { type: string }
+        external_id: { type: string, description: "Fixed at minting. Absent, the redeem's `filename` decides, then a generated id." }
+        title:       { type: string }
+        metadata:
+          type: object
+          description: The same tags `IngestRequest` takes, validated at minting.
+          additionalProperties: true
+    UploadDescriptor:
+      type: object
+      description: >
+        Where to send the bytes. Shaped after the descriptor the MCP
+        file-transfer proposal (SEP-2631) has a server mint for an upload, so
+        that door can open onto the same store.
+      required: [ticket, url, method, headers, expires_at, max_size, accepts, curl]
+      properties:
+        ticket:     { type: string }
+        url:        { type: string, format: uri, description: "`POST` the file here as the raw body." }
+        method:     { type: string, enum: [POST] }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          description: What to send beside the body — `content-type` is the file's own media type.
+        expires_at: { type: string, format: date-time }
+        max_size:   { type: integer, description: "Bytes, from NACRE_MAX_DOCUMENT_BYTES." }
+        accepts:    { type: array, items: { type: string }, description: Media types the redeem admits. }
+        curl:       { type: string, description: "The same request as a shell line, with FILE and TYPE to fill in." }
     IngestRequest:
       type: object
       required: [layer]
@@ -3277,6 +3307,97 @@ paths:
       responses:
         '204': { description: Removed }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /uploads:
+    post:
+      summary: Mint an upload ticket
+      description: >
+        A ticket for a document the caller will send later, from wherever the
+        bytes are — a shell with `curl`, an MCP App's file input, a script —
+        without passing through a model's context window. The answer is a
+        descriptor: the URL to `POST` the file to as the raw body under its
+        own media type, when it expires, the size limit, and the same request
+        as a `curl` line.
+
+
+        Minted on **`write`** to the layer and nothing else, with `404` for a
+        layer the caller may not write to and for one that does not exist —
+        the same answer, so the endpoint is not a layer-name oracle. The
+        document is queued **as this caller** when the bytes arrive, and the
+        write is checked again then: a grant revoked in between refuses the
+        upload.
+
+
+        A ticket is single-use and lives five minutes; the TTL is the server's
+        and not a field. `external_id`, `title` and `metadata` are fixed at
+        minting — `external_id` defaults to the `filename` query parameter on
+        the redeem, then to a generated id. The descriptor is shaped after the
+        one the MCP file-transfer proposal (SEP-2631) has a server mint, so
+        that proposal can become a second door onto the same store.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadTicketRequest' }
+      responses:
+        '201':
+          description: The ticket
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadDescriptor' }
+        '404': { description: The layer is absent or not writable by the caller — indistinguishably }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { description: "The ticket store did not answer. Closed, deliberately — a ticket is a bearer of somebody's write." }
+  /uploads/{ticket}:
+    post:
+      summary: Redeem an upload ticket
+      security: []
+      description: >
+        The file, as the raw request body, under its own media type. No
+        credential: the ticket is one — single-use, five minutes, minted by a
+        caller holding `write` — and an unknown, spent or expired ticket is
+        `404` for all three alike.
+
+
+        The bytes get the same admission a multipart file part gets: UTF-8
+        text, or a binary format in the table whose declared type and whose
+        signature agree, with binary needing object storage. The document is
+        queued as the caller who minted the ticket and the outcome is the one
+        `POST /documents` answers with.
+
+
+        **This is the one operation that admits every origin**
+        (`Access-Control-Allow-Origin: *`). An MCP App's file input runs in a
+        host's sandboxed iframe whose origin no deployment can list, and
+        admitting `*` here adds nothing: there is no cookie and no
+        `Authorization`, so a page that holds no ticket gets what a stranger
+        gets.
+      parameters:
+        - name: ticket
+          in: path
+          required: true
+          schema: { type: string }
+        - name: filename
+          in: query
+          required: false
+          description: The document's `external_id`, when the ticket fixed none.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          '*/*':
+            schema: { type: string, format: binary }
+      responses:
+        '200': { description: Idempotent repeat; the document is unchanged }
+        '202':
+          description: Accepted for processing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '400': { description: "An empty body, a binary file outside the table, a declared type and a signature that disagree, or a binary file on a deployment without object storage" }
+        '404': { description: "No such ticket — unknown, spent or expired" }
+        '413': { description: Document exceeds NACRE_MAX_DOCUMENT_BYTES }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { description: The ticket store did not answer }
   /jobs/{id}:
     get:
       summary: Ingest job status

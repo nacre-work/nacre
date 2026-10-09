@@ -852,7 +852,7 @@ authority over the organization holding it, so `administers` reads the
 connection's ceiling and never a layer's.
 
 `admin` is a ceiling value and is deliberately **not** on the consent screen.
-The MCP surface has no administrative tool at all — its six tools resolve with
+The MCP surface has no administrative tool at all — its seven tools resolve with
 `read` or `write` — so the box would do nothing where the person is looking and
 a great deal through REST, where they are not, which is worse than a control
 that does nothing. It stays reachable through the API because it is not an
@@ -2963,6 +2963,130 @@ because without them a client assumes the worst of every tool and confirms a
 search as carefully as a delete. And CI went red on `main` for a reason outside
 the tree: `minio/minio` left Docker Hub. The object store is Chainguard's build
 of the same server now, in the four workflows and the `full` profile alike.
+
+**The MCP server is `@modelcontextprotocol/server` 2.x now, and the parity
+argument is structural.** Both transports hand-built every result — and
+diverged on `permission`, on the capability set, on a cache hint, on `ping`,
+on `initialize` negotiating versus announcing — because two dispatchers each
+remembered the protocol separately. `factory.ts` builds one `McpServer` for the
+caller the token names; Streamable HTTP builds one per request and STDIO one
+per connection, and the protocol — the two eras, the `_meta` envelope, the
+mirrored headers, `resultType`, the cache hints, `-32020`/`-32022`, the legacy
+counter-offer — is the SDK's. What stays this repository's is everything
+before a frame is read (`Origin`, CORS, the RFC 9728 document, the `401`,
+authentication through the same `authenticate` as REST, the tenant-override
+refusal, the rate limit) and the one wrapper that keeps a thrown error's
+message off the wire. The parity suite's last case refuses a second factory,
+because that is now the only way to diverge.
+
+Three things the spike found, each of which the hand-written server read the
+other way. A 2026-07-28 request **must** carry the envelope and the mirrored
+headers, and the SDK's own client does; the lenient reading was right about
+the legacy era and wrong about the modern one, and the conformance page says
+which is which. The SDK answers `406` to a POST that does not name
+`text/event-stream`, which `curl`, `fetch` and every hand-written check here
+do not — so `Accept` is filled in when the client asked for no stream, since
+this server answers JSON either way. And the SDK's stdio transport closes
+itself the moment its stdin ends and refuses to write afterwards, while a
+script and the parity suite close the pipe with the answers still in flight:
+the wrapper feeds it a stream that never ends and forwards the close only once
+every request has been answered. Found by running it — the first version
+answered nothing and resolved never.
+
+**And the STDIO suite had been written to the dispatcher it replaced.** Five
+of its ten cases went red on the SDK and every one was the fixture: a bare
+`initialize` carrying only `protocolVersion`, which no client sends and the
+schema refuses; a `server/discover` with no envelope, which is a legacy frame
+and is rightly `-32601` from the legacy server; a `search` with no `query`,
+answered `isError: false` because nothing on that path had ever validated
+arguments — a relaxation of exactly the kind the file's own header says the
+local surface must not have; and a `-32700` frame with `id: null`, which MCP
+says is not a response at all, asserted onto a stream the same file promises
+carries nothing else. The SDK's reader skips an unparseable line and reads
+on, so the property that survives is the session, and the case says so. The
+e2e went red once beside it for a race the rewrite made visible: `web` starts
+after `mcp` is *started*, not after it listens, and the front door's first
+request landed on a 502 and was read as "not proxied". It waits now, as it
+already did for the API and the console.
+
+What the SDK does **not** do, measured rather than assumed: `resultType:
+"task"` from a tool is refused and `tasks/get` is not routed in the 2026-07-28
+era, so the tasks extension is not a registration away; `ext-tasks` is the
+client half. An unknown tool is its JSON-RPC `-32602` naming the tool, which
+`docs/mcp.md` argues is not a leak; a failing tool is still one answer.
+
+**A file reaches the index without passing through a model.** An agent that
+holds a file cannot put it into `ingest_document`: a tool argument is a string
+the model has to emit, which is the file retyped through the context window —
+paid for twice, and for anything a model cannot faithfully reproduce, not the
+same bytes. `request_upload` (MCP) and `POST /v1/uploads` (REST) mint a
+**ticket** instead, and whoever holds the bytes — a shell handed the `curl`
+line, an MCP App's file input, a script — sends them to
+`POST /v1/uploads/{ticket}` as the raw body. The ticket is the capability:
+minted on `write` with the same `404` for unwritable and absent, single-use
+by `GETDEL`, five minutes, queued **as the minter** with the write checked
+again on arrival, and **failing closed** on a Redis that does not answer —
+against the grain of the rate limiter beside it, because this one is an
+authorization control.
+
+The redeem is the one door on the API answering `Access-Control-Allow-Origin:
+*`, and that is a decision rather than a relaxation: an MCP App's file input
+runs in a host's sandboxed iframe whose origin no deployment can list, and
+admitting `*` adds nothing there — no cookie, no `Authorization`, and a page
+that holds no ticket gets what a stranger gets. Everything else stays on exact
+match. The bytes get the multipart part's admission through the **same
+function**, and the outcome goes through the same answer, because the second
+door arriving is exactly when two copies of "what is a document" start to
+disagree. The descriptor is shaped after SEP-2631's, so the proposal becomes a
+second door onto this store when it lands.
+
+Two things were decided against on the way. URL-mode elicitation — the tool
+answering `input_required` with a console page to open — was built as far as
+a diagram and dropped: it takes the person out of the agent and into a
+browser, and the MCP App widget does the same job inside it. And the tasks
+extension was measured rather than planned: SDK 2.3.1's server refuses
+`resultType: "task"` from a tool and does not route `tasks/get` in the
+2026-07-28 era, and `ext-tasks` is the client half, so it is not built.
+
+**Three MCP App views ship with the server, and they are the half of the
+upload that happens inside the agent.** `packages/mcp/apps/` is `upload`,
+`search` and `layers`: single HTML files, script inlined by the package build
+because a host's sandbox loads nothing from anywhere, served as `ui://nacre/*`
+resources under the extension's media type. A view reaches the server through
+the host and holds no credential; the upload view makes the one request a
+view makes itself — the bytes to the ticket URL — and is the only one whose
+CSP names an origin. `upload_file` is the tool that opens it, and it is
+dropped from the catalog of a modern-era client that declared no
+`io.modelcontextprotocol/ui` extension, because a panel nobody can render is a
+tool that does nothing; a legacy-era client says nothing per request and is
+offered it, since the hosts rendering apps today are legacy-era clients. A
+host is not in the suite — a stub host agrees with whatever it was written to
+— so `apps.test.ts` asks the wire: the listing, the media type, the HTML, the
+CSP per view, and the catalog with and without the declaration. Each view is
+~600 kB because the extension's client carries the protocol with it; it is
+read once per render, through the host.
+
+**And the three views were drawn in the host's colours, at three heights.** The
+first version applied the host's style variables and declared no colour of its
+own, on the argument that a panel should look like the conversation it is in
+— and what that produced, rendered, was a `<datalist>` field, a native file
+picker and a button each at its platform's own height, in a palette that was
+nobody's. Reported from the renders in those words. A view is a page of this
+product and now says so: the build inlines the brand mirror the console ships
+(tokens and faces, as `data:` URIs, since a sandbox fetches nothing a view did
+not declare), `shared.ts` carries the console's control vocabulary at **one**
+height — the file control is a label over an invisible input, because the
+native widget cannot be sized — and the host decides only the theme. Rendered
+at 600 and 390 and in the dark theme before being believed; at 390 four
+columns of a hit did not fit, so a document's id and a layer's description are
+a second line under the first cell rather than a column, which is the
+console's own treatment of a value that is an annotation.
+
+`get_document` carries its presigned `source_url` twice now: in the JSON, and
+as a `resource_link` block, which is the revision's word for "the result is
+somewhere else" and what lets a client fetch the whole file out of band. One
+block per call and only there — `search` still carries none, for the reason
+already written: ten bearer capabilities where the caller wanted an ordering.
 
 ## Conventions
 

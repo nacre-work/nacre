@@ -6,7 +6,9 @@ import {
   loadModules,
   loadJwtVerification,
   logger,
+  Redis,
 } from '@nacre.work/core'
+import { RedisUploadTickets } from '@nacre.work/api'
 
 import { buildServices } from './services.js'
 import { serveStdio } from './stdio.js'
@@ -56,7 +58,17 @@ async function main(): Promise<void> {
     ])
   }
 
-  const { pool, layers, tools, verification } = buildServices(config)
+  // Redis, for one thing: an upload ticket has to be redeemable on the API
+  // from wherever the bytes are, so it lives in the store the API reads. The
+  // other transport shares the same one. Nothing else here needs it.
+  const redis = new Redis({ url: config.redisUrl })
+  const { pool, layers, tools, verification } = buildServices(config, {
+    uploads: {
+      store: new RedisUploadTickets(redis),
+      baseUrl: config.canonicalUrl,
+      maxBytes: config.maxDocumentBytes,
+    },
+  })
 
   try {
     await serveStdio({
@@ -75,12 +87,14 @@ async function main(): Promise<void> {
       layers,
       tools,
       serverVersion: packageVersion(),
+      apiOrigin: new URL(config.canonicalUrl).origin,
     })
   } finally {
     // stdin closed: the client is gone. Releasing the pool here rather than on
     // a signal means a client that exits without one does not leave a
     // connection held open against the operator's database.
     await pool.end()
+    redis.close()
   }
 }
 

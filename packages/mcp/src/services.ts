@@ -31,10 +31,10 @@ import {
   withOrg,
   type Config,
 } from '@nacre.work/core'
-import { postgresVerification } from '@nacre.work/api'
+import { postgresVerification, TICKET_TTL_SECONDS, uploadDescriptor, type UploadTicketStore } from '@nacre.work/api'
 import type { Pool } from 'pg'
 
-import type { Layers, ToolRunner } from './server.js'
+import type { Layers, ToolRunner } from './factory.js'
 import type { Layer } from './tools.js'
 
 /**
@@ -65,9 +65,20 @@ export interface Services {
   readonly tools: ToolRunner
 }
 
+/**
+ * Upload tickets, as the MCP surface needs them: the store, and where a
+ * ticket's URL points — the **API's** canonical origin, never this transport's,
+ * because the ticket is redeemed on the API by whoever holds the bytes.
+ */
+export interface UploadTickets {
+  readonly store: UploadTicketStore
+  readonly baseUrl: string
+  readonly maxBytes: number
+}
+
 export function buildServices(
   config: Config,
-  options: { principalsCache?: PrincipalsCache } = {},
+  options: { principalsCache?: PrincipalsCache; uploads?: UploadTickets } = {},
 ): Services {
   const principalsCache = options.principalsCache
   const pool = createPool({ connectionString: config.pgUrl, max: config.pgPoolMax })
@@ -439,6 +450,55 @@ export function buildServices(
             job_id: outcome.jobId,
             status: outcome.unchanged ? 'indexed' : 'queued',
           }
+        }
+        case 'upload_file': {
+          // The host renders the panel; the model gets a sentence. A layer
+          // that is not writable is not refused here — the panel lists what
+          // the person may write to, and the ticket refuses the rest.
+          return {
+            opened: true,
+            note:
+              'The upload panel is open in the conversation. The person picks the file there; ' +
+              'the outcome arrives as context when the upload settles.',
+          }
+        }
+        case 'request_upload': {
+          const layer = args.layer
+          if (typeof layer !== 'string' || layer === '') throw new Error('layer is required')
+          // Absent on STDIO, where there is no Redis: the tool is in the
+          // catalog and answers as a tool that cannot do its job here.
+          const uploads = options.uploads
+          if (uploads === undefined) throw new Error('upload tickets are not available on this transport')
+          // Validated now, so a ticket never carries tags the upload would
+          // refuse minutes later with nobody there to read the refusal.
+          const metadata = parseMetadata(args.metadata)
+          // The same write check `ingest_document` makes, with the same
+          // answer for a layer the caller may not write to and one that does
+          // not exist: a ticket tool that said "not writable" would be a
+          // layer-name oracle reachable with no document at all.
+          if (!(await ingest.writable(auth, layer))) {
+            await audit.write({
+              orgId: auth.orgId,
+              actor: `${auth.principal.type}:${auth.principal.id}`,
+              action: 'ingest',
+              result: 'deny',
+              surface: 'mcp',
+              target: { layer, document_id: null },
+              detail: { layer, ticket: 'refused' },
+              requestId,
+            })
+            throw new Error('not found')
+          }
+          const expiresAt = Math.floor(Date.now() / 1000) + TICKET_TTL_SECONDS
+          const ticket = await uploads.store.mint({
+            auth,
+            layer,
+            ...(typeof args.external_id === 'string' ? { externalId: args.external_id } : {}),
+            ...(typeof args.title === 'string' ? { title: args.title } : {}),
+            metadata,
+            expiresAt,
+          })
+          return uploadDescriptor(ticket, expiresAt, uploads.baseUrl, uploads.maxBytes)
         }
         case 'ingest_status': {
           const jobId = args.job_id

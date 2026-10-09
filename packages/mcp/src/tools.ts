@@ -262,6 +262,91 @@ export function catalog(
       },
     },
     {
+      name: 'request_upload',
+      title: 'Request an upload ticket',
+      // Not read-only: a ticket is a promise of a write, counted like one.
+      // Not destructive and not idempotent — every call mints a fresh,
+      // single-use ticket, and nothing already there is replaced by it.
+      annotations: {
+        title: 'Request an upload ticket',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+      /**
+       * The way a file reaches the index without passing through the model.
+       *
+       * `ingest_document` takes `content`, which is the file retyped through
+       * the context window — paid for twice, and for anything a model cannot
+       * reproduce faithfully, not the same bytes. This mints a single-use,
+       * five-minute ticket for a layer the caller may write to; whoever holds
+       * the bytes — a shell, an MCP App's file input, a script — sends them to
+       * the ticket's URL, and the index sees exactly what was on disk.
+       */
+      description:
+        'Get a single-use upload ticket (valid 5 minutes) for sending a file to a layer without ' +
+        'putting its contents through this conversation. Returns a URL to POST the file to as ' +
+        'the raw body under its own media type, and the same request as a curl line — hand that ' +
+        'to a shell or to the person. Then check ingest_status with the job_id the upload answers with.',
+      permission: 'write',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          layer: { type: 'string', description: 'Slug of the layer to write into.' },
+          external_id: {
+            type: 'string',
+            description:
+              "Your id for the document and the idempotency key. Absent, the uploader's filename " +
+              'decides, then a generated id.',
+          },
+          title: { type: 'string' },
+          metadata: {
+            type: 'object',
+            description: 'Flat key/value tags (lower-case keys) that search can filter on with `filters`.',
+          },
+        },
+        required: ['layer'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'upload_file',
+      title: 'Open the upload panel',
+      // Read-only from the index's point of view: opening the panel changes
+      // nothing. The upload the person then makes goes through
+      // `request_upload` and the ticket, where the write is checked.
+      annotations: {
+        title: 'Open the upload panel',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      /**
+       * The MCP App half of `request_upload`.
+       *
+       * A host that renders MCP Apps shows `ui://nacre/upload.html` when this
+       * is called: the person picks the file in the conversation, the view
+       * mints a ticket through the host and sends the bytes itself, and the
+       * model learns the outcome. A client that declares no UI support does
+       * not see this tool at all (see `factory.ts`), because a panel nobody
+       * can render is a tool that does nothing.
+       */
+      description:
+        'Open a panel in the conversation where the person picks a file to add to a layer. The file ' +
+        'never passes through this conversation; the panel reports the document id and the outcome. ' +
+        'Use request_upload instead when the person will send the file from a shell or a script.',
+      permission: 'write',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          layer: { type: 'string', description: 'Slug of the layer to preselect in the panel.' },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'ingest_status',
       title: 'Check an ingest',
       annotations: {

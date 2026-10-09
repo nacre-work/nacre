@@ -39,6 +39,8 @@ import type {
   WebAuthnAssertion,
   WebAuthnAssertionOptions,
   WebAuthnRegistrationOptions,
+  UploadDescriptor,
+  UploadTicketRequest,
 } from './types.js'
 
 /**
@@ -136,6 +138,8 @@ interface RequestOptions {
   readonly body?: unknown
   /** Instead of `body`: the request goes up as `multipart/form-data`. */
   readonly multipart?: MultipartBody
+  /** Instead of `body`: the bytes go up as they are, under their own media type. */
+  readonly raw?: { readonly bytes: Uint8Array; readonly contentType: string }
   readonly signal?: AbortSignal
   /** Safe or idempotent, so a transient failure may be retried. */
   readonly retryable?: boolean
@@ -213,10 +217,14 @@ export class NacreClient {
         headers: {
           authorization: `Bearer ${this.#token}`,
           ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
+          ...(options.raw === undefined ? {} : { 'content-type': options.raw.contentType }),
           accept: 'application/json',
         },
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
         ...(options.multipart === undefined ? {} : { body: formData(options.multipart) }),
+        // A copy, for the reason `formData` makes one: the caller's buffer may
+        // be a view over something reused before the request is sent.
+        ...(options.raw === undefined ? {} : { body: new Uint8Array(options.raw.bytes) }),
         signal: controller.signal,
       })
     } catch (cause) {
@@ -645,6 +653,75 @@ export class NacreClient {
       } catch (error) {
         if (error instanceof NacreError && error.isNotFound) return false
         throw error
+      }
+    },
+  }
+
+  // ─── uploads ─────────────────────────────────────────────────────────────
+
+  /**
+   * A file sent to the index by whoever holds the bytes, on a ticket minted
+   * by whoever holds `write`. The two halves are two methods because they
+   * run in two places: an agent mints a ticket and hands the descriptor to a
+   * shell, a page or a script, which sends the bytes with no credential at
+   * all. `documents.add` with `bytes` is the one-process form.
+   */
+  readonly uploads = {
+    /** Mint a ticket: single-use, five minutes, for a layer the caller may write to. */
+    create: async (request: UploadTicketRequest): Promise<UploadDescriptor> => {
+      const body = (await this.#request({
+        method: 'POST',
+        path: '/v1/uploads',
+        body: {
+          layer: request.layer,
+          ...(request.externalId === undefined ? {} : { external_id: request.externalId }),
+          ...(request.title === undefined ? {} : { title: request.title }),
+          ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
+        },
+        // Minting is not idempotent — every attempt that reached the server
+        // is a ticket — but an unredeemed ticket costs nothing and expires,
+        // so a retry after a timeout buys a working descriptor rather than a
+        // stray document.
+        retryable: true,
+      })) as Record<string, unknown>
+      return {
+        ticket: String(body.ticket),
+        url: String(body.url),
+        method: 'POST',
+        headers: (body.headers as Record<string, string> | undefined) ?? {},
+        expiresAt: String(body.expires_at),
+        maxSize: Number(body.max_size),
+        accepts: (body.accepts as string[] | undefined) ?? [],
+        curl: String(body.curl),
+      }
+    },
+
+    /**
+     * Redeem a ticket with the file as the body, under its own media type.
+     *
+     * Deliberately not retried: the ticket is spent by the first request that
+     * reaches the server, so a retry after a timeout that did arrive answers
+     * `404` — and a `404` here means mint again, never that the document is
+     * missing. `filename` names the document when the ticket fixed no
+     * `externalId`.
+     */
+    send: async (
+      ticket: string,
+      bytes: Uint8Array,
+      contentType: string,
+      filename?: string,
+    ): Promise<IngestOutcome> => {
+      const query = filename === undefined ? '' : `?filename=${encodeURIComponent(filename)}`
+      const body = (await this.#request({
+        method: 'POST',
+        path: `/v1/uploads/${encodeURIComponent(ticket)}${query}`,
+        raw: { bytes, contentType },
+        retryable: false,
+      })) as Record<string, unknown>
+      return {
+        documentId: String(body.document_id),
+        jobId: String(body.job_id),
+        unchanged: body.status === 'indexed',
       }
     },
   }

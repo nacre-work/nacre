@@ -25,21 +25,25 @@ means to be reachable.
 ## Transport
 
 - Streamable HTTP, one endpoint: `POST /mcp`.
-- Request headers: `MCP-Protocol-Version` and `Mcp-Method` on every request;
-  `Mcp-Name` **only** on `tools/call`, `resources/read` and `prompts/get` — the
-  three that name something. Requiring `Mcp-Name` everywhere is a server that
-  refuses `tools/list`, which no client can make any other way, and that is what
-  this did until it was pointed at a real one.
-- **The headers are validated against the body**, which is the whole reason
-  they exist: an intermediary routes and rate-limits on the header while the
-  server executes the body, so a request whose halves disagree is one where the
-  two acted on different instructions. A missing or contradicting header is
-  `400` with JSON-RPC code **`-32020` (`HeaderMismatch`)**, the code the
-  specification allocates. It used to answer `-32600`, which a client reads as
-  "not a modern server" and follows into a fallback this transport does not
-  speak.
+- **Two eras, one server.** The protocol is `@modelcontextprotocol/server`
+  2.x's since 0.28.0. A request carrying the 2026-07-28 `_meta` envelope in
+  `params` is a **modern** client and is held to that revision's rules: the
+  mirrored headers `MCP-Protocol-Version` and `Mcp-Method` on every request,
+  `Mcp-Name` on `tools/call`, `resources/read` and `prompts/get`, each
+  compared against the body, and a missing or contradicting one is `400` with
+  JSON-RPC **`-32020` (`HeaderMismatch`)**. A frame with no envelope is a
+  **legacy** client — everything that opens with `initialize`, which is every
+  shipping client today — and is served the way those revisions specify, with
+  no mirrored headers at all. The two are built from one `McpServer` factory
+  (`packages/mcp/src/factory.ts`), so a method or a field cannot differ
+  between them; `transport-parity.test.ts` compares every method of both eras
+  over both transports, field for field.
 - `Mcp-Name` may arrive Base64-encoded in the `=?base64?…?=` sentinel when the
   value is not header-safe, and is decoded before it is compared.
+- Every answer is `application/json`. A caller that did not name
+  `text/event-stream` in `Accept` — `curl`, an uptime check, `fetch`'s default
+  — is handed the JSON it was going to get anyway rather than a `406` about a
+  header that would not have changed the reply.
 - **`Origin` is validated.** A present origin that is not in
   `NACRE_MCP_ALLOWED_ORIGINS` is `403`; an absent one is allowed, because an
   agent sends none and the attack the rule exists for — DNS rebinding — is by
@@ -67,7 +71,11 @@ means to be reachable.
 - A tool that needs state between calls returns an explicit descriptor in its
   result, and the model passes it as an argument to the next call. Hidden state
   in the transport is not allowed.
-- `server/discover` is supported but not required of clients.
+- `server/discover` is the modern era's opening move and advertises the
+  modern revisions; `initialize` is the legacy era's and negotiates from the
+  legacy ones. A legacy proposal this server does not speak is answered with
+  the newest legacy revision, never the modern one, because a legacy client
+  cannot fall forward.
 - `tools/list` returns `ttlMs: 0` and `cacheScope: "private"` — the catalog
   depends on the caller's permissions, so it is never shared across
   authorization contexts, and a grant can change it at any moment with no
@@ -429,6 +437,14 @@ deployment stores document bytes in object storage. Absent otherwise, and
 absent for a document ingested inline or by URL. Permission: `read`. No
 permission → `404`, not `403`.
 
+Where there is a `source_url`, the result carries it twice: in the JSON, and
+as a **`resource_link`** content block beside it — `{ type: "resource_link",
+uri, name }` — which is what the 2026-07-28 revision has a server say when a
+result is somewhere else. A client that knows the block fetches the original
+bytes directly, out of band, the whole file and never through the
+conversation; a client that does not reads the JSON as before. `search`
+deliberately carries no such link (below).
+
 ### `ingest_document`
 
 ```jsonc
@@ -458,6 +474,41 @@ Permission: `write`.
 embedding all happen afterwards in the worker, and a document that fails there
 is left in `failed`, which nothing retries. Check `ingest_status` before
 treating the document as searchable.
+
+### `request_upload`
+
+`{ layer, external_id?, title?, metadata? }`. Returns the upload descriptor
+`POST /v1/uploads` answers with — a URL to `POST` the file to as the raw body
+under its own media type, when the ticket expires, the size limit, and the same
+request as a `curl` line. Permission: **`write`**, resolved exactly as
+`ingest_document` resolves it, and a layer the caller may not write to is
+`Not found` like one that does not exist.
+
+This is how a file reaches the index **without passing through the model**.
+`ingest_document` takes `content`, which is the file retyped through the
+context window — paid for twice, and for anything a model cannot faithfully
+reproduce, not the same bytes. A ticket is single-use and lives five minutes;
+whoever holds the bytes — a shell handed the `curl` line, an MCP App's file
+input, a script — sends them to the URL, and the upload answers with the
+`job_id` that `ingest_status` then reads. The document is queued as the caller
+who minted the ticket, with their write checked again when the bytes arrive.
+The whole of it is in [api.md](./api.md#uploading-by-ticket--a-file-that-never-passes-through-a-model).
+
+Both transports mint into the same store — local mode opens the same Redis
+for exactly this — and the URL names the API's canonical origin on both,
+because that is where the bytes go. Without a store the tool answers
+`Not found`, as a tool that cannot do its job here.
+
+### `upload_file`
+
+`{ layer? }`. Permission: **`write`**. Opens the upload **view** in a host
+that renders MCP Apps — the person picks the file in the conversation, the
+view mints a ticket through the host with `request_upload` and sends the bytes
+itself, then reads `ingest_status` until the document settles and tells the
+model the outcome. Offered only to a client that can render it: a modern-era
+client that declares no `io.modelcontextprotocol/ui` extension does not see
+this tool, and a deployment whose MCP process names no API origin serves no
+view at all. See **MCP Apps** below.
 
 ### `ingest_status`
 
@@ -496,20 +547,68 @@ document, because it is written into the payload of every chunk.
 `{ document_id }` or `{ external_id, layer }`. Writes a tombstone; the document
 leaves results immediately. Permission: `write`.
 
+## MCP Apps
+
+Three views, served as resources under `ui://nacre/` with the extension's
+media type `text/html;profile=mcp-app`, each a single HTML file carrying its
+own script — a host renders one in a sandboxed iframe whose CSP admits no
+script from anywhere, so nothing can be loaded and everything is inlined at
+build time (`packages/mcp/apps/`, bundled by the package build).
+
+| View | Opened by | What it shows |
+|---|---|---|
+| `ui://nacre/search.html` | `search` | every hit with its layer, document id and score — the permitted set, filtered inside the index — and a box to re-run a query through the host, against exactly the access the model has |
+| `ui://nacre/layers.html` | `list_layers` | the layers this principal may read, paged through the host |
+| `ui://nacre/upload.html` | `upload_file` | a layer field with the readable layers as suggestions, and a file input; the bytes go to a ticket URL and never through the conversation. A field rather than a list, because `list_layers` answers with what the caller may *read* and an ingest-only account holds `write` on a layer it cannot list |
+
+A view reaches the server **through the host** (`callServerTool`), so every
+permission check runs where it always runs and the view holds no credential.
+The upload view makes the one request a view makes on its own — the bytes to
+the ticket URL on the API — and its resource's CSP names that origin and
+nothing else; the other two declare no network at all, which the extension
+reads as the secure default. That origin is `NACRE_CANONICAL_URL`'s, and it is
+also why `POST /v1/uploads/{ticket}` admits every origin: a host's sandbox
+origin is not one a deployment can list.
+
+A client that does not render apps loses nothing: `_meta.ui` on a tool is a
+member it ignores, the resources are a list it never reads, and `upload_file`
+— the one tool that is nothing without a panel — is hidden from a client that
+said so. The hosts rendering apps today (Claude, VS Code, Goose and others)
+open with `initialize` and say nothing per request, so a legacy-era client is
+offered it.
+
+The styling is this product's. A view carries the brand mirror the console
+ships — the tokens and the three faces, inlined by the package build so a
+host's sandbox has nothing to fetch — and draws the console's own controls at
+one height, so a panel reads as a piece of Nacre inside the conversation. What
+the host decides is the theme: `data-theme` from the host context picks light
+or dark, and the page's own `prefers-color-scheme` answers when the host says
+nothing. The host's style variables are deliberately not applied: the
+permission colours here carry a meaning, and a palette chosen per host is one
+the brand does not control.
+
 ## What a call answers with
 
 A `CallToolResult`, always — `{ content: [...], isError }` — with the payload
-JSON-encoded into a text block. Not the bare value. A client that follows the
+JSON-encoded into a text block, and for `get_document` a `resource_link`
+block beside it when the document has a presigned `source_url`. Not the bare
+value. A client that follows the
 protocol rejects anything else, so this is not a stylistic point: the server
 returned raw arrays for its first several revisions, every test in the suite
 passed, and no compliant client could have read a single result.
 
-A failing tool and an unknown one both answer with a `CallToolResult` whose
-`isError` is true and whose text is `Not found` — never an HTTP `404`, which
-on Streamable HTTP tells a client its session is gone — carrying nothing about
-which, because distinguishing them tells the caller whether a tool — and so a
-layer — exists. The reason is logged on the server, where an operator can see
-that a database is down rather than reading it as a tool that does not exist.
+A failing tool answers with a `CallToolResult` whose `isError` is true and
+whose text is `Not found` — never an HTTP `404`, which on Streamable HTTP tells
+a client its session is gone — carrying nothing about why: a document that is
+absent, one the caller may not read and a database that is down are the same
+bytes. The reason is logged on the server, where an operator can see that a
+database is down rather than reading it as a tool that does not exist. A tool
+that does not **exist** is the SDK's JSON-RPC `-32602`, naming the tool the
+caller asked for and nothing else; that is not a leak, because the catalog's
+names are the same for every caller — only `search`'s description is per
+caller — so it says what `tools/list` already said. Arguments that do not
+match the tool's schema are an `isError` result naming the argument, before
+the tool runs.
 
 ## What tools may not do
 
@@ -568,16 +667,18 @@ What is under test is the part that carries the leak risk:
   `cacheScope: "private"`, and there is a test for each;
 - a caller with no layers is told exactly that and nothing about what exists
   elsewhere;
-- a failing tool call and an unknown tool return **byte-identical** answers,
-  because a tool error naming a layer is the same leak as a `403` naming a
-  document;
+- a failing tool call answers the same bytes whatever it failed on, because a
+  tool error naming a layer is the same leak as a `403` naming a document —
+  the SDK would put the thrown message on the wire, and the factory is what
+  stops it;
 - no tool schema accepts an organization at any depth, and `params` carrying
-  one is refused before dispatch;
-- there is no `initialize` and no `Mcp-Session-Id` to be had over HTTP — a test
-  asserts the session cannot be established, because state creeping into the
-  transport is what quietly ends the round-robin deployment. STDIO answers
-  `initialize` because a pipe is a session by construction: there is one client,
-  one process, and nothing to route.
+  one is refused before dispatch, on both transports;
+- `initialize` is answered over HTTP and establishes nothing — no
+  `Mcp-Session-Id` comes back in either era, and a test asserts it, because
+  state creeping into the transport is what quietly ends the round-robin
+  deployment;
+- the SDK's own client connects in both eras and calls a tool, which is the
+  case every hand-written frame in the suite could not stand in for.
 
 Both transports answer a successful call with a `CallToolResult`, and stdout in
 local mode carries protocol frames and nothing else — a stray log line lands

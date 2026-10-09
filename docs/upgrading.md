@@ -272,6 +272,63 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.28.0 — the MCP server on the reference SDK
+
+No schema change and no new configuration, and 0.27.0 runs unchanged against
+this database — so rolling back is safe. What changed is the wire, and only for
+one kind of client.
+
+**The MCP server is `@modelcontextprotocol/server` 2.x**, the reference
+implementation of the 2026-07-28 revision, on both transports. Everything a
+client does today keeps working: `initialize`, the negotiation, `tools/list`,
+`tools/call`, `ping`, the RFC 9728 walk, service account keys and delegations
+— every shipping client is a legacy-era client and that era is served as it
+was. The SDK's own client was driven against the transport in both eras, and
+so was every hand-written frame the suite had.
+
+**A 2026-07-28 client is held to that revision now.** A request that carries
+the `_meta` envelope must also carry `MCP-Protocol-Version` and `Mcp-Method`,
+and `Mcp-Name` on `tools/call`; a missing one is refused with `-32020` where
+0.27.0 let it through. The SDK's client sends all of them, so the only caller
+this reaches is one that was hand-writing modern frames without the headers.
+
+**An unknown tool is a JSON-RPC `-32602` naming the tool**, where it used to
+be the same `isError` result a failing tool gets. A failing tool still answers
+`Not found` and nothing about why. Anything that matched on the old `Not found`
+for a mistyped tool name should match on the error code instead.
+
+**`Accept` is no longer something a caller can get wrong.** A POST that does
+not name `text/event-stream` is answered in JSON, which is what every POST is
+answered in; a `curl` or a check script needs no header it did not have.
+
+**A file can reach the index without passing through a model.** `POST
+/v1/uploads` mints a single-use, five-minute ticket for a layer the caller may
+write to, and `POST /v1/uploads/{ticket}` takes the file as the raw body with
+no credential — the ticket is one. Over MCP the same ticket comes from the new
+`request_upload` tool, which hands the model a `curl` line. The ticket store
+is the Redis every deployment already has; nothing to configure. The redeem
+endpoint is the one path on the API answering `Access-Control-Allow-Origin:
+*`, and the reason it is safe is stated in `docs/api.md`. The MCP STDIO
+process now opens Redis too, for exactly this — `NACRE_REDIS_URL` was already
+required of it.
+
+**The MCP server carries three MCP App views.** `search`, `list_layers` and
+the new `upload_file` tool open a panel in a host that renders MCP Apps —
+Claude, VS Code, Goose and others — showing the permitted result set with
+layers, ids and scores, the layer catalog, and a file input whose bytes go to
+a ticket and never through the conversation. A client that does not render
+apps is unaffected and does not see `upload_file`. The views are served as
+`ui://nacre/*` resources, so the server now declares a `resources`
+capability. The upload view's CSP names `NACRE_CANONICAL_URL`'s origin, which
+is where the bytes go; nothing to configure beyond what every deployment
+already sets.
+
+**`get_document` links the original bytes.** Where a document lives in
+object storage, the tool's result carries a `resource_link` content block
+beside the JSON, pointing at the same presigned `source_url` — a client that
+knows the block fetches the file directly. Clients that read the JSON see
+what they saw before.
+
 ### 0.27.0 — Office and OpenDocument files, EPUB and RTF are accepted
 
 One migration, 0035, which widens the `CHECK` on `documents.content_type`

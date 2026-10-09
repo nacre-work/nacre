@@ -82,10 +82,20 @@ REG=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${WEB}/oauth/register" \
 # `http://localhost/...` for a client that reached `:8082` — a mismatch, and a
 # refusal before any token is sent. Found by starting the stack and reading one
 # header; nothing else here would have caught it.
-MCP_401=$(curl -s -i -X POST "${WEB}/mcp" -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | tr -d '\r')
-echo "${MCP_401}" | grep -qi '^HTTP/1.1 401' \
-  || die "/mcp is not proxied through the front-door (no 401 from the transport)"
+#
+# Waited for, the way the API and the console are above. `web` starts after
+# `mcp` is *started*, not after it listens, and the front door proxies a
+# connection refused as a 502 — so the first request can land before the
+# transport has bound its port and read as "not proxied" when it was only
+# early. It did, once, on a run where nothing in the proxy had changed.
+say "waiting for the MCP transport on the web front-door"
+for i in $(seq 1 30); do
+  MCP_401=$(curl -s -i -X POST "${WEB}/mcp" -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | tr -d '\r')
+  if echo "${MCP_401}" | grep -qi '^HTTP/1.1 401'; then break; fi
+  if [ "$i" = 30 ]; then die "/mcp is not proxied through the front-door (no 401 from the transport): $(echo "${MCP_401}" | head -1)"; fi
+  sleep 2
+done
 echo "${MCP_401}" | grep -qi "resource_metadata=\"${WEB}/.well-known/oauth-protected-resource\"" \
   || die "the front-door dropped the port from Host: $(echo "${MCP_401}" | grep -i www-authenticate)"
 

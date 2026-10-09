@@ -90,4 +90,6 @@ export type {
   User,
   UserRole,
   Workspace,
+  UploadDescriptor,
+  UploadTicketRequest,
 } from './types.js'

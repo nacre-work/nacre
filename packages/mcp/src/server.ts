@@ -2,10 +2,17 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 
 import {
+  createMcpHandler,
+  isLegacyRequest,
+  WebStandardStreamableHTTPServerTransport,
+  type AuthInfo,
+  type McpHttpHandler,
+  type McpRequestContext,
+} from '@modelcontextprotocol/server'
+import {
   allowedRequestHeaders,
   corsHeaders,
   logger,
-  MetadataError,
   preflightHeaders,
   PROTECTED_RESOURCE_PATH,
   type ProtectedResourceMetadata,
@@ -22,12 +29,8 @@ import {
   type VerifyOptions,
 } from '@nacre.work/api'
 
-import { CATALOG_SAMPLE, catalog, dispatchCatalog, type Layer, type ToolDefinition } from './tools.js'
-// Both transports answer `initialize`, `server/discover` and `tools/list` from
-// these, rather than each building its own object — which is how one server
-// came to declare two different capability sets, and to send a cache hint over
-// one transport and not the other. results.ts has the whole argument.
-import { discoverResult, initializeResult, PROTOCOL_VERSIONS, toolsListResult, pingResult, callToolResult, callToolError } from './results.js'
+import { buildServer, type Layers, type McpMetrics, type ToolRunner } from './factory.js'
+import { dispatchCatalog } from './tools.js'
 
 // Re-exported because this module is what the package's entry point and the
 // surface tests already import them from.
@@ -38,41 +41,34 @@ export {
   PROTOCOL_VERSIONS,
   TOOLS_TTL_MS,
 } from './results.js'
+export type { Layers, McpMetrics, ToolRunner } from './factory.js'
 
-export interface Layers {
-  /**
-   * One page of the layers this caller may read, ordered by id.
-   *
-   * A page and never the whole catalog, and the bound is **required** rather
-   * than defaulted: this used to return every layer the plan reaches, which on
-   * an installation at the scale layers are sold for — one per patient, one
-   * per matter — is a million-row answer built per call. `afterId` is the seek;
-   * `nextCursor` is the last id when another page exists. Drives `list_layers`
-   * and the search description, each at its own bound.
-   */
-  forCaller(
-    auth: AuthContext,
-    page: { readonly limit: number; readonly afterId?: string },
-  ): Promise<{ readonly layers: readonly Layer[]; readonly nextCursor: string | null }>
-}
-
-export interface ToolRunner {
-  /**
-   * `requestId` is threaded through so audit rows can be joined to a request.
-   *
-   * Every MCP audit row carried the literal string `mcp` — this transport
-   * generates a real id per request and never passed it down, so
-   * `docs/config.md`'s claim that "an auditor's question and a latency
-   * investigation resolve against the same identifier" was true of REST and
-   * false here.
-   */
-  call(
-    name: string,
-    args: Record<string, unknown>,
-    auth: AuthContext,
-    requestId: string,
-  ): Promise<unknown>
-}
+/**
+ * Streamable HTTP, one endpoint, no session.
+ *
+ * The protocol is `@modelcontextprotocol/server`'s: it classifies a request
+ * into the 2026-07-28 era or the legacy one, negotiates `initialize` for a
+ * legacy client, answers `server/discover` and `tools/list`, validates tool
+ * arguments against their schema, stamps `resultType` and the cache hints,
+ * and refuses a mirrored header that disagrees with the body (`-32020`) or a
+ * framing revision it cannot read (`-32022`). What this module adds is
+ * everything the SDK has no opinion on and this deployment does — which is
+ * everything that happens **before** a JSON-RPC envelope is read:
+ *
+ *   - `/metrics`, on the same terms as the API's;
+ *   - `Origin`, validated and then admitted (the two halves of CORS);
+ *   - the RFC 9728 document this transport's own `401` names;
+ *   - `405` on the verbs the sessionless revision removed, and a plain HTTP
+ *     `404` — never the RPC envelope — on every path that is not `/mcp`;
+ *   - authentication, per request, with the `401` that starts the OAuth walk;
+ *   - the tenant-override refusal, before anything dispatches;
+ *   - the rate limit, on the tools that spend a budget.
+ *
+ * There is no `Mcp-Session-Id` and nothing kept between requests, which is
+ * what lets any replica behind a round-robin balancer serve any request: the
+ * `McpServer` is built per request by `factory.ts`, for the caller the token
+ * names, and discarded with the response.
+ */
 
 export interface McpOptions {
   /**
@@ -100,6 +96,8 @@ export interface McpOptions {
    * the built package once already.
    */
   readonly serverVersion?: string
+  /** The API's canonical origin, for the MCP App views. See `ServerBuild.apiOrigin`. */
+  readonly apiOrigin?: string
   /**
    * Build the discovery document from the origin the client actually reached,
    * rather than from one baked in at startup.
@@ -155,22 +153,6 @@ export interface McpOptions {
 }
 
 /**
- * What this transport records.
- *
- * It recorded nothing. The MCP server built no registry and served no
- * `/metrics`, so every claim in `docs/config.md` about search latency and
- * denials was true of REST and silent here — and this is the transport the
- * product is *for*. An agent's search was invisible: not slow, not failing,
- * absent.
- */
-export interface McpMetrics {
-  toolDuration: { observe(seconds: number, labels?: Record<string, string>): void }
-  toolCalls: { inc(labels?: Record<string, string>, by?: number): void }
-  aclDenials: { inc(labels?: Record<string, string>, by?: number): void }
-  authFailures: { inc(labels?: Record<string, string>, by?: number): void }
-}
-
-/**
  * Which budget a tool spends from.
  *
  * By what the tool *does*, not by its name: `search` is a read against the
@@ -180,7 +162,7 @@ export interface McpMetrics {
  */
 function resourceForTool(tool: string): Resource | undefined {
   if (tool === 'search') return 'search'
-  if (tool === 'ingest_document' || tool === 'delete_document') return 'ingest'
+  if (tool === 'ingest_document' || tool === 'delete_document' || tool === 'request_upload') return 'ingest'
   return undefined
 }
 
@@ -189,17 +171,67 @@ interface JsonRpcRequest {
   readonly id?: unknown
   readonly method?: unknown
   readonly params?: unknown
-  /**
-   * Request metadata, where the binding carries the protocol version under
-   * `io.modelcontextprotocol/protocolVersion`. Read only to compare against the
-   * header; nothing dispatches on it.
-   */
-  readonly _meta?: unknown
 }
 
 const MAX_BODY_BYTES = 1_000_000
 
-async function readBody(req: IncomingMessage): Promise<unknown> {
+/**
+ * What the SDK is handed beside the request, and how the factory gets the
+ * caller back out of it.
+ *
+ * `AuthInfo` is the SDK's shape for a verified bearer token; this
+ * deployment's authentication has already run by the time it is built, so
+ * `extra` carries the `AuthContext` the factory needs and `requestId` ties
+ * every audit row to this request. Nothing below the SDK reads the token.
+ */
+interface Verified {
+  readonly auth: AuthContext
+  readonly requestId: string
+  /**
+   * Whether this client renders MCP Apps, read from the envelope's client
+   * capabilities on a modern-era request. A legacy request carries none per
+   * request, and the hosts that render apps today are legacy-era clients, so
+   * "unknown" is `true`: the tool a view needs is hidden only from a client
+   * that said it cannot render one.
+   */
+  readonly ui: boolean
+}
+
+function authInfoFor(verified: Verified, token: string): AuthInfo {
+  return {
+    token,
+    clientId: `${verified.auth.principal.type}:${verified.auth.principal.id}`,
+    scopes: [],
+    extra: { verified },
+  }
+}
+
+function verifiedOf(ctx: McpRequestContext): Verified {
+  const verified = (ctx.authInfo?.extra as { verified?: Verified } | undefined)?.verified
+  // Every path into the SDK runs through `handle` below, which authenticates
+  // first; a factory call without a caller is a wiring error, not a request.
+  if (verified === undefined) throw new Error('an unauthenticated request reached the MCP factory')
+  return verified
+}
+
+/**
+ * Whether the request's client declared the MCP Apps extension.
+ *
+ * Only a modern-era request says: its envelope carries the client's
+ * capabilities, and `extensions["io.modelcontextprotocol/ui"]` is the
+ * declaration. Anything else — a legacy frame, an envelope without the key
+ * — is "unknown", and unknown is admitted; see `Verified.ui`.
+ */
+function rendersApps(params: unknown): boolean {
+  const meta = (params as { _meta?: Record<string, unknown> } | undefined)?._meta
+  const capabilities = meta?.['io.modelcontextprotocol/clientCapabilities'] as
+    | { extensions?: Record<string, unknown> }
+    | undefined
+  if (capabilities === undefined) return true
+  return capabilities.extensions?.['io.modelcontextprotocol/ui'] !== undefined
+}
+
+async function readBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
@@ -207,8 +239,7 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
     if (size > MAX_BODY_BYTES) throw new Error('body too large')
     chunks.push(chunk as Buffer)
   }
-  if (chunks.length === 0) return undefined
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  return Buffer.concat(chunks)
 }
 
 function rpcError(id: unknown, code: number, message: string): Record<string, unknown> {
@@ -279,129 +310,6 @@ function notServed(res: ServerResponse, options: McpOptions): void {
 }
 
 /**
- * Streamable HTTP, one endpoint, no session.
- *
- * There is no `initialize`, no `Mcp-Session-Id`, and nothing kept between
- * requests — which is what lets any replica behind a round-robin balancer serve
- * any request. A tool that needs state between calls returns an explicit
- * descriptor and takes it back as an argument; hidden state in the transport
- * would quietly reintroduce the affinity the deployment model rules out.
- */
-export function createMcpServer(options: McpOptions): Server {
-  return createServer((req, res) => {
-    void handle(req, res, options).catch(() => {
-      if (!res.headersSent) send(res, 500, rpcError(null, -32603, 'Internal error'))
-    })
-  })
-}
-
-/**
- * `HeaderMismatch`, from the sub-range the specification reserves for
- * protocol-defined errors. It covers a missing required header as well as one
- * that disagrees with the body — both are "the headers do not describe this
- * request", and a client reads the code to tell a modern server from a legacy
- * one before deciding whether to fall back.
- */
-const HEADER_MISMATCH = -32020
-
-/** The three methods that name something, and where the name lives. */
-const NAMED_METHODS: Record<string, 'name' | 'uri'> = {
-  'tools/call': 'name',
-  'prompts/get': 'name',
-  'resources/read': 'uri',
-}
-
-
-/**
- * `UnsupportedProtocolVersionError`, which the schema pins at -32022 and
- * requires to carry both halves of the disagreement.
- *
- * Listing what this server *does* speak is the part that matters: a bare
- * refusal leaves a client with nothing to retry, and the whole point of naming
- * a version is that the other side can pick another one.
- */
-const UNSUPPORTED_VERSION = -32022
-
-/**
- * Decode the Base64 sentinel a client uses for a value that is not header-safe.
- *
- * `=?base64?…?=`, lower case and exact — a value that merely looks like one is
- * required to be encoded too, so treating the markers as a hint rather than a
- * format would let a plain string impersonate an encoded one.
- */
-function decodeHeaderValue(value: string): string {
-  if (!value.startsWith('=?base64?') || !value.endsWith('?=')) return value
-  const inner = value.slice('=?base64?'.length, -'?='.length)
-  try {
-    return Buffer.from(inner, 'base64').toString('utf8')
-  } catch {
-    return value
-  }
-}
-
-/**
- * Whether the mirrored headers describe this body, and what is wrong if not.
- *
- * Three comparisons: the protocol version against `_meta`, `Mcp-Method` against
- * the method, and `Mcp-Name` against the field the method names — the last only
- * on the three methods that name something, because requiring it everywhere
- * refuses a `tools/list` no client can make any other way.
- *
- * Every one is "when present". Absent is not a mismatch, and that is the branch
- * the binding sanctions for a server supporting clients older than 2025-06-18;
- * see docs/mcp-conformance.md. What is refused is a header that *disagrees*.
- */
-function headerMismatch(
-  headers: IncomingMessage['headers'],
-  rpc: { method: string; params?: unknown; _meta?: unknown },
-): string | undefined {
-  // The version the body carries, when it carries one. The binding puts it in
-  // `_meta` under a reversed-domain key and requires the header to agree — the
-  // same rule as `Mcp-Method`, and it was the one comparison still missing
-  // after the others went in. A header that says one revision while the body
-  // says another is two components acting on different instructions, which is
-  // the entire reason any of these are mirrored.
-  const declaredVersion = headers['mcp-protocol-version']
-  const meta = (rpc._meta ?? {}) as Record<string, unknown>
-  const bodyVersion = meta['io.modelcontextprotocol/protocolVersion']
-  if (
-    typeof declaredVersion === 'string' &&
-    typeof bodyVersion === 'string' &&
-    declaredVersion !== bodyVersion
-  ) {
-    return (
-      `Header mismatch: MCP-Protocol-Version header value '${declaredVersion}' does not match ` +
-      `body value '${bodyVersion}'`
-    )
-  }
-
-  const declared = headers['mcp-method']
-  if (typeof declared === 'string' && declared !== rpc.method) {
-    return `Header mismatch: Mcp-Method header value '${declared}' does not match body value '${rpc.method}'`
-  }
-
-  const field = NAMED_METHODS[rpc.method]
-  if (field === undefined) return undefined
-
-  const params = (rpc.params ?? {}) as Record<string, unknown>
-  const expected = params[field]
-  // Absent in the body means the call is malformed rather than the header
-  // wrong; dispatch answers that with the error the method owes.
-  if (typeof expected !== 'string') return undefined
-
-  const presented = headers['mcp-name']
-  // Absent is not a mismatch. See the note on the required-header check: these
-  // headers arrived in 2026-07-28 and no shipping client sends them yet, so
-  // demanding one refuses the request instead of protecting it. Present and
-  // disagreeing is still refused, which is the property they exist for.
-  if (typeof presented !== 'string') return undefined
-  if (decodeHeaderValue(presented) !== expected) {
-    return `Header mismatch: Mcp-Name header value does not match body value '${expected}'`
-  }
-  return undefined
-}
-
-/**
  * The origin this request arrived on, as the client wrote it.
  *
  * `Host` is what the client put in the URL bar or the config file, which is
@@ -425,7 +333,121 @@ function metadataUrlFor(req: IncomingMessage, options: McpOptions): string {
   return new URL(PROTECTED_RESOURCE_PATH, origin).toString()
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse, options: McpOptions): Promise<void> {
+/**
+ * The SDK's two faces over one factory.
+ *
+ * `modern` serves the 2026-07-28 era and refuses everything else, so the
+ * refusal a legacy-shaped request would get there is never what a legacy
+ * client sees: `isLegacyRequest` routes it to a per-request legacy transport
+ * instead, in the stateless idiom — no session id generator, so no
+ * `Mcp-Session-Id` is ever issued — and with JSON responses, because every
+ * tool here answers with a complete result and an SSE stream carrying one
+ * event and closing would be the same answer in a costlier envelope.
+ *
+ * Both are built from `buildServer`, which is the whole of the parity
+ * argument: a divergence between the eras now needs a second factory.
+ */
+interface Faces {
+  readonly modern: McpHttpHandler
+  readonly legacy: (request: Request, authInfo: AuthInfo, parsedBody: unknown) => Promise<Response>
+}
+
+function faces(options: McpOptions): Faces {
+  const factory = (ctx: McpRequestContext) => {
+    const verified = verifiedOf(ctx)
+    return buildServer({
+      auth: verified.auth,
+      requestId: () => verified.requestId,
+      ui: verified.ui,
+      layers: options.layers,
+      tools: options.tools,
+      ...(options.serverVersion === undefined ? {} : { serverVersion: options.serverVersion }),
+      ...(options.apiOrigin === undefined ? {} : { apiOrigin: options.apiOrigin }),
+      ...(options.observe === undefined ? {} : { observe: options.observe }),
+    })
+  }
+  const onerror = (error: Error): void => {
+    // Reporting only: the SDK has already answered the request. A rejected
+    // frame — a header that lies, a revision nobody speaks — is the client's
+    // to read in the reply, and `debug` here is for the operator who is
+    // asking why a client cannot connect.
+    logger.debug('mcp request rejected', { error: String(error).slice(0, 200) })
+  }
+
+  return {
+    modern: createMcpHandler(factory, {
+      legacy: 'reject',
+      responseMode: 'json',
+      maxRequestBodySize: MAX_BODY_BYTES,
+      onerror,
+    }),
+    legacy: async (request, authInfo, parsedBody) => {
+      const server = await factory({ era: 'legacy', authInfo, requestInfo: request })
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      })
+      try {
+        await server.connect(transport)
+        return await transport.handleRequest(request, { authInfo, parsedBody })
+      } finally {
+        await server.close()
+      }
+    },
+  }
+}
+
+export function createMcpServer(options: McpOptions): Server {
+  const served = faces(options)
+  return createServer((req, res) => {
+    void handle(req, res, options, served).catch((error: unknown) => {
+      logger.error('mcp request failed', { error: String(error).slice(0, 200) })
+      if (!res.headersSent) send(res, 500, rpcError(null, -32603, 'Internal error'))
+    })
+  })
+}
+
+/** What the binding has a client say it accepts, and what this server answers in either case. */
+const ACCEPT_BOTH = 'application/json, text/event-stream'
+
+/**
+ * A web-standard `Request` for the SDK, from what Node handed us.
+ *
+ * `Accept` is filled in when the client did not name `text/event-stream`.
+ * The Streamable HTTP binding has the client list both `application/json`
+ * and `text/event-stream`, and the SDK answers `406` to a POST that does not
+ * — which every shipping client satisfies, and a `curl`, an uptime check or
+ * `fetch`'s own default of any type does not. This server answers JSON on every
+ * request regardless (see `faces`), so a caller that did not ask for a
+ * stream is given the answer it was going to get anyway rather than a
+ * refusal about a header that would not have changed the reply. A caller
+ * that names `text/event-stream` is held to what it sent.
+ */
+function webRequest(req: IncomingMessage, body: Buffer): Request {
+  const headers = new Headers()
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (value === undefined) continue
+    for (const v of Array.isArray(value) ? value : [value]) headers.append(name, v)
+  }
+  if (!(headers.get('accept') ?? '').includes('text/event-stream')) headers.set('accept', ACCEPT_BOTH)
+  return new Request(new URL(req.url ?? '/', originOf(req) ?? 'http://localhost').toString(), {
+    method: req.method ?? 'POST',
+    headers,
+    body,
+    // `duplex` is required by undici for a request with a body and absent
+    // from the DOM typing of `RequestInit`, hence the cast.
+    duplex: 'half',
+  } as RequestInit)
+}
+
+/** The SDK's reply, written onto Node's response with the CORS headers already set on it. */
+async function reply(res: ServerResponse, response: Response): Promise<void> {
+  for (const [name, value] of response.headers) res.setHeader(name, value)
+  res.writeHead(response.status)
+  res.end(Buffer.from(await response.arrayBuffer()))
+}
+
+async function handle(req: IncomingMessage, res: ServerResponse, options: McpOptions, served: Faces): Promise<void> {
   const requestId = randomUUID()
 
   const path = (req.url ?? '').split('?')[0]
@@ -484,11 +506,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // browser then threw away — and `docs/config.md` said to "set it only if a
   // browser talks to this transport directly", which nothing could.
   //
-  // Found by pointing a browser at a deployed stand: the preflight came back
-  // `403 Origin not allowed` with no `Access-Control-*` header on it. The
-  // specification's own transport is built for browser clients as well as
-  // agents; this one answered none of them.
-  //
   // **Nothing changes with the list empty**, which is the default: no origin is
   // allowed, so no header below is ever emitted and a preflight is refused
   // exactly as it was.
@@ -497,7 +514,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // implementations would disagree about which headers a caller may read.
   const cors = corsHeaders(origin, options.allowedOrigins ?? [])
 
-  // Set once rather than at forty call sites. `writeHead` merges what it is
+  // Set once rather than at every call site. `writeHead` merges what it is
   // given over what was set here, and nothing below sets an `access-control-*`
   // header — so every reply from this point carries them, including the 401
   // that starts the OAuth walk and the discovery document it points at.
@@ -540,10 +557,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
     // cached: the answer depends on the `Host` this request carried, and two
     // clients reaching the same replica on two names are both entitled to a
     // document that matches the URL they used.
-    const origin = originOf(req)
+    const reached = originOf(req)
     const metadata =
-      options.resourceFromRequest !== undefined && origin !== undefined
-        ? options.resourceFromRequest(origin)
+      options.resourceFromRequest !== undefined && reached !== undefined
+        ? options.resourceFromRequest(reached)
         : options.resourceMetadata
     res.end(JSON.stringify(metadata))
     return
@@ -569,34 +586,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // revision: an older client sending them gets an answer about the request
   // rather than about its framing.
 
-  // The 2026-07-28 mirrored headers are **validated when present and never
-  // demanded**, and that is a deliberate deviation stated rather than hidden.
-  //
-  // Demanding `MCP-Protocol-Version` on every POST could not be satisfied at
-  // all. The first request a client makes is `initialize`, and at that moment
-  // no version is negotiated — it travels in `params.protocolVersion`, because
-  // that request is what negotiates it. So the header this server insisted on
-  // is one the client is not able to send, and every real client bounced off
-  // `-32020 Missing required header: mcp-protocol-version` on its very first
-  // POST. `Mcp-Method` and `Mcp-Name` are the same generation and no shipping
-  // client sends those either.
-  //
-  // A conformance stance that no existing client can satisfy is not
-  // conformance, it is a transport nobody can reach — and this product exists
-  // to be reached by agents. The protection those headers buy is in the
-  // *comparison*, not in the demand: an intermediary that routes on a header
-  // while the server executes a body must not see two different instructions.
-  // That check is below and is unchanged. Refusing the request when the header
-  // is absent bought the incompatibility and none of the protection.
-
-  const auth = await authenticate(req.headers.authorization, options.verify, '/mcp', requestId)
+  const presented = req.headers.authorization
+  const auth = await authenticate(presented, options.verify, '/mcp', requestId)
   if (auth instanceof Problem) {
     // By the kind presented, never by the reason. Same series and same labels
     // as the REST surface, or a key rotation shows up on one dashboard as two
     // unrelated shapes. `kind="service_key"` is the one that matters here:
     // this transport exists for agents, and an agent presents a service account
     // key, which no JWT rotation should ever touch.
-    const presented = req.headers.authorization
     options.observe?.authFailures.inc({
       kind:
         presented === undefined || !presented.startsWith('Bearer ')
@@ -616,71 +613,26 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
     return
   }
 
-  let body: unknown
+  let body: Buffer
   try {
     body = await readBody(req)
+  } catch {
+    send(res, 413, rpcError(null, -32600, 'Request body too large'))
+    return
+  }
+
+  let parsed: unknown
+  try {
+    parsed = body.length === 0 ? undefined : JSON.parse(body.toString('utf8'))
   } catch {
     send(res, 400, rpcError(null, -32700, 'Parse error'))
     return
   }
 
-  const rpc = body as JsonRpcRequest | undefined
+  const rpc = parsed as JsonRpcRequest | undefined
   const id = rpc?.id ?? null
   if (rpc?.jsonrpc !== '2.0' || typeof rpc.method !== 'string') {
     send(res, 400, rpcError(id, -32600, 'Invalid request'))
-    return
-  }
-
-  // The headers have to agree with the body, which is the whole reason they
-  // exist and was the half that was missing.
-  //
-  // The specification is explicit about why: intermediaries route and rate-limit
-  // on the header while the server executes the body, so a request whose two
-  // halves disagree is one where the balancer and the server acted on different
-  // instructions. Demanding the headers and never comparing them bought the
-  // incompatibility and none of the protection.
-  const mismatch = headerMismatch(req.headers, { method: rpc.method, params: rpc.params, _meta: rpc._meta })
-  if (mismatch !== undefined) {
-    send(res, 400, rpcError(id, HEADER_MISMATCH, mismatch))
-    return
-  }
-
-  // A revision this server does not speak is refused with the list of the ones
-  // it does — `400` and -32022, both pinned by the schema.
-  //
-  // The *header* only. `initialize`'s `params.protocolVersion` is a proposal
-  // and is answered by counter-offering, which is what the handshake is for;
-  // refusing it there would turn a negotiation into a failure. The header is a
-  // different statement: it says which revision's transport rules this request
-  // was framed by, and if that is one we cannot read then nothing below can be
-  // trusted to mean what it appears to.
-  const framing = req.headers['mcp-protocol-version']
-  if (typeof framing === 'string' && !(PROTOCOL_VERSIONS as readonly string[]).includes(framing)) {
-    send(res, 400, {
-      jsonrpc: '2.0',
-      id,
-      error: {
-        code: UNSUPPORTED_VERSION,
-        message: 'Unsupported protocol version',
-        data: { supported: [...PROTOCOL_VERSIONS], requested: framing },
-      },
-    })
-    return
-  }
-
-  // A notification has no `id` and takes no result. `notifications/initialized`
-  // is the third leg of the handshake and every client sends it immediately
-  // after `initialize`; answering it with `-32601` makes a client that just
-  // connected believe it did not.
-  //
-  // 202 with an empty body is what the specification asks for, and it is
-  // returned for any `notifications/*` rather than for a list of known ones: a
-  // notification this server does not understand is by definition one it may
-  // ignore, and refusing it would be inventing an error the sender cannot act
-  // on.
-  if (rpc.method.startsWith('notifications/')) {
-    res.writeHead(202)
-    res.end()
     return
   }
 
@@ -693,187 +645,37 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
     return
   }
 
-  switch (rpc.method) {
-    // The handshake. It had never been implemented, and the comment above this
-    // server said so as though it were a consequence of being stateless: "there
-    // is no `initialize`, no `Mcp-Session-Id`, and nothing kept between
-    // requests". Two different things got removed together. Statelessness is
-    // real and is what lets any replica serve any request. `initialize` is not
-    // state — it is how a client learns the protocol version and what this
-    // server can do, and it is answered here without remembering anything: no
-    // session id is issued, and nothing about this request is kept.
-    //
-    // Without it every client failed on its first POST, so **no standard MCP
-    // client had ever connected over Streamable HTTP**. The suite could not see
-    // it because the suite called `tools/list` directly, which is the second
-    // request a client makes and never the first.
-    case 'initialize': {
-      const asked = (rpc.params as { protocolVersion?: unknown } | undefined)?.protocolVersion
-      // Echo what the client asked for when this server speaks it, and
-      // otherwise counter-offer the newest **legacy** revision — never the
-      // newest revision outright.
-      //
-      // That distinction is the whole of this fix. Answering with
-      // `PROTOCOL_VERSIONS[0]` is what the handshake reads like it should do,
-      // and it broke every real client: the current SDK's
-      // `SUPPORTED_PROTOCOL_VERSIONS` tops out at `2025-11-25`, so a client
-      // proposing that got `2026-07-28` back and threw
-      // `Server's protocol version is not supported: 2026-07-28` — a
-      // connection refused by the client, on a version the server offered it.
-      //
-      // A counter-offer is only useful if the other side can take it, and
-      // anything arriving on `initialize` is by definition a legacy client
-      // with no way to fall forward. The newest revision it might know is the
-      // newest one in the legacy list, so that is what it is offered.
-      send(res, 200, { jsonrpc: '2.0', id, result: initializeResult(asked, options.serverVersion) })
-      return
-    }
-
-    // The modern era's entry point, and a MUST for any server claiming this
-    // revision: "Servers MUST implement server/discover."
-    //
-    // It is `initialize` with the handshake taken out. A modern client sends no
-    // `initialize` and negotiates nothing — it names a version on every request
-    // — so what it needs up front is the list of versions to pick from and the
-    // capabilities to expect. Both are static here, which is why this answers
-    // without touching a dependency and why `cacheScope` is `public`: unlike
-    // `tools/list`, nothing in this result depends on who is asking.
-    //
-    // Authenticated, like everything else on this endpoint. A client probing
-    // before it holds a token gets the same `401` and the same pointer at the
-    // metadata document that any other method gets, which is the flow rather
-    // than an obstacle to it.
-    case 'server/discover': {
-      send(res, 200, { jsonrpc: '2.0', id, result: discoverResult(options.serverVersion) })
-      return
-    }
-
-    // A MUST-respond for both parties in every revision, and the arm this
-    // dispatcher was missing: STDIO answered ping and this one fell through
-    // to the 404 below, so a client's keep-alive dropped the very connection
-    // it was checking. The result is built in results.ts like the others.
-    case 'ping': {
-      send(res, 200, { jsonrpc: '2.0', id, result: pingResult() })
-      return
-    }
-
-    case 'tools/list': {
-      // A bounded page: the search description names a handful of layers and
-      // says there are more, rather than interpolating a catalog that is a
-      // million entries on the installations layers are sold for.
-      const page = await options.layers.forCaller(auth, { limit: CATALOG_SAMPLE })
-      const tools: ToolDefinition[] = [
-        ...catalog(page.layers, { more: page.nextCursor !== null }),
-      ]
-      send(res, 200, { jsonrpc: '2.0', id, result: toolsListResult(tools) })
-      return
-    }
-
-    case 'tools/call': {
-      const params = (rpc.params ?? {}) as { name?: unknown; arguments?: unknown }
-      if (typeof params.name !== 'string') {
-        send(res, 400, rpcError(id, -32602, 'Invalid params'))
+  // Same limiter, same policies, same keys as REST. On the tools that spend a
+  // budget, and only for a name the catalog has: an unknown tool goes to the
+  // SDK and gets its answer about the tool, because a 429 on a tool that does
+  // not exist would confirm it does.
+  if (rpc.method === 'tools/call' && options.limits !== undefined && options.limitPolicies !== undefined) {
+    const name = (rpc.params as { name?: unknown } | undefined)?.name
+    const definition = typeof name === 'string' ? dispatchCatalog().find((t) => t.name === name) : undefined
+    const resource = definition === undefined ? undefined : resourceForTool(definition.name)
+    if (resource !== undefined) {
+      const decision = await options.limits.check(auth.orgId, resource)
+      if (!decision.allowed) {
+        send(
+          res,
+          429,
+          rpcError(id, -32003, `Rate limit exceeded. Try again in ${decision.reset} seconds.`),
+          limitHeaders(decision, options.limitPolicies[resource], resource),
+        )
         return
       }
-
-      // Dispatch needs a tool's name and permission, and neither depends on
-      // the caller's layers — only the search *description* does, and nothing
-      // reads a description while dispatching. The full-catalog read that used
-      // to sit here made every tool call pay for a listing it never used.
-      const definition = dispatchCatalog().find((t) => t.name === params.name)
-      if (definition === undefined) {
-        // A result and not a 404: on this transport a 404 means "your session
-        // is gone" and a client drops the connection. See callToolError.
-        send(res, 200, { jsonrpc: '2.0', id, result: callToolError() })
-        return
-      }
-
-      // Same limiter, same policies, same keys as REST. Checked after the
-      // catalog lookup so an unknown tool is still indistinguishable from one
-      // this caller may not see — a 429 on a tool that does not exist would
-      // confirm it does.
-      const resource = resourceForTool(definition.name)
-      if (resource !== undefined && options.limits !== undefined && options.limitPolicies !== undefined) {
-        const decision = await options.limits.check(auth.orgId, resource)
-        if (!decision.allowed) {
-          send(
-            res,
-            429,
-            rpcError(id, -32003, `Rate limit exceeded. Try again in ${decision.reset} seconds.`),
-            limitHeaders(decision, options.limitPolicies[resource], resource),
-          )
-          return
-        }
-      }
-
-      const started = process.hrtime.bigint()
-      try {
-        const result = await options.tools.call(
-          definition.name,
-          (params.arguments ?? {}) as Record<string, unknown>,
-          auth,
-          requestId,
-        )
-
-        const seconds = Number(process.hrtime.bigint() - started) / 1e9
-        options.observe?.toolDuration.observe(seconds, { tool: definition.name })
-        options.observe?.toolCalls.inc({ tool: definition.name, result: 'ok' })
-
-        // Zero results on a search is what a denial looks like here: invariant 4
-        // makes an invisible layer indistinguishable from an absent one, so
-        // there is no 403 to count. Same reason and same reason string as the
-        // REST surface, or the two do not add up on one dashboard.
-        if (definition.name === 'search' && Array.isArray(result) && result.length === 0) {
-          options.observe?.aclDenials.inc({ reason: 'search_empty' })
-        }
-
-        // A CallToolResult, not the bare value. The protocol requires
-        // `content` to be a list of content blocks, and a client that follows
-        // it rejects anything else — this server answered with the raw array
-        // and no compliant client could read a single result from it. The
-        // product's claim is that agents reach it over MCP; the shape of this
-        // object is the whole of that claim in practice.
-        send(res, 200, { jsonrpc: '2.0', id, result: callToolResult(result) })
-      } catch (error) {
-        options.observe?.toolDuration.observe(
-          Number(process.hrtime.bigint() - started) / 1e9,
-          { tool: definition.name },
-        )
-        options.observe?.toolCalls.inc({ tool: definition.name, result: 'error' })
-
-        // Nothing about what failed reaches the caller. A tool error that names
-        // a layer tells them the layer exists, which is the leak invariant I4
-        // is about, and an unknown tool must answer the same way.
-        //
-        // Logged here, though: without this a database that is down looks
-        // exactly like a tool that does not exist, from both ends at once —
-        // the caller is told nothing, by design, and the operator was told
-        // nothing either.
-        logger.error('tool call failed', { tool: definition.name,
-            request_id: requestId,
-            error: String(error) })
-
-        // One carve-out, and it is about the caller's own arguments rather than
-        // about anything stored. A `MetadataError` says a key is not a legal
-        // name, or a value is not a scalar, or a list is empty — facts the
-        // caller already had, naming nothing they did not send. Answering "not
-        // found" to a typo in a filter key leaves an agent retrying the same
-        // malformed call forever, because the one thing it cannot learn from
-        // that answer is that its arguments were wrong.
-        //
-        // Nothing else is separated out. The moment an error is about what
-        // exists, it goes back into the single answer above.
-        if (error instanceof MetadataError) {
-          send(res, 200, { jsonrpc: '2.0', id, result: callToolError(error.message) })
-          return
-        }
-
-        send(res, 200, { jsonrpc: '2.0', id, result: callToolError() })
-      }
-      return
     }
-
-    default:
-      send(res, 404, rpcError(id, -32601, 'Not found'))
   }
+
+  const token = presented?.startsWith('Bearer ') === true ? presented.slice(7) : ''
+  const authInfo = authInfoFor({ auth, requestId, ui: rendersApps(rpc.params) }, token)
+  const request = webRequest(req, body)
+
+  // The era decides the face, and the SDK decides the era — from the `_meta`
+  // envelope and the mirrored headers, by the same rules it then enforces.
+  const legacy = await isLegacyRequest(request, parsed)
+  const response = legacy
+    ? await served.legacy(request, authInfo, parsed)
+    : await served.modern.fetch(request, { authInfo, parsedBody: parsed })
+  await reply(res, response)
 }
