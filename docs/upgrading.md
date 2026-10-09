@@ -285,6 +285,24 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.36.0 — the administrative MCP's read panels
+
+**No migration and nothing to configure.** Four reads on `/mcp/admin` open a
+panel in a client that renders MCP Apps — the access log, connections,
+effective access, and a new read tool, `layer_status`, for one layer's health.
+A client that does not render them gets the same answers as text, exactly as
+before.
+
+An administrative connection approved before this release is offered
+`layer_status` and the panels on its next `tools/list`; nothing about what it
+may do changed. The Connections panel's Revoke is the existing
+`revoke_connection` proposal, applied by the person like any other.
+
+The built-in guide and the default skill change by two sentences, so an agent
+updating a document it found sends that document's own `external_id` rather
+than inventing one. An organization that wrote its own skill keeps it; the guide
+reaches everybody.
+
 ### 0.35.0 — notifications and alert rules on the administrative MCP
 
 **Migration 0040, and nothing new to configure.** It adds `notifications`, an

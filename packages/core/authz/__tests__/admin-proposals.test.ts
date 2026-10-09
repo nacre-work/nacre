@@ -452,6 +452,19 @@ when('adversarial · a change on the administrative MCP waits for a person', () 
       const write = tools.find((t) => t.name === 'issue_grant')
       expect((write?._meta as { ui?: { resourceUri?: string } } | undefined)?.ui?.resourceUri).toBe('ui://nacre/change.html')
       expect(write?.annotations?.destructiveHint).toBe(true)
+      // The four reads that open a panel, and which.
+      for (const [read, view] of [['query_audit', 'audit'], ['list_connections', 'connections'], ['effective_access', 'access'], ['layer_status', 'layer']]) {
+        const tool = tools.find((t) => t.name === read)
+        expect((tool?._meta as { ui?: { resourceUri?: string } } | undefined)?.ui?.resourceUri, read).toBe(`ui://nacre/${view as string}.html`)
+      }
+      // Every panel is listed with no network of its own: it reaches the
+      // server through the host and nothing else.
+      const resources = (await client.listResources()).resources
+      for (const view of ['change', 'audit', 'connections', 'access', 'layer']) {
+        const listed = resources.find((r) => r.uri === `ui://nacre/${view}.html`)
+        expect(listed, view).toBeDefined()
+        expect((listed?._meta as { ui?: { csp?: { connectDomains?: string[] } } } | undefined)?.ui?.csp?.connectDomains, view).toEqual([])
+      }
     } finally {
       await client.close()
     }

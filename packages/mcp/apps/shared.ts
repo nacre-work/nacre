@@ -105,6 +105,8 @@ export const STYLE = `
 
   /* ─── Tables ─────────────────────────────────────────────────────── */
   .table-wrap { overflow-x: auto; }
+  /* Prose after a table is about the table: a gap, so it does not read as its last row. */
+  .table-wrap + .facts-line { margin-top: 8px; }
   .table { width: 100%; border-collapse: collapse; background: var(--n-surface); border: 1px solid var(--n-border-color); border-radius: var(--n-radius); }
   .table th, .table td { padding: 8px 12px; text-align: left; vertical-align: top; }
   .table thead th { font-family: var(--n-font-mono); font-weight: 400; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--n-text-faint); border-bottom: 1px solid var(--n-rule); background: var(--n-surface-sunk); white-space: nowrap; }
@@ -121,6 +123,42 @@ export const STYLE = `
      engineeri/ng reads as two things. */
   .slug { font-family: var(--n-font-mono); font-size: 12.5px; background: var(--n-surface-sunk); border: 1px solid var(--n-border-color); border-radius: var(--n-radius); padding: 1px 6px; white-space: nowrap; word-break: normal; }
   .snippet-text { white-space: pre-wrap; max-height: 6.5em; overflow: hidden; font-size: 13px; color: var(--n-text-muted); }
+
+  /* ─── Chips: the console's own, for the administrative panels ───── */
+  /* The permission colours carry information rather than mood, which is why
+     they are the console's exactly: read, write, admin and deny mean the same
+     thing in a panel as on a screen. A neutral outcome is ringed and unfilled,
+     and an error is the error colour rather than deny's — the same hex, and a
+     different statement. One width down a column, from the longest value. */
+  .chip { --n-chip-pad: 10px; display: inline-block; padding: 2px var(--n-chip-pad); border-radius: var(--n-radius-pill); font-family: var(--n-font-mono); font-size: 12px; line-height: 18px; color: var(--n-pearl-000); white-space: nowrap; }
+  .chip-read { background: var(--n-read); }
+  .chip-write { background: var(--n-write); }
+  .chip-admin { background: var(--n-admin); }
+  .chip-deny { background: var(--n-deny); }
+  .chip-plain { background: none; color: var(--n-text-muted); box-shadow: inset 0 0 0 1px var(--n-border-color); }
+  .chip-error { background: none; color: var(--n-error); box-shadow: inset 0 0 0 1px var(--n-error); }
+  .table td > .chip { min-width: calc(5ch + 2 * var(--n-chip-pad)); text-align: center; }
+  .chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+  .facts-line { margin: 0 0 12px; font-size: 13px; color: var(--n-text-muted); }
+  .facts-line .sub { display: block; margin-top: 2px; }
+  code.ident { word-break: normal; overflow-wrap: normal; }
+  .facts-line b { color: var(--n-text); font-weight: 600; }
+  /* A person, pressable to narrow to them. The whole name is the control,
+     as on the console's Access log: a second control in the same cell would
+     be a target six pixels from another one. */
+  .narrow { appearance: none; background: none; border: 0; padding: 0; margin: 0; font: inherit; color: var(--n-text); text-align: left; cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; touch-action: manipulation; }
+  .narrow:focus-visible { outline: 2px solid var(--n-accent); outline-offset: 2px; }
+  /* A change proposed from inside a panel: the server's sentence and the
+     person's two buttons. Nothing has changed while this box is open. */
+  .confirm { margin: 12px 0 0; padding: 12px; border: 1px solid var(--n-border-color); border-left: 3px solid var(--n-accent); border-radius: var(--n-radius); background: var(--n-surface-sunk); }
+  .confirm > p { margin: 0 0 10px; }
+  .confirm > p.what { font-weight: 600; }
+  .confirm > .row { margin: 0; }
+  .stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+  .stat { flex: 1 1 7em; padding: 8px 12px; border: 1px solid var(--n-border-color); border-radius: var(--n-radius); background: var(--n-surface); }
+  .stat b { display: block; font-family: var(--n-font-mono); font-size: 18px; font-weight: 400; }
+  .stat span { font-family: var(--n-font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--n-text-faint); }
+  h2 { font-family: var(--n-font-display); font-weight: 700; font-size: 15px; margin: 16px 0 8px; }
 
   /* ─── Status ─────────────────────────────────────────────────────── */
   .status { margin: 10px 0 0; font-size: 13px; color: var(--n-text-muted); }
@@ -171,6 +209,140 @@ export async function call(
     return { ok: true, value: text }
   }
 }
+
+/**
+ * A tool's answer with its `_meta` — what a write hands the panel and nothing
+ * the model reads: the proposal's id and the key its Apply presents.
+ */
+export async function callWithMeta(
+  app: App,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ ok: true; value: unknown; meta: Record<string, unknown> } | { ok: false; message: string }> {
+  const result = await app.callServerTool({ name, arguments: args })
+  const text = result.content
+    .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
+    .map((c) => c.text)
+    .join('')
+  if (result.isError === true) return { ok: false, message: text || 'The call failed.' }
+  let value: unknown = text
+  try {
+    value = JSON.parse(text)
+  } catch {
+    // A sentence rather than JSON; returned as it is.
+  }
+  return { ok: true, value, meta: (result._meta ?? {}) as Record<string, unknown> }
+}
+
+/**
+ * A change proposed from inside a panel, decided in the same place.
+ *
+ * The write tool proposes, as it does when the model calls it; what differs is
+ * who reads the answer. The server's own sentence goes in a box with the
+ * person's Apply and Cancel under it, and the key Apply presents comes from
+ * the result's `_meta`, which this panel reads and the model is not shown. A
+ * host that drops `_meta` leaves the proposal on the console's Proposals
+ * screen, and the box says so rather than offering a button it cannot honour.
+ */
+export async function proposeHere(
+  app: App,
+  host: HTMLElement,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<'applied' | 'cancelled' | 'refused' | 'waiting'> {
+  for (const old of host.querySelectorAll('.confirm')) old.remove()
+  const answer = await callWithMeta(app, tool, args)
+  if (!answer.ok) {
+    status(host, answer.message, 'error')
+    return 'refused'
+  }
+  const proposed = (answer.value ?? {}) as { proposed?: string }
+  const meta = answer.meta['nacre/proposal'] as { id?: string; key?: string } | undefined
+  const box = el('div', { class: 'confirm' }, el('p', { class: 'what' }, proposed.proposed ?? 'A change is proposed.'))
+  host.append(box)
+  if (typeof meta?.id !== 'string' || typeof meta.key !== 'string') {
+    box.append(el('p', { class: 'muted' }, "Nothing has changed. It waits on the console's Proposals screen, where you can apply it."))
+    return 'waiting'
+  }
+  const { id, key } = meta
+  box.append(el('p', { class: 'muted' }, 'Nothing has changed yet.'))
+  const apply = el('button', { type: 'button', class: 'btn btn-primary' }, 'Apply')
+  const cancel = el('button', { type: 'button', class: 'btn' }, 'Cancel')
+  box.append(el('div', { class: 'row' }, apply, cancel))
+  return new Promise((resolve) => {
+    const decide = (name: 'apply_proposal' | 'cancel_proposal'): void => {
+      apply.disabled = true
+      cancel.disabled = true
+      void (async () => {
+        const done = await call(app, name, { proposal: id, key })
+        if (!done.ok) {
+          box.replaceChildren(el('p', {}, done.message))
+          box.dataset.kind = 'error'
+          resolve('refused')
+          return
+        }
+        box.replaceChildren(el('p', {}, name === 'apply_proposal' ? 'Applied.' : 'Cancelled. Nothing changed.'))
+        resolve(name === 'apply_proposal' ? 'applied' : 'cancelled')
+      })()
+    }
+    apply.addEventListener('click', () => decide('apply_proposal'))
+    cancel.addEventListener('click', () => decide('cancel_proposal'))
+  })
+}
+
+/** A result's JSON, or a sentence saying it could not be read. */
+export function parsed<T>(result: { readonly content: readonly { readonly type: string; readonly text?: string | undefined }[]; readonly isError?: boolean | undefined }): { ok: true; value: T } | { ok: false; message: string } {
+  const text = result.content
+    .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
+    .map((c) => c.text)
+    .join('')
+  if (result.isError === true) return { ok: false, message: text || 'The call failed.' }
+  try {
+    return { ok: true, value: JSON.parse(text) as T }
+  } catch {
+    return { ok: false, message: 'The result could not be read.' }
+  }
+}
+
+/**
+ * A moment as a `Date`, from ISO 8601 or from Postgres's own text form —
+ * `2026-10-09 11:52:00.000+00`, which `Date` refuses for its space and its
+ * two-digit offset, so a timestamp read as `::text` would otherwise print raw.
+ */
+const instant = (value: string): Date => {
+  const iso = value.includes('T') ? value : value.replace(' ', 'T')
+  return new Date(/[+-]\d\d$/u.test(iso) ? `${iso}:00` : iso)
+}
+
+/** A moment, short and in the reader's locale. */
+export const when = (value: string | null | undefined, style: 'medium' | 'short' = 'medium'): string => {
+  if (value === null || value === undefined) return '—'
+  const at = instant(value)
+  if (Number.isNaN(at.getTime())) return value
+  return style === 'short'
+    ? at.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : at.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+/**
+ * An identifier that may break only where a reader would: after an underscore
+ * or a dot. `ingest_document` across two lines reads as one word wrapped;
+ * `ingest_docum` / `ent` reads as two things, which is what `code`'s
+ * `break-all` did to an action name in a narrow panel.
+ */
+export const identifier = (value: string): HTMLElement => {
+  const node = el('code', { class: 'ident' })
+  const parts = value.split(/(?<=[_.])/u)
+  parts.forEach((part, i) => {
+    node.append(part)
+    if (i < parts.length - 1) node.append(el('wbr'))
+  })
+  return node
+}
+
+/** A permission, as the chip the console draws it with. */
+export const permissionChip = (permission: string): HTMLElement =>
+  el('span', { class: `chip ${['read', 'write', 'admin', 'deny'].includes(permission) ? `chip-${permission}` : 'chip-plain'}` }, permission)
 
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,

@@ -1,11 +1,11 @@
 # The administrative MCP
 
-> **Reads since 0.32.0, writes since 0.34.0, notifications since 0.35.0.** The
-> resource, its audience and consent, the guide, every read tool, the access log
-> and the four prompts were served first; proposals, the change panel, the
-> console's Proposals screen, the write tools and the extension point followed;
-> then notifications and alert rules. The other panels are the contract the rest
-> is written to. "Current state" at the end says exactly which is which.
+> **Reads since 0.32.0, writes since 0.34.0, notifications since 0.35.0, panels
+> since 0.36.0.** The resource, its audience and consent, the guide, every read
+> tool, the access log and the four prompts were served first; proposals, the
+> change panel, the console's Proposals screen, the write tools and the extension
+> point followed; then notifications and alert rules; then the four read panels.
+> "Current state" at the end says what arrived when.
 
 An organization's administrator does their work in the console: people, groups,
 layers, grants, skills, the access log. An agent can do most of it from a
@@ -119,7 +119,7 @@ time, so the method is ours rather than whatever an agent improvises:
 | `access-review` | window (default 7 days) | who read what by layer, new grants and revocations, denials by principal, anything a disabled person or a revoked connection touched |
 | `who-read` | a document, a window | every read of it, by whom and through which connection |
 | `why-denied` | a person or service account, a layer | their effective access on the layer, the grants and denies that decide it, the denials in the log |
-| `layer-health` | a layer | documents failed and why, pending, the model and any reindex, and what a retry would change |
+| `layer-health` | a layer | documents failed and why, pending, the model and any reindex, and which failures come back by themselves |
 
 A prompt reads and explains; any change it suggests is a proposal like any
 other. Declaring `prompts` is a capability this surface has and the ordinary
@@ -181,7 +181,7 @@ through a proposal.
 |---|---|---|
 | People | `list_people`, `list_service_accounts` | `create_person` (no password), `set_person_role` (`member` / `org_admin`), `disable_person`, `enable_person` |
 | Groups | `list_groups`, `get_group` | `create_group`, `delete_group`, `add_group_member`, `remove_group_member` |
-| Workspaces and layers | `list_workspaces`, `list_layers` | `create_workspace`, `create_layer`, `update_layer` (name, description), `delete_layer` |
+| Workspaces and layers | `list_workspaces`, `list_layers`, `layer_status` | `create_workspace`, `create_layer`, `update_layer` (name, description), `delete_layer` |
 | Grants | `list_grants` by principal or scope, `effective_access` | `issue_grant`, `revoke_grant` |
 | Skills | `list_skills`, `get_skill` — returned as material under review, see above | `write_skill`, `restore_skill`, `clear_skill`, for the organization's skill and a layer's |
 | Connections | `list_connections` | `revoke_connection` |
@@ -323,16 +323,49 @@ was removed finds no tool, and is refused rather than queued for nobody.
 
 ## Panels
 
-| Panel | What it shows |
-|---|---|
-| Change | the proposed change, in full, with Apply and Cancel |
-| Skill | as [skills.md](./skills.md), with versions, comparison and restore |
-| Access | a matrix of people, groups and service accounts against layers, in the permission colours, computed by the resolver — "who sees `contracts`", "what does Petya see" |
-| Layer | documents indexed, pending and failed; failures with their reason and a retry; the model, a reindex's progress, the recall gate |
-| Access log | the rows, filterable, an actor pressed to narrow to them |
-| Connections | who has connected what, as whom, with which ceiling, and a revoke |
+A panel is an MCP App view the host renders beside the answer, and it reaches
+the server through the host with the same connection and nothing else: every
+one is listed with no network of its own. Four open from a read and one from a
+write.
 
-Drawn in the brand like the existing three, with the host deciding light or dark.
+| Panel | Opened by | What it shows |
+|---|---|---|
+| Change | every write | the proposed change, in the server's own sentence, with Apply and Cancel |
+| Access log | `query_audit` | the rows the model was handed, newest first — the action, who, the result in one column of one size; an actor pressed narrows to that actor, and More reads the next page |
+| Connections | `list_connections` | who has connected what, as whom, through which surface, with which ceiling, and when it was last used; Revoke proposes `revoke_connection` from the panel |
+| Access | `effective_access` | one principal's reach as a matrix of layers against `read`, `write` and `admin` in the permission colours, computed by the resolver search uses, with the grants that decide it; anybody else can be asked from the panel |
+| Layer | `layer_status` | documents indexed, pending and failed; the most recent failures with their reason and whether each comes back by itself; the model, a reindex's progress, the recall gate |
+
+**A press in a panel is a proposal like the model's.** Revoke calls the same
+write the model would, the server's sentence appears under the table, and the
+person applies it with the key the result handed the panel — so a panel adds no
+path that skips the person, and nothing a panel does is anything the model could
+not have proposed.
+
+**The Access panel is one principal against every layer**, not every principal
+against one layer. "What does Petya see" is one call to the resolver; "who sees
+`contracts`" is one call per principal, and a panel that made them would be
+issuing reads nobody asked for. The model answers the second from `list_grants`
+on the scope and `effective_access` for whoever it names, and cites both.
+
+**The Layer panel offers nothing to press.** Retrying a failed document is a
+write on its layer, and this surface's connection holds `read` and `admin` but
+not `write`, because it changes no documents — so a Retry here would be refused
+on every press. A failure the worker retries by itself says so; one that will
+not says that instead, and the answer to it is fixing the cause and re-sending
+the document, or `POST /v1/documents/{id}/retry` by somebody who may write to
+the layer. Widening the ceiling of every administrative connection already
+approved, to add one button, is not a trade this surface makes.
+
+**There is no skill panel here**, deliberately. On this surface a skill is
+material under review — it was written by somebody with less authority than the
+administrator the session acts for — and rendering its Markdown inside that
+session is the presentation the review notice exists to avoid. A skill is read,
+compared and restored on the console's Skills screen, and a proposed write to one
+is shown in the change panel like any other.
+
+Drawn in the brand like the ordinary surface's views, with the host deciding
+light or dark, and rendered at 600 and 390 in both themes by `lint:apps`.
 
 ## Commercial modules add tools here
 
@@ -421,4 +454,11 @@ what an injection attempt looks like from the outside.
 - The `oauth.consent` event records which surface a connection is for, which the
   `admin_connection` rule reads.
 
-**Specified, not built:** the other panels.
+**Built in 0.36.0** — the read panels:
+
+- `ui://nacre/audit.html`, `connections.html`, `access.html` and `layer.html`,
+  opened by `query_audit`, `list_connections`, `effective_access` and the new
+  read tool `layer_status`, each listed with an empty `connectDomains`.
+- Revoke in the Connections panel, as a proposal applied with the panel's key.
+
+Nothing here is specified and unbuilt.

@@ -73,6 +73,14 @@ class Refusal {
   }
 }
 
+/** A fixture answer carrying `_meta` — what a write hands a panel and the model is not shown. */
+class WithMeta {
+  constructor(value, meta) {
+    this.value = value
+    this.meta = meta
+  }
+}
+
 const PROPOSED = {
   proposed: 'Give the person dana@example.com read on the layer handbook.',
   details: [
@@ -120,6 +128,118 @@ const LAYER_ROWS = (from, n) =>
     description: i % 3 === 0 ? 'Policies, handbooks and the things people look up twice a year.' : '',
     documentCount: 10 + i,
   }))
+
+const ACTORS = {
+  dana: { type: 'user', id: 'a1b2c3d4-0000-4000-8000-000000000001', name: 'dana@example.com' },
+  ingest: { type: 'service_account', id: 'a1b2c3d4-0000-4000-8000-000000000002', name: 'nightly-ingest' },
+  system: { type: 'system', id: null, name: null },
+}
+const EVENT = (actor, action, result, minutesAgo, connection = null) => ({
+  at: new Date(Date.UTC(2026, 9, 9, 12, 0) - minutesAgo * 60_000).toISOString(),
+  actor,
+  action,
+  result,
+  surface: actor.type === 'system' ? 'system' : 'mcp',
+  connection,
+  target: {},
+  detail: {},
+})
+const AUDIT_WINDOW = { from: '2026-10-02T12:00:00.000Z', to: '2026-10-09T12:00:00.000Z' }
+const AUDIT_ALL = [
+  EVENT(ACTORS.dana, 'search', 'allow', 4, 'connection:c1'),
+  EVENT(ACTORS.ingest, 'ingest_document', 'allow', 9),
+  EVENT(ACTORS.dana, 'get_document', 'deny', 15, 'connection:c1'),
+  EVENT(ACTORS.system, 'proposal.expired', 'allow', 22),
+]
+const AUDIT_MORE = [EVENT(ACTORS.ingest, 'ingest_document', 'error', 40)]
+
+const CONNECTIONS = (revoked) => ({
+  notice: 'Names were written by people.',
+  connections: [
+    {
+      id: 'c1',
+      application: 'Claude',
+      administrative: false,
+      acts_as: { person: 'dana@example.com' },
+      approved_by: 'dana@example.com',
+      approver_disabled: false,
+      ceiling: ['read'],
+      layers: 'every layer the person reaches',
+      created_at: '2026-10-01T09:00:00.000Z',
+      last_refreshed_at: '2026-10-09T11:40:00.000Z',
+      revoked,
+    },
+    {
+      id: 'c2',
+      application: 'Claude',
+      administrative: true,
+      acts_as: { person: 'lee@example.com' },
+      approved_by: 'lee@example.com',
+      approver_disabled: false,
+      ceiling: ['read', 'admin'],
+      layers: 'every layer the person reaches',
+      created_at: '2026-10-05T09:00:00.000Z',
+      last_refreshed_at: '2026-10-09T10:00:00.000Z',
+      revoked: false,
+    },
+    {
+      id: 'c3',
+      application: 'Ingest bot',
+      administrative: false,
+      acts_as: { service_account: 'nightly-ingest' },
+      approved_by: 'lee@example.com',
+      ceiling: ['write'],
+      layers: [{ layer: 'handbook' }, { layer: 'scratch', ceiling: ['write'] }],
+      created_at: '2026-09-01T09:00:00.000Z',
+      last_refreshed_at: null,
+      revoked: true,
+    },
+  ],
+})
+const PANEL_META = { 'nacre/proposal': { id: '4a1c2b9e-5d7a-4e21-9c84-0a6b2f1d7e66', key: 'q8Rm3pXv0aLr5TnB9sWc2dYe7fGh4jKu6oZi1xNq_Sx', expires_at: new Date(Date.now() + 9 * 60_000).toISOString() } }
+const applyFromPanel = (args) => {
+  if (args.proposal !== '4a1c2b9e-5d7a-4e21-9c84-0a6b2f1d7e66' || args.key !== 'q8Rm3pXv0aLr5TnB9sWc2dYe7fGh4jKu6oZi1xNq_Sx') {
+    throw new Error('the panel did not apply with the proposal and key it was handed')
+  }
+  return { applied: true, result: {} }
+}
+
+const ACCESS = {
+  notice: 'Names were written by people.',
+  principal: { type: 'user', id: ACTORS.dana.id, name: 'dana@example.com', role: 'member' },
+  groups: [{ id: 'g1', name: 'engineering' }],
+  read: { every_layer: false, layers: ['handbook', 'engineering'], documents_denied_inside_them: 2 },
+  write: { every_layer: false, layers: ['scratch'] },
+  admin: { every_layer: false, layers: [] },
+  deciding_grants: [
+    { through: 'group engineering', scope: { type: 'layer', id: 'l1', name: 'engineering' }, permission: 'read', effect: 'allow' },
+    { through: 'directly', scope: { type: 'layer', id: 'l2', name: 'handbook' }, permission: 'read', effect: 'allow' },
+    { through: 'directly', scope: { type: 'layer', id: 'l3', name: 'scratch' }, permission: 'write', effect: 'allow' },
+    { through: 'group contractors', scope: { type: 'document', id: 'd9', name: 'salary-bands' }, permission: 'read', effect: 'deny' },
+  ],
+}
+const ACCESS_ADMIN = {
+  notice: '',
+  principal: { type: 'user', id: 'u2', name: 'lee@example.com', role: 'org_admin' },
+  note: 'An organization administrator reaches every layer by role, whatever the grants say.',
+  groups: [],
+  read: { every_layer: true },
+  write: { every_layer: true },
+  admin: { every_layer: true },
+  deciding_grants: [],
+}
+
+const LAYER_STATUS = {
+  notice: 'Titles were written by people.',
+  layer: { id: 'l2', slug: 'handbook', name: 'Handbook', description: 'Policies and the things people look up twice a year.', workspace: 'company', model: 'bge-m3', vector: 'bge-m3' },
+  documents: { indexed: 412, pending: 3, failed: 2 },
+  failures: [
+    { id: 'd1', external_id: 'travel-2026', title: 'Travel policy 2026', reason: 'quota', recovers_by_itself: false, detail: 'the organization is at its document limit', attempts: 1, failed_at: '2026-10-09 11:52:00.000+00' },
+    { id: 'd2', external_id: 'expenses', title: 'Expenses', reason: 'unavailable', recovers_by_itself: true, detail: 'the embedding service did not answer', attempts: 3, failed_at: '2026-10-09 11:40:00.000+00' },
+  ],
+  reindex: { status: 'running', phase: 'embedding', current_vector: 'bge-small', shadow_vector: 'bge-m3', done: 280, total: 412, failed: 0, progress: 0.68, error: null, check: null },
+  reference_queries: 3,
+}
 
 /** One scenario per picture: the tool that opened the view, its result, and what the view may call. */
 const SCENARIOS = [
@@ -263,7 +383,120 @@ const SCENARIOS = [
       if (rows !== 16) throw new Error(`pressing More twice left ${String(rows)} rows, expected 16`)
     },
   },
+  {
+    view: 'audit',
+    name: 'audit',
+    input: {},
+    result: text({ notice: '', window: AUDIT_WINDOW, events: AUDIT_ALL, next_cursor: 'p2' }),
+    calls: {
+      query_audit: (args) =>
+        args.cursor === 'p2'
+          ? { notice: '', window: AUDIT_WINDOW, events: AUDIT_MORE, next_cursor: null }
+          : args.actor === ACTORS.dana.id
+            ? { notice: '', window: AUDIT_WINDOW, events: AUDIT_ALL.filter((e) => e.actor.id === ACTORS.dana.id), next_cursor: null }
+            : { notice: '', window: AUDIT_WINDOW, events: AUDIT_ALL, next_cursor: 'p2' },
+    },
+    check: async (frame) => {
+      if ((await frame.locator('tbody tr').count()) !== 4) throw new Error('the log does not show its four rows')
+      if ((await frame.locator('td .chip-deny').count()) !== 1) throw new Error('the deny is not a deny chip')
+      // The system actor has no id and is not offered as a filter.
+      if ((await frame.locator('button.narrow').count()) !== 3) throw new Error('every actor with an id should narrow, and only those')
+      await frame.locator('button.narrow', { hasText: 'dana@example.com' }).first().click()
+      await frame.locator('.facts-line', { hasText: 'only dana@example.com' }).waitFor()
+      if ((await frame.locator('tbody tr').count()) !== 2) throw new Error('pressing an actor did not narrow to their two rows')
+      await frame.locator('button', { hasText: 'Everyone' }).click()
+      await frame.locator('tbody tr').nth(3).waitFor()
+      await frame.locator('button', { hasText: 'More' }).click()
+      await frame.locator('tbody tr').nth(4).waitFor()
+      if ((await frame.locator('button', { hasText: 'More' }).evaluate((b) => getComputedStyle(b).display)) !== 'none') throw new Error('More is still offered with no next page')
+    },
+  },
+  {
+    view: 'connections',
+    name: 'connections',
+    input: {},
+    result: text(CONNECTIONS(false)),
+    calls: {
+      revoke_connection: (args) => {
+        if (args.connection !== 'c1') throw new Error(`proposed revoking ${String(args.connection)}, not the row pressed`)
+        return new WithMeta({ proposed: "End Claude's connection, acting as dana@example.com. It stops on its next request.", details: [] }, PANEL_META)
+      },
+      apply_proposal: applyFromPanel,
+      list_connections: () => CONNECTIONS(true),
+    },
+    check: async (frame) => {
+      if ((await frame.locator('tbody tr').count()) !== 3) throw new Error('the panel does not list the three connections')
+      if ((await frame.locator('button', { hasText: 'Revoke' }).count()) !== 2) throw new Error('a revoked connection is offered a Revoke')
+      await frame.locator('button', { hasText: 'Revoke' }).first().click()
+      await frame.locator('.confirm .what', { hasText: "End Claude's connection" }).waitFor()
+      // Nothing is revoked until Apply.
+      if ((await frame.locator('td .chip-deny', { hasText: 'revoked' }).count()) !== 1) throw new Error('a proposal changed the listing before Apply')
+      await frame.locator('.confirm button', { hasText: 'Apply' }).click()
+      await frame.locator('.confirm', { hasText: 'Applied.' }).waitFor()
+      await frame.locator('td .chip-deny', { hasText: 'revoked' }).nth(1).waitFor()
+    },
+  },
+  {
+    view: 'connections',
+    name: 'connections-no-meta',
+    input: {},
+    result: text(CONNECTIONS(false)),
+    calls: {
+      revoke_connection: () => ({ proposed: "End Claude's connection, acting as dana@example.com.", details: [] }),
+    },
+    check: async (frame) => {
+      // A host that drops `_meta`: the panel must not offer a button it cannot honour.
+      await frame.locator('button', { hasText: 'Revoke' }).first().click()
+      await frame.locator('.confirm', { hasText: 'Proposals screen' }).waitFor()
+      if ((await frame.locator('.confirm button', { hasText: 'Apply' }).count()) !== 0) throw new Error('Apply is offered with no key to apply with')
+    },
+  },
+  {
+    view: 'access',
+    name: 'access',
+    input: { person: 'dana@example.com' },
+    result: text(ACCESS),
+    calls: { effective_access: (args) => (args.person === 'lee@example.com' ? ACCESS_ADMIN : ACCESS) },
+    check: async (frame) => {
+      if ((await frame.locator('table').first().locator('tbody tr').count()) !== 3) throw new Error('the matrix does not have a row per layer')
+      // Rule 6: write without read is one chip on its row, not a ladder.
+      const scratch = frame.locator('table').first().locator('tbody tr', { hasText: 'scratch' })
+      if ((await scratch.locator('.chip-write').count()) !== 1 || (await scratch.locator('.chip-read').count()) !== 0) throw new Error('scratch should show write and not read')
+      if ((await frame.locator('.chip-deny').count()) !== 1) throw new Error('the deny grant is not a deny chip')
+    },
+  },
+  {
+    // The same panel after asking about somebody else from it: a second
+    // scenario rather than a press at the end of the first, so the matrix
+    // above — rule 6's one-chip row and the deny — is what gets photographed.
+    view: 'access',
+    name: 'access-someone-else',
+    input: { person: 'dana@example.com' },
+    result: text(ACCESS),
+    calls: { effective_access: (args) => (args.person === 'lee@example.com' ? ACCESS_ADMIN : ACCESS) },
+    check: async (frame) => {
+      await frame.locator('input.input').fill('lee@example.com')
+      await frame.locator('button', { hasText: 'Show' }).click()
+      await frame.locator('td', { hasText: 'Every layer' }).waitFor()
+    },
+  },
+  {
+    view: 'layer',
+    name: 'layer',
+    input: { layer: 'handbook' },
+    result: text(LAYER_STATUS),
+    check: async (frame) => {
+      if ((await frame.locator('.stat').count()) !== 3) throw new Error('the three counts are not shown')
+      if ((await frame.locator('progress').count()) !== 1) throw new Error('the reindex has no progress bar')
+      // Read-only: retrying is a write on the layer, which this surface's
+      // connection does not hold. Each failure says whether it comes back.
+      if ((await frame.locator('button').count()) !== 0) throw new Error('the layer panel offers something to press')
+      if ((await frame.locator('.sub', { hasText: 'will not recover by itself' }).count()) !== 1) throw new Error('the permanent failure does not say so')
+      if ((await frame.locator('.sub', { hasText: 'retried by itself' }).count()) !== 1) throw new Error('the transient failure does not say so')
+    },
+  },
 ]
+
 
 const browser = await chromium.launch(process.env.NACRE_CHROMIUM ? { executablePath: process.env.NACRE_CHROMIUM } : {})
 const problems = []
@@ -280,6 +513,7 @@ try {
           if (answer === undefined) return { content: [{ type: 'text', text: `no fixture for ${name}` }], isError: true }
           const value = answer(args)
           if (value instanceof Refusal) return { content: [{ type: 'text', text: value.message }], isError: true }
+          if (value instanceof WithMeta) return { ...text(value.value), _meta: value.meta }
           return text(value)
         })
         await page.setContent(

@@ -7,7 +7,7 @@ import type { AuthContext } from '@nacre.work/api'
 import { protectedResourceMetadata } from '@nacre.work/core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { VIEWS, viewUri } from '../factory.js'
+import { ADMIN_VIEWS, VIEWS, viewUri } from '../factory.js'
 import { createMcpServer, type McpOptions } from '../server.js'
 
 /**
@@ -83,7 +83,7 @@ async function raw(method: string, params: Record<string, unknown>, ui: boolean)
 
 describe('the MCP App views', () => {
   it('are built', () => {
-    for (const view of VIEWS) {
+    for (const view of [...VIEWS, ...ADMIN_VIEWS]) {
       const at = new URL(`../../apps/build/${view}.html`, import.meta.url)
       expect(existsSync(at), `${view}.html — run the package build`).toBe(true)
       const html = readFileSync(at, 'utf8')
@@ -98,7 +98,7 @@ describe('the MCP App views', () => {
     // loses to any author display rule — so a hidden More button stayed on
     // the screen and re-appended the first page on every press. The rule
     // that makes the attribute win has to be in every view.
-    for (const view of VIEWS) {
+    for (const view of [...VIEWS, ...ADMIN_VIEWS]) {
       const html = readFileSync(new URL(`../../apps/build/${view}.html`, import.meta.url), 'utf8')
       expect(html, `${view}.html`).toMatch(/\[hidden\]\s*\{\s*display:\s*none\s*!important/)
     }
