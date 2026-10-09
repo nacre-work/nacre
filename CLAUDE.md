@@ -3106,7 +3106,14 @@ mirror is held by `lint:images` rather than trusted: every `tags:` block has
 to carry the mirror line beside each canonical one, and the architecture loop
 has to inspect both registries, because a registry added to one push step and
 not the next is this file's first paragraph arriving in a workflow. Both
-refusals were produced. The commercial image is deliberately **not** mirrored:
+refusals were produced. The planner asks both registries before it skips the
+containers job, because that job is skipped once `ghcr.io` has the tag — so a
+first attempt that reached `ghcr.io` and failed on Docker Hub would otherwise
+never be re-run into the mirror. It asks Docker Hub's web API rather than its
+registry: an anonymous manifest `HEAD` there counts against the pull-rate
+limit and answered `429` from the first machine it was tried on, and a
+repository that does not exist answers `401`, which reads as "went private".
+The commercial image is deliberately **not** mirrored:
 it is gated by a GitHub token on `ghcr.io`, a second registry is a second
 credential for the same customer, and the private repositories cannot read the
 organization's Docker Hub secrets on this plan anyway.

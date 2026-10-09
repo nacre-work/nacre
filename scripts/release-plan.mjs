@@ -120,6 +120,36 @@ async function imageExists(image, version) {
   return true
 }
 
+/**
+ * Whether the Docker Hub mirror carries the tag, by Docker Hub's own API.
+ *
+ * Not the registry: an anonymous manifest `HEAD` on `registry-1.docker.io`
+ * counts against the pull-rate limit and answered `429` from the first
+ * machine this was tried on, and a repository that does not exist answers
+ * `401` there, which reads as "went private". The web API answers `200` for
+ * a tag a stranger can pull and `404` for a missing tag, a missing
+ * repository and a private one alike — and all three are "not on the
+ * mirror", because the containers job is what puts it there. Measured, not
+ * read: `library/alpine:3.20` → 200, `:no-such-tag` → 404, a repository
+ * this account never had → 404.
+ *
+ * It is asked beside ghcr because the two are pushed by one job that the
+ * planner skips once ghcr has the tag — so a first attempt that reached
+ * ghcr and failed on Docker Hub would otherwise never be re-run into the
+ * mirror, and the mirror would be one version short with nothing saying so.
+ */
+const MIRROR = 'nacrecontextlayer'
+async function mirrorExists(image, version) {
+  const response = await fetch(`https://hub.docker.com/v2/repositories/${MIRROR}/${image}/tags/${version}/`, {
+    headers: { accept: 'application/json' },
+  })
+  if (response.status === 404) return false
+  if (!response.ok) {
+    throw new Error(`cannot read docker.io/${MIRROR}/${image}:${version}: ${response.status} ${response.statusText}`)
+  }
+  return true
+}
+
 const packages = publishable()
 const agreed = agreedVersion(packages)
 if (agreed.errors !== undefined) {
@@ -150,9 +180,14 @@ if (pendingOnly) {
 const tagged = tagExists(version)
 const built = []
 for (const image of IMAGES) {
-  if (await imageExists(image, version)) say(`ghcr.io/${OWNER}/${image}:${version} is already pushed`)
+  const canonical = await imageExists(image, version)
+  const mirrored = await mirrorExists(image, version)
+  if (canonical && mirrored) say(`${image}:${version} is already pushed, to ghcr.io and to the Docker Hub mirror`)
   else {
-    say(`ghcr.io/${OWNER}/${image}:${version} is not pushed`)
+    say(
+      `${image}:${version} is not pushed` +
+        (canonical ? ' to the Docker Hub mirror' : mirrored ? ' to ghcr.io' : ' to either registry'),
+    )
     built.push(image)
   }
 }
@@ -162,7 +197,7 @@ say(`v${version} is ${tagged ? 'already tagged' : 'not tagged'}`)
 const nothing = pending.length === 0 && tagged && built.length === 0
 say(
   nothing
-    ? `nothing to release: ${version} is on the registry, tagged, and every image is pushed`
+    ? `nothing to release: ${version} is on the registry, tagged, and every image is pushed to both registries`
     : `releasing ${version}:${pending.length > 0 ? ` npm ${pending.join(', ')};` : ''}` +
       `${tagged ? '' : ' the tag and the release;'}${built.length > 0 ? ` images ${built.join(', ')}` : ''}`,
 )
