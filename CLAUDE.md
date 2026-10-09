@@ -3066,6 +3066,22 @@ CSP per view, and the catalog with and without the declaration. Each view is
 ~600 kB because the extension's client carries the protocol with it; it is
 read once per render, through the host.
 
+**And the three views were drawn in the host's colours, at three heights.** The
+first version applied the host's style variables and declared no colour of its
+own, on the argument that a panel should look like the conversation it is in
+— and what that produced, rendered, was a `<datalist>` field, a native file
+picker and a button each at its platform's own height, in a palette that was
+nobody's. Reported from the renders in those words. A view is a page of this
+product and now says so: the build inlines the brand mirror the console ships
+(tokens and faces, as `data:` URIs, since a sandbox fetches nothing a view did
+not declare), `shared.ts` carries the console's control vocabulary at **one**
+height — the file control is a label over an invisible input, because the
+native widget cannot be sized — and the host decides only the theme. Rendered
+at 600 and 390 and in the dark theme before being believed; at 390 four
+columns of a hit did not fit, so a document's id and a layer's description are
+a second line under the first cell rather than a column, which is the
+console's own treatment of a value that is an annotation.
+
 `get_document` carries its presigned `source_url` twice now: in the JSON, and
 as a `resource_link` block, which is the revision's word for "the result is
 somewhere else" and what lets a client fetch the whole file out of band. One

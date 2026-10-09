@@ -8,7 +8,7 @@
  * tool through the host, so a person can check a query the model did not
  * think to make, against exactly the access the model has.
  */
-import { call, clear, connect, el, layers, mount, status, type LayerRow } from './shared.js'
+import { call, clear, connect, el, field, layers, mount, select, status, type LayerRow } from './shared.js'
 
 interface Hit {
   chunk_id: string
@@ -19,15 +19,28 @@ interface Hit {
   text?: string
 }
 
+/**
+ * A uuid shortened to its ends, the console's own treatment: thirty-six
+ * characters of hex in a table on a phone break mid-value and read as three
+ * ids. The whole id is the cell's title, and it is in the tool result the
+ * model already has.
+ */
+function shortId(id: string): string {
+  return id.length > 16 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id
+}
+
 async function main(): Promise<void> {
-  const root = mount()
+  const root = mount('Search')
   const app = await connect('nacre-search')
 
-  const query = el('input', { type: 'text', 'aria-label': 'Query', placeholder: 'Search…' })
-  const scope = el('select', { 'aria-label': 'Layer' }, el('option', { value: '' }, 'every layer'))
-  const button = el('button', { type: 'button' }, 'Search')
-  const table = el('table')
-  root.append(el('div', { class: 'row' }, query, scope, button), table)
+  const query = el('input', { class: 'input', type: 'text', placeholder: 'What are you looking for?' })
+  const scope = el('select', {}, el('option', { value: '' }, 'every layer'))
+  const button = el('button', { type: 'button', class: 'btn btn-primary' }, 'Search')
+  const table = el('table', { class: 'table', hidden: '' })
+  root.append(
+    el('div', { class: 'row' }, field('Query', query), field('Layer', select(scope), true), el('div', { class: 'field fit' }, button)),
+    el('div', { class: 'table-wrap' }, table),
+  )
 
   app.ontoolinput = (params) => {
     const args = (params.arguments ?? {}) as { query?: unknown; layers?: unknown }
@@ -59,24 +72,25 @@ async function main(): Promise<void> {
   function show(hits: Hit[]): void {
     clear(table)
     if (hits.length === 0) {
+      table.hidden = true
       status(root, 'Nothing you may see matched. That is not an error, and retrying will not change it.')
       return
     }
+    table.hidden = false
     table.append(
-      el('thead', {}, el('tr', {}, el('th', {}, 'Title'), el('th', {}, 'Layer'), el('th', {}, 'Document'), el('th', {}, 'Score'))),
+      el('thead', {}, el('tr', {}, el('th', {}, 'Document'), el('th', {}, 'Layer'), el('th', { class: 'num' }, 'Score'))),
     )
     const body = el('tbody')
     for (const hit of hits) {
       const row = el(
         'tr',
         {},
-        el('td', {}, hit.title ?? el('span', { class: 'muted' }, 'untitled')),
+        el('td', {}, hit.title ?? el('span', { class: 'muted' }, 'untitled'), el('span', { class: 'sub' }, el('code', { title: hit.doc_id }, shortId(hit.doc_id)))),
         el('td', {}, el('code', { class: 'slug' }, hit.layer)),
-        el('td', {}, el('code', {}, hit.doc_id)),
-        el('td', {}, hit.score.toFixed(3)),
+        el('td', { class: 'num' }, hit.score.toFixed(3)),
       )
       body.append(row)
-      if (hit.text) body.append(el('tr', {}, el('td', { colspan: '4', class: 'snippet muted' }, hit.text)))
+      if (hit.text) body.append(el('tr', { class: 'snippet' }, el('td', { colspan: '3' }, el('div', { class: 'snippet-text' }, hit.text))))
     }
     table.append(body)
     status(root, `${hits.length} result${hits.length === 1 ? '' : 's'} — the permitted set, filtered inside the index.`)

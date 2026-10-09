@@ -14,13 +14,39 @@
  * published package, because the path is resolved relative to the module and
  * both sit one directory below the package root.
  */
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import * as esbuild from 'esbuild'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const out = `${root}apps/build`
+
+/**
+ * The brand, inlined.
+ *
+ * A view is a page of this product and looks like one: the console's palette,
+ * its three faces, its control heights. The palette is the brand mirror the
+ * admin UI ships (`packages/admin/public/brand/`, held against the brand
+ * repository by its `check-mirrors`), read here at build time rather than
+ * copied, because a second copy is a second thing that can disagree with the
+ * brand. The fonts go in as `data:` URIs: a host's sandbox admits no network
+ * resource a view did not declare, and declaring the API's origin for a font
+ * would be a request to the installation every time a panel opens. Should a
+ * host's policy refuse `data:` fonts too, the stacks fall back to system
+ * faces and the page degrades in shape rather than breaking.
+ */
+const brand = `${root}../admin/public/brand`
+if (!existsSync(`${brand}/tokens.css`)) throw new Error(`${brand}/tokens.css is missing; the views take their palette from the admin UI's brand mirror`)
+const tokens = readFileSync(`${brand}/tokens.css`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+const fonts = readFileSync(`${brand}/fonts.css`, 'utf8')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/url\("fonts\/([^"]+)"\)/g, (_, file) => {
+    const bytes = readFileSync(`${brand}/fonts/${file}`)
+    return `url("data:font/woff2;base64,${bytes.toString('base64')}")`
+  })
+if (!fonts.includes('data:font/woff2')) throw new Error('fonts.css named no font file; nothing was inlined')
+const brandStyle = `${tokens}\n${fonts}`
 
 rmSync(out, { recursive: true, force: true })
 mkdirSync(out, { recursive: true })
@@ -50,6 +76,7 @@ for (const view of views) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Nacre — ${name}</title>
+<style>${brandStyle}</style>
 </head>
 <body>
 <script>${script}</script>

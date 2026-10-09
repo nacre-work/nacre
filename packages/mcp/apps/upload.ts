@@ -18,7 +18,7 @@
  * offered that account nothing. The suggestions are a convenience; the name
  * is the input, and the write is checked where it always is, on the ticket.
  */
-import { call, clear, connect, el, layers, mount, status, type LayerRow } from './shared.js'
+import { call, clear, connect, el, field, fileControl, layers, mount, status, type LayerRow } from './shared.js'
 
 interface Descriptor {
   url: string
@@ -37,7 +37,7 @@ interface Job {
 }
 
 async function main(): Promise<void> {
-  const root = mount()
+  const root = mount('Upload a document')
   const app = await connect('nacre-upload')
 
   let preset: string | undefined
@@ -47,18 +47,18 @@ async function main(): Promise<void> {
     render()
   }
 
-  const select = el('input', { list: 'layers', type: 'text', 'aria-label': 'Layer', placeholder: 'layer slug', autocomplete: 'off', spellcheck: 'false' })
+  const select = el('input', { class: 'input mono', list: 'layers', type: 'text', placeholder: 'layer slug', autocomplete: 'off', spellcheck: 'false' })
   const suggestions = el('datalist', { id: 'layers' })
   const file = el('input', { type: 'file', 'aria-label': 'File' })
-  const button = el('button', { type: 'button' }, 'Upload')
+  const button = el('button', { type: 'button', class: 'btn btn-primary' }, 'Upload')
   const bar = el('progress', { hidden: '', max: '3', value: '0' })
   let known: LayerRow[]
 
   function render(): void {
     clear(root)
     root.append(
-      el('div', { class: 'row' }, el('label', {}, 'Layer ', select), suggestions),
-      el('div', { class: 'row' }, file, button),
+      el('div', { class: 'row' }, field('Layer', select), suggestions),
+      el('div', { class: 'row' }, field('File', fileControl(file, 'Choose a file…')), el('div', { class: 'field fit' }, button)),
       bar,
     )
     if (preset !== undefined) select.value = preset

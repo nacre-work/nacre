@@ -8,12 +8,12 @@
 import { call, clear, connect, el, mount, status, type LayerRow } from './shared.js'
 
 async function main(): Promise<void> {
-  const root = mount()
+  const root = mount('Layers you may read')
   const app = await connect('nacre-layers')
 
-  const table = el('table')
-  const more = el('button', { type: 'button', hidden: '' }, 'More')
-  root.append(table, el('div', { class: 'row' }, more))
+  const table = el('table', { class: 'table', hidden: '' })
+  const more = el('button', { type: 'button', class: 'btn', hidden: '' }, 'More')
+  root.append(el('div', { class: 'table-wrap' }, table), el('div', { class: 'row after-table' }, more))
   const rows: LayerRow[] = []
   let cursor: string | null = null
 
@@ -43,12 +43,14 @@ async function main(): Promise<void> {
   function show(): void {
     clear(table)
     if (rows.length === 0) {
+      table.hidden = true
       status(root, 'No layers are available to you.')
       more.hidden = true
       return
     }
+    table.hidden = false
     table.append(
-      el('thead', {}, el('tr', {}, el('th', {}, 'Layer'), el('th', {}, 'Slug'), el('th', {}, 'Documents'), el('th', {}, 'About'))),
+      el('thead', {}, el('tr', {}, el('th', {}, 'Layer'), el('th', {}, 'Slug'), el('th', { class: 'num' }, 'Documents'))),
     )
     const body = el('tbody')
     for (const layer of rows) {
@@ -56,10 +58,9 @@ async function main(): Promise<void> {
         el(
           'tr',
           {},
-          el('td', {}, layer.name),
+          el('td', {}, layer.name, ...(layer.description ? [el('span', { class: 'sub' }, layer.description)] : [])),
           el('td', {}, el('code', { class: 'slug' }, layer.slug)),
-          el('td', {}, String(layer.documentCount)),
-          el('td', { class: 'muted' }, layer.description),
+          el('td', { class: 'num' }, String(layer.documentCount)),
         ),
       )
     }

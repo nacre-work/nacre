@@ -577,9 +577,15 @@ said so. The hosts rendering apps today (Claude, VS Code, Goose and others)
 open with `initialize` and say nothing per request, so a legacy-era client is
 offered it.
 
-The styling is the host's: a view applies the theme and style variables the
-host hands over and declares no colour of its own, so it looks like the
-conversation it is in rather than like this product's console.
+The styling is this product's. A view carries the brand mirror the console
+ships — the tokens and the three faces, inlined by the package build so a
+host's sandbox has nothing to fetch — and draws the console's own controls at
+one height, so a panel reads as a piece of Nacre inside the conversation. What
+the host decides is the theme: `data-theme` from the host context picks light
+or dark, and the page's own `prefers-color-scheme` answers when the host says
+nothing. The host's style variables are deliberately not applied: the
+permission colours here carry a meaning, and a palette chosen per host is one
+the brand does not control.
 
 ## What a call answers with
 
