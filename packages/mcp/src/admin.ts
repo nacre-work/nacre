@@ -61,7 +61,7 @@ const PANEL_DESCRIPTIONS: Readonly<Record<Exclude<AdminView, 'change'>, string>>
   audit: 'The access log as rows, an actor pressed to narrow to them, paged.',
   connections: 'Connected applications — who, as whom, with which ceiling — and a revoke the person applies.',
   access: 'What one principal reaches, layer by layer, in the permission colours, with the grants that decide it.',
-  layer: "A layer's documents by status, recent failures with a retry the person applies, and a reindex's progress.",
+  layer: "A layer's documents by status, recent failures and whether each comes back by itself, and a reindex's progress.",
 }
 
 export const panelUri = (view: AdminView): string => `ui://nacre/${view}.html`
