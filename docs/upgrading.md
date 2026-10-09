@@ -285,6 +285,29 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.31.1 — a connected application can no longer approve a wider connection
+
+**A security fix; upgrade.** The consent endpoint checked that the caller was a
+person and not that the person was signed in. A connected application's token
+*is* its person's, and the API accepts it — so an application connected with a
+restricted ceiling could register a client of its own, approve a connection for
+it with its own token and no ceiling, and exchange the code for one that reaches
+everything its person does. Every release since a person could approve a
+connection as themselves has it.
+
+`POST /v1/oauth/consent` now refuses a connection's token with the `404` it
+gives every caller who may not approve, and stores nothing. A person approving
+in the console is unaffected. Nothing to configure and no schema change.
+
+**The access log cannot tell you whether it happened**, and that is worth
+knowing before reading it. Every approval is recorded as `oauth.consent` with the
+client's name, but the actor is the person either way: the log records whose
+token it was and not which connection carried it. What is checkable is the
+result. Each person's connections are on their Connections screen, and an
+administrator's lists the organization's. A connection nobody remembers
+approving, especially one for a client named like an application already
+connected, is the sign. Forgetting it there ends it on the next request.
+
 ### 0.31.0 — the consent screen's Edit skill box, and what a connection is listed
 
 **Migration 0037**, run by the migrator as usual: the CHECKs on

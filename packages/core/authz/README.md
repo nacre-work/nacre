@@ -13,7 +13,7 @@ reference.ts        reference implementation: written straight from the
                     rules, slow, used only by property-based tests
 principals.ts       effective principals, caching, invalidation
 filter.ts           builds the vector-store pre-filter
-__tests__/          T1-T40 and the property test
+__tests__/          T1-T41 and the property test
 ```
 
 Do not optimize `reference.ts`. Its whole value is being obviously correct:
