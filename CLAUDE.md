@@ -3187,6 +3187,19 @@ prose. T39 holds it, pending with the surface. So is the consent screen's per-la
 it exists a connected application writes a layer's skill only where its ceiling
 holds `admin` there.
 
+**A connected application is listed only what its ceiling admits.** A person who
+approved a read-only connection approved a search client, and that client was
+listed `delete_document` and `update_skill` anyway and refused each on every
+call — so the catalog said the client may do what the person had said it may
+not, and the public stand's own page described a "not offered" marker the
+server never produced. Found there, by reading the page against the code. The
+filter is `delegationPermits`, the predicate the request path asks, so the
+catalog and the refusal cannot disagree; and it is the delegation's ceiling
+only, because that is fixed for the token's life, while grants move between
+calls and a catalog listed once per session must not freeze them. It only ever
+removes. `ceiling-catalog.test.ts` asks the wire, and taking the line out turns
+three of its four cases red.
+
 
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.

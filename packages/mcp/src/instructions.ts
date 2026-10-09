@@ -56,7 +56,8 @@ search then finds nothing, both answers are correct.
 If you are acting on somebody's behalf through an authorized connection, you
 reach exactly what that person reaches, re-checked on every request — and they
 may have restricted this connection to some of their layers or to reading only.
-A refusal is that limit, not an error to work around.
+A tool the connection may not use is not offered at all, and a refusal on a
+layer is that limit too — not an error to work around.
 
 ## How to work
 
