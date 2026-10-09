@@ -57,6 +57,7 @@ import { rerankerFor } from './rerank.js'
 import { RateLimiter, type LimitPolicy, type Resource } from './limits.js'
 import { RedisUploadTickets } from './uploads.js'
 import { PostgresGroups, PostgresUsers } from './principals.js'
+import { PostgresSkills } from './skills.js'
 import { PostgresServiceAccounts } from './service-keys.js'
 import { postgresVerification } from './verification.js'
 import { createApi } from './server.js'
@@ -371,6 +372,7 @@ async function main(): Promise<void> {
     auditReader: new PostgresAuditReader(pool, APP_ROLE, principalsCache),
     reindex: new PostgresReindex(pool, vectors, APP_ROLE, principalsCache),
     referenceQueries: new PostgresReferenceQueries(pool, APP_ROLE, principalsCache),
+    skills: new PostgresSkills(pool, APP_ROLE, principalsCache),
     documents: new PostgresDocuments(
       pool,
       vectors,
