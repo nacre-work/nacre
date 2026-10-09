@@ -316,6 +316,28 @@ both of the ways this document already guards against, plus one that is its own.
 | T24 | A delegation with ceiling `{write}`, whose person holds both | ingests; search returns empty — rule 6 inherited, not collapsed |
 | T25 | An `org_admin` delegates with ceiling `{read}` | reads the whole organization, and every `org_admin`-gated endpoint refuses |
 
+### Skills and the administrative surface
+
+Specified in [skills.md](./skills.md) and [mcp-admin.md](./mcp-admin.md), not
+built; every case below is pending in `test-plan.ts` until it is.
+
+| # | Scenario | Expected |
+|---|---|---|
+| T26 | A layer skill on a layer the caller holds no permission on | absent from the listing, and fetching it answers exactly as for a layer with no skill |
+| T27 | A principal holding only `write` on a layer | sees that layer's skill — rule 6 keeps documents from it, not the layer's conventions |
+| T28 | A delegation narrowed to layer L whose person reads L and M | lists L's skill and never M's |
+| T29 | A delegation without `skill` in L's ceiling, whose person holds `admin` on L | every write to L's skill refused; with `skill` in L's ceiling the write succeeds, and the same token still cannot rename or delete L or issue a grant on it |
+| T30 | `skill` in L's ceiling, and the person holds only `write` on L | the skill write is refused — `skill` never confers what the person lacks |
+| T31 | A token for the administrative resource presented to the API and to `/mcp`, and an ordinary token presented to `/mcp/admin` | `401` in all three directions |
+| T32 | A write tool on the administrative surface, called and never applied | nothing changes; the proposal expires and is recorded |
+| T33 | A `platform_admin` and an organization's skill | never read; the installation skill written only by that role, and refused to an `org_admin` |
+| T34 | An organization's skill and a caller from another organization | never listed, fetched or applied to that caller's `instructions` |
+| T35 | A notification addressed to anything but an active user of the caller's organization | refused before a message is composed |
+
+T31 is the one the whole administrative surface rests on. One audience for both
+surfaces would put `admin` in a token that REST accepts, which is exactly why the
+ordinary consent screen does not offer it.
+
 T25 is the one that is easy to get half right. A ceiling that bounds documents
 and not administration produces a read-only delegation that can mint a service
 account key, and the key is then a credential with no ceiling at all.

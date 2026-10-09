@@ -5,9 +5,11 @@ model, and reworking it after search is written is expensive.
 
 | Document | Covers |
 |---|---|
-| [authz.md](./authz.md) | **Start here.** Permission model, algorithm, invariants, the T1–T25 test plan |
+| [authz.md](./authz.md) | **Start here.** Permission model, algorithm, invariants, the T1–T35 test plan |
 | [architecture.md](./architecture.md) | Components, data flow, vector storage, reindexing, backups |
 | [mcp.md](./mcp.md) | MCP server: transport, authorization, tools |
+| [skills.md](./skills.md) | Skills: what an agent is told on connecting, at installation, organization and layer level — *specified, not built* |
+| [mcp-admin.md](./mcp-admin.md) | The administrative MCP: a separate resource and token, changes a person applies, the access log, notifications — *specified, not built* |
 | [mcp-conformance.md](./mcp-conformance.md) | Every normative sentence of the 2026-07-28 binding, and where we stand on it |
 | [api.md](./api.md) | REST API conventions · contract in [openapi.yaml](./openapi.yaml) |
 | [config.md](./config.md) | Environment variables, Compose profiles, metrics |
