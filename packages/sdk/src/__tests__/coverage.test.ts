@@ -127,9 +127,13 @@ const COVERAGE: Record<string, string | null> = {
   'POST /uploads/{ticket}': 'uploads.send',
 
   'GET /me': 'me',
+  'GET /endpoints': 'endpoints',
   'POST /oauth/consent': 'consent',
   'GET /oauth/consents': 'connections.list',
   'DELETE /oauth/consents/{id}': 'connections.end',
+  'GET /proposals': 'proposals.list',
+  'POST /proposals/{id}/apply': 'proposals.apply',
+  'POST /proposals/{id}/cancel': 'proposals.cancel',
   'GET /workspaces': 'workspaces.list',
   'POST /workspaces': 'workspaces.create',
 

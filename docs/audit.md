@@ -97,6 +97,20 @@ The rule is the one sentence above — **`target` is what the call was about,
 `detail` is everything else** — and `lint:audit-target` holds every call site to
 it, refusing an absent target and an empty one alike.
 
+**A proposed change is four events, since 0.34.0.** A write on the
+administrative MCP proposes rather than changes — docs/mcp-admin.md — so the log
+says `proposal.created` when the agent asks, with the server's own sentence for
+what would happen and when it expires, and then exactly one of
+`proposal.applied`, `proposal.cancelled` or `proposal.expired`. `applied` names
+where the person pressed the button (`through: panel` or `console`); `expired`
+is written by the worker, with actor `system` and the connection the proposal
+came through, since nobody was there to do it. The change itself is still
+recorded as what it is — `issue_grant`, `create_user` and the rest — with
+`surface: "mcp-admin"` and the proposal's id in `detail`, so a filter on the
+action finds an applied proposal beside the same change made in the console.
+A run of proposals nobody applied is what a prompt injection looks like from
+outside, which is why the ones that were never applied are recorded at all.
+
 **Retention is enforced**, and the decision that was open is made. The worker
 prunes hourly in bounded batches, and `NACRE_AUDIT_RETENTION_DAYS` is what it
 prunes against.

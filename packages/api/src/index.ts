@@ -1,6 +1,7 @@
 export { createApi } from './server.js'
 export type {
   ApiOptions,
+  ServedEndpoints,
   AuditEvent,
   AuditQuery,
   AuditReader,
@@ -67,6 +68,19 @@ export type {
 } from './oauth-store.js'
 export { Problem, badRequest, forbidden, internal, notFound, unauthorized } from './errors.js'
 export { MAX_REACH_LAYERS, PostgresAccess } from './access.js'
+export { AdminNames, isUuid } from './admin-names.js'
+export type { NamedLayer, PrincipalKind } from './admin-names.js'
+export { coreAdminWrites } from './admin-writes.js'
+export type { AdminWritePorts } from './admin-writes.js'
+export {
+  applyProposal,
+  cancelProposal,
+  PostgresProposals,
+  PROPOSAL_TTL_MS,
+  recordProposal,
+  writeLookup,
+} from './proposals.js'
+export type { DecideDeps, DecideOutcome, ProposalDecider, ProposalView, WriteLookup } from './proposals.js'
 export type { AccessSubject, EffectiveAccess, Reach } from './access.js'
 export {
   AUDIT_GROUPINGS,

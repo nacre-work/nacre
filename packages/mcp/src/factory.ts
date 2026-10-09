@@ -170,7 +170,7 @@ export const viewUri = (view: View): string => `ui://nacre/${view}.html`
  * working directory. Built by `scripts/build-apps.mjs`; a missing file is a
  * build that did not run, and says so.
  */
-async function viewHtml(view: View): Promise<string> {
+export async function viewHtml(view: View | 'change'): Promise<string> {
   const at = new URL(`../apps/build/${view}.html`, import.meta.url)
   try {
     return await readFile(at, 'utf8')

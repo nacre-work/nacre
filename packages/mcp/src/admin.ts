@@ -14,22 +14,34 @@
  * that keeps a thrown error's message off the wire.
  */
 
+import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server'
 import { fromJsonSchema, McpServer, type CallToolResult, type GetPromptResult } from '@modelcontextprotocol/server'
 import type { AuthContext } from '@nacre.work/api'
-import { logger, MetadataError } from '@nacre.work/core'
+import { logger, McpToolRefusal, MetadataError } from '@nacre.work/core'
 
 import { ADMIN_INSTRUCTIONS } from './admin-instructions.js'
-import { ADMIN_CATALOG } from './admin-tools.js'
-import { ToolArgumentError, type McpMetrics, type ToolRunner } from './factory.js'
+import type { AdminRunner } from './admin-services.js'
+import { AdminResult } from './admin-tools.js'
+import { ToolArgumentError, viewHtml, type McpMetrics } from './factory.js'
 import { callToolError, callToolResult, DISCOVER_TTL_MS, TOOLS_TTL_MS } from './results.js'
 
 export interface AdminServerBuild {
   readonly auth: AuthContext
   readonly requestId: () => string
-  readonly tools: ToolRunner
+  readonly tools: AdminRunner
   readonly serverVersion?: string
   readonly observe?: McpMetrics
+  /**
+   * Whether the client renders MCP Apps, as `Verified.ui` reads it. `false` —
+   * a modern-era client that declared no UI extension — drops the panel's two
+   * buttons, which nothing but a panel can press. The writes stay: what they
+   * propose waits on the console's Proposals screen.
+   */
+  readonly ui?: boolean
 }
+
+/** The change panel. Served on this surface only; the ordinary one never lists it. */
+export const CHANGE_VIEW = 'ui://nacre/change.html'
 
 /** Tools and prompts, neither of which changes during a session. */
 export const ADMIN_CAPABILITIES = {
@@ -40,7 +52,8 @@ export const ADMIN_CAPABILITIES = {
 /**
  * The workflows worth doing the same way every time: MCP's user-invoked
  * prompts, the slash commands a person picks in their client. Each reads and
- * explains; none changes anything, because nothing on this surface does.
+ * explains; where one ends in a change, it ends in a proposal the person
+ * applies, like every write here.
  *
  * Arguments are strings because MCP's prompt arguments are, and each says so
  * in its description rather than letting a client guess a format.
@@ -81,7 +94,7 @@ export const ADMIN_PROMPTS: readonly AdminPrompt[] = [
         `4. Denials: summarize_audit by actor with result deny; for the three largest, query_audit to see what each tried.`,
         `5. list_people and list_connections: for every disabled person and every revoked connection, query_audit by actor or by connection over the window. Anything there is worth reporting first.`,
         '',
-        'Report under four headings: what changed in permissions, who read what by layer, denials worth attention, and anything that should not have happened. Say what you would change and that it is made in the console; change nothing.',
+        'Report under four headings: what changed in permissions, who read what by layer, denials worth attention, and anything that should not have happened. Say what you would change; propose a change only when the person asks for one, and say it waits for them to apply.',
         '',
         INJECTION,
       ].join('\n')
@@ -131,7 +144,7 @@ export const ADMIN_PROMPTS: readonly AdminPrompt[] = [
         `2. list_grants with layer ${layer}, and with the layer's workspace: every grant and deny on the scope, whoever it names.`,
         `3. summarize_audit by action with actor ${principal} and layer ${layer} and result deny, over the last 30 days; query_audit for the rows if there are any.`,
         '',
-        'Explain in plain words which grant gives each permission, which deny removes it, and that write does not imply read while admin implies both. If the answer is that nothing grants it, say which grant would and that it is issued on the Grants screen.',
+        'Explain in plain words which grant gives each permission, which deny removes it, and that write does not imply read while admin implies both. If the answer is that nothing grants it, say which grant would; if the person wants it, propose it with issue_grant and say it waits for them to apply.',
         '',
         INJECTION,
       ].join('\n')
@@ -181,18 +194,41 @@ export function buildAdminServer(build: AdminServerBuild): McpServer {
     },
   )
 
-  for (const definition of ADMIN_CATALOG) {
-    server.registerTool(
-      definition.name,
-      {
-        title: definition.title,
-        description: definition.description,
-        inputSchema: fromJsonSchema(definition.inputSchema),
-        annotations: definition.annotations,
-      },
-      async (args: unknown): Promise<CallToolResult> => run(build, definition.name, args as Record<string, unknown>),
-    )
+  for (const definition of build.tools.catalog) {
+    const kind = definition.kind ?? 'read'
+    if (kind === 'decide' && build.ui === false) continue
+    const config = {
+      title: definition.title,
+      description: definition.description,
+      inputSchema: fromJsonSchema(definition.inputSchema),
+      annotations: definition.annotations,
+    }
+    const callback = async (args: unknown): Promise<CallToolResult> => run(build, definition.name, args as Record<string, unknown>)
+    if (kind === 'write') {
+      // Opens the change panel beside its result, where the person decides.
+      registerAppTool(server, definition.name, { ...config, _meta: { ui: { resourceUri: CHANGE_VIEW } } }, callback)
+    } else if (kind === 'decide') {
+      // The panel's own buttons. `visibility: ["app"]` is the host's promise
+      // not to offer them to the model, and docs/mcp-admin.md says that is
+      // what the guarantee rests on.
+      registerAppTool(server, definition.name, { ...config, _meta: { ui: { resourceUri: CHANGE_VIEW, visibility: ['app'] } } }, callback)
+    } else {
+      server.registerTool(definition.name, config, callback)
+    }
   }
+
+  registerAppResource(
+    server,
+    'Nacre change',
+    CHANGE_VIEW,
+    {
+      mimeType: RESOURCE_MIME_TYPE,
+      description: 'A proposed change, in full, with Apply and Cancel — pressed by the person, never by the model.',
+      // No network: the panel reaches the server through the host and nothing else.
+      _meta: { ui: { csp: { connectDomains: [] } } },
+    },
+    async (uri) => ({ contents: [{ uri: uri.href, mimeType: RESOURCE_MIME_TYPE, text: await viewHtml('change') }] }),
+  )
 
   for (const prompt of ADMIN_PROMPTS) {
     const properties = Object.fromEntries(
@@ -235,12 +271,17 @@ async function run(build: AdminServerBuild, name: string, args: Record<string, u
     const result = await build.tools.call(name, args, build.auth, requestId)
     build.observe?.toolDuration.observe(elapsed(), { tool: `admin.${name}` })
     build.observe?.toolCalls.inc({ tool: `admin.${name}`, result: 'ok' })
+    // A proposal's id goes to the panel in `_meta`, beside a text the model
+    // reads that does not carry it.
+    if (result instanceof AdminResult) return { ...callToolResult(result.result), _meta: { ...result.meta } }
     return callToolResult(result)
   } catch (error) {
     build.observe?.toolDuration.observe(elapsed(), { tool: `admin.${name}` })
     build.observe?.toolCalls.inc({ tool: `admin.${name}`, result: 'error' })
     logger.error('administrative tool call failed', { tool: name, request_id: requestId, error: String(error) })
-    if (error instanceof MetadataError || error instanceof ToolArgumentError) return callToolError(error.message)
+    if (error instanceof MetadataError || error instanceof ToolArgumentError || error instanceof McpToolRefusal) {
+      return callToolError(error.message)
+    }
     return callToolError()
   }
 }

@@ -329,8 +329,11 @@ and T29 and T30 in `delegation.test.ts`, where the `skill` value goes through th
 consent table and back through authentication rather than being handed in as a
 literal. T31 and T39 run in `admin-mcp.test.ts`, over real sockets to the API
 and to both MCP resources, with tokens minted by the function the API mints
-with. T32 and T35 wait for the administrative surface's writes and
-notifications, which are specified and not built. `test-plan.ts` says which.
+with. T32 runs in `admin-proposals.test.ts`, against a real PostgreSQL and
+over the administrative MCP's own transport: a write called and never applied
+changes nothing, expires, and is recorded — and a proposal applied from another
+connection, another person, after expiry or twice is the same refusal. T35 waits
+for notifications, which are specified and not built. `test-plan.ts` says which.
 
 T39 is the injection case. A layer's skill is written by that layer's
 administrator, and the administrative surface acts for an `org_admin` — so a

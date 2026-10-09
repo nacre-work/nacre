@@ -1,4 +1,5 @@
 import {
+  ADMIN_MCP_PATH,
   configureLogging,
   collectDatabaseGauges,
   createMetrics,
@@ -20,10 +21,12 @@ import {
   VectorStore,
   vectorStoreOptions,
   pendingMigrations,
+  withAuditSinks,
   withOrg,
   ConfigError,
   installGuards,
   onListenError,
+  packageVersion,
 } from '@nacre.work/core'
 
 import {
@@ -57,6 +60,8 @@ import { RateLimiter, type LimitPolicy, type Resource } from './limits.js'
 import { RedisUploadTickets } from './uploads.js'
 import { PostgresGroups, PostgresUsers } from './principals.js'
 import { PostgresSkills } from './skills.js'
+import { coreAdminWrites } from './admin-writes.js'
+import { PostgresProposals, writeLookup } from './proposals.js'
 import { PostgresServiceAccounts } from './service-keys.js'
 import { postgresVerification } from './verification.js'
 import { createApi } from './server.js'
@@ -348,6 +353,28 @@ async function main(): Promise<void> {
           ? config.canonicalUrl.replace(/\/+$/, '')
           : config.oauthAuthorizationServer,
     }),
+    // Where a client connects, said by the server so the console does not have
+    // to work it out from its own address. Both the front door and the chart's
+    // Ingress put `/v1` and `/mcp` behind `NACRE_CANONICAL_URL`; a transport
+    // published somewhere else is `NACRE_MCP_CANONICAL_URL`, which is the same
+    // value its discovery document is built from.
+    endpoints: (() => {
+      const origin = (url: string): string => url.replace(/\/+$/, '')
+      const version = packageVersion()
+      return {
+        api: `${origin(config.canonicalUrl)}/v1`,
+        mcp: `${origin(config.mcpCanonicalUrl)}/mcp`,
+        mcpAdmin: `${origin(config.mcpCanonicalUrl)}${ADMIN_MCP_PATH}`,
+        // The contract this release was built against, not `main`'s — a
+        // client written today against tomorrow's document is a client that
+        // compiles and asks for fields this server does not send.
+        contract:
+          version === '0.0.0'
+            ? 'https://github.com/nacre-work/nacre/blob/main/docs/openapi.yaml'
+            : `https://github.com/nacre-work/nacre/blob/v${version}/docs/openapi.yaml`,
+        version,
+      }
+    })(),
     // Only when there is a public half. A deployment on NACRE_JWT_SECRET serves
     // 404 here, because a shared secret has nothing publishable and an endpoint
     // that produced something anyway would be publishing the key that mints
@@ -426,6 +453,41 @@ async function main(): Promise<void> {
     serviceAccounts: new PostgresServiceAccounts(pool, APP_ROLE),
     users: new PostgresUsers(pool, APP_ROLE),
     groups: new PostgresGroups(pool, APP_ROLE),
+
+    /**
+     * Changes proposed on the administrative MCP, applied from the console.
+     *
+     * The writes are the same ones the MCP process proposes, built from the
+     * same ports the REST handlers above use, so applying from the console
+     * and applying from the panel are one code path with one set of checks.
+     * Their events go through the same sinks as every other: `createApi`
+     * wraps the port it is handed, and this one is wrapped here because the
+     * writes hold their own — `withAuditSinks` marks what it wrapped, so the
+     * two never fan an event out twice.
+     */
+    proposals: {
+      store: new PostgresProposals(pool, APP_ROLE),
+      writes: writeLookup(
+        coreAdminWrites({
+          pool,
+          role: APP_ROLE,
+          audit: withAuditSinks(new PostgresAudit(pool, APP_ROLE), (sink, event, error) => {
+            logger.warn('audit sink failed; the event is still in the table', {
+              sink,
+              action: event.action,
+              error: String(error).slice(0, 200),
+            })
+          }),
+          grants: new PostgresGrants(pool, APP_ROLE, principalsCache),
+          groups: new PostgresGroups(pool, APP_ROLE),
+          users: new PostgresUsers(pool, APP_ROLE),
+          workspaces: new PostgresWorkspaces(pool, APP_ROLE, principalsCache),
+          layers: new PostgresLayers(pool, vectors, APP_ROLE, principalsCache),
+          skills: new PostgresSkills(pool, APP_ROLE, principalsCache),
+          consents: new PostgresOAuthConsents(pool, APP_ROLE),
+        }),
+      ),
+    },
 
     /**
      * The authorization server.

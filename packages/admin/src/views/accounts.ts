@@ -178,6 +178,18 @@ function showKey(dialog: HTMLDialogElement, key: string, name: string, root: HTM
   const field = h('textarea', { class: 'input mono keyfield', readonly: true, rows: 2, spellcheck: 'false' })
   field.value = key
   const copied = h('span', { class: 'copied' })
+  // Where the key goes, said at the one moment somebody is holding it. Filled
+  // from `GET /v1/endpoints` when the server answers and left empty when it
+  // does not — an older API, and then the Connections screen is still there.
+  const usage = h('p', { class: 'hint' })
+  void client()
+    .endpoints()
+    .then((e) => {
+      usage.textContent =
+        `Send it as a bearer token — Authorization: Bearer ${key.slice(0, 12)}… — to the REST API at ${e.api}, ` +
+        `or to an MCP client pointed at ${e.mcp}. The Connections screen has example requests.`
+    })
+    .catch(() => undefined)
 
   dialog.replaceChildren(
     h('div', { class: 'keyout' },
@@ -202,6 +214,7 @@ function showKey(dialog: HTMLDialogElement, key: string, name: string, root: HTM
         } }, 'Copy'),
       ),
       copied,
+      usage,
       h('div', { class: 'dialog-actions' },
         h('button', { type: 'button', class: 'btn btn-primary', onclick: () => {
           dialog.close()

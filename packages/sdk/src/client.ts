@@ -32,7 +32,10 @@ import type {
   SearchHit,
   SearchOptions,
   Connection,
+  Proposal,
+  ProposalOutcome,
   Self,
+  Endpoints,
   ServiceAccount,
   User,
   UserRole,
@@ -829,6 +832,27 @@ export class NacreClient {
   }
 
   /**
+   * Where a client connects to this installation: the REST base, the MCP
+   * endpoint, and the administrative one for somebody who administers the
+   * organization.
+   *
+   * Asked rather than derived from wherever this client happens to be
+   * pointed: the API's base is not the MCP transport's address on every
+   * deployment, and the server already knows which addresses are the public
+   * ones.
+   */
+  readonly endpoints = async (): Promise<Endpoints> => {
+    const body = (await this.#request({ method: 'GET', path: '/v1/endpoints', retryable: true })) as Record<string, unknown>
+    return {
+      api: String(body.api),
+      mcp: String(body.mcp),
+      ...(typeof body.mcp_admin === 'string' ? { mcpAdmin: body.mcp_admin } : {}),
+      contract: String(body.contract),
+      version: String(body.version),
+    }
+  }
+
+  /**
    * Workspaces. A layer needs one, and until this endpoint existed the only
    * way to have its id was the line `init` printed.
    */
@@ -1436,6 +1460,70 @@ export class NacreClient {
         return { accessTokenTtlSeconds: Number(body.access_token_ttl_seconds ?? 0) }
       } catch (error) {
         if (error instanceof NacreError && error.status === 404) return undefined
+        throw error
+      }
+    },
+  }
+
+  /**
+   * Changes an agent proposed on the administrative MCP, waiting for you.
+   *
+   * Only your own session reaches these — a connected application's token is
+   * answered as if the path did not exist, or a client could approve its own
+   * proposals. `list` is short by construction: a proposal lives ten minutes.
+   */
+  readonly proposals = {
+    list: async (): Promise<readonly Proposal[]> => {
+      const body = (await this.#request({ method: 'GET', path: '/v1/proposals', retryable: true })) as { items?: unknown[] }
+      return (body.items ?? []).map((raw) => {
+        const p = raw as Record<string, unknown>
+        const connection = (p.connection ?? {}) as Record<string, unknown>
+        return {
+          id: String(p.id),
+          tool: String(p.tool),
+          module: p.module == null ? null : String(p.module),
+          summary: String(p.summary),
+          details: Array.isArray(p.details)
+            ? p.details.map((d) => ({ label: String((d as { label?: unknown }).label), value: String((d as { value?: unknown }).value) }))
+            : [],
+          createdAt: String(p.created_at),
+          expiresAt: String(p.expires_at),
+          connection: {
+            id: String(connection.id),
+            application: connection.application == null ? null : String(connection.application),
+          },
+        }
+      })
+    },
+
+    /**
+     * Press Apply. Not retried: applying twice is refused by the server, and a
+     * retry after a lost answer would report `gone` for a change that happened.
+     */
+    apply: async (id: string): Promise<ProposalOutcome> => {
+      try {
+        const body = (await this.#request({ method: 'POST', path: `/v1/proposals/${encodeURIComponent(id)}/apply` })) as {
+          result?: unknown
+        }
+        return { kind: 'applied', result: body.result }
+      } catch (error) {
+        // By the problem's type and not its status: a status is too coarse to
+        // carry two facts, and `409` is not reserved to this one.
+        if (error instanceof NacreError && error.type === 'https://nacre.work/errors/proposal-refused') {
+          return { kind: 'refused', reason: error.detail }
+        }
+        if (error instanceof NacreError && error.status === 404) return { kind: 'gone' }
+        throw error
+      }
+    },
+
+    /** Press Cancel. `false` when it was no longer open. */
+    cancel: async (id: string): Promise<boolean> => {
+      try {
+        await this.#request({ method: 'POST', path: `/v1/proposals/${encodeURIComponent(id)}/cancel` })
+        return true
+      } catch (error) {
+        if (error instanceof NacreError && error.status === 404) return false
         throw error
       }
     },

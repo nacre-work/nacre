@@ -378,4 +378,86 @@ for (const file of files) {
   })
 }
 
+// ─── A service pulled from Docker Hub signs in ────────────────────────────
+
+// An anonymous pull from Docker Hub counts against a limit shared by every job
+// on the runner's address, and it is refused with `toomanyrequests` before a
+// step runs. The commercial modules' 0.10.16 release failed that way three
+// times in a row on `postgres:17-alpine`, and a re-run cannot help — the limit
+// is not the repository's. This repository pulls three images from there in
+// four workflows.
+//
+// So every service container whose image names no registry — which is what
+// Docker Hub looks like — carries `credentials` from the repository's
+// `DOCKER_USER` and `DOCKER_PAT`. Three service blocks with the same image and
+// nothing that knew there were three is the shape this file exists for, so it
+// is asked of every block rather than of the ones that failed.
+
+/** Every service container in a job: its name, image and whether it signs in. */
+function servicesOf(text) {
+  const lines = text.split('\n')
+  const found = []
+  for (let i = 0; i < lines.length; i += 1) {
+    const open = /^(\s*)services:\s*$/.exec(lines[i])
+    if (open === null) continue
+    const indent = open[1].length
+    let current
+    for (const line of lines.slice(i + 1)) {
+      if (line.trim() === '' || line.trim().startsWith('#')) continue
+      const depth = line.length - line.trimStart().length
+      if (depth <= indent) break
+      const header = depth === indent + 2 ? /^\s*([\w-]+):\s*$/.exec(line) : null
+      if (header !== null) {
+        current = { name: header[1], lines: [] }
+        found.push(current)
+        continue
+      }
+      current?.lines.push(line)
+    }
+  }
+  return found.map(({ name, lines: body }) => {
+    const text = body.join('\n')
+    return {
+      name,
+      image: /^\s*image:\s*(\S+)/m.exec(text)?.[1],
+      signsIn:
+        /^\s*username:\s*\$\{\{\s*secrets\.DOCKER_USER\s*\}\}\s*$/m.test(text) &&
+        /^\s*password:\s*\$\{\{\s*secrets\.DOCKER_PAT\s*\}\}\s*$/m.test(text),
+    }
+  })
+}
+
+/** Docker Hub is where an image reference with no registry host resolves. */
+const onDockerHub = (image) => {
+  const first = image.split('/')[0]
+  return !image.includes('/') || !(first.includes('.') || first.includes(':') || first === 'localhost')
+}
+
+let services = 0
+for (const file of files) {
+  const text = readFileSync(join(DIR, file), 'utf8')
+  for (const job of jobsOf(text)) {
+    for (const service of servicesOf(job.text)) {
+      services += 1
+      if (service.image === undefined) {
+        console.error(
+          `::error file=${DIR}/${file}::${job.name}.services.${service.name} has no image this check can read. ` +
+            'Correct the pattern here rather than letting the service go unasked.',
+        )
+        failed = true
+        continue
+      }
+      if (onDockerHub(service.image) && !service.signsIn) {
+        console.error(
+          `::error file=${DIR}/${file}::${job.name}.services.${service.name} pulls ${service.image} from Docker Hub ` +
+            'anonymously. Add credentials with username ${{ secrets.DOCKER_USER }} and password ' +
+            '${{ secrets.DOCKER_PAT }}, or the job fails on the rate limit before a step runs.',
+        )
+        failed = true
+      }
+    }
+  }
+}
+if (services > 0) console.log(`${String(services)} service container(s), each signed in or not on Docker Hub`)
+
 process.exit(failed ? 1 : 0)

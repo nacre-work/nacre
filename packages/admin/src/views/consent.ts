@@ -551,11 +551,23 @@ async function administrativeConsent(root: HTMLElement, request: Request, host: 
               'the access log, and counts over it',
             ]),
           ),
+          // Since 0.34.0 it may also *propose*, and the screen says so rather
+          // than leaving "may not change anything" to read as the whole story.
+          // A proposal is stored and shown back; it happens only when the
+          // person presses Apply — in the panel beside the conversation or on
+          // the Proposals screen — and never on the call that made it.
+          h('fieldset', { class: 'field-group' },
+            h('legend', {}, 'It may propose'),
+            list([
+              'grants, people, groups, layers, skills and connections to change',
+              'each one waits for you to press Apply, beside the conversation or on the Proposals screen here, and expires after ten minutes',
+            ]),
+          ),
           h('fieldset', { class: 'field-group' },
             h('legend', {}, 'It may not'),
             list([
               'read, add or change any document',
-              'change anything — every change stays yours to make here',
+              'change anything by itself — nothing it proposes happens until you apply it',
               'see passwords, keys or second factors',
               'reach any other organization',
             ]),

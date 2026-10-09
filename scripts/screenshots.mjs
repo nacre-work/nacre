@@ -301,6 +301,44 @@ const skillEntry = (v) => ({
   paths: Object.keys(v.files),
 })
 
+/*
+ * Two changes an agent proposed on the administrative MCP, waiting for the
+ * person: a grant, and a module's deny with its own module named — the line
+ * under each says which. Times are relative to the frozen clock, so the
+ * "expires in" sentence is the same on every run.
+ */
+const PENDING_PROPOSALS = [
+  {
+    id: '3f1c2b9e-5d7a-4e21-9c84-0a6b2f1d7e55',
+    tool: 'issue_grant',
+    module: null,
+    summary: 'Give the person dana@example.com read on the layer handbook.',
+    details: [
+      { label: 'person', value: 'dana@example.com' },
+      { label: 'layer', value: 'handbook' },
+      { label: 'permission', value: 'read' },
+    ],
+    created_at: '2026-03-15T08:58:00.000Z',
+    expires_at: '2026-03-15T09:08:00.000Z',
+    connection: { id: 'a9d2f0c4-6e18-4b7a-8c35-1f4e9b2d7a60', application: 'Claude' },
+  },
+  {
+    id: '7b2e4c9a-1d63-4f08-a5b7-3c9e0f2d6a14',
+    tool: 'issue_document_deny',
+    module: 'acl-advanced',
+    summary: 'Deny the group contractors read on the document "2026 salary bands" in the layer hr.',
+    details: [
+      { label: 'group', value: 'contractors' },
+      { label: 'document', value: '2026 salary bands' },
+      { label: 'layer', value: 'hr' },
+      { label: 'effect', value: 'deny — beats any allow, at any depth' },
+    ],
+    created_at: '2026-03-15T08:55:00.000Z',
+    expires_at: '2026-03-15T09:05:00.000Z',
+    connection: { id: 'a9d2f0c4-6e18-4b7a-8c35-1f4e9b2d7a60', application: 'Claude' },
+  },
+]
+
 const FIXTURES = {
   // Polled by the header to show whether the API is reachable.
   'GET /v1/health': { status: 'ok' },
@@ -316,6 +354,19 @@ const FIXTURES = {
   // where the three hashes differ — but nothing stopped a run from replacing
   // them, which is what `landed` below is for: an assertion that the picture
   // is of the screen it is named after.
+  /*
+   * Where a client connects — the Connections screen's panel. A deployment's
+   * own public name rather than the quickstart's port, because what this
+   * answers is the operator's configured address and not wherever the console
+   * happens to be pointed; `mcp_admin` because the default caller administers.
+   */
+  'GET /v1/endpoints': {
+    api: 'https://nacre.example.com/v1',
+    mcp: 'https://nacre.example.com/mcp',
+    mcp_admin: 'https://nacre.example.com/mcp/admin',
+    contract: 'https://github.com/nacre-work/nacre/blob/v0.34.0/docs/openapi.yaml',
+    version: '0.34.0',
+  },
   'GET /v1/me': {
     organization: 'acme',
     principal_type: 'user',
@@ -485,6 +536,12 @@ const FIXTURES = {
    * with the skill box ticked, a ceiling with no narrowing, and an agent, which
    * has no line because its reach is its grants.
    */
+  /*
+   * Nothing waiting, which is the state an administrator is in nearly always —
+   * and what keeps the Proposals item out of every other screen's nav. The
+   * proposals shot carries two.
+   */
+  'GET /v1/proposals': { items: [] },
   'GET /v1/oauth/consents': {
     items: [
       {
@@ -1308,8 +1365,23 @@ await shot('consent-admin-member', {
     },
   },
 })
-// What each connection may do, said under its name.
+// What each connection may do, said under its name — and, above it, where to
+// connect one.
 await shot('connections', { hash: '#/connections' })
+// The example requests, opened: what a person handed a login copies first.
+await shot('connect-examples', {
+  hash: '#/connections',
+  prepare: async (page) => {
+    await page.getByText('Example requests').click()
+    await page.waitForTimeout(100)
+  },
+})
+// What an agent on the administrative MCP proposed, waiting for the person —
+// where a client that renders no panel leaves it.
+await shot('proposals', {
+  hash: '#/proposals',
+  fixtures: { 'GET /v1/proposals': { items: PENDING_PROPOSALS } },
+})
 
 await shot('skills-platform-admin', {
   hash: '#/skills',

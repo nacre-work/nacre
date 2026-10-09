@@ -1,0 +1,340 @@
+import {
+  mcpTools,
+  McpToolRefusal,
+  withOrg,
+  type AuditWriter,
+  type McpProposal,
+  type McpProposalDetail,
+  type McpWriteTool,
+} from '@nacre.work/core'
+import type { Pool } from 'pg'
+
+import type { AuthContext } from './auth.js'
+
+/**
+ * Proposals: a change on the administrative MCP, waiting for a person.
+ * docs/mcp-admin.md, "A change is proposed, and a person applies it".
+ *
+ * A write tool on `/mcp/admin` stores what it would do here and answers with
+ * that. It happens when the person who approved the connection presses Apply —
+ * in the panel the host renders beside the tool's result, or on the console's
+ * Proposals screen under their own session — and at no other time and by no
+ * other hand. Never the model's, in any client: the panel's Apply is a tool the
+ * host leaves out of what the model is offered, and the console is a screen the
+ * model cannot reach at all. That second door is why a client that renders no
+ * panel still works, and why there is no "apply directly" setting for one.
+ *
+ * Three properties are this table's rather than the code's: single use (the
+ * UPDATE that claims a row is the only way to apply it), expiry (the database's
+ * clock, ten minutes), and a record of what nobody applied.
+ */
+
+export const PROPOSAL_TTL_MS = 10 * 60_000
+
+/** Who is deciding: the connection's panel, or the person in the console. */
+export type ProposalDecider =
+  | { readonly through: 'panel'; readonly consentId: string }
+  | { readonly through: 'console'; readonly personId: string }
+
+export interface ProposalView {
+  readonly id: string
+  readonly tool: string
+  readonly module: string | null
+  readonly summary: string
+  readonly details: readonly McpProposalDetail[]
+  readonly createdAt: string
+  readonly expiresAt: string
+  readonly connection: { readonly id: string; readonly application: string | null }
+}
+
+interface Claimed {
+  readonly tool: string
+  readonly module: string | null
+  readonly input: Record<string, unknown>
+  readonly consentId: string
+}
+
+/** Literal, so `lint:audit-actions` can see each is recorded. */
+const RECORDED = {
+  created: { action: 'proposal.created' },
+  applied: { action: 'proposal.applied' },
+  cancelled: { action: 'proposal.cancelled' },
+} as const
+
+export class PostgresProposals {
+  constructor(
+    private readonly pool: Pool,
+    private readonly role: string,
+  ) {}
+
+  private inOrg<T>(auth: AuthContext, run: (client: import('pg').PoolClient) => Promise<T>): Promise<T> {
+    return withOrg(this.pool, auth.orgId, run, { role: this.role })
+  }
+
+  /**
+   * Store one. The connection and the person come from the token — the
+   * administrative connection this call arrived on — and never from anything
+   * the tool or the model said.
+   */
+  async create(
+    auth: AuthContext,
+    entry: { readonly tool: string; readonly module: string | null; readonly proposal: McpProposal },
+  ): Promise<{ readonly id: string; readonly expiresAt: string }> {
+    const consentId = auth.delegation?.id
+    if (consentId === undefined || auth.delegation?.surface !== 'admin' || auth.principal.type !== 'user') {
+      throw new Error('a proposal is made on an administrative connection, by a person')
+    }
+    return this.inOrg(auth, async (client) => {
+      const { rows } = await client.query<{ id: string; expires_at: string }>(
+        `INSERT INTO admin_proposals (org_id, consent_id, proposed_by, tool, module, summary, details, input, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, now() + make_interval(secs => $9))
+         RETURNING id, to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS expires_at`,
+        [
+          auth.orgId,
+          consentId,
+          auth.principal.id,
+          entry.tool,
+          entry.module,
+          entry.proposal.summary.slice(0, 1000),
+          JSON.stringify(entry.proposal.details),
+          JSON.stringify(entry.proposal.input),
+          PROPOSAL_TTL_MS / 1000,
+        ],
+      )
+      const row = rows[0] as { id: string; expires_at: string }
+      return { id: row.id, expiresAt: row.expires_at }
+    })
+  }
+
+  /**
+   * Take one for applying, or `undefined`. One answer for absent, another
+   * organization's, another connection's or person's, already decided, expired,
+   * and proposed through a connection revoked since — the caller learns
+   * nothing about a proposal that is not theirs to apply.
+   *
+   * The UPDATE is the single use: two presses, two tabs, or the panel and the
+   * console at once each run it, and exactly one gets a row.
+   */
+  async claim(auth: AuthContext, id: string, by: ProposalDecider): Promise<Claimed | undefined> {
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return undefined
+    return this.inOrg(auth, async (client) => {
+      const { rows } = await client.query<{ tool: string; module: string | null; input: Record<string, unknown>; consent_id: string }>(
+        `UPDATE admin_proposals p
+            SET status = 'applying', decided_at = now(), decided_through = $3
+          WHERE p.org_id = $1 AND p.id = $2::uuid
+            AND p.status = 'open' AND p.expires_at > now()
+            AND ${by.through === 'panel' ? 'p.consent_id = $4::uuid' : 'p.proposed_by = $4::uuid'}
+            AND EXISTS (SELECT 1 FROM oauth_consents c
+                         WHERE c.org_id = p.org_id AND c.id = p.consent_id AND c.revoked_at IS NULL)
+        RETURNING p.tool, p.module, p.input, p.consent_id`,
+        [auth.orgId, id, by.through, by.through === 'panel' ? by.consentId : by.personId],
+      )
+      const row = rows[0]
+      return row === undefined ? undefined : { tool: row.tool, module: row.module, input: row.input, consentId: row.consent_id }
+    })
+  }
+
+  /** Record how applying went. */
+  async settle(auth: AuthContext, id: string, outcome: { readonly ok: true } | { readonly ok: false; readonly error: string }): Promise<void> {
+    await this.inOrg(auth, async (client) => {
+      await client.query(
+        `UPDATE admin_proposals SET status = $3, error = $4
+          WHERE org_id = $1 AND id = $2::uuid AND status = 'applying'`,
+        [auth.orgId, id, outcome.ok ? 'applied' : 'failed', outcome.ok ? null : outcome.error.slice(0, 1000)],
+      )
+    })
+  }
+
+  /** Decline one. The same single answer as `claim` for anything not the caller's. */
+  async cancel(auth: AuthContext, id: string, by: ProposalDecider): Promise<{ readonly tool: string; readonly module: string | null; readonly consentId: string } | undefined> {
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return undefined
+    return this.inOrg(auth, async (client) => {
+      const { rows } = await client.query<{ tool: string; module: string | null; consent_id: string }>(
+        `UPDATE admin_proposals
+            SET status = 'cancelled', decided_at = now(), decided_through = $3
+          WHERE org_id = $1 AND id = $2::uuid AND status = 'open' AND expires_at > now()
+            AND ${by.through === 'panel' ? 'consent_id = $4::uuid' : 'proposed_by = $4::uuid'}
+        RETURNING tool, module, consent_id`,
+        [auth.orgId, id, by.through, by.through === 'panel' ? by.consentId : by.personId],
+      )
+      const row = rows[0]
+      return row === undefined ? undefined : { tool: row.tool, module: row.module, consentId: row.consent_id }
+    })
+  }
+
+  /** What is waiting for this person, newest first. Their own and nobody else's. */
+  async pending(auth: AuthContext): Promise<readonly ProposalView[]> {
+    return this.inOrg(auth, async (client) => {
+      const { rows } = await client.query<{
+        id: string
+        tool: string
+        module: string | null
+        summary: string
+        details: McpProposalDetail[]
+        created_at: string
+        expires_at: string
+        consent_id: string
+        application: string | null
+      }>(
+        `SELECT p.id, p.tool, p.module, p.summary, p.details,
+                to_char(p.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
+                to_char(p.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS expires_at,
+                p.consent_id, oc.client_name AS application
+           FROM admin_proposals p
+           JOIN oauth_consents c ON c.org_id = p.org_id AND c.id = p.consent_id AND c.revoked_at IS NULL
+           LEFT JOIN oauth_clients oc ON oc.client_id = c.client_id
+          WHERE p.org_id = $1 AND p.proposed_by = $2 AND p.status = 'open' AND p.expires_at > now()
+          ORDER BY p.created_at DESC
+          LIMIT 100`,
+        [auth.orgId, auth.principal.id],
+      )
+      return rows.map((r) => ({
+        id: r.id,
+        tool: r.tool,
+        module: r.module,
+        summary: r.summary,
+        details: r.details,
+        createdAt: r.created_at,
+        expiresAt: r.expires_at,
+        connection: { id: r.consent_id, application: r.application },
+      }))
+    })
+  }
+}
+
+/** Where a proposal's tool is found again when it is applied. */
+export type WriteLookup = (tool: string, module: string | null) => McpWriteTool | undefined
+
+/**
+ * The core's own writes and every module's, by the name and module a proposal
+ * stored. A module's tool is found only under the module that registered it,
+ * so a proposal cannot be applied by a different module's tool of the same
+ * name — and a module unloaded since leaves nothing that can apply it.
+ */
+export function writeLookup(core: readonly McpWriteTool[]): WriteLookup {
+  return (tool, module) => {
+    if (module === null) return core.find((t) => t.name === tool)
+    const found = mcpTools('admin').find((t) => t.module === module && t.tool.name === tool)?.tool
+    return found?.kind === 'write' ? found : undefined
+  }
+}
+
+export type DecideOutcome =
+  | { readonly kind: 'applied'; readonly result: unknown }
+  | { readonly kind: 'refused'; readonly reason: string }
+  | { readonly kind: 'failed' }
+  | { readonly kind: 'gone' }
+  | { readonly kind: 'cancelled' }
+
+export interface DecideDeps {
+  readonly proposals: PostgresProposals
+  readonly audit: AuditWriter
+  readonly writes: WriteLookup
+}
+
+const surfaceOf = (by: ProposalDecider) => (by.through === 'panel' ? ('mcp-admin' as const) : ('api' as const))
+
+/**
+ * Apply one, as the person deciding. The panel and the console both come
+ * here, so there is one answer to what applying means.
+ *
+ * `apply` runs under the decider's own authority — the administrative
+ * connection, or the person's session — and re-checks whatever it needs to: a
+ * role lost or a grant revoked in the minutes since the proposal is what
+ * decides. A refusal from it is the person's to read and is recorded; anything
+ * else is the generic failure and is logged by the caller.
+ */
+export async function applyProposal(
+  deps: DecideDeps,
+  auth: AuthContext,
+  id: string,
+  by: ProposalDecider,
+  requestId: string,
+): Promise<DecideOutcome> {
+  const claimed = await deps.proposals.claim(auth, id, by)
+  if (claimed === undefined) return { kind: 'gone' }
+
+  const record = (result: 'allow' | 'deny' | 'error', detail: Record<string, unknown>) =>
+    deps.audit.write({
+      orgId: auth.orgId,
+      actor: `${auth.principal.type}:${auth.principal.id}`,
+      ...RECORDED.applied,
+      result,
+      surface: surfaceOf(by),
+      client: `connection:${claimed.consentId}`,
+      target: { proposal: id, tool: claimed.tool, ...(claimed.module === null ? {} : { module: claimed.module }) },
+      detail: { through: by.through, ...detail },
+      requestId,
+    })
+
+  const tool = deps.writes(claimed.tool, claimed.module)
+  if (tool === undefined) {
+    const reason = `${claimed.tool} is no longer offered here, so this proposal cannot be applied.`
+    await deps.proposals.settle(auth, id, { ok: false, error: reason })
+    await record('deny', { reason })
+    return { kind: 'refused', reason }
+  }
+
+  try {
+    const result = await tool.apply({ auth, requestId, proposal: { id, through: by.through } }, claimed.input)
+    await deps.proposals.settle(auth, id, { ok: true })
+    await record('allow', {})
+    return { kind: 'applied', result }
+  } catch (error) {
+    if (error instanceof McpToolRefusal) {
+      await deps.proposals.settle(auth, id, { ok: false, error: error.message })
+      await record('deny', { reason: error.message })
+      return { kind: 'refused', reason: error.message }
+    }
+    await deps.proposals.settle(auth, id, { ok: false, error: 'internal' })
+    await record('error', {})
+    throw error
+  }
+}
+
+/** Decline one. Recorded, because a proposal nobody wanted is part of the story. */
+export async function cancelProposal(
+  deps: Pick<DecideDeps, 'proposals' | 'audit'>,
+  auth: AuthContext,
+  id: string,
+  by: ProposalDecider,
+  requestId: string,
+): Promise<DecideOutcome> {
+  const cancelled = await deps.proposals.cancel(auth, id, by)
+  if (cancelled === undefined) return { kind: 'gone' }
+  await deps.audit.write({
+    orgId: auth.orgId,
+    actor: `${auth.principal.type}:${auth.principal.id}`,
+    ...RECORDED.cancelled,
+    result: 'allow',
+    surface: surfaceOf(by),
+    client: `connection:${cancelled.consentId}`,
+    target: { proposal: id, tool: cancelled.tool, ...(cancelled.module === null ? {} : { module: cancelled.module }) },
+    detail: { through: by.through },
+    requestId,
+  })
+  return { kind: 'cancelled' }
+}
+
+/** Store one and record that an agent asked for it. */
+export async function recordProposal(
+  deps: Pick<DecideDeps, 'proposals' | 'audit'>,
+  auth: AuthContext,
+  entry: { readonly tool: string; readonly module: string | null; readonly proposal: McpProposal },
+  requestId: string,
+): Promise<{ readonly id: string; readonly expiresAt: string }> {
+  const stored = await deps.proposals.create(auth, entry)
+  await deps.audit.write({
+    orgId: auth.orgId,
+    actor: `${auth.principal.type}:${auth.principal.id}`,
+    ...RECORDED.created,
+    result: 'allow',
+    surface: 'mcp-admin',
+    target: { proposal: stored.id, tool: entry.tool, ...(entry.module === null ? {} : { module: entry.module }) },
+    // The sentence and the facts, which are what a person reads — never the
+    // input, which may carry a skill's text.
+    detail: { summary: entry.proposal.summary, expires_at: stored.expiresAt },
+    requestId,
+  })
+  return stored
+}

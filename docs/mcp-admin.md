@@ -1,10 +1,11 @@
 # The administrative MCP
 
-> **Reads are built; writes are specified.** Since 0.32.0 the resource, its
-> audience and consent, the guide, every read tool, the access log and the four
-> prompts are served. Proposals, the change panel, the write tools, the other
-> panels, notifications and the extension point are the contract the rest is
-> written to. "Current state" at the end says exactly which is which.
+> **Reads since 0.32.0, writes since 0.34.0.** The resource, its audience and
+> consent, the guide, every read tool, the access log and the four prompts were
+> served first; proposals, the change panel, the console's Proposals screen, the
+> write tools and the extension point followed. The other panels and
+> notifications are the contract the rest is written to. "Current state" at the
+> end says exactly which is which.
 
 An organization's administrator does their work in the console: people, groups,
 layers, grants, skills, the access log. An agent can do most of it from a
@@ -133,33 +134,54 @@ can call**: it is declared with `visibility: ["app"]`, which a host honours by
 leaving it out of what the model is offered. A planted instruction can therefore
 get as far as a proposal on somebody's screen, and no further.
 
-- A proposal is stored server-side, bound to the connection, single-use, and
-  expires in ten minutes. Applying an expired or foreign one is refused.
+- A proposal is stored server-side, bound to the connection that made it and
+  to its person, single-use, and expires in ten minutes. Applying an expired,
+  decided or foreign one is refused with the same answer as one that does not
+  exist, and a revoked connection's proposals cannot be applied at all.
+- **Applying is one statement**: the row moves from `open` to `applying` only if
+  it is open, unexpired, and the caller's — so two presses, two tabs or the
+  panel and the console at once apply it exactly once.
 - The proposal's identifier travels in the result's `_meta` for the panel, not in
-  the text the model reads.
-- **A client that cannot render panels** gets the organization's choice, set in
-  the console: refuse writes with a sentence saying a panel is needed (the
-  default), or apply directly, relying on the client's own confirmation of a
-  tool annotated destructive.
+  the text the model reads. Everything the panel and the console show is the
+  server's own sentence, written from names it resolved, never text the model
+  typed.
+- **A client that cannot render panels** — a terminal, say — leaves the proposal
+  on the console's **Proposals** screen, which is the same Apply and Cancel for
+  the same person and nobody else: the API answers those routes for a person's
+  own session and for nothing a connected application holds, so the model
+  cannot reach that screen either. The result the model reads names the screen,
+  and the console's nav shows it only while something is waiting.
+- There is **no "apply directly" setting.** It was specified as an
+  organization's choice for clients without panels and dropped once the console
+  could hold the button instead: every way of making that switch safe ends up
+  being a person pressing Apply somewhere, and the console is somewhere.
 
 What this guarantee rests on is the host not offering an app-only tool to the
-model, and that is stated rather than implied.
+model, and that is stated rather than implied. A host that offered it anyway
+would let the model apply only proposals its own connection made, to the
+organization its person administers — the panel's call is checked like any
+other.
 
 ## Tools
 
 All read tools are `readOnlyHint`; every write is `destructiveHint` and goes
 through a proposal.
 
-| Area | Read | Write |
+| Area | Read | Write — each a proposal |
 |---|---|---|
-| People | list, one person with their groups and grants | create (no password), set role `member` / `org_admin`, disable, enable |
-| Groups | list, members | create, rename, delete, add and remove members |
-| Workspaces and layers | list, one with its state | create, rename, delete |
-| Grants | by principal, by scope, effective access of a principal | issue, revoke |
-| Skills | as [skills.md](./skills.md), returned as material under review — see above | organization and layer skill: write, restore, clear |
-| Connections | delegations in the organization | revoke |
-| Access log | query, summarize | — |
-| Notifications | — | send, alert rules |
+| People | `list_people`, `list_service_accounts` | `create_person` (no password), `set_person_role` (`member` / `org_admin`), `disable_person`, `enable_person` |
+| Groups | `list_groups`, `get_group` | `create_group`, `delete_group`, `add_group_member`, `remove_group_member` |
+| Workspaces and layers | `list_workspaces`, `list_layers` | `create_workspace`, `create_layer`, `update_layer` (name, description), `delete_layer` |
+| Grants | `list_grants` by principal or scope, `effective_access` | `issue_grant`, `revoke_grant` |
+| Skills | `list_skills`, `get_skill` — returned as material under review, see above | `write_skill`, `restore_skill`, `clear_skill`, for the organization's skill and a layer's |
+| Connections | `list_connections` | `revoke_connection` |
+| Access log | `query_audit`, `summarize_audit` | — |
+| Notifications | — | send, alert rules — specified, not built |
+
+Every write names things the way a person does — an address, a group's name, a
+layer's slug — and the proposal is where those names are resolved, so what the
+panel shows is what was found rather than what was typed. A name that matches
+nothing, or more than one thing, is refused there, before anything is stored.
 
 **What is not here, and why:**
 
@@ -230,18 +252,26 @@ Drawn in the brand like the existing three, with the host deciding light or dark
 
 ## Commercial modules add tools here
 
-`registerMcpTools(surface, ...tools)` is the point, specified in
-[extensions.md](./extensions.md): `acl-advanced` adds document-scoped grants and
-deny rules to this surface. A registered write goes through a proposal like a
-core one — the point takes the proposal and the apply step, not a function that
-writes directly — so a module cannot add a write that skips the panel.
+`registerMcpTools(surface, ...tools)` is the point, built in 0.34.0 and
+described in [extensions.md](./extensions.md): `acl-advanced` adds
+document-scoped grants and deny rules to this surface. A registered write is two
+functions — `propose`, which resolves and describes and changes nothing, and
+`apply`, which the core calls only when the person applies — so a module cannot
+add a write that skips the panel: the shape has no third way. A proposal records
+which module made it, and is refused if that module is no longer the one
+offering the tool. A name the core already uses, or that two modules both
+register, stops the process at startup rather than shadowing a tool somebody
+believes they called.
 
 ## Audit
 
 Every call from this surface is recorded with `surface: "mcp-admin"` and the
-connection. Proposals that were never applied are recorded too, as
-`proposal.expired` and `proposal.cancelled`: a stream of proposals nobody
-applied is what an injection attempt looks like from the outside.
+connection. A proposal leaves `proposal.created` when it is made and one of
+`proposal.applied`, `proposal.cancelled` or `proposal.expired` when it is
+decided — the last written by the worker, which sweeps them once a minute — and
+an applied one also leaves the ordinary record of the change itself, with the
+proposal's id beside it. A stream of proposals nobody applied is what an
+injection attempt looks like from the outside.
 
 ## Current state
 
@@ -279,9 +309,18 @@ applied is what an injection attempt looks like from the outside.
   surface, because the scope is entered once per request rather than at
   fifty-nine call sites.
 
-**Specified, not built:** proposals and the change panel, the write tools,
-`proposal.expired` and `proposal.cancelled`, the other panels, notifications and
-alert rules (T32, T35), and `registerMcpTools`. Until proposals exist there is
-no write on this surface at all, and the guide tells an agent where a change is
-made instead — a write that skipped the panel would be the one the design exists
-to prevent.
+**Built in 0.34.0** — the writes, all of them proposals:
+
+- `admin_proposals` (migration 0039): bound to the connection and its person by
+  composite keys, under row-level security, ten minutes long.
+- The eighteen write tools in the table above, and the change panel
+  (`ui://nacre/change.html`) a write opens. Apply and Cancel are the app-only
+  tools `apply_proposal` and `cancel_proposal`, left out of the catalog of a
+  client that declared no panels.
+- The console's **Proposals** screen and `GET /v1/proposals`,
+  `POST /v1/proposals/{id}/apply` and `…/cancel` — a person's own session only.
+- `proposal.created`, `proposal.applied`, `proposal.cancelled` and
+  `proposal.expired`, and the worker's expiry sweep. T32.
+- `registerMcpTools`, for a module's read and write tools on this surface.
+
+**Specified, not built:** the other panels, notifications and alert rules (T35).

@@ -732,6 +732,39 @@ components:
           items: { type: string }
           description: 'base64url credential ids this account may answer with.'
         timeout_ms: { type: integer }
+    Endpoints:
+      type: object
+      required: [api, mcp, contract, version]
+      properties:
+        api:
+          type: string
+          format: uri
+          description: >
+            The REST API's base, ending in `/v1`. A token goes in the
+            `Authorization` header as a bearer token.
+          examples: ['https://nacre.example.com/v1']
+        mcp:
+          type: string
+          format: uri
+          description: >
+            The MCP endpoint, Streamable HTTP. A client added here discovers the
+            authorization server from the `401` it gets first and sends the
+            person to sign in and approve what it may do.
+          examples: ['https://nacre.example.com/mcp']
+        mcp_admin:
+          type: string
+          format: uri
+          description: >
+            The administrative MCP endpoint. Present only for a caller who
+            administers the organization.
+          examples: ['https://nacre.example.com/mcp/admin']
+        contract:
+          type: string
+          format: uri
+          description: This document, at the release the server was built from.
+        version:
+          type: string
+          examples: ['0.34.0']
     Self:
       type: object
       required: [organization, principal_type, principal_id, role, administers, holds_own_credentials]
@@ -795,6 +828,36 @@ components:
           description: |
             What this principal may do organization-wide. A service account is
             always `member`; anything it reaches, it reaches through a grant.
+    Proposal:
+      type: object
+      description: |
+        A change an agent proposed on the administrative MCP. `summary` and
+        `details` are the server's own words, written from names it resolved —
+        what a person reads before pressing Apply.
+      required: [id, tool, module, summary, details, created_at, expires_at, connection]
+      properties:
+        id: { type: string, format: uuid }
+        tool: { type: string, description: 'The write tool that proposed it, such as issue_grant.' }
+        module:
+          type: [string, 'null']
+          description: The module that registered the tool; null for the core's own.
+        summary: { type: string }
+        details:
+          type: array
+          items:
+            type: object
+            required: [label, value]
+            properties:
+              label: { type: string }
+              value: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        connection:
+          type: object
+          required: [id, application]
+          properties:
+            id: { type: string, format: uuid }
+            application: { type: [string, 'null'] }
     Connection:
       type: object
       required: [id, client_id, client_name, acts_as, service_account_id, service_account_name, approved_by, approved_by_email, approver_disabled, created_at, layers, permissions, surface]
@@ -1936,6 +1999,38 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+  /endpoints:
+    get:
+      operationId: describeEndpoints
+      summary: Where a client connects
+      tags: [auth]
+      description: |
+        The addresses this installation is reached at: the REST API's base, the
+        MCP endpoint, and — for somebody who administers the organization — the
+        administrative MCP endpoint. Built from `NACRE_CANONICAL_URL` and
+        `NACRE_MCP_CANONICAL_URL`, the values every token's issuer and every
+        discovery document are already made of.
+
+        It exists so a screen can say where to point a client without working
+        it out from its own address, which is the answer only when the console,
+        the API and the MCP transport share one origin. Any credential may ask:
+        a member connects their own client, and nothing here names anything a
+        token could not already reach.
+
+        `mcp_admin` is present only for a caller who administers the
+        organization, because the administrative MCP's consent screen refuses
+        everybody else — docs/mcp-admin.md.
+      responses:
+        '200':
+          description: The addresses
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Endpoints' }
+        '401':
+          description: No token, or one this deployment cannot verify.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
   /me/password:
     post:
       operationId: changeOwnPassword
@@ -2492,6 +2587,94 @@ paths:
                 properties:
                   ended: { type: boolean }
                   access_token_ttl_seconds: { type: integer }
+        '404':
+          $ref: '#/components/responses/NotFoundOrForbidden'
+  /proposals:
+    get:
+      operationId: listProposals
+      summary: Changes an agent proposed, waiting for you
+      description: |
+        Every write on the administrative MCP **proposes**: it stores what it
+        would do and answers with that, and the change happens when the person
+        who approved that connection presses Apply — in the panel a host renders
+        beside the result, or here. docs/mcp-admin.md.
+
+        Your own session and nobody else's. A connected application's token,
+        administrative or not, is answered as if this path did not exist: a
+        client that could reach it could approve its own proposals, and the
+        person would never be in front of them. An `org_admin` only, and only
+        their own proposals — never another administrator's.
+
+        Open and unexpired only, newest first. A proposal lives ten minutes, and
+        one proposed through a connection revoked since is not listed.
+      tags: [auth]
+      responses:
+        '200':
+          description: What is waiting
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Proposal' }
+        '404':
+          $ref: '#/components/responses/NotFoundOrForbidden'
+  /proposals/{id}/apply:
+    post:
+      operationId: applyProposal
+      summary: Apply a proposed change
+      description: |
+        Makes the change, as you, through the same checks the endpoint for that
+        change makes — so a role lost or a grant revoked since it was proposed
+        is what decides. Single use: the second press, or the panel and this at
+        once, finds nothing to apply.
+
+        `409` when the proposal was yours and the change itself was refused —
+        the name is taken, the last administrator would go — with the reason in
+        `detail`; the proposal is spent. `404` for absent, somebody else's,
+        already decided, expired, or proposed through a connection revoked since.
+      tags: [auth]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Applied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [applied]
+                properties:
+                  applied: { type: boolean, enum: [true] }
+                  result:
+                    description: What the change answered — the id of what it created, for instance.
+        '404':
+          $ref: '#/components/responses/NotFoundOrForbidden'
+        '409':
+          description: The change was refused; `type` is `https://nacre.work/errors/proposal-refused`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /proposals/{id}/cancel:
+    post:
+      operationId: cancelProposal
+      summary: Decline a proposed change
+      description: Nothing changes, and the decision is recorded as `proposal.cancelled`.
+      tags: [auth]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Cancelled
         '404':
           $ref: '#/components/responses/NotFoundOrForbidden'
   /embedding-providers:

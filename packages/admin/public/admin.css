@@ -685,6 +685,38 @@ th.tick {
 }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
 
+/* ─── Where a client connects ─────────────────────────────────────────── */
+/* The addresses on the Connections screen, each beside the control that takes
+   it, and the example requests under them. The address is a box of its own
+   rather than inline code, because it wraps on a phone and a button beside a
+   wrapped line of inline text sits nowhere in particular — the `.secretrow`
+   arrangement the Security screen already uses for a value somebody copies. */
+.connect > h2 { margin: 0 0 14px; }
+/* The copy controls here change their own glyph when they succeed, so the line
+   `.copied` reserves for a failure is a gap under every address and every
+   example. It is put on the page only when it has something to say. */
+.connect .copied:empty { display: none; }
+.connect .facts { grid-template-columns: max-content 1fr; row-gap: 12px; }
+.connect .facts dt { align-self: start; padding-top: 9px; }
+.connect .facts .hint { margin: 6px 0 0; }
+.endpoint {
+  display: block; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere;
+  background: var(--n-surface-sunk); border: 1px solid var(--n-border-color);
+  border-radius: var(--n-radius); padding: 6px 10px;
+}
+.secretrow .endpoint, .secretrow .example-code { flex: 1 1 0; min-width: 0; }
+.examples > summary { cursor: pointer; font-weight: 600; font-size: 14px; margin: 4px 0 0; }
+.examples[open] > summary { margin-bottom: 14px; }
+.example { margin: 0 0 16px; }
+.example h4 { margin: 0 0 10px; font-size: 14px; }
+.example .hint { margin: 6px 0 0; }
+.example-code {
+  font-family: var(--n-font-mono); font-size: 13px; line-height: 1.55;
+  background: var(--n-surface-sunk); border: 1px solid var(--n-border-color);
+  border-radius: var(--n-radius); padding: 10px 12px; margin: 0;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
 /* ─── The migration panel ─────────────────────────────────────────────── */
 /* Wider than the other dialogs: the reference set is two fields per row and
    the whole point of the screen is reading them next to each other. */

@@ -22,6 +22,7 @@ import { loadExtensions, type ConsoleView, type ConsoleViewer } from './extensio
 import { accountsView } from './views/accounts.js'
 import { auditView } from './views/audit.js'
 import { connectionsView } from './views/connections.js'
+import { proposalsView } from './views/proposals.js'
 import { consentView } from './views/consent.js'
 import { grantsView } from './views/grants.js'
 import { layersView } from './views/layers.js'
@@ -81,7 +82,7 @@ import { skillsView } from './views/skills.js'
  * rather than two: a screen from `nacre-enterprise-web` decides who it is for
  * by asking exactly what a screen in this file asks.
  */
-type Viewer = ConsoleViewer & { readonly managesEmbedders: boolean }
+type Viewer = ConsoleViewer & { readonly managesEmbedders: boolean; readonly pendingProposals: number }
 
 /**
  * A core route, whose `shows`/`render` take the richer internal `Viewer`.
@@ -96,6 +97,14 @@ interface Route {
   readonly label: string
   readonly shows: (viewer: Viewer) => boolean
   readonly render: (root: HTMLElement, viewer: Viewer) => void
+  /**
+   * Whether it has a nav item, when that is narrower than whether it may be
+   * opened. Absent is "whenever it shows". The current screen is always in the
+   * nav, so a screen opened by link still says where the reader is.
+   */
+  readonly inNav?: (viewer: Viewer) => boolean
+  /** The nav item's text, where it says more than the label — a count. */
+  readonly navLabel?: (viewer: Viewer) => string
 }
 
 const anybody = (): boolean => true
@@ -174,6 +183,23 @@ const PERSONAL_ROUTES: readonly Route[] = [
     label: 'Connections',
     render: (root) => void connectionsView(root),
     shows: anybody,
+  },
+  // Personal rather than administrative, although only an administrator has
+  // any: a proposal waits for the one person whose connection made it, and no
+  // other administrator sees it. The administrative MCP's own result names
+  // this hash, so a client that renders no panel has somewhere to send them.
+  //
+  // In the nav only while something is waiting. A proposal lives ten minutes,
+  // so an item that is there all the time is an empty screen nearly always —
+  // and it was the tenth item, which wrapped the nav onto a second line for
+  // every administrator to say nothing.
+  {
+    hash: '#/proposals',
+    label: 'Proposals',
+    render: (root) => void proposalsView(root),
+    shows: administers,
+    inNav: (v: Viewer) => v.pendingProposals > 0,
+    navLabel: (v: Viewer) => `Proposals (${String(v.pendingProposals)})`,
   },
 ]
 
@@ -307,12 +333,13 @@ function route(main: HTMLElement, nav: HTMLElement, viewer: Viewer): void {
 
   clear(nav)
   for (const r of allowed) {
+    if (r !== current && r.inNav !== undefined && !r.inNav(viewer)) continue
     nav.append(
       h('a', {
         href: r.hash,
         class: r === current ? 'active' : '',
         ...(r === current ? { 'aria-current': 'page' } : {}),
-      }, r.label),
+      }, r.navLabel !== undefined && r.inNav?.(viewer) !== false ? r.navLabel(viewer) : r.label),
     )
   }
 
@@ -829,7 +856,7 @@ function start(): void {
   // not derivable from it: `false` there covers a member and a platform
   // administrator alike, and only one of them is owed an explanation for the
   // screens that are missing.
-  let viewer: Viewer = { administers: false, platformAdmin: false, managesEmbedders: false }
+  let viewer: Viewer = { administers: false, platformAdmin: false, managesEmbedders: false, pendingProposals: 0 }
   const draw = (): void => route(main, nav, viewer)
   draw()
   window.onhashchange = draw
@@ -853,8 +880,22 @@ function start(): void {
       // access log — and to choose which sentence to show. That is
       // `administersTenants(auth)` in the API, which is the role and has no
       // ceiling question, so there is nothing else to ask for.
-      viewer = { administers: me.administers, platformAdmin: me.role === 'platform_admin', managesEmbedders: me.managesEmbedders }
+      viewer = { administers: me.administers, platformAdmin: me.role === 'platform_admin', managesEmbedders: me.managesEmbedders, pendingProposals: 0 }
       draw()
+      // What is waiting, asked once the server has said this is an
+      // administrator — nobody else can have any. A failure is "nothing
+      // waiting": the screen is still reachable by its link, and an older API
+      // answers 404 here.
+      if (me.administers) {
+        void client()
+          .proposals.list()
+          .then((pending) => {
+            if (pending.length === 0) return
+            viewer = { ...viewer, pendingProposals: pending.length }
+            draw()
+          })
+          .catch(() => undefined)
+      }
     })
     .catch(() => {
       // Left as a member. An older API with no /v1/me answers 404, and a

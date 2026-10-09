@@ -1510,6 +1510,14 @@ against is `NACRE_JWT_ISSUER` and `NACRE_JWT_AUDIENCE`, and **those stay
 identical on both processes** — the MCP transport verifies what the API signed,
 so a difference there is 401s on part of the traffic and not the rest.
 
+Set it on the **api** process as well, to the same value, if you want the
+console to say it. Since 0.34.0 `GET /v1/endpoints` tells the Connections screen
+where to point an MCP client, built from `NACRE_MCP_CANONICAL_URL` with
+`NACRE_CANONICAL_URL` as the fallback — so on this two-port shape, an API that
+has not been told shows `…:8080/mcp`, which is the API's port, while the
+transport answers on 8081. Behind one origin — the front door, the chart's
+Ingress — neither process needs it.
+
 `NACRE_MCP_ALLOWED_ORIGINS` is a comma-separated allow-list of browser origins.
 Empty is the default and refuses every browser and no agent: validating `Origin`
 is required of an MCP server to stop DNS rebinding — a page in somebody's

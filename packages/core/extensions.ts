@@ -323,6 +323,105 @@ export interface SignInGate {
   check(context: SignInContext): Promise<SignInVerdict>
 }
 
+
+/**
+ * A tool a module adds to an MCP surface. `registerMcpTools`.
+ *
+ * The administrative surface is the only one in the first version, and the
+ * core applies its gate — an organization administrator's administrative
+ * connection — before any of this runs, so a module cannot register a tool
+ * that skips it.
+ */
+export type McpSurface = 'admin'
+
+/** What a module's tool is told about the call. */
+export interface McpToolCall {
+  /** Already authenticated and already an administrator. From the credential. */
+  readonly auth: ResolvedPrincipal
+  /** The audit log's `request_id` for this call. */
+  readonly requestId: string
+  /**
+   * On `apply` only: the proposal being applied, and where the person pressed
+   * Apply — the panel beside the conversation or the console. For a module that
+   * records its own event and wants to say which change it was.
+   */
+  readonly proposal?: { readonly id: string; readonly through: 'panel' | 'console' }
+}
+
+/** A line under a proposal's sentence: what, and to what. */
+export interface McpProposalDetail {
+  readonly label: string
+  readonly value: string
+}
+
+/**
+ * What a write would do, written for the person who decides.
+ *
+ * `summary` and `details` are shown on the panel and on the console's
+ * Proposals screen, so they are written from resolved names — an email, a
+ * layer's slug — never from whatever the model typed. `input` is what `apply`
+ * receives, stored as JSON: ids, not names, so that applying does not resolve
+ * anything a second time and cannot resolve it differently.
+ */
+export interface McpProposal {
+  readonly summary: string
+  readonly details: readonly McpProposalDetail[]
+  readonly input: Readonly<Record<string, unknown>>
+}
+
+interface McpToolBase {
+  /** Unique across the core and every module; a collision is a startup failure. */
+  readonly name: string
+  readonly title: string
+  readonly description: string
+  /** JSON Schema for the arguments, served as written. */
+  readonly inputSchema: Readonly<Record<string, unknown>>
+}
+
+/** A read: answered on the call, recorded as a read. */
+export interface McpReadTool extends McpToolBase {
+  readonly kind: 'read'
+  run(call: McpToolCall, args: Readonly<Record<string, unknown>>): Promise<unknown>
+}
+
+/**
+ * A write: **proposed** on the call and **applied** only when a person presses
+ * Apply — never by the model, in any client. A module registers the two halves
+ * rather than one function that writes, which is what makes a module's write go
+ * past a person exactly as a core one does: the core stores the proposal, shows
+ * it, and is the only caller of `apply`.
+ *
+ * `apply` re-checks whatever it needs to. Ten minutes pass between the two
+ * halves at most, and a grant revoked or a role lost in between must be what
+ * decides the outcome — the proposal is a description of a change, not a
+ * permission to make it.
+ */
+export interface McpWriteTool extends McpToolBase {
+  readonly kind: 'write'
+  propose(call: McpToolCall, args: Readonly<Record<string, unknown>>): Promise<McpProposal>
+  apply(call: McpToolCall, input: Readonly<Record<string, unknown>>): Promise<unknown>
+}
+
+export type McpTool = McpReadTool | McpWriteTool
+
+/**
+ * A refusal about the caller's own arguments, whose message reaches the caller.
+ *
+ * Anything else a tool throws is answered with the surface's one generic
+ * failure, because an exception's message can carry what invariant 4 keeps off
+ * the wire — this is the way for a tool to say "no person by that address"
+ * and be heard.
+ */
+export class McpToolRefusal extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'McpToolRefusal'
+  }
+}
+
+/** Names a module tool may take: the same shape the proposal table admits. */
+const MCP_TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/
+
 interface Registry {
   resolver: { readonly module: string; readonly value: AuthzResolver } | undefined
   readonly providers: { module: string; value: AuthProvider }[]
@@ -330,6 +429,7 @@ interface Registry {
   readonly routes: { module: string; value: AdminRoute }[]
   readonly gates: { module: string; value: IngestGate }[]
   readonly signIn: { module: string; value: SignInGate }[]
+  readonly mcp: { module: string; surface: McpSurface; value: McpTool }[]
 }
 
 const registry: Registry = {
@@ -339,6 +439,7 @@ const registry: Registry = {
   routes: [],
   gates: [],
   signIn: [],
+  mcp: [],
 }
 
 /** Which module is registering, or `undefined` when registration is closed. */
@@ -391,6 +492,49 @@ export function registerIngestGate(gate: IngestGate): void {
 
 export function registerSignInGate(gate: SignInGate): void {
   registry.signIn.push({ module: mustBeLoading('a sign-in gate'), value: gate })
+}
+
+/**
+ * Add tools to an MCP surface. docs/extensions.md, `registerMcpTools`.
+ *
+ * Only `admin`: the ordinary surface's catalog is what every connected agent
+ * reads, and a module adding to it would change what a search client is told
+ * without the person who approved the connection seeing it.
+ *
+ * Two modules naming one tool are refused here, naming both — a tool silently
+ * shadowed is the second-resolver failure this registry already refuses. A
+ * module tool named like a core one is refused where the surface is composed,
+ * which is the one place that knows the core's names.
+ */
+export function registerMcpTools(surface: McpSurface, ...tools: readonly McpTool[]): void {
+  const module = mustBeLoading('MCP tools')
+  if (surface !== 'admin') {
+    throw new ExtensionError(`MCP tools can be added to the administrative surface only, not "${String(surface)}".`)
+  }
+  for (const tool of tools) {
+    if (!MCP_TOOL_NAME.test(tool.name)) {
+      throw new ExtensionError(`${module}: "${tool.name}" is not a tool name — lower case, digits and underscores, 64 at most.`)
+    }
+    // Asked although the type says it cannot happen: a module is plain
+    // JavaScript to this process, and a tool that is neither would be served
+    // as a read — a write with no person in front of it.
+    const kind: unknown = (tool as { kind?: unknown }).kind
+    if (kind !== 'read' && kind !== 'write') {
+      throw new ExtensionError(`${module}: ${tool.name} is neither a read nor a write.`)
+    }
+    if (tool.kind === 'write' && (typeof tool.propose !== 'function' || typeof tool.apply !== 'function')) {
+      // A write that is one function is a write that skips the person.
+      throw new ExtensionError(`${module}: ${tool.name} is a write and must register propose and apply.`)
+    }
+    const taken = registry.mcp.find((t) => t.surface === surface && t.value.name === tool.name)
+    if (taken !== undefined) {
+      throw new ExtensionError(
+        `two modules registered the MCP tool ${tool.name} — ${taken.module} and ${module}. ` +
+          'One name, one tool; rename one of them.',
+      )
+    }
+    registry.mcp.push({ module, surface, value: tool })
+  }
 }
 
 export const ADMIN_PREFIX = '/v1/admin/'
@@ -515,6 +659,9 @@ export function activeResolver(): AuthzResolver {
 export const authProviders = (): readonly AuthProvider[] => registry.providers.map((p) => p.value)
 export const auditSinks = (): readonly AuditSink[] => registry.sinks.map((s) => s.value)
 export const adminRoutes = (): readonly AdminRoute[] => registry.routes.map((r) => r.value)
+/** The tools modules added to a surface, with the module each came from. */
+export const mcpTools = (surface: McpSurface): readonly { readonly module: string; readonly tool: McpTool }[] =>
+  registry.mcp.filter((t) => t.surface === surface).map((t) => ({ module: t.module, tool: t.value }))
 
 /** A refused ingest, as `admitIngest` reports it. */
 export interface IngestRefusal {
@@ -642,6 +789,7 @@ export function loadedExtensions(): {
   routes: number
   gates: string[]
   signIn: string[]
+  mcpTools: string[]
 } {
   return {
     resolver: registry.resolver?.module ?? null,
@@ -650,6 +798,7 @@ export function loadedExtensions(): {
     routes: registry.routes.length,
     gates: registry.gates.map((g) => `${g.module}:${g.value.name}`),
     signIn: registry.signIn.map((g) => `${g.module}:${g.value.name}`),
+    mcpTools: registry.mcp.map((t) => `${t.module}:${t.surface}.${t.value.name}`),
   }
 }
 
@@ -668,6 +817,7 @@ export function resetExtensionsForTests(): void {
   registry.routes.length = 0
   registry.gates.length = 0
   registry.signIn.length = 0
+  registry.mcp.length = 0
   loading = undefined
 }
 

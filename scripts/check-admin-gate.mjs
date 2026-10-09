@@ -142,7 +142,15 @@ if (assignments.length === 0) {
   process.exit(1)
 }
 
-const derived = assignments.filter(({ line }) => !/administers:\s*me\.administers/.test(line))
+// An update that copies the viewer and does not name `administers` keeps the
+// server's value rather than deriving one — the pending-proposals count is
+// written that way, after `GET /v1/proposals` answers. One that spreads the
+// viewer *and* sets `administers` is asked like any other assignment.
+const derived = assignments.filter(
+  ({ line }) =>
+    !/administers:\s*me\.administers/.test(line) &&
+    !(/\{\s*\.\.\.viewer\b/.test(line) && !/administers\s*:/.test(line)),
+)
 if (derived.length > 0) {
   console.error(
     `::error::${CONSOLE} derives the viewer's \`administers\` rather than reading it from ` +

@@ -281,7 +281,16 @@ export async function columnChipsAgree(page, name, failures) {
 
 export async function controlHeadroom(page, name, failures) {
   const tight = await page.evaluate((min) => {
-    const visible = (n) => n.getClientRects().length > 0
+    /*
+     * Laid out *and* rendered. The contents of a closed `<details>` still have
+     * boxes in Chromium — the browser hides them with `content-visibility`
+     * rather than by removing them from layout — so the first rule alone read
+     * a collapsed list of examples as text sitting six pixels over the table
+     * below it. `checkVisibility` is the browser's own answer to "is this on
+     * the screen", and it knows about that.
+     */
+    const visible = (n) =>
+      n.getClientRects().length > 0 && (typeof n.checkVisibility !== 'function' || n.checkVisibility())
     /*
      * One root at a time, never across two.
      *

@@ -98,6 +98,7 @@ import {
 } from './audit-export.js'
 import { decodeCursor, readPage, type Page, type PageResult } from './pagination.js'
 import type { SkillEntry, SkillLevel, Skills, SkillVersionMeta, SkillWrite } from './skills.js'
+import { applyProposal, cancelProposal, type PostgresProposals, type WriteLookup } from './proposals.js'
 export type { Page, PageResult }
 
 /**
@@ -970,6 +971,22 @@ export interface OAuthServer {
   mint(approved: MintRequest): Promise<{ accessToken: string; expiresIn: number }>
 }
 
+/**
+ * Where this installation is reached — what `GET /v1/endpoints` answers with.
+ * docs/openapi.yaml, `Endpoints`.
+ */
+export interface ServedEndpoints {
+  /** The REST API's base, ending in `/v1`. */
+  readonly api: string
+  /** The MCP endpoint, Streamable HTTP. */
+  readonly mcp: string
+  /** The administrative MCP endpoint, beside it. */
+  readonly mcpAdmin: string
+  /** The OpenAPI document describing this release. */
+  readonly contract: string
+  readonly version: string
+}
+
 export interface ApiOptions {
   readonly verify: VerifyOptions
   /** Rendered at /metrics. Absent means the endpoint answers 404. */
@@ -1033,6 +1050,16 @@ export interface ApiOptions {
    * neither agreed on.
    */
   readonly resourceMetadata?: ProtectedResourceMetadata
+  /**
+   * Where a client reaches this installation, served at `/v1/endpoints`.
+   *
+   * Built once from `NACRE_CANONICAL_URL` and `NACRE_MCP_CANONICAL_URL` — the
+   * values every token's issuer and every discovery document are already made
+   * of — so the console says the address an operator configured rather than
+   * guessing one from the page it happens to be served on. Absent, the route
+   * answers `404`, which is what a server built without it should say.
+   */
+  readonly endpoints?: ServedEndpoints
   /**
    * The public keys served at `/.well-known/jwks.json`.
    *
@@ -1106,6 +1133,18 @@ export interface ApiOptions {
   readonly jobs?: Jobs
   readonly layers?: Layers
   readonly grants?: Grants
+  /**
+   * Changes proposed on the administrative MCP, decided on the console's
+   * Proposals screen. Absent means `/v1/proposals` answers 404.
+   *
+   * The console is the second place a person presses Apply, beside the panel a
+   * host renders — and the one that works in a client that renders none. Only
+   * the person's own session reaches it: a connected application's token,
+   * administrative or not, is answered as if the path did not exist, or a
+   * client could approve its own proposals and the person would never be in
+   * front of them.
+   */
+  readonly proposals?: { readonly store: PostgresProposals; readonly writes: WriteLookup }
   readonly serviceAccounts?: ServiceAccountPort
   /** Absent means `/v1/users` answers 404, like any capability a surface lacks. */
   readonly users?: Users
@@ -4724,6 +4763,44 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     }
 
     /*
+     * Where a client connects: the REST base, the MCP endpoint, and — for an
+     * organization administrator — the administrative one.
+     *
+     * Asked of the server rather than worked out in a browser, because the
+     * page's own origin is the answer only when the console, the API and the
+     * MCP transport share one, and the operator already told the server which
+     * addresses are the public ones. Any credential may ask: a member connects
+     * their own client, and an agent reading this learns nothing its token did
+     * not already let it reach.
+     *
+     * `mcp_admin` is the administrative MCP, and only somebody who administers
+     * this organization is told it — its consent screen refuses everybody
+     * else, so offering it would be offering a connection that cannot be made.
+     * The same `administers` the gated handlers call.
+     */
+    if (instance === '/v1/endpoints') {
+      if (req.method !== 'GET' || options.endpoints === undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      const e = options.endpoints
+      send(
+        res,
+        200,
+        {
+          api: e.api,
+          mcp: e.mcp,
+          ...(administers(auth) ? { mcp_admin: e.mcpAdmin } : {}),
+          contract: e.contract,
+          version: e.version,
+        },
+        requestId,
+      )
+      return
+    }
+
+    /*
      * The caller's own password.
      *
      * Under `/v1/me` for the same reason the second factor is: this is a person
@@ -5875,6 +5952,83 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
      * is a denylist consulted on every request, which would make local
      * verification not local.
      */
+    // ── proposals ─────────────────────────────────────────────────────────
+    //
+    // docs/mcp-admin.md, "A change is proposed, and a person applies it". What
+    // the person's administrative connection proposed, waiting for them, and
+    // the two buttons. A person in their own session and nobody else: every
+    // other caller — a connected application's token included — gets the
+    // answer a path that does not exist gets.
+    const proposalMatch = pathMatch(/^\/v1\/proposals(?:\/([0-9a-f-]{36})\/(apply|cancel))?$/i, instance)
+    if (proposalMatch !== null && options.proposals !== undefined) {
+      const own = auth.principal.type === 'user' && auth.delegation === undefined && administers(auth)
+      const id = proposalMatch[1]
+      const verb = proposalMatch[2]
+      if (!own || (id === undefined ? req.method !== 'GET' : req.method !== 'POST')) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      const deps = { proposals: options.proposals.store, audit: options.audit, writes: options.proposals.writes }
+      const by = { through: 'console' as const, personId: auth.principal.id }
+      if (id === undefined) {
+        const items = await options.proposals.store.pending(auth)
+        send(
+          res,
+          200,
+          {
+            items: items.map((p) => ({
+              id: p.id,
+              tool: p.tool,
+              module: p.module,
+              summary: p.summary,
+              details: p.details,
+              created_at: p.createdAt,
+              expires_at: p.expiresAt,
+              connection: { id: p.connection.id, application: p.connection.application },
+            })),
+          },
+          requestId,
+        )
+        return
+      }
+      const outcome =
+        verb === 'apply'
+          ? await applyProposal(deps, auth, id, by, requestId)
+          : await cancelProposal(deps, auth, id, by, requestId)
+      switch (outcome.kind) {
+        case 'applied':
+          send(res, 200, { applied: true, result: outcome.result }, requestId)
+          return
+        case 'cancelled':
+          send(res, 204, null, requestId)
+          return
+        case 'refused': {
+          // The proposal was theirs and is now spent; the change itself was
+          // refused, in the tool's own words — the role was lost, the name is
+          // taken, the last administrator would go. Not 404: they are looking
+          // straight at it.
+          const problem = new Problem({
+            type: 'https://nacre.work/errors/proposal-refused',
+            title: 'The change was refused',
+            status: 409,
+            detail: outcome.reason,
+            instance,
+            requestId,
+          })
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        default: {
+          // Absent, somebody else's, decided, expired, or proposed through a
+          // connection revoked since — one answer.
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+      }
+    }
+
     if (instance === '/v1/oauth/consents' && options.oauth !== undefined) {
       if (req.method !== 'GET') {
         const problem = notFound(instance, requestId)
