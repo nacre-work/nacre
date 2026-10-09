@@ -9,11 +9,12 @@
  * against it goes through `withOrg`.
  */
 
-import { hashCode, whileAuthenticating, withOrg, type OrgRole, type Permission } from '@nacre.work/core'
+import { hashCode, whileAuthenticating, withOrg, type OrgRole } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
 import { administers, administersTenants } from './auth.js'
 import type { AuthContext, Delegations } from './auth.js'
+import type { CeilingValue } from './skill-ceiling.js'
 
 export interface RegisteredClient {
   readonly clientId: string
@@ -43,7 +44,7 @@ export type ConsentSubject =
  */
 export interface LayerNarrowing {
   readonly id: string
-  readonly permissions?: readonly Permission[]
+  readonly permissions?: readonly CeilingValue[]
 }
 
 /**
@@ -58,7 +59,7 @@ export interface LayerNarrowing {
  * null, and only one of them was true.
  */
 const narrowingOf = (
-  rows: readonly { id: string; permissions: Permission[] | null }[] | null,
+  rows: readonly { id: string; permissions: CeilingValue[] | null }[] | null,
 ): readonly LayerNarrowing[] =>
   (rows ?? []).map((l) => ({ id: l.id, ...(l.permissions === null ? {} : { permissions: l.permissions }) }))
 
@@ -102,7 +103,7 @@ export interface Consent {
    * The permissions a delegation may exercise. Empty means no ceiling — it
    * reaches every verb its person holds.
    */
-  readonly permissions: readonly Permission[]
+  readonly permissions: readonly CeilingValue[]
   readonly createdAt: string
   readonly lastRefreshedAt: string | null
   readonly revokedAt: string | null
@@ -171,7 +172,7 @@ export interface OAuthConsents {
      * deliberately not storable: a delegation that can do nothing is not a
      * restriction anybody meant to write, and the database refuses one.
      */
-    permissions?: readonly Permission[],
+    permissions?: readonly CeilingValue[],
   ): Promise<string>
   /**
    * Every connection this caller may see.
@@ -391,7 +392,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
     clientId: string,
     subject: ConsentSubject,
     layers?: readonly LayerNarrowing[],
-    permissions?: readonly Permission[],
+    permissions?: readonly CeilingValue[],
   ): Promise<string> {
     return withOrg(
       this.pool,
@@ -494,8 +495,8 @@ export class PostgresOAuthConsents implements OAuthConsents {
           approved_by: string
           approved_by_email: string | null
           approver_disabled: boolean
-          layers: { id: string; permissions: Permission[] | null }[] | null
-          permissions: Permission[] | null
+          layers: { id: string; permissions: CeilingValue[] | null }[] | null
+          permissions: CeilingValue[] | null
           created_at: string
           last_refreshed_at: string | null
           revoked_at: string | null
@@ -754,8 +755,8 @@ export class PostgresDelegations implements Delegations {
         const { rows } = await client.query<{
           user_id: string
           role: OrgRole
-          layers: { id: string; permissions: Permission[] | null }[] | null
-          permissions: Permission[] | null
+          layers: { id: string; permissions: CeilingValue[] | null }[] | null
+          permissions: CeilingValue[] | null
         }>(
           `SELECT c.approved_by AS user_id,
                   u.role,

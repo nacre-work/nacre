@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 
 import {
+  contextFor,
+  delegatedLayers,
   HttpEmbedder,
   NacreIngest,
   NacreSearchService,
@@ -17,16 +19,10 @@ import {
 } from '@nacre.work/api'
 import {
   createPool,
-  effectivePrincipals,
-  loadGrants,
-  loadScopeTree,
   parseFilters,
   parseMetadata,
-  PostgresGroupGraph,
   activeResolver,
   withAuditSinks,
-  cachedEffectivePrincipals,
-  loadGroupsVersion,
   logger,
   queryAudit,
   S3,
@@ -85,6 +81,103 @@ export interface UploadTickets {
   readonly store: UploadTicketStore
   readonly baseUrl: string
   readonly maxBytes: number
+}
+
+/**
+ * The layer catalog, per caller.
+ *
+ * It runs the same resolve() the search does and lists only what the plan
+ * reaches. The catalog is permission data — a layer name is a fact about the
+ * organization — which is why tools/list is cached per user and never
+ * globally.
+ *
+ * Through `contextFor`, which is what puts a delegation's **ceiling** into the
+ * resolve input, and narrowed by the delegation's **narrowing** before the
+ * statement. It built its own input with neither, so a connection narrowed to
+ * layer L was listed M too — name, description, document count — and a
+ * `{write}` connection was listed every layer its person reads, while
+ * `GET /v1/layers` answered the same token with the ceiling applied. Every
+ * other resolve input in the product came from `contextFor`; this one was the
+ * fourth copy its own comment said a compile error would catch. T40.
+ *
+ * Exported so the authorization suite can ask it directly, rather than
+ * through a server whose other halves it would have to stub.
+ */
+export function layerCatalog(pool: Pool, principalsCache?: PrincipalsCache): Layers {
+  return {
+    forCaller: async (
+      auth: AuthContext,
+      page: { readonly limit: number; readonly afterId?: string },
+    ): Promise<{ readonly layers: readonly Layer[]; readonly nextCursor: string | null }> =>
+      withOrg(
+        pool,
+        auth.orgId,
+        async (client) => {
+          // Through the registry, not the built-in directly: this catalog is
+          // permission data, so a module's resolver has to reach it or the
+          // layer list and the search would answer from two different models.
+          const plan = activeResolver().resolve(await contextFor(client, auth, principalsCache), 'read')
+          if (plan.kind === 'none') return { layers: [], nextCursor: null }
+
+          // The narrowing, intersected with the plan rather than applied to
+          // the rows — the same arithmetic `GET /v1/layers` does, for the same
+          // reason: a delegation must not be a way to learn which layers its
+          // person reaches.
+          const narrowing = delegatedLayers(auth, 'read')
+          const ids: readonly string[] | undefined =
+            narrowing === undefined
+              ? plan.kind === 'all' ? undefined : plan.layers
+              : plan.kind === 'all' ? narrowing : plan.layers.filter((id) => narrowing.includes(id))
+          if (ids !== undefined && ids.length === 0) return { layers: [], nextCursor: null }
+
+          // A page, ordered by id with an id seek — the same shape every REST
+          // listing uses, minus the timestamp, because a catalog has no
+          // recency to order by. `limit + 1` is how the page knows whether
+          // there is another one without a count over the table. The per-layer
+          // document count stays a correlated subquery because it is now
+          // bounded by the page rather than by the organization.
+          const bounded = Math.min(Math.max(1, page.limit), 500)
+          const { rows } = await client.query<{
+            id: string
+            slug: string
+            name: string
+            description: string
+            documents: string
+            has_skill: boolean
+          }>(
+            `SELECT l.id, l.slug, l.name, l.description,
+                    (SELECT count(*) FROM documents d
+                      WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS documents,
+                    -- The newest version decides: a cleared skill is no skill.
+                    COALESCE((SELECT s.name IS NOT NULL FROM skill_versions s
+                               WHERE s.org_id = l.org_id AND s.layer_id = l.id
+                               ORDER BY s.version DESC LIMIT 1), false) AS has_skill
+               FROM layers l
+              WHERE l.org_id = $1 AND l.deleted_at IS NULL
+                AND ($2::uuid[] IS NULL OR l.id = ANY($2::uuid[]))
+                AND ($3::uuid IS NULL OR l.id > $3::uuid)
+              ORDER BY l.id
+              LIMIT $4`,
+            [auth.orgId, ids === undefined ? null : [...ids], page.afterId ?? null, bounded + 1],
+          )
+
+          const slice = rows.slice(0, bounded)
+          const last = slice[slice.length - 1]
+          return {
+            layers: slice.map((r) => ({
+              id: r.id,
+              slug: r.slug,
+              name: r.name,
+              description: r.description,
+              documentCount: Number(r.documents),
+              hasSkill: r.has_skill,
+            })),
+            nextCursor: rows.length > bounded && last !== undefined ? last.id : null,
+          }
+        },
+        { role: APP_ROLE },
+      ),
+  }
 }
 
 export function buildServices(
@@ -161,108 +254,7 @@ export function buildServices(
     })
   })
 
-  /**
-   * The layer catalog, per caller.
-   *
-   * It runs the same resolve() the search does and lists only what the plan
-   * reaches. The catalog is permission data — a layer name is a fact about the
-   * organization — which is why tools/list is cached per user and never
-   * globally.
-   */
-  const layers: Layers = {
-    forCaller: async (
-      auth: AuthContext,
-      page: { readonly limit: number; readonly afterId?: string },
-    ): Promise<{ readonly layers: readonly Layer[]; readonly nextCursor: string | null }> =>
-      withOrg(
-        pool,
-        auth.orgId,
-        async (client) => {
-          // The same cache the REST surface uses, or the same recomputation
-          // when there is none. Two surfaces resolving a principal differently
-          // is the shape `NACRE_RATE_*` had before both shared a bucket.
-          const principals =
-            principalsCache === undefined
-              ? effectivePrincipals(auth.principal, await PostgresGroupGraph.load(client, auth.orgId))
-              : await cachedEffectivePrincipals(
-                  {
-                    orgId: auth.orgId,
-                    principal: auth.principal,
-                    groupsVersion: await loadGroupsVersion(client, auth.orgId),
-                    ttlSeconds: principalsCache.ttlSeconds,
-                  },
-                  principalsCache.store,
-                  () => PostgresGroupGraph.load(client, auth.orgId),
-                )
-          const grants = await loadGrants(client, auth.orgId, principals)
-          const tree = await loadScopeTree(
-            client,
-            auth.orgId,
-            grants.filter((g) => g.scope.type === 'document').map((g) => g.scope.id),
-          )
-          // Through the registry, not the built-in directly: this catalog is
-          // permission data, so a module's resolver has to reach it or the
-          // layer list and the search would answer from two different models.
-          const plan = activeResolver().resolve(
-            { orgId: auth.orgId, role: auth.role, principals, grants, tree },
-            'read',
-          )
-          if (plan.kind === 'none') return { layers: [], nextCursor: null }
-
-          // A page, ordered by id with an id seek — the same shape every REST
-          // listing uses, minus the timestamp, because a catalog has no
-          // recency to order by. `limit + 1` is how the page knows whether
-          // there is another one without a count over the table. The per-layer
-          // document count stays a correlated subquery because it is now
-          // bounded by the page rather than by the organization.
-          const bounded = Math.min(Math.max(1, page.limit), 500)
-          const { rows } = await client.query<{
-            id: string
-            slug: string
-            name: string
-            description: string
-            documents: string
-            has_skill: boolean
-          }>(
-            `SELECT l.id, l.slug, l.name, l.description,
-                    (SELECT count(*) FROM documents d
-                      WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS documents,
-                    -- The newest version decides: a cleared skill is no skill.
-                    COALESCE((SELECT s.name IS NOT NULL FROM skill_versions s
-                               WHERE s.org_id = l.org_id AND s.layer_id = l.id
-                               ORDER BY s.version DESC LIMIT 1), false) AS has_skill
-               FROM layers l
-              WHERE l.org_id = $1 AND l.deleted_at IS NULL
-                AND ($2::boolean OR l.id = ANY($3::uuid[]))
-                AND ($4::uuid IS NULL OR l.id > $4::uuid)
-              ORDER BY l.id
-              LIMIT $5`,
-            [
-              auth.orgId,
-              plan.kind === 'all',
-              plan.kind === 'scoped' ? plan.layers : [],
-              page.afterId ?? null,
-              bounded + 1,
-            ],
-          )
-
-          const slice = rows.slice(0, bounded)
-          const last = slice[slice.length - 1]
-          return {
-            layers: slice.map((r) => ({
-              id: r.id,
-              slug: r.slug,
-              name: r.name,
-              description: r.description,
-              documentCount: Number(r.documents),
-              hasSkill: r.has_skill,
-            })),
-            nextCursor: rows.length > bounded && last !== undefined ? last.id : null,
-          }
-        },
-        { role: APP_ROLE },
-      ),
-  }
+  const layers = layerCatalog(pool, principalsCache)
 
   /**
    * The document this call is about, by id or by the caller's own identifier.

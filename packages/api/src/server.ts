@@ -58,6 +58,7 @@ import {
   type AuthContext,
   type VerifyOptions,
 } from './auth.js'
+import { isCeilingValue } from './skill-ceiling.js'
 import { badRequest, internal, notAdministeredHere, notFound, Problem, tooBusy } from './errors.js'
 import { passwordChangedMessage, secondFactorMessage } from './messages.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
@@ -416,6 +417,19 @@ export interface Layer {
    * disclosure.
    */
   readonly documentCount: number
+  /**
+   * What **this** caller may do on the layer: the verbs it resolves to here,
+   * each inside this token's ceiling and narrowing.
+   *
+   * Unordered, on rule 6 — `['write']` is a real answer. The consent screen
+   * reads `admin` from it to decide where "edit this layer's skill" may be
+   * offered, which it used to have no way to know; a screen that guesses
+   * offers what the server then refuses.
+   *
+   * Never `skill`. That is a value a delegation's ceiling may hold and not a
+   * permission anybody holds on a layer.
+   */
+  readonly permissions: readonly Permission[]
 }
 
 /**
@@ -1149,14 +1163,13 @@ const readNarrowing = (value: unknown): readonly LayerNarrowing[] | undefined | 
     // delegation may do nothing in is a layer that should not be in the
     // narrowing at all, and the column's CHECK refuses one too — this is the
     // same rule arriving as a 400 instead of as a constraint violation.
-    if (
-      !isStringArray(permissions) ||
-      permissions.length === 0 ||
-      permissions.some((p) => !(PERMISSIONS as readonly string[]).includes(p))
-    ) {
+    // `skill` too, which is a ceiling value and not a permission: it is what
+    // the consent screen's "edit this layer's skill" box stores, and only
+    // `skill-ceiling.ts` reads it.
+    if (!isStringArray(permissions) || permissions.length === 0 || !permissions.every(isCeilingValue)) {
       return INVALID
     }
-    out.push({ id, permissions: permissions as readonly Permission[] })
+    out.push({ id, permissions })
   }
   return out
 }
@@ -5170,6 +5183,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             description: l.description,
             document_count: l.documentCount,
             failed_count: l.failedCount,
+            permissions: l.permissions,
           })),
           next_cursor: nextCursor,
         },
@@ -5257,6 +5271,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           description: created.description,
           document_count: created.documentCount,
           failed_count: created.failedCount,
+          permissions: created.permissions,
         },
         requestId,
       )
@@ -5844,7 +5859,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             approved_by_email: c.approvedByEmail,
             approver_disabled: c.approverDisabled,
             // Empty means the delegation reaches everything its approver does.
-            layers: c.layers,
+            //
+            // Each entry is `{ id, permissions? }`, the shape the consent
+            // request takes. The contract said bare ids and the server sent
+            // these objects from the day a layer could carry a ceiling of its
+            // own, so every client that believed the contract read
+            // `[object Object]` — and `permissions` below was documented and
+            // never sent, so the same clients read every ceiling as "none".
+            layers: c.layers.map((l) => ({ id: l.id, ...(l.permissions === undefined ? {} : { permissions: l.permissions }) })),
+            // Empty means no ceiling: it reaches every verb its approver holds.
+            permissions: c.permissions,
             created_at: c.createdAt,
             last_refreshed_at: c.lastRefreshedAt,
             revoked_at: c.revokedAt,
@@ -5955,7 +5979,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           instance,
           requestId,
           "'layers' must be an array of layer ids, or of { id, permissions } objects " +
-            'whose permissions are a non-empty subset of read, write and admin.',
+            'whose permissions are a non-empty subset of read, write, admin and skill.',
         )
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -5964,11 +5988,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // first. Validated here rather than left to the database, so a typo is a
       // 400 naming the field instead of a constraint violation as a 500.
       const ceiling = consent['permissions']
-      if (ceiling !== undefined && (!isStringArray(ceiling) || ceiling.some((p) => !(PERMISSIONS as readonly string[]).includes(p)))) {
+      if (ceiling !== undefined && (!isStringArray(ceiling) || !ceiling.every(isCeilingValue))) {
         const problem = badRequest(
           instance,
           requestId,
-          "'permissions' must be an array of 'read', 'write' or 'admin'.",
+          "'permissions' must be an array of 'read', 'write', 'admin' or 'skill'.",
         )
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -6087,9 +6111,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // does nothing. Refused here, naming both sets, rather than stored.
       if (delegating && isStringArray(ceiling)) {
         const allowed = ceiling as readonly string[]
-        const outside = narrowing?.find((l) =>
-          l.permissions?.some((p: Permission) => !allowed.includes(p)),
-        )
+        const outside = narrowing?.find((l) => l.permissions?.some((p) => !allowed.includes(p)))
         if (outside !== undefined) {
           const problem = badRequest(
             instance,
@@ -6115,7 +6137,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         clientId,
         subject,
         narrowing === undefined ? [] : narrowing,
-        isStringArray(ceiling) ? (ceiling as readonly Permission[]) : undefined,
+        isStringArray(ceiling) && ceiling.every(isCeilingValue) ? ceiling : undefined,
       )
       const code = generateCode()
       const common = {

@@ -1,6 +1,7 @@
 import { NacreError, NacreTransportError, type Problem } from './errors.js'
 import type {
   AuditPage,
+  CeilingValue,
   AuditQuery,
   AuditRecord,
   CreatedServiceAccount,
@@ -934,6 +935,7 @@ export class NacreClient {
         description: String(layer.description ?? ''),
         documentCount: Number(layer.document_count ?? 0),
         failedCount: Number(layer.failed_count ?? 0),
+        permissions: readPermissions(layer.permissions),
       })),
 
     create: async (input: LayerInput): Promise<Layer | undefined> => {
@@ -957,6 +959,7 @@ export class NacreClient {
         description: String(body.description ?? ''),
         documentCount: Number(body.document_count ?? 0),
         failedCount: Number(body.failed_count ?? 0),
+        permissions: readPermissions(body.permissions),
       }
     },
 
@@ -1321,7 +1324,7 @@ export class NacreClient {
      * is refused with a `400` rather than stored as a control that does
      * nothing.
      */
-    layers?: readonly (string | { id: string; permissions?: readonly Permission[] })[]
+    layers?: readonly (string | { id: string; permissions?: readonly CeilingValue[] })[]
     /**
      * Permissions a delegation may exercise. Omit for no ceiling.
      *
@@ -1329,8 +1332,12 @@ export class NacreClient {
      * cannot read back what it wrote, which is rule 6 and is deliberately
      * expressible. Empty is refused — that would be a delegation that can do
      * nothing, which is not what omitting a restriction means.
+     *
+     * `skill` lets the application write a layer's skill where the person
+     * holds `admin`, and confers nothing else; per layer it is the consent
+     * screen's "edit this layer's skill" box.
      */
-    permissions?: readonly ('read' | 'write' | 'admin')[]
+    permissions?: readonly CeilingValue[]
     state?: string
     resource?: string
   }): Promise<string> => {
@@ -1392,10 +1399,13 @@ export class NacreClient {
             // renders on the screen.
             approvedByEmail: c.approved_by_email == null ? null : String(c.approved_by_email),
             approverDisabled: c.approver_disabled === true,
-            layers: Array.isArray(c.layers) ? c.layers.map(String) : [],
-            permissions: Array.isArray(c.permissions)
-              ? (c.permissions.map(String) as ('read' | 'write' | 'admin')[])
-              : [],
+            // Objects, `{ id, permissions? }`. This was `map(String)` over
+            // a contract that said ids while the server sent the objects, so
+            // every narrowed connection came back as `[object Object]`. A bare
+            // string is still read as an id with no ceiling of its own, which
+            // is what an API older than per-layer ceilings sends.
+            layers: Array.isArray(c.layers) ? c.layers.map(narrowingEntry) : [],
+            permissions: Array.isArray(c.permissions) ? c.permissions.filter(isCeilingValue) : [],
             createdAt: String(c.created_at),
             lastRefreshedAt: c.last_refreshed_at === null ? null : String(c.last_refreshed_at),
             revokedAt: c.revoked_at === null ? null : String(c.revoked_at),
@@ -2081,6 +2091,27 @@ function readPermissions(value: unknown): readonly Permission[] {
   const all: readonly Permission[] = ['read', 'write', 'admin']
   if (!Array.isArray(value)) return []
   return all.filter((p) => value.includes(p))
+}
+
+/** A ceiling value off the wire — a permission, or `skill`. Anything else is dropped, as `readPermissions` drops it. */
+function isCeilingValue(value: unknown): value is CeilingValue {
+  return value === 'read' || value === 'write' || value === 'admin' || value === 'skill'
+}
+
+/**
+ * One entry of a connection's narrowing.
+ *
+ * `{ id, permissions? }` from this API; a bare id from one older than per-layer
+ * ceilings, read as a layer that inherits the connection's ceiling — which is
+ * exactly what a bare id meant there.
+ */
+function narrowingEntry(value: unknown): { id: string; permissions?: readonly CeilingValue[] } {
+  if (typeof value === 'string') return { id: value }
+  const entry = value as { id?: unknown; permissions?: unknown }
+  return {
+    id: String(entry.id),
+    ...(Array.isArray(entry.permissions) ? { permissions: entry.permissions.filter(isCeilingValue) } : {}),
+  }
 }
 
 function providerFrom(p: Record<string, unknown>): EmbeddingProvider {

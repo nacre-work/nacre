@@ -117,6 +117,13 @@ see answers as a layer with no skill does: not found, same status, same words.
 Anything else turns the skill listing into a way to learn which layers exist,
 which is invariant I6 broken through a side door.
 
+The one widening is a connection that may **write** the skill: its person
+administers the layer and approved `skill` on it, so the layer is theirs to name
+and the skill theirs to read. A `{skill}`-only connection resolves no `read` and
+no `write` — no catalog, no documents, no search — and a skill it could write and
+not read would be one it could never write, because a write names the version it
+was based on. So it sees that skill, and that skill only.
+
 **An organization's skill never leaves it.** Tenant isolation is checked first,
 as for everything else, and the organization comes from the token.
 
@@ -329,12 +336,18 @@ only the commercial `admin-global` module issues.
 **Built:** the format and its zip, the default skill, storage and versions
 (migration 0036), the REST surface, the SDK's `skills`, the MCP tools and
 `instructions`, the console's Skills screen and a layer's skill on the Layers
-screen, and the authorization cases T26, T27, T28, T33 and T34, against a real
-PostgreSQL.
+screen, the consent screen's per-layer **Edit skill** box (migration 0037 admits
+`skill` in a ceiling; `packages/api/src/skill-ceiling.ts` is its one reader, held
+there by `lint:skill-ceiling`), and the authorization cases T26, T27, T28, T29, T30, T33 and T34,
+against a real PostgreSQL.
+
+The box is offered on a row only where the person holds `admin` — the layer
+listing says so in its `permissions` — and the Connections screen says under
+each application what it may do, so a person can see afterwards that a
+connection may rewrite a layer's skill.
+
+![The consent screen with Edit skill ticked on the handbook](./assets/admin/consent-skill.png)
 
 **Not built yet, in this order:** the default skill judged on a live agent —
 a fresh agent on the demo stand with no other guidance, storing and finding
-things correctly; the skill panel as an MCP App; and the consent screen's
-per-layer box, which is what T29 and T30 wait for. Until that box exists, a
-connected application writes a layer's skill only where its ceiling holds
-`admin` on that layer — which the ordinary consent screen never sets.
+things correctly; and the skill panel as an MCP App.

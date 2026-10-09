@@ -63,6 +63,7 @@ export type {
 } from './oauth-store.js'
 export { Problem, badRequest, forbidden, internal, notFound, unauthorized } from './errors.js'
 export {
+  contextFor,
   HttpEmbedder,
   NacreIngest,
   NacreSearchService,
@@ -87,6 +88,8 @@ export type {
 } from './adapters.js'
 export { PostgresGroups, PostgresUsers, looksLikeEmail } from './principals.js'
 export { INSTRUCTIONS_SKILL_LIMIT, PostgresSkills } from './skills.js'
+export { CEILING_VALUES, ceilingOffers, isCeilingValue } from './skill-ceiling.js'
+export type { CeilingValue } from './skill-ceiling.js'
 export { decodeCursor, encodeCursor, MAX_LIMIT } from './pagination.js'
 export type {
   EffectiveBase,

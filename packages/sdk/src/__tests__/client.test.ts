@@ -166,6 +166,45 @@ describe('NacreClient', () => {
     expect(older.managesEmbedders).toBe(false)
   })
 
+  it('reads a connection\u2019s narrowing as layers with ceilings, and its ceiling as sent', async () => {
+    // The server sent `{ id, permissions? }` from the day a layer could carry
+    // a ceiling of its own, and this mapped it with `String(...)` — so every
+    // narrowed connection came back as `[object Object]`, and the ceiling the
+    // server never sent read as "none". Both halves of the wire as it is now.
+    const listed = await client(stub(json(200, {
+      items: [{
+        id: 'c-1', client_id: 'claude', client_name: 'Claude', acts_as: 'user',
+        service_account_id: null, service_account_name: null,
+        approved_by: 'p-1', approved_by_email: 'dana@example.com', approver_disabled: false,
+        layers: [{ id: 'L', permissions: ['read', 'skill'] }, { id: 'M' }, 'N'],
+        permissions: ['read', 'skill', 'nonsense'],
+        created_at: '2026-03-12T10:20:00.000Z', last_refreshed_at: null, revoked_at: null,
+      }],
+      access_token_ttl_seconds: 900,
+    })).fetchImpl).connections.list()
+    const [connection] = listed.items
+    expect(connection?.layers).toEqual([
+      { id: 'L', permissions: ['read', 'skill'] },
+      { id: 'M' },
+      // A bare id, from an API older than per-layer ceilings: inherits.
+      { id: 'N' },
+    ])
+    // A value this model does not have is dropped, as `readPermissions` drops one.
+    expect(connection?.permissions).toEqual(['read', 'skill'])
+  })
+
+  it('reads what the caller may do on a layer, and nothing it does not know', async () => {
+    const layers = await client(stub(json(200, {
+      items: [
+        { id: 'L', slug: 'l', name: 'L', description: '', document_count: 1, failed_count: 0, permissions: ['read', 'admin'] },
+        // An API older than 0.31.0 sends no permissions: nothing is known to be permitted.
+        { id: 'M', slug: 'm', name: 'M', description: '', document_count: 1, failed_count: 0 },
+      ],
+      next_cursor: null,
+    })).fetchImpl).layers.list()
+    expect(layers.map((l) => l.permissions)).toEqual([['read', 'admin'], []])
+  })
+
   it('passes top_k through uncorrected', async () => {
     const { fetchImpl, calls } = stub(json(200, { items: [] }))
     await client(fetchImpl).search('anything', { topK: 5 })

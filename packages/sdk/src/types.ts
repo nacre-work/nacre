@@ -7,6 +7,13 @@
  */
 
 export type Permission = 'read' | 'write' | 'admin'
+/**
+ * A value a delegation's ceiling may hold: a permission, or `skill` — the
+ * consent screen's per-layer "edit this layer's skill" box. `skill` is not a
+ * permission anybody holds; it lets a connection write a layer's skill where
+ * its person holds `admin`, and nothing else. See docs/skills.md.
+ */
+export type CeilingValue = Permission | 'skill'
 export type PrincipalType = 'user' | 'group' | 'service_account'
 export type ScopeType = 'workspace' | 'layer' | 'document'
 export type Effect = 'allow' | 'deny'
@@ -154,6 +161,12 @@ export interface Layer {
    * healthy one until this existed.
    */
   readonly failedCount: number
+  /**
+   * What this token may do on the layer — the verbs it resolves to there,
+   * inside its ceiling and narrowing. Unordered, on rule 6: `['write']` is a
+   * real answer. Empty against an API older than 0.31.0, which did not say.
+   */
+  readonly permissions: readonly Permission[]
 }
 
 export interface Workspace {
@@ -604,13 +617,17 @@ export interface Connection {
   readonly approvedByEmail: string | null
   /** Whether that person is disabled — a delegation of one is refused. */
   readonly approverDisabled: boolean
-  /** Layers a delegation was narrowed to. Empty means no narrowing. */
-  readonly layers: readonly string[]
   /**
-   * Permissions a delegation may exercise. Empty means no ceiling — it reaches
-   * every verb its person holds.
+   * Layers a delegation was narrowed to, each with its own ceiling where the
+   * person set one. Empty means no narrowing. A layer with no `permissions`
+   * inherits the connection's.
    */
-  readonly permissions: readonly ('read' | 'write' | 'admin')[]
+  readonly layers: readonly { readonly id: string; readonly permissions?: readonly CeilingValue[] }[]
+  /**
+   * What a delegation may exercise. Empty means no ceiling — it reaches every
+   * verb its person holds.
+   */
+  readonly permissions: readonly CeilingValue[]
   readonly createdAt: string
   readonly lastRefreshedAt: string | null
   readonly revokedAt: string | null

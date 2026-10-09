@@ -12,5 +12,6 @@ export type { Layers, McpMetrics, ServerBuild, SkillSource, ToolRunner } from '.
 export { INSTRUCTIONS, instructionsFor } from './instructions.js'
 export { catalog, searchDescription } from './tools.js'
 export type { Layer, ToolContext, ToolDefinition, ToolPermission } from './tools.js'
+export { layerCatalog } from './services.js'
 export { serveStdio } from './stdio.js'
 export type { StdioOptions } from './stdio.js'

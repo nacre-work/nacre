@@ -2,7 +2,7 @@ import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import type { AuthContext } from '@nacre.work/api'
+import type { AuthContext, CeilingValue } from '@nacre.work/api'
 import { protectedResourceMetadata } from '@nacre.work/core'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -64,11 +64,18 @@ async function listed(auth: AuthContext): Promise<string[]> {
   }
 }
 
-const person = (permissions?: readonly ('read' | 'write' | 'admin')[]): AuthContext => ({
+const person = (
+  permissions?: readonly CeilingValue[],
+  layers?: readonly { id: string; permissions?: readonly CeilingValue[] }[],
+): AuthContext => ({
   orgId: 'o',
   principal: { type: 'user', id: 'u' },
   role: 'member',
-  delegation: { id: 'connection', ...(permissions === undefined ? {} : { permissions }) },
+  delegation: {
+    id: 'connection',
+    ...(permissions === undefined ? {} : { permissions }),
+    ...(layers === undefined ? {} : { layers }),
+  },
 })
 
 // `upload_file` is left out of every expectation: this client declares no
@@ -98,6 +105,23 @@ describe('a delegated connection is offered the tools its ceiling admits', () =>
   it('offers update_skill only where the ceiling carries admin', async () => {
     expect(await listed(person(['read', 'write']))).toEqual(needing('read', 'write'))
     expect(await listed(person(['read', 'write', 'admin']))).toContain('update_skill')
+  })
+
+  it('offers update_skill where a layer\u2019s ceiling carries skill, and nothing else that resolves admin', async () => {
+    // The consent screen's per-layer box. `update_skill` is the one tool it
+    // offers, and the catalog says so — the tool resolves `admin` for the
+    // person, and is offered by `skill` in the ceiling as well as by `admin`.
+    const editing = await listed(person(['read', 'skill'], [{ id: 'L', permissions: ['read', 'skill'] }]))
+    expect(editing).toEqual([...needing('read'), 'update_skill'].sort())
+
+    // `{skill}` alone: the skill tool and nothing else, not even search.
+    expect(await listed(person(['skill'], [{ id: 'L', permissions: ['skill'] }]))).toEqual(['update_skill'])
+
+    // `skill` in the connection's ceiling and on no layer in its narrowing
+    // offers nothing — a tool every call to which would be refused is the
+    // noise this filter exists to remove.
+    const nowhere = await listed(person(['read', 'skill'], [{ id: 'L', permissions: ['read'] }]))
+    expect(nowhere).not.toContain('update_skill')
   })
 
   it('lists everything to a delegation with no ceiling, and to a principal that is not a delegation', async () => {

@@ -1,4 +1,4 @@
-import type { Connection } from '@nacre.work/sdk'
+import type { CeilingValue, Connection } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { agoCell, clear, h } from '../dom.js'
@@ -57,6 +57,45 @@ function actsAs(
   return c.approverDisabled ? [who, h('span', { class: 'muted' }, ' — suspended')] : [who]
 }
 
+/** What each ceiling value lets an application do, as the verb a sentence needs. */
+const VERB: Readonly<Record<CeilingValue, string>> = {
+  read: 'read',
+  write: 'write',
+  admin: 'administer',
+  skill: 'edit the skill',
+}
+
+const sentence = (words: readonly string[]): string =>
+  words.length <= 1 ? words.join('') : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1] ?? ''}`
+
+/**
+ * What a delegation may do, said under its name.
+ *
+ * The consent screen is the only place a person sees what they approved, and
+ * then never again — so "this application may read the handbook and edit its
+ * skill" had nowhere to be checked afterwards, and a connection that may
+ * rewrite what agents are told about a layer looked exactly like one that may
+ * only search. It could not have been said before 0.31.0 in any case: the API
+ * sent the narrowing as objects under a contract that said ids, and sent no
+ * ceiling at all.
+ *
+ * Layer names come from the caller's own listing, so a layer the reader cannot
+ * see is named as one — an administrator looking at somebody else's
+ * connection is not told what that person reads.
+ *
+ * An agent has no line: its reach is its grants, which the Grants screen says.
+ */
+function mayLine(c: Connection, names: ReadonlyMap<string, string>): string | undefined {
+  if (c.actsAs !== 'user') return undefined
+  const verbs = (values: readonly CeilingValue[]): string =>
+    values.length === 0 ? 'do anything its person can' : sentence(values.map((v) => VERB[v]))
+  if (c.layers.length === 0) return `May ${verbs(c.permissions)}, in every layer its person reaches.`
+  const parts = c.layers.map(
+    (l) => `${verbs(l.permissions ?? c.permissions)} in ${names.get(l.id) ?? 'a layer you cannot see'}`,
+  )
+  return `May ${parts.join('; ')}.`
+}
+
 export async function connectionsView(root: HTMLElement): Promise<void> {
   clear(root)
   const body = h('div', {})
@@ -89,6 +128,15 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
     me = (await client().me()).principalId
   } catch {
     me = undefined
+  }
+  // Names for the layers a narrowing points at, from what this reader can see.
+  // Tolerated when it fails for the same reason: ids would be a worse line,
+  // not a broken screen.
+  const names = new Map<string, string>()
+  try {
+    for (const layer of await client().layers.list()) names.set(layer.id, layer.name)
+  } catch {
+    // Every narrowed layer reads as one this reader cannot see.
   }
 
   const load = async (): Promise<void> => {
@@ -126,7 +174,7 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
             h('th', {}, ''),
           ),
         ),
-        h('tbody', {}, ...shown.map((c) => connectionRow(c, me, message, load))),
+        h('tbody', {}, ...shown.map((c) => connectionRow(c, me, names, message, load))),
       ),
     }))
   }
@@ -137,6 +185,7 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
 function connectionRow(
   c: Connection,
   me: string | undefined,
+  names: ReadonlyMap<string, string>,
   message: HTMLElement,
   load: () => Promise<void>,
 ): HTMLElement {
@@ -167,8 +216,13 @@ function connectionRow(
     })()
   })
 
+  const may = mayLine(c, names)
   return h('tr', { class: ended ? 'muted' : '' },
-    h('td', {}, c.clientName),
+    // What it may do sits under its name rather than in a column of its own:
+    // it is a sentence of unbounded length, and a table that is five columns
+    // at 1440 has to stay readable at 390. The same treatment the Skills
+    // screen gives a skill's description.
+    h('td', { class: 'cell-stack' }, c.clientName, ...(may === undefined ? [] : [h('div', { class: 'cell-note' }, may)])),
     // A delegation names no agent, so the cell names the *person*.
     //
     // It used to read "the person who approved it" on every row, which is

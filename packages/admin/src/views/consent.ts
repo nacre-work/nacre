@@ -1,3 +1,5 @@
+import type { CeilingValue } from '@nacre.work/sdk'
+
 import { client, explain } from '../api.js'
 import { chip, clear, h } from '../dom.js'
 
@@ -141,7 +143,14 @@ export async function consentView(root: HTMLElement): Promise<void> {
    * the same meaning an unticked box had before.
    */
   const narrowing = group('It may, in each layer')
-  const rows: { id: string; read: HTMLInputElement; write: HTMLInputElement }[] = []
+  /**
+   * `skill` is present only on a row where the person holds `admin` — the box
+   * is "edit this layer's skill", and offering it anywhere else would be
+   * offering something that resolves to nothing. See docs/skills.md.
+   */
+  const rows: { id: string; read: HTMLInputElement; write: HTMLInputElement; skill?: HTMLInputElement }[] = []
+  const boxes = (r: (typeof rows)[number]): HTMLInputElement[] =>
+    r.skill === undefined ? [r.read, r.write] : [r.read, r.write, r.skill]
 
   /**
    * What the application may do, and the dimension people reach for first.
@@ -178,7 +187,7 @@ export async function consentView(root: HTMLElement): Promise<void> {
    * comes back when the last one is cleared.
    */
   const showCeiling = (): void => {
-    const perLayer = rows.some((r) => r.read.checked || r.write.checked)
+    const perLayer = rows.some((r) => boxes(r).some((b) => b.checked))
     ceiling.el.hidden = asAgent.checked || perLayer
   }
 
@@ -226,10 +235,11 @@ export async function consentView(root: HTMLElement): Promise<void> {
 
     // No `admin` box, and that is about *this screen* rather than about the
     // mechanism. The person arriving here was sent by an MCP client, and the
-    // MCP surface's one tool that resolves `admin` writes a layer's skill, and
-    // that has its own box in docs/skills.md — so `admin` itself would do
-    // little where they are looking and something considerable through the
-    // REST API, where they are not.
+    // MCP surface's one tool that resolves `admin` writes a layer's skill —
+    // which has its own box, per layer, in the table below — so `admin`
+    // itself would do little more where they are looking and something
+    // considerable through the REST API, where they are not: renaming and
+    // deleting a layer, issuing grants on it.
     //
     // The ceiling still admits it and `POST /v1/oauth/consent` still takes it,
     // for an `org_admin` who deliberately wants an administrative delegation:
@@ -252,19 +262,30 @@ export async function consentView(root: HTMLElement): Promise<void> {
       h('p', { class: 'hint' }, 'Leave every row empty to give it everything above, everywhere you can read.'),
     )
 
+    // "Edit skill" is a column only where it can be ticked somewhere. The
+    // API says what this person holds on each layer, so the screen does not
+    // guess — and a person who administers no layer is not shown a column of
+    // empty cells asking them a question they cannot answer.
+    const administered = layers.some((l) => l.permissions.includes('admin'))
+
     const body = h('tbody', {})
     for (const layer of layers) {
       const read = h('input', { type: 'checkbox', 'aria-label': `Read ${layer.name}` }) as HTMLInputElement
       const write = h('input', { type: 'checkbox', 'aria-label': `Write ${layer.name}` }) as HTMLInputElement
+      const skill = layer.permissions.includes('admin')
+        ? (h('input', { type: 'checkbox', 'aria-label': `Edit the skill of ${layer.name}` }) as HTMLInputElement)
+        : undefined
+      const row = { id: layer.id, read, write, ...(skill === undefined ? {} : { skill }) }
       // Ticking anything per layer answers the question the group above asks,
       // so that group steps aside rather than sitting there contradicting it.
-      for (const box of [read, write]) box.addEventListener('change', showCeiling)
-      rows.push({ id: layer.id, read, write })
+      for (const box of boxes(row)) box.addEventListener('change', showCeiling)
+      rows.push(row)
       body.append(
         h('tr', {},
           h('td', {}, `${layer.name} · ${layer.slug}`),
           h('td', { class: 'tick' }, read),
           h('td', { class: 'tick' }, write),
+          ...(administered ? [h('td', { class: 'tick' }, skill ?? '')] : []),
         ),
       )
     }
@@ -274,10 +295,22 @@ export async function consentView(root: HTMLElement): Promise<void> {
           h('th', {}, 'Layer'),
           h('th', { class: 'tick' }, 'Read'),
           h('th', { class: 'tick' }, 'Write'),
+          ...(administered ? [h('th', { class: 'tick' }, 'Edit skill')] : []),
         )),
         body,
       ),
     )
+    if (administered) {
+      // What the box gives, said where it is offered. A skill is what every
+      // later agent is told about the layer, so this is the one write here
+      // that outlives the conversation that made it — and it gives nothing
+      // else, which is the half a person needs told to tick it at all.
+      narrowing.el.append(
+        h('p', { class: 'hint' },
+          'Edit skill lets it rewrite what agents are told about that layer — offered where you administer it. ',
+          'Nothing else comes with it: no documents, no renaming, no grants. Every version is kept and can be restored.'),
+      )
+    }
   }
 
   const setBusy = (busy: boolean): void => {
@@ -313,7 +346,11 @@ export async function consentView(root: HTMLElement): Promise<void> {
         const layers = rows
           .map((r) => ({
             id: r.id,
-            permissions: [...(r.read.checked ? ['read' as const] : []), ...(r.write.checked ? ['write' as const] : [])],
+            permissions: [
+              ...(r.read.checked ? ['read' as const] : []),
+              ...(r.write.checked ? ['write' as const] : []),
+              ...(r.skill?.checked === true ? ['skill' as const] : []),
+            ],
           }))
           .filter((l) => l.permissions.length > 0)
 
@@ -327,10 +364,10 @@ export async function consentView(root: HTMLElement): Promise<void> {
         // sending anything narrower here would refuse the very rows the person
         // just ticked — and anything wider would leave administration bounded
         // by a verb they never granted anywhere.
-        const permissions =
+        const permissions: CeilingValue[] =
           layers.length > 0
-            ? (['read', 'write'] as const).filter((p) => layers.some((l) => l.permissions.includes(p)))
-            : (verbs.filter((b) => b.checked).map((b) => b.value) as ('read' | 'write' | 'admin')[])
+            ? (['read', 'write', 'skill'] as const).filter((p) => layers.some((l) => l.permissions.includes(p)))
+            : (verbs.filter((b) => b.checked).map((b) => b.value) as CeilingValue[])
         if (!asAgent.checked && permissions.length === 0) {
           message.textContent = 'Choose at least one thing the application may do.'
           return

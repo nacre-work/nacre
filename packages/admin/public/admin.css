@@ -201,6 +201,12 @@ a { color: var(--n-accent); }
    the column two buttons wide, and at 390 the table cut both off. */
 .table td.fit { width: 1%; }
 .table td.fit .btn-block { margin-top: 0; }
+/* A value with a sentence about it underneath — a layer and its skill, an
+   application and what it may do. A second line rather than a column, because
+   the sentence is of unbounded length and a table that is five columns at 1440
+   has to stay readable at 390. */
+.table td.cell-stack { font-size: 14px; overflow-wrap: break-word; }
+.cell-note { margin-top: 6px; }
 .table tr.revoked td { opacity: 0.55; }
 
 .slug {
@@ -594,13 +600,28 @@ a { color: var(--n-accent); }
 .field-group > .hint { margin-bottom: 10px; }
 .field-group > .field:last-child { margin-bottom: 0; }
 /* A group that belongs to the choice above it, inset to the label column of a
-   `.choice` so the relationship is visible without a second heading. */
-.field-group.nested { margin-left: 26px; }
+   `.choice` so the relationship is visible without a second heading.
+
+   It carries its own top margin rather than being given one by an
+   adjacent-sibling rule, and that is the repair rather than a style. The gap
+   used to come from `.choice + .field-group`, which holds only while the group
+   directly follows a choice — and a `hidden` group is still the previous
+   sibling. So on the consent screen, the moment a per-layer box was ticked and
+   "It may" stepped aside, "It may, in each layer" sat flush under "As you".
+   The note below this rule had already learned exactly that and grown a second
+   arm for it; this is the same trap one sibling over. Vertical margins between
+   blocks collapse, so after a choice the gap is this one and after another
+   group it is the larger of the two — the same either way, whatever is hidden. */
+.field-group.nested { margin: 16px 0 18px 26px; }
 
 /* One row per thing, one narrow column per verb. The verb columns are sized to
    their heading and pushed right, so the names stay left-aligned and readable
    however many layers there are. */
 .table.matrix { margin: 0; max-width: 48ch; }
+/* What a column of the matrix means, said under it. A `.hint` has no top margin
+   and the table no bottom one, so without this the sentence explaining "Edit
+   skill" sat against the last row it was explaining. */
+.table.matrix + .hint { margin-top: 10px; }
 .table.matrix td, .table.matrix th { padding: 6px 8px; }
 .table.matrix td:first-child { width: 100%; }
 .tick { text-align: center; white-space: nowrap; }
@@ -625,8 +646,8 @@ th.tick {
 .choice .hint { margin: 0; max-width: none; }
 /* Whatever follows the last choice is not part of it. A `.note` sitting flush
    against "As an agent" reads as that option's explanation rather than as the
-   screen's footnote. */
-.choice + .note, .choice + .field-group,
+   screen's footnote. A nested group needs no arm here: it carries its own. */
+.choice + .note,
 /* A hidden group is still the previous element sibling, so the note that
    follows the agent panel needs this arm as well as the one above. */
 .field-group + .note { margin-top: 16px; }
@@ -862,8 +883,6 @@ th.tick {
 }
 .skill-editor { min-height: 360px; resize: vertical; line-height: 1.5; }
 .skill-review { max-height: 240px; overflow: auto; margin-bottom: 12px; }
-.skill-cell { font-size: 14px; overflow-wrap: break-word; }
-.skill-line { margin-top: 6px; }
 
 /* A skill's Markdown. Headings start a step down from the screen's own, so a
    skill's `#` does not read as a second page title. */

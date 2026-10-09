@@ -285,6 +285,43 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.31.0 — the consent screen's Edit skill box, and what a connection is listed
+
+**Migration 0037**, run by the migrator as usual: the CHECKs on
+`oauth_consents.permissions` and `oauth_consent_layers.permissions` admit `skill`
+beside `read`, `write` and `admin`. Nothing is rewritten — the new constraint
+admits a superset. Rolling back to 0.30.0 is safe: that build hands a stored
+`skill` to the resolver as a value no permission matches, so a connection
+approved with the box simply cannot write the skill again until you upgrade, and
+gains nothing.
+
+**The consent screen offers "Edit skill", per layer**, on the layers the person
+administers. Ticked, the connection may write that layer's skill — through
+`update_skill` or `PUT /v1/skills/layers/{id}` — and nothing else: `skill` is not
+a permission, the resolver never sees it, and one file in the API reads it. A
+connection whose ceiling holds `skill` on some layer is now offered
+`update_skill` in `tools/list`; one that holds `admin` still is.
+
+**Three answers change for connected applications, and each is a correction.**
+
+- **A narrowed connection is listed only its layers.** `GET /v1/layers` and the
+  MCP `list_layers` tool listed a connection narrowed to one layer every layer
+  its person reads, with names and document counts, and the MCP catalog also
+  ignored the connection's ceiling — a `{write}` connection was listed every
+  layer its person reads. Both now list what the connection reaches. An
+  integration that read layer names it was never narrowed to will see fewer.
+- **`GET /v1/oauth/consents` matches its contract.** Each `layers` entry is
+  `{ id, permissions? }` — what the server already sent, while the contract
+  said bare ids — and `permissions`, documented all along, is now sent. The
+  SDK's `Connection.layers` is that object array; it used to come back as
+  `[object Object]` strings.
+- **A layer says what the caller may do on it**: `permissions` on every item of
+  `GET /v1/layers`, and in the SDK's `Layer`. The contract also had the layer's
+  `failed_count` filed under `Document`; it is under `Layer`, where it was
+  always sent.
+
+The Connections screen now says under each application what it may do.
+
 ### 0.30.0 — skills on the console
 
 Nothing to do, and nothing in the schema. The console has a **Skills** screen:

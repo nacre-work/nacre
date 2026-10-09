@@ -9,6 +9,7 @@ import {
 import { jwtVerify, type JWTPayload, type KeyObject } from 'jose'
 
 import { forbidden, unauthorized, type Problem } from './errors.js'
+import type { CeilingValue } from './skill-ceiling.js'
 
 export interface AuthContext {
   /** From the token. Never from anywhere else. */
@@ -39,7 +40,7 @@ export interface AuthContext {
      */
     readonly layers?: readonly {
       readonly id: string
-      readonly permissions?: readonly Permission[]
+      readonly permissions?: readonly CeilingValue[]
     }[]
     /**
      * The permissions this token may exercise. Absent means no ceiling.
@@ -47,8 +48,12 @@ export interface AuthContext {
      * A set rather than a level, because rule 6 makes permissions unordered —
      * `{write}` alone is an ingest pipeline that cannot read back what it
      * wrote. See docs/authz.md, "The permission ceiling".
+     *
+     * It may also hold `skill`, which is not a permission and which
+     * `skill-ceiling.ts` alone reads: `resolve` is handed this set with it
+     * stripped, so it confers nothing on any other path.
      */
-    readonly permissions?: readonly Permission[]
+    readonly permissions?: readonly CeilingValue[]
   }
 }
 
@@ -75,8 +80,8 @@ export interface Delegations {
         userId: string
         role: OrgRole
         /** The narrowing, each layer carrying its own ceiling where one was set. */
-        layers?: readonly { readonly id: string; readonly permissions?: readonly Permission[] }[]
-        permissions?: readonly Permission[]
+        layers?: readonly { readonly id: string; readonly permissions?: readonly CeilingValue[] }[]
+        permissions?: readonly CeilingValue[]
       }
     | undefined
   >

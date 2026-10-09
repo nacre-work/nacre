@@ -385,14 +385,6 @@ components:
             the layer reaches everything in it. Document-level grants are a
             commercial module, and when they exist this has to be computed per
             caller or dropped.
-    Document:
-      type: object
-      required: [document_id, layer, status, chunk_count, updated_at]
-      description: >
-        A document's metadata. Not its text — chunks are what search returns,
-        and a whole-document body here would be a second, unpaginated way to
-        read everything.
-      properties:
         failed_count:
           type: integer
           description: >
@@ -408,6 +400,28 @@ components:
 
 
             Not per caller, on the same argument `document_count` makes.
+        permissions:
+          type: array
+          items: { type: string, enum: [read, write, admin] }
+          description: >
+            What **this** caller may do on the layer — the verbs it resolves to
+            there, each inside the token's ceiling and narrowing. A set, not a
+            level: `write` does not imply `read`, so `["write"]` is a real
+            answer.
+
+
+            Never `skill`, which is a value a delegation's ceiling may hold and
+            not a permission anybody holds on a layer. The consent screen reads
+            `admin` from here to decide where "edit this layer's skill" may be
+            offered.
+    Document:
+      type: object
+      required: [document_id, layer, status, chunk_count, updated_at]
+      description: >
+        A document's metadata. Not its text — chunks are what search returns,
+        and a whole-document body here would be a second, unpaginated way to
+        read everything.
+      properties:
         document_id: { type: string, format: uuid }
         external_id:
           type: [string, 'null']
@@ -819,17 +833,31 @@ components:
             has exactly one explanation and this is it.
         layers:
           type: array
-          items: { type: string, format: uuid }
+          items:
+            type: object
+            required: [id]
+            properties:
+              id: { type: string, format: uuid }
+              permissions:
+                type: array
+                items: { type: string, enum: [read, write, admin, skill] }
+                description: This layer's own ceiling. Absent means it inherits the connection's.
           description: |
-            Layers a delegation was narrowed to at consent. Empty means **no
-            narrowing** — never "narrowed to nothing", which is the opposite
-            state and is deliberately not representable.
+            Layers a delegation was narrowed to at consent, each with its own
+            ceiling where the person set one — the shape `POST /v1/oauth/consent`
+            takes. Empty means **no narrowing** — never "narrowed to nothing",
+            which is the opposite state and is deliberately not representable.
+
+            This said bare ids until 0.31.0 while the server sent these objects
+            from the day a layer could carry a ceiling, so a client that
+            believed it read every narrowed layer as `[object Object]`.
         permissions:
           type: array
-          items: { type: string, enum: [read, write, admin] }
+          items: { type: string, enum: [read, write, admin, skill] }
           description: |
-            Permissions a delegation may exercise. Empty means **no ceiling**:
-            it reaches every verb its person holds.
+            What a delegation may exercise. Empty means **no ceiling**: it
+            reaches every verb its person holds. Documented here and not sent
+            until 0.31.0, so every ceiling read as none.
         created_at: { type: string, format: date-time }
         last_refreshed_at:
           type: [string, 'null']
@@ -881,7 +909,7 @@ components:
                   id: { type: string, format: uuid }
                   permissions:
                     type: array
-                    items: { type: string, enum: [read, write, admin] }
+                    items: { type: string, enum: [read, write, admin, skill] }
                     minItems: 1
           description: |
             Layers a delegation is restricted to, chosen by the person
@@ -914,11 +942,11 @@ components:
             administrator's to set.
         permissions:
           type: array
-          items: { type: string, enum: [read, write, admin] }
+          items: { type: string, enum: [read, write, admin, skill] }
           minItems: 1
           description: |
-            Permissions a delegation may exercise, chosen by the person
-            approving. Omit for no ceiling.
+            What a delegation may exercise, chosen by the person approving.
+            Omit for no ceiling.
 
             A **set**, not a level: `write` does not imply `read` anywhere in
             this model, so `["write"]` alone is an ingest client that cannot
@@ -932,12 +960,21 @@ components:
             Refused beside `service_account_id`, on the same argument as
             `layers`.
 
+            **`skill` is not a permission.** It is the consent screen's
+            per-layer "edit this layer's skill" box: in a layer's ceiling it lets
+            the application write that layer's skill where the person holds
+            `admin` there, and it confers nothing else — no search, no ingest,
+            no rename, no grant. In a layer's set it has to be in this one too,
+            by the rule every per-layer set follows. See docs/skills.md.
+
             **`admin` is accepted here and is not offered on the consent
             screen**, which is a deliberate difference rather than a drift. The
             person that screen is built for arrived from an MCP client, and the
-            MCP surface has no administrative tool — its tools resolve with
-            `read` or `write` — so the choice would do nothing where they are
-            looking and a great deal through this API, where they are not.
+            MCP surface's one tool that resolves `admin` writes a layer's skill
+            — which `skill` already offers, layer by layer — so `admin` would do
+            little more where they are looking and a great deal through this
+            API, where they are not: rename and delete the layer, issue grants
+            on it.
 
             It stays available here because it is not an escalation: a ceiling
             cannot exceed what its person already holds, so only an `org_admin`

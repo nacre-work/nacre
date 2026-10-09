@@ -1,16 +1,21 @@
-import type { Permission } from '@nacre.work/core'
 import {
   administers,
   authenticate,
   delegatedLayers,
   postgresVerification,
   PostgresDocuments,
+  PostgresGrants,
+  PostgresLayers,
   PostgresOAuthAuthorizations,
   PostgresOAuthConsents,
   PostgresOAuthRefreshTokens,
+  PostgresSkills,
   Problem,
   type AuthContext,
+  type CeilingValue,
+  type SkillLevel,
 } from '@nacre.work/api'
+import { layerCatalog } from '@nacre.work/mcp'
 import { createSecretKey } from 'node:crypto'
 import { SignJWT } from 'jose'
 import type { Pool } from 'pg'
@@ -71,8 +76,14 @@ let consents: PostgresOAuthConsents
 let authorizations: PostgresOAuthAuthorizations
 let refreshTokens: PostgresOAuthRefreshTokens
 let documents: PostgresDocuments
+let skills: PostgresSkills
+let layers: PostgresLayers
+let grants: PostgresGrants
+let catalog: ReturnType<typeof layerCatalog>
 /** Documents whose payload was rewritten, so a refusal can be told from a write. */
 const wrote: string[] = []
+/** Layers whose points were tombstoned, so a refused delete can be told from one that ran. */
+const tombstoned: string[] = []
 
 const context = (userId: string, role: AuthContext['role'] = 'member'): AuthContext => ({
   orgId: ORG,
@@ -105,9 +116,9 @@ const present = async (token: string): Promise<AuthContext | Problem> =>
 const connect = async (
   who: AuthContext,
   /** A bare id inherits the connection's ceiling; an object sets one for that layer. */
-  layers: readonly (string | { id: string; permissions?: readonly Permission[] })[] = [],
+  layers: readonly (string | { id: string; permissions?: readonly CeilingValue[] })[] = [],
   /** The permission ceiling. Empty is "no ceiling", as it is at the endpoint. */
-  permissions: readonly Permission[] = [],
+  permissions: readonly CeilingValue[] = [],
 ): Promise<{ token: string; delegationId: string }> => {
   const delegationId = await consents.record(
     who,
@@ -146,6 +157,19 @@ when('delegation · a person lending their own reach', () => {
       { setMetadata: async (collection, documentId) => { wrote.push(`${collection}:${documentId}`) } },
       AS_APP,
     )
+    skills = new PostgresSkills(pool, AS_APP)
+    layers = new PostgresLayers(
+      pool,
+      {
+        vectorsOf: async () => ({ v: 4 }),
+        tombstoneLayer: async (_collection, layerId) => {
+          tombstoned.push(layerId)
+        },
+      },
+      AS_APP,
+    )
+    grants = new PostgresGrants(pool, AS_APP)
+    catalog = layerCatalog(pool)
 
     const c = await pool.connect()
     try {
@@ -201,9 +225,11 @@ when('delegation · a person lending their own reach', () => {
   /** The person reads both layers, and every test starts from that. */
   beforeEach(async () => {
     wrote.length = 0
+    tombstoned.length = 0
     await disabled(false)
     const c = await pool.connect()
     try {
+      await c.query('DELETE FROM skill_versions WHERE org_id = $1', [ORG])
       await c.query('DELETE FROM oauth_consent_layers WHERE org_id = $1', [ORG])
       await c.query('DELETE FROM oauth_refresh_tokens WHERE org_id = $1', [ORG])
       await c.query('DELETE FROM oauth_consents WHERE org_id = $1', [ORG])
@@ -644,6 +670,168 @@ when('delegation · a person lending their own reach', () => {
 
     // What it *does* reach is the layer, which is the narrowing doing its job.
     expect(delegatedLayers(auth, 'admin')).toEqual([LAYER_L])
+  })
+
+  // ── what a delegation's ceiling and narrowing reach beyond documents ──────
+
+  /** Replace the person's grants for one case. `beforeEach` puts the default back. */
+  const holding = async (rows: readonly [scope: 'layer' | 'workspace', id: string, permission: string][]): Promise<void> => {
+    const c = await pool.connect()
+    try {
+      await c.query('DELETE FROM grants WHERE org_id = $1', [ORG])
+      for (const [scope, scopeId, permission] of rows) {
+        await c.query(
+          `INSERT INTO grants (org_id, principal_type, principal_id, scope_type, scope_id, permission, effect)
+           VALUES ($1,'user',$2,$3,$4,$5,'allow')`,
+          [ORG, PERSON, scope, scopeId, permission],
+        )
+      }
+    } finally {
+      c.release()
+    }
+  }
+
+  /** A token through the consent table and back through authentication, never a literal context. */
+  const delegated = async (
+    who: AuthContext,
+    narrowing: Parameters<typeof connect>[1],
+    ceiling: Parameters<typeof connect>[2],
+  ): Promise<AuthContext> => {
+    const auth = await present((await connect(who, narrowing, ceiling)).token)
+    if (auth instanceof Problem) throw new Error(`the delegation was refused: ${auth.detail}`)
+    return auth
+  }
+
+  const SKILL = (body: string): Record<string, string> => ({
+    'SKILL.md': `---\nname: ell\ndescription: How L is kept.\n---\n\n${body}\n`,
+  })
+  const L_SKILL: SkillLevel = { kind: 'layer', layerId: LAYER_L }
+  const M_SKILL: SkillLevel = { kind: 'layer', layerId: LAYER_M }
+  const page = { limit: 50, after: undefined }
+  const restLayers = async (auth: AuthContext): Promise<string[]> =>
+    (await layers.list(auth)).items.map((l) => l.id).sort()
+  const mcpLayers = async (auth: AuthContext): Promise<string[]> =>
+    (await catalog.forCaller(auth, { limit: 50 })).layers.map((l) => l.id).sort()
+
+  it('T29 · without skill in L’s ceiling a layer admin’s delegation cannot write L’s skill; with it, it can, and still cannot rename, delete or grant', async () => {
+    // `admin` on the workspace, so the person administers L and M alike and
+    // could rename, delete and grant on both. That is what makes every
+    // refusal below the ceiling's rather than the person's.
+    await holding([['workspace', WS, 'admin']])
+    const person = context(PERSON)
+    const first = await skills.write(person, L_SKILL, SKILL('Written by the person.'), 0, 'rest')
+    expect(first.kind).toBe('written')
+
+    // Without `skill`: the skill is visible, on rule 7's `read`, and the
+    // write is the refusal a caller looking at it is told — not `not_found`.
+    const reading = await delegated(person, [{ id: LAYER_L, permissions: ['read'] }], ['read'])
+    expect((await skills.current(reading, L_SKILL))?.version).toBe(1)
+    expect((await skills.write(reading, L_SKILL, SKILL('Not allowed.'), 1, 'mcp')).kind).toBe('forbidden')
+    expect(await skills.versions(reading, L_SKILL, page)).toBeUndefined()
+
+    // With `skill` on L — stored through the consent table, which is what
+    // migration 0037 widened, and read back on the authentication path.
+    const editing = await delegated(person, [{ id: LAYER_L, permissions: ['read', 'skill'] }], ['read', 'skill'])
+    expect(editing.delegation?.layers).toEqual([{ id: LAYER_L, permissions: ['read', 'skill'] }])
+    expect(editing.delegation?.permissions).toEqual(['read', 'skill'])
+    const written = await skills.write(editing, L_SKILL, SKILL('Written by the application.'), 1, 'mcp')
+    expect(written).toMatchObject({ kind: 'written', version: { version: 2, byAgent: true } })
+    expect((await skills.versions(editing, L_SKILL, page))?.items[0]?.version).toBe(2)
+
+    // M is outside the narrowing, so for this token it is not there at all.
+    expect((await skills.write(editing, M_SKILL, SKILL('Elsewhere.'), 0, 'mcp')).kind).toBe('not_found')
+
+    // And nothing else. The person may rename L — the control, without which
+    // the refusal after it would prove nothing — and the token may not.
+    expect(await layers.update(person, LAYER_L, { name: 'L' })).toBe(true)
+    expect(await layers.update(editing, LAYER_L, { name: 'Renamed by the application' })).toBe(false)
+    expect(await layers.remove(editing, LAYER_L)).toBe(false)
+    expect(tombstoned).toEqual([])
+    const grant = { principalType: 'user', principalId: ADMIN, scopeType: 'layer', scopeId: LAYER_L, permission: 'read' } as const
+    expect(await grants.issue(editing, grant)).toBeUndefined()
+    expect(administers(editing)).toBe(false)
+
+    // `{skill}` alone is the sharpest form of "confers nothing else": the
+    // skill, and not one document, one layer in a catalog, or one verb.
+    const only = await delegated(person, [{ id: LAYER_L, permissions: ['skill'] }], ['skill'])
+    expect((await skills.current(only, L_SKILL))?.version).toBe(2)
+    expect((await skills.write(only, L_SKILL, SKILL('Third edition.'), 2, 'mcp')).kind).toBe('written')
+    expect(await restLayers(only)).toEqual([])
+    expect(await mcpLayers(only)).toEqual([])
+    expect(await documents.read(only, DOC_IN_L)).toBeUndefined()
+    expect(await documents.updateMetadata(only, DOC_IN_L, { source: 'x' })).toBe(false)
+    expect(await layers.update(only, LAYER_L, { name: 'Renamed' })).toBe(false)
+
+    // An organization administrator, whose `admin` is the role's and reaches
+    // every layer by rule 3. The ceiling applies before that line, so
+    // `{read, skill}` writes a skill and administers nothing.
+    const admin = await delegated(context(ADMIN, 'org_admin'), [], ['read', 'skill'])
+    expect((await skills.write(admin, M_SKILL, SKILL('Written for M.'), 0, 'mcp')).kind).toBe('written')
+    expect(administers(admin)).toBe(false)
+    expect(await grants.issue(admin, grant)).toBeUndefined()
+    expect(await layers.update(admin, LAYER_M, { name: 'Renamed' })).toBe(false)
+  })
+
+  it('T30 · skill in L’s ceiling while the person holds only write on L: the skill write is refused', async () => {
+    await holding([['layer', LAYER_L, 'write']])
+    const person = context(PERSON)
+    // The person cannot write it either — which is the claim: the token is
+    // given nothing they lack.
+    expect((await skills.write(person, L_SKILL, SKILL('No.'), 0, 'rest')).kind).toBe('forbidden')
+
+    // Visible through `write` (T27), and refused as visible.
+    const writing = await delegated(person, [{ id: LAYER_L, permissions: ['write', 'skill'] }], ['write', 'skill'])
+    expect((await skills.write(writing, L_SKILL, SKILL('Still no.'), 0, 'mcp')).kind).toBe('forbidden')
+    expect(await skills.versions(writing, L_SKILL, page)).toBeUndefined()
+
+    // `{skill}` alone leaves nothing to see it through, so the answer is the
+    // not-found an invisible layer gets — never `forbidden`, which would say
+    // the layer is there.
+    const only = await delegated(person, [{ id: LAYER_L, permissions: ['skill'] }], ['skill'])
+    expect((await skills.write(only, L_SKILL, SKILL('No.'), 0, 'mcp')).kind).toBe('not_found')
+    expect(await skills.current(only, L_SKILL)).toBeUndefined()
+    expect((await skills.list(only, page)).layers.items).toEqual([])
+  })
+
+  it('T40 · the layer catalog, over REST and MCP alike, lists the narrowing and nothing past the ceiling', async () => {
+    const person = context(PERSON)
+    // The person reads both, on both surfaces, and is told so.
+    expect(await restLayers(person)).toEqual([LAYER_L, LAYER_M].sort())
+    expect(await mcpLayers(person)).toEqual([LAYER_L, LAYER_M].sort())
+    expect((await layers.list(person)).items.map((l) => l.permissions)).toEqual([['read'], ['read']])
+
+    // Narrowed to L: M's name, description and document count are "something
+    // from M", and T20 says nothing.
+    const narrowed = await delegated(person, [LAYER_L], [])
+    expect(await restLayers(narrowed)).toEqual([LAYER_L])
+    expect(await mcpLayers(narrowed)).toEqual([LAYER_L])
+
+    // A `{write}` ceiling reads nothing — rule 6, inherited — so it is listed
+    // nothing. The MCP catalog used to build its resolve input by hand with
+    // no ceiling in it and answer this token with every layer its person reads.
+    const writing = await delegated(person, [], ['write'])
+    expect(await restLayers(writing)).toEqual([])
+    expect(await mcpLayers(writing)).toEqual([])
+
+    // Per layer: `{read}` on L, `{write}` on M lists L, and says what the
+    // token may do there rather than what its person may.
+    await holding([
+      ['layer', LAYER_L, 'read'],
+      ['layer', LAYER_M, 'read'],
+      ['layer', LAYER_L, 'write'],
+      ['layer', LAYER_M, 'write'],
+    ])
+    const split = await delegated(
+      person,
+      [
+        { id: LAYER_L, permissions: ['read'] },
+        { id: LAYER_M, permissions: ['write'] },
+      ],
+      ['read', 'write'],
+    )
+    expect(await mcpLayers(split)).toEqual([LAYER_L])
+    const listed = (await layers.list(split)).items
+    expect(listed.map((l) => [l.id, l.permissions])).toEqual([[LAYER_L, ['read']]])
   })
 
   it('nothing is granted to a delegation, and the database still says so', async () => {
