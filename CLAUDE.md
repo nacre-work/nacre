@@ -3082,6 +3082,21 @@ columns of a hit did not fit, so a document's id and a layer's description are
 a second line under the first cell rather than a column, which is the
 console's own treatment of a value that is an annotation.
 
+**The images are mirrored to Docker Hub, and `ghcr.io` stays canonical.**
+`docker pull nacre` is where somebody who has not read a document looks first,
+so the release pushes every image to `docker.io/nacrecontextlayer/<image>` as
+well, from the same build, at the same tags. Canonical stays `ghcr.io` because
+Docker Hub rate-limits pulls by account and nothing here reads the mirror
+back — the chart, the Compose files and every document name `ghcr.io`. The
+mirror is held by `lint:images` rather than trusted: every `tags:` block has
+to carry the mirror line beside each canonical one, and the architecture loop
+has to inspect both registries, because a registry added to one push step and
+not the next is this file's first paragraph arriving in a workflow. Both
+refusals were produced. The commercial image is deliberately **not** mirrored:
+it is gated by a GitHub token on `ghcr.io`, a second registry is a second
+credential for the same customer, and the private repositories cannot read the
+organization's Docker Hub secrets on this plan anyway.
+
 `get_document` carries its presigned `source_url` twice now: in the JSON, and
 as a `resource_link` block, which is the revision's word for "the result is
 somewhere else" and what lets a client fetch the whole file out of band. One

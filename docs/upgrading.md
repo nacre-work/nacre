@@ -26,6 +26,12 @@ What comes out of one release:
 | `ghcr.io/nacre-work/nacre-parser:{version}` and `:latest` | the Python sidecar |
 | `ghcr.io/nacre-work/nacre-embedding-adapter:{version}` and `:latest` | the hosted-embeddings sidecar, `hosted` profile only |
 
+Each is mirrored to Docker Hub as `nacrecontextlayer/<image>` at the same tags
+by the same build. `ghcr.io` is the canonical address and the one every
+Compose file and the chart name: Docker Hub rate-limits pulls by account, and
+an installation that pins the mirror pins a registry with a different failure
+mode.
+
 `@nacre.work/worker` and `@nacre.work/admin` are `private` and deliberately not
 on the registry: the worker is reached through the image's entry point and the
 admin UI is a static bundle the `web` front door serves, so neither is something
