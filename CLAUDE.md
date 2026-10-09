@@ -3082,6 +3082,20 @@ columns of a hit did not fit, so a document's id and a layer's description are
 a second line under the first cell rather than a column, which is the
 console's own treatment of a value that is an annotation.
 
+**And the layers view's More button appended the first page again on every
+press.** Reported from a real host with the picture: twenty-four rows that
+were eight rows three times, and "24 layers you may read." under a More
+button that should not have been there. The view sets `hidden` on the button
+once the server answers with no cursor, and `hidden` is the user-agent's
+`display: none` — which the restyle's `.btn { display: inline-flex }` beats,
+so the attribute did nothing. The console learned exactly this on a dialog
+field, in a repository this one can read, and the lesson did not travel to the
+next stylesheet. `[hidden] { display: none !important }` is in every view
+now, the press is refused without a cursor whatever the button looks like, and
+`apps.test.ts` holds the rule in every built view — removing it from one names
+that one. The render harness presses More twice and reads the button's
+computed display, which is the check that could not have passed before.
+
 **The images are mirrored to Docker Hub, and `ghcr.io` stays canonical.**
 `docker pull nacre` is where somebody who has not read a document looks first,
 so the release pushes every image to `docker.io/nacrecontextlayer/<image>` as
