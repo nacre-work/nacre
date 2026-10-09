@@ -285,6 +285,18 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.30.0 — skills on the console
+
+Nothing to do, and nothing in the schema. The console has a **Skills** screen:
+the organization's skill with its history, files and the two markers, and
+every layer the caller can reach with its skill. A layer's skill also opens
+from **Skill** on the Layers screen. Writing, loading a folder or a `.zip`,
+clearing and restoring all go through the same REST surface as before, so the
+access log records them as `rest`.
+
+A platform administrator gets the installation's skill on that screen. Until
+now it could only be written through the API.
+
 ### 0.29.4 — a document re-ingested during a reindex is not left behind
 
 Nothing to do. A document re-sent while its layer was being moved onto another

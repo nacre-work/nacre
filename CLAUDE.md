@@ -3246,6 +3246,29 @@ marker, and `markReindexed` marks only if the document's point ids are still the
 ones the vector went onto — the set of ids, not `content_hash`, because a
 requeue re-indexes identical content under new ids.
 
+**Skills are on the console.** A Skills screen holds the organization's skill
+and every reachable layer with its own, and a layer's skill also opens from
+the Layers screen. Both are one panel: the markers, the history, a file tree
+that keeps subfolders as folders, and Markdown rendered through `textContent`.
+A layer's skill is written by somebody with `admin` on one layer and read by
+the organization's administrator, which is the stored-script shape at its
+worst, so raw HTML stays text and only `http(s)` and `mailto` become links.
+Whether the caller may write is `versions` answering, not the role. A platform
+administrator gets the installation's level on the same screen, rather than on
+a second copy of the panel in the commercial console.
+
+**The screenshot pass now measures 390 as well as 1280**, and a fifth rule,
+`wordsWhole`, is why. The first layer table on that screen had four columns,
+and at a phone's width the description broke after every letter or two. Every
+rule passed, because every rule ran at 1280. The rule asks whether a run of
+letters breaks across lines in a table cell. It was measured before the fix:
+it also named the Access log, where `overflow-wrap: anywhere` on `.named` let
+the actor column shrink to one letter and printed `dana@exam` over `ple.com`.
+`break-word` wraps an over-long value just as well and does not count every
+character as a place to shrink to. Hyphens, colons and `@` are left alone,
+because a slug wrapping at its hyphen is correct; the first version flagged
+those, and that is how this was settled.
+
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.
