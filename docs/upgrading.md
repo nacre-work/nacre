@@ -285,6 +285,21 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.36.1 — `undici` 7.30.0 under the vector store client
+
+**No migration and nothing to configure: pull the images.** `@qdrant/js-client-rest`
+pins `undici` at exactly 7.29.0, which carries two high-severity advisories —
+a TLS certificate check that a dropped connection can skip, and a WebSocket
+denial of service — and five moderate ones, every one fixed in 7.29.1. The
+newest release of that client still pins the old one, so the workspace
+overrides it: the images, built from this lockfile, carry 7.30.0.
+
+The override travels with the **images** and not with the npm packages. A
+deployment that installs `@nacre.work/core` from the registry into a workspace
+of its own resolves the client's pin itself, and should add the same override
+there — `"pnpm": { "overrides": { "undici@<7.29.1": "^7.29.1" } }`, or npm's
+`overrides` — until the client releases a version that moves it.
+
 ### 0.36.0 — the administrative MCP's read panels
 
 **No migration and nothing to configure.** Four reads on `/mcp/admin` open a
