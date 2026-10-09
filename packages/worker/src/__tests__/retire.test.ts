@@ -77,7 +77,7 @@ describe('retireOnce', () => {
   })
 
   it('does not delete a collection an operator has rolled back onto', async () => {
-    // D2 in the rollback runbook: the pointer goes back to the superseded
+    // D2 in docs/operations/rollback-layer-reindex.md: the pointer goes back to the superseded
     // collection, and the row here is still sitting at its original timestamp.
     // This is the case that would otherwise destroy live data.
     const p = ports([one('org_acme')], { live: ['org_acme'] })

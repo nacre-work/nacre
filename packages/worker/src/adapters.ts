@@ -866,7 +866,7 @@ export async function dueCollections(
 /**
  * Whether any organization is pointing at this collection right now.
  *
- * Asked before every delete, and it is D2 in the rollback runbook rather than
+ * Asked before every delete, and it is D2 in docs/operations/rollback-layer-reindex.md rather than
  * distrust of the table: moving the pointer back to a superseded collection is
  * the cheap rollback, and it leaves the row here untouched. Without this the
  * sweep would delete the collection an operator had just rolled back onto.

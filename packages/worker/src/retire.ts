@@ -4,8 +4,9 @@
  * A reindex builds a new collection, copies every point into it, and moves
  * `organizations.vector_collection` at the end. What it points away from is
  * still there — a full copy of the organization's vectors — and until this
- * existed, nothing ever removed one. `rollback-layer-reindex.md` said as much
- * and handed the operator a shell loop over every collection Qdrant has.
+ * existed, nothing ever removed one. The reindex rollback runbook, now
+ * `docs/operations/rollback-layer-reindex.md`, said as much and handed the
+ * operator a shell loop over every collection Qdrant has.
  *
  * That loop is the rule this deliberately does not use. "Everything Qdrant has
  * that no organization points at" includes the *target* of a copy that is still
@@ -17,7 +18,8 @@
  *
  * ─── the check before the delete ───
  *
- * `isLive` is not paranoia about the table, it is D2 in the runbook. The cheap
+ * `isLive` is not paranoia about the table, it is D2 in
+ * `docs/operations/rollback-layer-reindex.md`. The cheap
  * rollback is "move the pointer back to the old collection", and afterwards the
  * row for that name is still sitting here with its original timestamp. A sweep
  * that trusted the row would delete the collection the organization had just

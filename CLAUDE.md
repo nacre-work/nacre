@@ -3218,7 +3218,15 @@ network. The migrations Job now applies the migrator of each module named in
 `modules` rather than globbing a private package family's names, which put the
 commercial scope into the open chart and applied tables for modules nobody
 loads. The four runbooks that are about operating the product came with it,
-into `docs/operations`.
+into `docs/operations`, translated — and re-checked against the code on the way,
+which is the part worth keeping: they had drifted further than the chart had.
+Every `psql` in them ran as the application role against tables under FORCE
+row-level security, which raises rather than answers; the reindex rollback
+described a copy that marks itself failed when cancelled, where the fenced claim
+now abandons it silently; a Qdrant call went to a port the Compose file does not
+publish; and step 2a of the restore made an unsigned `HEAD` that a private
+bucket refuses. Nothing read them against the tree, because they lived where
+the tree was not.
 
 
 
