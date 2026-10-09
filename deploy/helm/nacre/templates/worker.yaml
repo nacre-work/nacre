@@ -64,6 +64,7 @@ spec:
           securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
           env:
             {{- include "nacre.env" . | nindent 12 }}
+            {{- include "nacre.mailEnv" . | nindent 12 }}
           volumeMounts:
             {{- include "nacre.tmpVolumeMount" . | nindent 12 }}
           resources: {{- toYaml .Values.worker.resources | nindent 12 }}

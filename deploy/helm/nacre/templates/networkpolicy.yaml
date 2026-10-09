@@ -155,7 +155,9 @@ and to everything the operator names in extraEgress — Postgres, Qdrant, Redis,
 the embedder, S3, and the SMTP relay where `mail.*` is set. That last one is the
 easiest to leave out, because nothing fails visibly: the API answers 204 to a
 recovery request whatever happened, deliberately, so a relay it cannot reach is
-a link that is never delivered and a log line on a pod nobody is reading.
+a link that is never delivered and a log line on a pod nobody is reading — and
+the worker, which sends notifications since 0.35.0, records the ones it could
+not send in the access log and nowhere a person is looking at the time.
 The migration Job is included because it connects to Postgres
 before anything else runs; it needs the datastore egress and not the parser, but
 one rule set for the four keeps the policy readable and a Job that can also reach

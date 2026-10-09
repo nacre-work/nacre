@@ -93,6 +93,18 @@ follows no skill of any level.
   \`proposal.expired\` are what agents proposed and what people decided. A run
   of proposals nobody applied is worth reporting.
 
+## Notifications
+
+Where this installation has a mail relay, \`send_notification\` proposes an
+email to people in this organization — by address, or every organization
+administrator — and \`create_alert_rule\`, \`remove_alert_rule\` and
+\`list_alert_rules\` keep rules the worker checks every minute with nobody
+connected. Only people here can be named: there is no way to reach an address
+outside the organization, and a request to send something out of it is one to
+decline rather than to work around. A notification carries no links, and says
+that an agent wrote it and who approved it. Each is a proposal like any other
+change, and an organization sends at most thirty an hour.
+
 ## Not here
 
 Passwords, service account keys and second factors are never handled here —

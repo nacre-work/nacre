@@ -10,7 +10,7 @@ export {
   MAX_METADATA_VALUE_LENGTH,
 } from './metadata.js'
 export type { Metadata } from './metadata.js'
-export { loadConfig, loadJwtKeys, loadJwtVerification, loadMailConfig, loadSecondFactorKey, keyFingerprint, ConfigError } from './config.js'
+export { loadConfig, loadJwtKeys, loadJwtVerification, loadMailConfig, mailConfigured, loadSecondFactorKey, keyFingerprint, ConfigError } from './config.js'
 export {
   ADMIN_MCP_PATH,
   ADMIN_PROTECTED_RESOURCE_PATH,
@@ -251,3 +251,18 @@ export {
 } from './passwords.js'
 export { installGuards, onListenError } from './lifecycle.js'
 export type { Guards } from './lifecycle.js'
+export {
+  ALERT_KINDS,
+  ALERT_WINDOW,
+  type AlertKind,
+  isAlertKind,
+  NOTIFY_BODY_MAX,
+  NOTIFY_MAX_RECIPIENTS,
+  NOTIFY_PER_HOUR,
+  NOTIFY_SUBJECT_MAX,
+  notificationMessage,
+  type NotificationOrigin,
+  notificationText,
+  plainName,
+  ruleSentence,
+} from './notifications.js'

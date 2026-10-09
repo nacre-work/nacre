@@ -205,11 +205,22 @@ function wrap(text: string, width = 72): string {
   return lines.join('\n')
 }
 
+/**
+ * A line break inside a paragraph is kept, in both parts. The messages written
+ * here have none; a notification's body is somebody's prose, and a list of
+ * five layers run together into one line reads as a sentence that lost its
+ * punctuation.
+ */
+const linesOf = (text: string): readonly string[] => text.split('\n')
+
 function renderText(body: readonly Block[]): string {
   return body
-    .map((block) => (block.kind === 'link' ? block.url : wrap(block.text)))
+    .map((block) => (block.kind === 'link' ? block.url : linesOf(block.text).map((line) => wrap(line)).join('\n')))
     .join('\n\n')
 }
+
+/** Escaped, with each kept line break as a `<br>`. */
+const paragraph = (text: string): string => linesOf(text).map(escape).join('<br>')
 
 /**
  * The same blocks as a message a client will render.
@@ -248,7 +259,7 @@ function renderHtml(subject: string, body: readonly Block[]): string {
   // preheader they show the wordmark — which tells a reader nothing at the one
   // moment they are deciding whether this message is real.
   const first = body.find((block) => block.kind === 'say')
-  const preheader = first === undefined ? '' : escape(first.text)
+  const preheader = first === undefined ? '' : escape(first.text.replace(/\s+/gu, ' '))
 
   const blocks = body.map((block) => {
     if (block.kind === 'link') {
@@ -268,13 +279,13 @@ function renderHtml(subject: string, body: readonly Block[]): string {
           <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
             <tr>
               <td width="3" style="background:${PALETTE.caution};width:3px;font-size:0;line-height:0">&nbsp;</td>
-              <td style="padding-left:12px;font-family:${FONTS.body};font-size:14px;line-height:1.55;color:${PALETTE.text}">${escape(block.text)}</td>
+              <td style="padding-left:12px;font-family:${FONTS.body};font-size:14px;line-height:1.55;color:${PALETTE.text}">${paragraph(block.text)}</td>
             </tr>
           </table>
         </td></tr>`
     }
     return `
-        <tr><td style="padding:0 0 16px;font-family:${FONTS.body};font-size:15.5px;line-height:1.55;color:${PALETTE.text}">${escape(block.text)}</td></tr>`
+        <tr><td style="padding:0 0 16px;font-family:${FONTS.body};font-size:15.5px;line-height:1.55;color:${PALETTE.text}">${paragraph(block.text)}</td></tr>`
   })
 
   return `<!doctype html>

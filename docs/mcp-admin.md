@@ -1,11 +1,11 @@
 # The administrative MCP
 
-> **Reads since 0.32.0, writes since 0.34.0.** The resource, its audience and
-> consent, the guide, every read tool, the access log and the four prompts were
-> served first; proposals, the change panel, the console's Proposals screen, the
-> write tools and the extension point followed. The other panels and
-> notifications are the contract the rest is written to. "Current state" at the
-> end says exactly which is which.
+> **Reads since 0.32.0, writes since 0.34.0, notifications since 0.35.0.** The
+> resource, its audience and consent, the guide, every read tool, the access log
+> and the four prompts were served first; proposals, the change panel, the
+> console's Proposals screen, the write tools and the extension point followed;
+> then notifications and alert rules. The other panels are the contract the rest
+> is written to. "Current state" at the end says exactly which is which.
 
 An organization's administrator does their work in the console: people, groups,
 layers, grants, skills, the access log. An agent can do most of it from a
@@ -186,7 +186,7 @@ through a proposal.
 | Skills | `list_skills`, `get_skill` — returned as material under review, see above | `write_skill`, `restore_skill`, `clear_skill`, for the organization's skill and a layer's |
 | Connections | `list_connections` | `revoke_connection` |
 | Access log | `query_audit`, `summarize_audit` | — |
-| Notifications | — | send, alert rules — specified, not built |
+| Notifications — where a mail relay is configured | `list_alert_rules` | `send_notification`, `create_alert_rule`, `remove_alert_rule` |
 
 Every write names things the way a person does — an address, a group's name, a
 layer's slug — and the proposal is where those names are resolved, so what the
@@ -246,6 +246,80 @@ log to auditor@elsewhere" has no way to name elsewhere.
 
 Both are rate-limited per organization, and every message is in the log as
 `notification.sent` with its recipients and the rule or connection behind it.
+
+### How it is built
+
+**Three bounds on who receives one, and T35 asks each.** The tool resolves every
+address or id it is given to an active person in the caller's organization, and
+refuses the call naming whatever did not resolve — before a proposal is stored,
+which is "refused before a message is composed". Somebody in another
+organization and an address nobody has are the same refusal, word for word, or
+the tool is an oracle for which addresses this installation knows. Applying
+resolves the stored ids again, because somebody disabled in the ten minutes
+between is somebody the organization has just decided should not be reached.
+And the worker reads each address at the moment it sends, from `users` in the
+notification's own organization, active accounts only: a row written straight
+into the outbox naming somebody elsewhere reaches nobody, and the case that
+asks so writes one.
+
+**What is stored is ids.** `notifications` and `alert_rules` (migration 0040)
+carry `uuid[]` and a flag for "every `org_admin`" — there is no column an
+address could be written into, so an agent asked to send the log to an auditor
+outside has no field to name them in, and neither does anything after it.
+
+**No links.** The body is somebody's prose sent from the installation's own
+address, which is the exact shape of a phishing message on a surface whose
+threat model is a planted instruction. A URL — a scheme, `www.`, or a dotted
+name followed by a path — is refused in the subject and the body, with the
+reason; the one link in the message is to the access log, built from
+`NACRE_CANONICAL_URL`. The subject is one line and the body is plain text,
+paragraphs separated by a blank line, 200 and 4,000 characters.
+
+**The message says where it came from.** `Nacre:` before an agent's subject and
+`Nacre alert:` before a rule's, and a last line naming the application the
+administrative connection was approved for and the person who applied it — or
+which kind of rule fired and who set it up. One message per address, so nobody
+sees who else received it.
+
+**Thirty an hour per organization**, agents and rules together, counted in the
+statement that queues one under a per-organization lock. Over it, applying is
+refused with that sentence; a rule's message is held and found again on a later
+pass rather than lost. Fifty rules per organization.
+
+**Alert rules** are answered from what the database already records — skill
+versions, the access log, the documents table — so none needs a hook in the code
+that does the thing:
+
+| Kind | Fires when | Narrowed by |
+|---|---|---|
+| `skill_by_agent` | a skill version is written by an agent: over MCP, through a delegation, or by a service account | a layer |
+| `skill_scripts` | a skill version adds scripts its predecessor did not have | a layer |
+| `admin_connection` | an administrative connection is approved | — |
+| `denial_spike` | one principal is denied at least `threshold` times within `window_minutes` | — |
+| `documents_failed` | at least `threshold` documents fail to index within `window_minutes` | a layer |
+
+The worker looks at each rule about once a minute and a counting rule fires at
+most once per window, so a spike lasting an hour is one message and not sixty.
+An alert names layers by slug and people by address, and never a document's
+title or anything in it. An application's registered name is the one string an
+alert carries that somebody outside the organization chose, so it is put on one
+line and broken where a mail client would make it a link.
+
+**At most once.** A message is claimed before it is sent and never claimed
+twice; a worker that dies between the two leaves it `sending`, and fifteen
+minutes later it is marked `failed` rather than sent again. A relay that refuses
+is retried twice more, backing off; a message nobody could send within a day is
+`dropped`; each of those is a `notification.sent` with `result: "error"` and the
+reason, which is where an administrator finds the message that did not go. A
+finished message's body is deleted after thirty days — the record of it is the
+access log's, and the text has no reason to outlive the month it was sent in.
+
+**Offered only where there is a relay.** The MCP transport reads
+`NACRE_MAIL_FROM` — the half of the pair that is not a secret — to decide
+whether to offer the four tools; the worker holds the relay and sends; the API
+holds it too, and composes the writes into the console's Proposals screen only
+where it does. A proposal made while a relay was configured and applied after it
+was removed finds no tool, and is refused rather than queued for nobody.
 
 ## Panels
 
@@ -336,4 +410,15 @@ what an injection attempt looks like from the outside.
   `proposal.expired`, and the worker's expiry sweep. T32.
 - `registerMcpTools`, for a module's read and write tools on this surface.
 
-**Specified, not built:** the other panels, notifications and alert rules (T35).
+**Built in 0.35.0** — notifications and alert rules, as above:
+
+- `notifications` and `alert_rules` (migration 0040), under row-level security,
+  holding user ids and never an address.
+- `send_notification`, `create_alert_rule` and `remove_alert_rule`, each a
+  proposal, and `list_alert_rules` — offered only where a relay is configured.
+- The worker's evaluator and sender, every thirty seconds, at most once, and
+  `notification.sent` for each message whatever became of it. T35.
+- The `oauth.consent` event records which surface a connection is for, which the
+  `admin_connection` rule reads.
+
+**Specified, not built:** the other panels.

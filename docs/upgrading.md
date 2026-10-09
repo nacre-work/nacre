@@ -285,6 +285,29 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.35.0 — notifications and alert rules on the administrative MCP
+
+**Migration 0040, and nothing new to configure.** It adds `notifications`, an
+outbox, and `alert_rules`, and gives the worker read access to skill versions
+and OAuth connections, which a rule asks about. Both tables hold user ids and
+never an address.
+
+**The relay reaches the worker now**, because the worker is what sends. Under
+Compose it already did — `.env` is read by every application service. The chart
+gives the worker `NACRE_SMTP_URL` and `NACRE_MAIL_FROM` from the same `mail.*`
+values as the API, and gives the MCP transport `NACRE_MAIL_FROM` alone, which is
+how it knows to offer the tools; the relay's password stays out of that pod.
+**Under `networkPolicy.strict`, add the relay to the worker's egress** as it is
+already in the API's: without it a notification is retried, then recorded as
+failed in the access log, and nothing else says so.
+
+An installation **without** a relay changes nothing: the four tools are not
+offered, the worker sends nothing, and no rule exists to evaluate.
+
+`oauth.consent` events carry `surface` from this release on. Older ones do not,
+so an `admin_connection` rule reads approvals made after the upgrade — which is
+the only window a rule created after it looks at anyway.
+
 ### 0.34.0 — the administrative MCP writes, as proposals a person applies
 
 **Migration 0039, and nothing to configure.** It adds `admin_proposals` — a

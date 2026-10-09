@@ -332,8 +332,12 @@ and to both MCP resources, with tokens minted by the function the API mints
 with. T32 runs in `admin-proposals.test.ts`, against a real PostgreSQL and
 over the administrative MCP's own transport: a write called and never applied
 changes nothing, expires, and is recorded — and a proposal applied from another
-connection, another person, after expiry or twice is the same refusal. T35 waits
-for notifications, which are specified and not built. `test-plan.ts` says which.
+connection, another person, after expiry or twice is the same refusal. T35 runs
+in `notifications.test.ts`, over the same transport and database with the
+worker's own passes and a mailer that records what it was handed: refused before
+anything is stored, refused again at apply for somebody disabled since, and a
+row written straight into the outbox naming somebody in another organization
+reaching nobody. `test-plan.ts` says which.
 
 T39 is the injection case. A layer's skill is written by that layer's
 administrator, and the administrative surface acts for an `org_admin` — so a

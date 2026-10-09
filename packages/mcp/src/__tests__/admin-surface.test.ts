@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { ADMIN_PROMPTS } from '../admin.js'
 import { ADMIN_INSTRUCTIONS } from '../admin-instructions.js'
-import { coreAdminWrites } from '@nacre.work/api'
+import { coreAdminWrites, notificationTools } from '@nacre.work/api'
 import type { Pool } from 'pg'
 
 import { ADMIN_CATALOG, DECIDE_CATALOG, writeDefinition } from '../admin-tools.js'
@@ -30,6 +30,9 @@ const CORE_WRITES = coreAdminWrites({
   skills: {} as never,
   consents: {} as never,
 })
+
+/** The notification tools, offered where a relay is configured — and named in the guide either way. */
+const NOTIFY_TOOLS = notificationTools({ audit: { write: async () => undefined }, names: {} as never, notifications: {} as never })
 import { createMcpServer } from '../server.js'
 
 /**
@@ -111,7 +114,7 @@ async function connect(calls: string[] = []): Promise<Client> {
 
 describe('the administrative guide', () => {
   it('names every tool in the catalog — reads, writes and the panel’s buttons — and every prompt', () => {
-    for (const tool of [...ADMIN_CATALOG, ...CORE_WRITES, ...DECIDE_CATALOG]) {
+    for (const tool of [...ADMIN_CATALOG, ...CORE_WRITES, ...NOTIFY_TOOLS, ...DECIDE_CATALOG]) {
       expect(ADMIN_INSTRUCTIONS, `the guide never mentions ${tool.name}`).toContain(`\`${tool.name}\``)
     }
     for (const prompt of ADMIN_PROMPTS) {

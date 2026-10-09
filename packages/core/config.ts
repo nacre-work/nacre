@@ -529,6 +529,20 @@ function loadEd25519(ref: string, variable: string): { private: KeyObject; publi
  * on demand.
  */
 /**
+ * Whether the installation has a mail relay, for a process that never sends.
+ *
+ * The MCP transport offers the notification tools only where something will
+ * send what they queue — and the worker is what sends, so the transport needs
+ * the fact and not the relay's credential. `NACRE_MAIL_FROM` is the half of the
+ * pair that is not a secret: the chart hands the transport that one alone, and
+ * the API, which reads both through `loadMailConfig`, refuses to start with one
+ * and not the other, so a deployment cannot have the address and no relay.
+ */
+export function mailConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.NACRE_MAIL_FROM ?? '') !== ''
+}
+
+/**
  * The installation's sender, or none.
  *
  * All or nothing, validated as a group the way `NACRE_S3_*` is: a URL with no

@@ -546,10 +546,11 @@ then have no way to configure them. `extraEnv` is a raw list of env entries, so
 {{- end -}}
 
 {{/*
-The second factor's sealing key, and the mail relay. Both are the **API's
+The second factor's sealing key, and the mail relay. The key is the **API's
 alone**: the MCP transport verifies tokens and issues none, and the worker signs
 nothing, so a key on either would be a secret sitting in a pod that never reads
-it. Both are optional, and unset is a supported deployment rather than a
+it. The relay was the API's alone too, until the worker began sending — see
+`nacre.mailPresenceEnv` below. Both are optional, and unset is a supported deployment rather than a
 degraded one — the mail surfaces answer 404 and sign-in is what it was.
 
 **Since core 0.19.0 that sentence stops short of the second factor.** TOTP needs
@@ -582,6 +583,21 @@ among them — there is no secret of its holder's here to hand over.
     secretKeyRef:
       name: {{ .Values.mail.existingSecret }}
       key: {{ .Values.mail.urlSecretKey }}
+- name: NACRE_MAIL_FROM
+  value: {{ .Values.mail.from | quote }}
+{{- end }}
+{{- end -}}
+
+{{/*
+**Since 0.35.0 the relay is the worker's as well as the API's**, and the
+transport gets the fact of one without it. The worker sends what the
+administrative MCP's notification tools and an organization's alert rules
+queue, so it needs the relay; the transport only decides whether to offer
+those tools, so it gets `NACRE_MAIL_FROM` — the half of the pair that is not a
+secret — and the relay password stays out of a pod that never sends.
+*/}}
+{{- define "nacre.mailPresenceEnv" -}}
+{{- if .Values.mail.existingSecret }}
 - name: NACRE_MAIL_FROM
   value: {{ .Values.mail.from | quote }}
 {{- end }}

@@ -19,6 +19,7 @@ import {
 } from '@nacre.work/api'
 import {
   createPool,
+  mailConfigured,
   parseFilters,
   parseMetadata,
   readSkillZip,
@@ -732,6 +733,9 @@ export function buildServices(
       audit,
       vectors,
       consoleUrl: config.consentUrl,
+      // The fact and not the relay: the worker sends, this process proposes,
+      // and the relay's credential has no business here.
+      notifications: mailConfigured(),
       ...(principalsCache === undefined ? {} : { principalsCache }),
     }),
     verification: postgresVerification(pool, APP_ROLE),
