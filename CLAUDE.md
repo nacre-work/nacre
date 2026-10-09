@@ -3516,6 +3516,16 @@ administrative connection already approved, for one button; the panel says
 which failures will not recover instead, and the guide and the `layer-health`
 prompt stopped claiming a retry on a Layers screen that never had one.
 
+**And the default skill contradicted itself on the one write it cares most
+about.** Asked as an agent would ask it, against the stand: step 2 says to
+update a document that exists rather than add a second, step 4 says to derive
+the `external_id` from the subject — and a search hit carries a `doc_id` and no
+`external_id`, so an agent obeying both re-sends the stand's `on-call.md` as
+`engineering/on-call` and the layer has two. The guide now says where a hit's
+`external_id` comes from (`get_document`), and step 4 is for a new document.
+The plain-words and exact-term searches the skill asks for were worth keeping:
+the first ranked `onboarding.md` above `on-call.md` and the second put it first.
+
 **Where to connect is on a screen**, which was asked for in those words. The MCP
 endpoint and the REST base lived in `docs/quickstart.md` and in an operator's
 `.env`, so a person handed a login had to ask somebody for an address the server

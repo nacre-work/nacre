@@ -72,7 +72,9 @@ layer is that limit too — not an error to work around.
   bytes to the URL it returns; never retype a file into a tool argument.
   \`upload_file\`, where offered, opens a panel where the person picks the file.
 - An \`external_id\` is the document's identity in its layer: sending the same
-  one again replaces that document, and a new one adds a second document.
+  one again replaces that document, and a new one adds a second document. A
+  search hit names its \`doc_id\`; \`get_document\` gives its \`external_id\`,
+  which is what you send to update it.
 - An ingest answers \`queued\`, which is not success. Call \`ingest_status\` with
   the job_id until it says \`indexed\`; \`failed\` carries a reason that says
   whether sending again would help.

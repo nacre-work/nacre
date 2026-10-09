@@ -298,6 +298,11 @@ An administrative connection approved before this release is offered
 may do changed. The Connections panel's Revoke is the existing
 `revoke_connection` proposal, applied by the person like any other.
 
+The built-in guide and the default skill change by two sentences, so an agent
+updating a document it found sends that document's own `external_id` rather
+than inventing one. An organization that wrote its own skill keeps it; the guide
+reaches everybody.
+
 ### 0.35.0 — notifications and alert rules on the administrative MCP
 
 **Migration 0040, and nothing new to configure.** It adds `notifications`, an

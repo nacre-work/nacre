@@ -62,12 +62,13 @@ If you are unsure whether something is a secret, treat it as one.
 1. **Pick the layer by its purpose**, and read that layer's skill first. If no
    layer fits, say so instead of putting it somewhere it does not belong.
 2. **Search first.** If a document on the subject exists, update it rather
-   than adding a second one.
+   than adding a second one — under its own \`external_id\`, whatever it is.
 3. **One subject per document**, written so a reader with no context
    understands it: a clear title, a one-line summary at the top, then the
    detail.
-4. **A readable \`external_id\` derived from the subject**, not from the date —
-   such as \`deploy/rotate-signing-key\` — so the next update finds it.
+4. **For a new document, a readable \`external_id\` derived from the subject**,
+   not from the date — such as \`deploy/rotate-signing-key\` — so the next
+   update finds it.
 5. **Tags in \`metadata\`**: lower-case keys, simple values. Use the keys a
    layer's skill names; otherwise \`type\` and \`updated\` (YYYY-MM-DD).
 6. **Check that it arrived** before saying it is stored.
