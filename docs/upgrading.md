@@ -278,6 +278,40 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.29.0 — skills: an agent that connects already knows how to work here
+
+**Migration 0036**, run by the migrator as usual: two tables, `skill_versions`
+(per organization, with the usual row-level security) and
+`installation_skill_versions` (no organization, so no policy), both `INSERT` and
+`SELECT` to `nacre_app` and nothing else — a version is a record of what agents
+were told and is never rewritten. No existing table changes, and 0.28.1 runs
+unchanged against the migrated database, so rolling back is safe; it simply
+stops serving skills.
+
+**Nothing to configure.** An installation nobody has configured hands every
+agent the default skill shipped in the image — how to search, what never goes
+into the index, how to name and tag a document, and that `queued` is not
+`indexed` — in `instructions`, after the built-in text. To change what agents
+are told:
+
+- the **installation's** skill, for every organization that has not set its
+  own: a platform administrator, `PUT /v1/skills/installation`, never over MCP;
+- an **organization's**, which replaces it: an organization administrator,
+  `PUT /v1/skills/organization`;
+- a **layer's**, which is added to whichever applies: `admin` on the layer,
+  `PUT /v1/skills/layers/{id}` or the `update_skill` tool.
+
+Each takes the folder as JSON or as the `.zip` Claude exports, names the version
+it was based on (`0` the first time), and is a new version that
+`POST …/versions/{n}/restore` can go back from. `docs/skills.md` has the rules.
+
+**`instructions` are per organization now**, so `initialize` and
+`server/discover` are cached `private` rather than `public`. A cache in front of
+the MCP transport that kept `server/discover` across callers must stop doing
+so, or one tenant's skill reaches another. Three tools join the catalog —
+`list_skills`, `get_skill`, `update_skill` — and `list_layers` says per layer
+whether it has a skill.
+
 ### 0.28.1 — a Docker Hub mirror, and the layers view's More button
 
 Nothing to do. The four images are now also pushed to Docker Hub as

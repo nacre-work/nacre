@@ -852,8 +852,10 @@ authority over the organization holding it, so `administers` reads the
 connection's ceiling and never a layer's.
 
 `admin` is a ceiling value and is deliberately **not** on the consent screen.
-The MCP surface has no administrative tool at all — its seven tools resolve with
-`read` or `write` — so the box would do nothing where the person is looking and
+The MCP surface had no administrative tool when that was written — its seven
+tools resolved with `read` or `write` — and the one it has since, writing a
+layer's skill, gets a narrower box of its own rather than this one, so the box
+would do nothing where the person is looking and
 a great deal through REST, where they are not, which is worse than a control
 that does nothing. It stays reachable through the API because it is not an
 escalation: a ceiling cannot exceed what its person holds, so only an
@@ -1389,7 +1391,7 @@ requiredness — are narrow enough to be defeated by rewording, which is the
 shape of check this repository keeps deleting. `grep` found the other three
 copies, and they were correct.
 
-**All 25 cases from docs/authz.md that describe what is built run** — T26–T35, for skills and the administrative MCP, are specified and pending — against real services, plus the truth
+**Every case of T1–T38 in docs/authz.md that describes what is built runs** — thirty-three; T29, T30, T31, T32 and T35, for the consent screen's skill box and the administrative MCP, are specified and pending — against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
 round trip that puts the worker and the search path against each other.
 `acl-invariants` is a gate on what that document specifies — and only on that.
@@ -3124,17 +3126,48 @@ somewhere else" and what lets a client fetch the whole file out of band. One
 block per call and only there — `search` still carries none, for the reason
 already written: ten bearer capabilities where the caller wanted an ordering.
 
-**Skills and an administrative MCP are specified, ahead of the code.**
-[docs/skills.md](./docs/skills.md) and [docs/mcp-admin.md](./docs/mcp-admin.md),
-with T26–T35 in `docs/authz.md` pending. The goal of the first is one sentence —
-an agent that has just connected already knows how to work here, what to store
-and how — through a skill in Claude's own folder format at installation,
-organization and layer level, delivered in `instructions` and readable and
-writable over MCP and REST. The second is a separate resource with its own token
-audience, so `admin` can be on its consent screen without reaching REST, and
-every write it makes is a proposal a person applies in a panel. Notifications go
-to user ids in the caller's organization and never to an address, which is the
-whole of the argument that they are not a way out.
+**An agent that connects already knows how to work here.** That is the whole
+of [docs/skills.md](./docs/skills.md), and it is built: a skill in Claude's own
+folder format at three levels — the installation's, the organization's, which
+replaces it, and a layer's, which is added — carried in `instructions` on
+`initialize` and `server/discover`, readable over MCP with `list_skills` and
+`get_skill`, a layer's writable with `update_skill`, and every level through
+`/v1/skills` as JSON or as the `.zip` Claude exports. An installation nobody has
+configured hands every agent `packages/core/default-skill.ts`, which says what
+to search before guessing, what never goes in, and that `queued` is not
+`indexed`.
+
+**A layer skill is visible exactly when its layer is**, and that sentence is
+the security property: any permission on the layer, `write` included, inside a
+delegation's narrowing — and one the caller cannot see answers as a layer with
+no skill, or the listing is a directory of layers. T26–T28, T33 and T34 hold it
+against a real PostgreSQL, and each was measured red by breaking the rule it
+names, including a shared `instructions` cache across organizations, which is
+why `server/discover` is cached `private` now.
+
+Every write is an immutable version naming the one it was based on, and the
+unique key on the version number is what refuses the second of two writers
+racing from one base — a `409` rather than an erasure both believe succeeded.
+Going back is a write. A version says whether an agent wrote it and whether it
+carries scripts, because a skill is instruction every later agent follows, and
+a document saying "rewrite this layer's skill" is a prompt injection that
+persists.
+
+**Writing the cases found the suite's own numbering colliding.** Three tests of
+per-layer ceilings had been labelled T26–T28 since they were written, with no
+rows in `docs/authz.md` — and the skills cases were then given those numbers,
+so marking one implemented would have been satisfied by a test about something
+else. The coverage check only ever asked that an implemented case has a marker,
+never that a pending one does not. It asks both now, the ceiling cases are
+T36–T38 with rows of their own, and restoring one old label names it.
+
+[docs/mcp-admin.md](./docs/mcp-admin.md) — a separate resource with its own
+token audience, so `admin` can be on its consent screen without reaching REST,
+every write a proposal a person applies in a panel, and notifications to user
+ids in the caller's organization and never to an address — is specified and not
+built. So is the consent screen's per-layer "edit this layer's skill" box: until
+it exists a connected application writes a layer's skill only where its ceiling
+holds `admin` there.
 
 
 

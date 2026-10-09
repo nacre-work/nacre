@@ -226,9 +226,10 @@ export async function consentView(root: HTMLElement): Promise<void> {
 
     // No `admin` box, and that is about *this screen* rather than about the
     // mechanism. The person arriving here was sent by an MCP client, and the
-    // MCP surface has no administrative tool at all — its five tools resolve
-    // with read or write — so the box would do nothing where they are looking
-    // and something considerable through the REST API, where they are not.
+    // MCP surface's one tool that resolves `admin` writes a layer's skill, and
+    // that has its own box in docs/skills.md — so `admin` itself would do
+    // little where they are looking and something considerable through the
+    // REST API, where they are not.
     //
     // The ceiling still admits it and `POST /v1/oauth/consent` still takes it,
     // for an `org_admin` who deliberately wants an administrative delegation:

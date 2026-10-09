@@ -315,11 +315,16 @@ both of the ways this document already guards against, plus one that is its own.
 | T23 | A delegation with ceiling `{read}`, whose person holds `write` on the layer | reads; every write path answers as it would for a principal with no write at all |
 | T24 | A delegation with ceiling `{write}`, whose person holds both | ingests; search returns empty — rule 6 inherited, not collapsed |
 | T25 | An `org_admin` delegates with ceiling `{read}` | reads the whole organization, and every `org_admin`-gated endpoint refuses |
+| T36 | A delegation whose narrowing gives layer L `{read}` and layer M `{write}`, whose person holds both on both | reads L and not M, writes M and not L, and the search clause carries L alone |
+| T37 | A layer in the narrowing with no ceiling of its own | inherits the connection's ceiling |
+| T38 | `admin` in one layer's ceiling, under a connection ceiling of `{admin}`, for a person who is a `member` | reaches the layer and administers nothing — a layer's `admin` never confers the organization's |
 
 ### Skills and the administrative surface
 
-Specified in [skills.md](./skills.md) and [mcp-admin.md](./mcp-admin.md), not
-built; every case below is pending in `test-plan.ts` until it is.
+Specified in [skills.md](./skills.md) and [mcp-admin.md](./mcp-admin.md).
+T26–T28, T33 and T34 run against a real PostgreSQL in `skills.test.ts`; T29 and
+T30 wait for the consent screen's per-layer `skill` box, and T31, T32 and T35
+for the administrative MCP. `test-plan.ts` says which.
 
 | # | Scenario | Expected |
 |---|---|---|
@@ -337,6 +342,12 @@ built; every case below is pending in `test-plan.ts` until it is.
 T31 is the one the whole administrative surface rests on. One audience for both
 surfaces would put `admin` in a token that REST accepts, which is exactly why the
 ordinary consent screen does not offer it.
+
+T36–T38 are numbered after the skills cases because they ran in the suite
+before this table had rows for them, under the labels T26–T28 — the numbers the
+skills cases were then given, so a skills case would have been satisfied by a
+test about per-layer ceilings. The coverage suite now refuses a pending case
+whose marker any test carries.
 
 T25 is the one that is easy to get half right. A ceiling that bounds documents
 and not administration produces a read-only delegation that can mint a service
@@ -584,10 +595,11 @@ default is everything is a consent screen nobody reads, and a person connecting
 an MCP client means "let it search".
 
 **`admin` is a real ceiling value and is not on that screen**, which is a
-statement about the screen rather than about the mechanism. The MCP surface has
-no administrative tool — its tools resolve with `read` or `write` — so the
-choice would do nothing where the person is looking and a great deal through the
-REST API, where they are not. That is worse than a control that does nothing.
+statement about the screen rather than about the mechanism. The MCP surface's
+one administrative tool writes a layer's skill, and that is offered by a
+narrower box of its own — see [skills.md](./skills.md) — so `admin` here would
+do nothing more where the person is looking and a great deal through the REST
+API, where they are not. That is worse than a control that does nothing.
 
 It stays in the ceiling because it is not an escalation. A ceiling cannot exceed
 what its person already holds, so only an `org_admin` can obtain an
