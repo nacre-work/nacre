@@ -5,6 +5,11 @@ node placement are values with empty defaults, so it renders the same on kind,
 k3s, EKS, GKE and AKS.
 
 ```bash
+# Every release from 0.29.3 carries the packaged chart, versioned with it
+V=0.29.3
+helm install nacre "https://github.com/nacre-work/nacre/releases/download/v$V/nacre-$V.tgz" -f my-values.yaml
+
+# or from a checkout of the release's tag
 helm install nacre ./deploy/helm/nacre -f my-values.yaml
 ```
 

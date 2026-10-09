@@ -12,8 +12,8 @@ type: application
 # same diff as the code it deploys, and `scripts/check-chart-version.mjs` holds
 # both lines equal to `packages/core/package.json`, so a release that bumps the
 # manifests and not this file fails on its pull request.
-version: 0.29.2
-appVersion: "0.29.2"
+version: 0.29.3
+appVersion: "0.29.3"
 
 keywords: [rag, permissions, access-control, vector-search, self-hosted, mcp]
 home: https://nacre.work

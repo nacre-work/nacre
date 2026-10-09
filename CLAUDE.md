@@ -3214,7 +3214,10 @@ charts" named nothing anybody was ever sold. So it is Apache 2.0 under
 `deploy/helm`, its `version` and `appVersion` are the release's and
 `lint:chart-version` holds them to the manifests, and the other three checks it
 carried read the adapter and the templates in this tree instead of over the
-network. The migrations Job now applies the migrator of each module named in
+network, and every release attaches the packaged chart, so `helm install` takes
+one URL per version — `docs/upgrading.md` had told operators to `helm upgrade
+nacre nacre/nacre` for the chart's whole life, from a chart repository that
+never existed. The migrations Job now applies the migrator of each module named in
 `modules` rather than globbing a private package family's names, which put the
 commercial scope into the open chart and applied tables for modules nobody
 loads. The four runbooks that are about operating the product came with it,
