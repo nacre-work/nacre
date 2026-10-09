@@ -1391,7 +1391,7 @@ requiredness — are narrow enough to be defeated by rewording, which is the
 shape of check this repository keeps deleting. `grep` found the other three
 copies, and they were correct.
 
-**Every case of T1–T38 in docs/authz.md that describes what is built runs** — thirty-three; T29, T30, T31, T32 and T35, for the consent screen's skill box and the administrative MCP, are specified and pending — against real services, plus the truth
+**Every case of T1–T39 in docs/authz.md that describes what is built runs** — thirty-three; T29, T30, T31, T32, T35 and T39, for the consent screen's skill box and the administrative MCP, are specified and pending — against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
 round trip that puts the worker and the search path against each other.
 `acl-invariants` is a gate on what that document specifies — and only on that.
@@ -3165,7 +3165,11 @@ T36–T38 with rows of their own, and restoring one old label names it.
 token audience, so `admin` can be on its consent screen without reaching REST,
 every write a proposal a person applies in a panel, and notifications to user
 ids in the caller's organization and never to an address — is specified and not
-built. So is the consent screen's per-layer "edit this layer's skill" box: until
+built. It follows **no skill**: its `instructions` carry its own text alone, and a
+skill its tools read comes back marked as text under review, because a layer's
+skill is written by somebody with less authority than the `org_admin` that
+surface acts for, and following one there would be an escalation written in
+prose. T39 holds it, pending with the surface. So is the consent screen's per-layer "edit this layer's skill" box: until
 it exists a connected application writes a layer's skill only where its ceiling
 holds `admin` there.
 

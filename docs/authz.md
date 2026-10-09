@@ -322,9 +322,14 @@ both of the ways this document already guards against, plus one that is its own.
 ### Skills and the administrative surface
 
 Specified in [skills.md](./skills.md) and [mcp-admin.md](./mcp-admin.md).
-T26–T28, T33 and T34 run against a real PostgreSQL in `skills.test.ts`; T29 and
-T30 wait for the consent screen's per-layer `skill` box, and T31, T32 and T35
-for the administrative MCP. `test-plan.ts` says which.
+T26, T27, T28, T33 and T34 run against a real PostgreSQL in `skills.test.ts`;
+T29 and T30 wait for the consent screen's per-layer `skill` box, and T31, T32,
+T35 and T39 for the administrative MCP. `test-plan.ts` says which.
+
+T39 is the injection case. A layer's skill is written by that layer's
+administrator, and the administrative surface acts for an `org_admin` — so a
+layer skill followed there would let the lower authority instruct the higher
+one.
 
 | # | Scenario | Expected |
 |---|---|---|
@@ -338,6 +343,7 @@ for the administrative MCP. `test-plan.ts` says which.
 | T33 | A `platform_admin` and an organization's skill | never read; the installation skill written only by that role, and refused to an `org_admin` |
 | T34 | An organization's skill and a caller from another organization | never listed, fetched or applied to that caller's `instructions` |
 | T35 | A notification addressed to anything but an active user of the caller's organization | refused before a message is composed |
+| T39 | A layer skill whose text asks for a grant, and an `org_admin`'s connection to the administrative surface | the surface's `instructions` carry no skill of any level, and the skill read through its tools comes back marked as text under review — never as guidance |
 
 T31 is the one the whole administrative surface rests on. One audience for both
 surfaces would put `admin` in a token that REST accepts, which is exactly why the

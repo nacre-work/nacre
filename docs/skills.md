@@ -227,6 +227,12 @@ marker the console and the panel show.
   is said in words, because an agent told "not found" about its own arguments
   retries a call that can never succeed; a layer it cannot see is not found,
   like everything else.
+- **The administrative MCP follows no skill.** Its `instructions` carry its own
+  built-in text and no skill of any level, and a skill its tools read is returned
+  as text under review rather than as guidance: a layer's skill is written by
+  somebody with less authority than the `org_admin` that surface acts for, so
+  following one there would be an escalation through text. See
+  [mcp-admin.md](./mcp-admin.md).
 - **`list_layers`** carries, per layer, whether it has a skill and its
   `description`, so "read the layer's skill before writing" costs one call.
 - **The skill panel**, `ui://nacre/skill.html`, opened by `get_skill` and

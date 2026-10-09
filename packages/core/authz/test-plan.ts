@@ -1,5 +1,5 @@
 /**
- * The T1-T38 inventory from docs/authz.md section "Test plan".
+ * The T1-T39 inventory from docs/authz.md section "Test plan".
  *
  * This exists so the gap between "the suite the specification requires" and
  * "the suite that runs today" is a checked fact rather than a memory. A test
@@ -133,6 +133,11 @@ export const TEST_PLAN: readonly TestCase[] = [
     scenario: 'An organization\u2019s skill never reaches a caller from another organization, including through instructions' },
   { id: 'T35', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP is specified in docs/mcp-admin.md and not built yet',
     scenario: 'A notification to anything but an active user of the caller\u2019s organization is refused before composing' },
+  // A layer skill is written by a layer's administrator, who has less authority
+  // than the org_admin the administrative surface acts for — so a layer skill
+  // followed there is an escalation written in prose.
+  { id: 'T39', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP is specified in docs/mcp-admin.md and not built yet',
+    scenario: 'The administrative surface\u2019s instructions carry no skill, and a skill read through it is marked as text under review, never guidance' },
 ]
 
 export const pending = (): readonly TestCase[] =>
