@@ -23,9 +23,11 @@ export const STYLE = `
   th, td { text-align: left; padding: 6px 8px; vertical-align: top; border-bottom: 1px solid var(--color-border-primary, currentColor); }
   th { font-weight: 600; opacity: 0.8; }
   code { font: 12px/1.4 var(--font-mono, ui-monospace, monospace); word-break: break-all; }
+  /* A slug is one word: a uuid may break anywhere, a slug must not: engineeri/ng reads as two things. */
+  .slug { white-space: nowrap; word-break: normal; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
   .row > * { margin: 0; }
-  input[type=text], select { font: inherit; color: inherit; background: transparent; border: 1px solid var(--color-border-primary, currentColor); border-radius: 6px; padding: 6px 8px; min-height: 36px; }
+  input[type=text], input[list], select { font: inherit; color: inherit; background: transparent; border: 1px solid var(--color-border-primary, currentColor); border-radius: 6px; padding: 6px 8px; min-height: 36px; }
   input[type=text] { flex: 1 1 12em; }
   button { font: inherit; min-height: 36px; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--color-border-primary, currentColor); background: var(--color-background-secondary, transparent); color: inherit; cursor: pointer; touch-action: manipulation; }
   button:disabled { opacity: 0.5; cursor: default; }

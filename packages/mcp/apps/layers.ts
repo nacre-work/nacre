@@ -57,7 +57,7 @@ async function main(): Promise<void> {
           'tr',
           {},
           el('td', {}, layer.name),
-          el('td', {}, el('code', {}, layer.slug)),
+          el('td', {}, el('code', { class: 'slug' }, layer.slug)),
           el('td', {}, String(layer.documentCount)),
           el('td', { class: 'muted' }, layer.description),
         ),

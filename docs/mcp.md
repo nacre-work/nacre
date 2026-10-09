@@ -559,7 +559,7 @@ build time (`packages/mcp/apps/`, bundled by the package build).
 |---|---|---|
 | `ui://nacre/search.html` | `search` | every hit with its layer, document id and score — the permitted set, filtered inside the index — and a box to re-run a query through the host, against exactly the access the model has |
 | `ui://nacre/layers.html` | `list_layers` | the layers this principal may read, paged through the host |
-| `ui://nacre/upload.html` | `upload_file` | a layer picker and a file input; the bytes go to a ticket URL and never through the conversation |
+| `ui://nacre/upload.html` | `upload_file` | a layer field with the readable layers as suggestions, and a file input; the bytes go to a ticket URL and never through the conversation. A field rather than a list, because `list_layers` answers with what the caller may *read* and an ingest-only account holds `write` on a layer it cannot list |
 
 A view reaches the server **through the host** (`callServerTool`), so every
 permission check runs where it always runs and the view holds no credential.

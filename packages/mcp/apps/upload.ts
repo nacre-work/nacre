@@ -10,6 +10,13 @@
  * until the document is indexed or has failed. What the model learns is the
  * outcome, through `updateModelContext`: a document id, a job id, a status,
  * and never the file.
+ *
+ * The layer is a text field with the readable layers as suggestions, not a
+ * list to pick from. `list_layers` answers with what the caller may *read*,
+ * and rule 6 makes `write` a separate fact: an ingest-only account holds
+ * `write` on a layer it cannot list, and a `<select>` built from the listing
+ * offered that account nothing. The suggestions are a convenience; the name
+ * is the input, and the write is checked where it always is, on the ticket.
  */
 import { call, clear, connect, el, layers, mount, status, type LayerRow } from './shared.js'
 
@@ -40,23 +47,24 @@ async function main(): Promise<void> {
     render()
   }
 
-  const select = el('select', { 'aria-label': 'Layer' })
+  const select = el('input', { list: 'layers', type: 'text', 'aria-label': 'Layer', placeholder: 'layer slug', autocomplete: 'off', spellcheck: 'false' })
+  const suggestions = el('datalist', { id: 'layers' })
   const file = el('input', { type: 'file', 'aria-label': 'File' })
   const button = el('button', { type: 'button' }, 'Upload')
   const bar = el('progress', { hidden: '', max: '3', value: '0' })
-  let known: LayerRow[] = []
+  let known: LayerRow[]
 
   function render(): void {
     clear(root)
     root.append(
-      el('div', { class: 'row' }, el('label', {}, 'Layer ', select)),
+      el('div', { class: 'row' }, el('label', {}, 'Layer ', select), suggestions),
       el('div', { class: 'row' }, file, button),
       bar,
     )
-    if (preset !== undefined && known.some((l) => l.slug === preset)) select.value = preset
+    if (preset !== undefined) select.value = preset
   }
   render()
-  status(root, 'Loading the layers you may write to…')
+  status(root, 'Loading the layers you may read, as suggestions…')
 
   try {
     known = await layers(app)
@@ -64,21 +72,31 @@ async function main(): Promise<void> {
     status(root, `Could not list layers: ${String(error)}`, 'error')
     return
   }
-  clear(select)
+  clear(suggestions)
   for (const layer of known) {
-    select.append(el('option', { value: layer.slug }, `${layer.name} (${layer.slug})`))
+    suggestions.append(el('option', { value: layer.slug }, `${layer.name} (${layer.slug})`))
   }
   if (preset !== undefined) select.value = preset
-  status(root, known.length === 0 ? 'No layers are available to you.' : 'Pick a file.')
-  button.disabled = known.length === 0
+  else if (known.length === 1 && known[0] !== undefined) select.value = known[0].slug
+  status(
+    root,
+    known.length === 0
+      ? 'Type the slug of a layer you may write to, then pick a file. (You can read no layer, so none is suggested.)'
+      : 'Pick a file.',
+  )
 
   button.addEventListener('click', () => {
     const picked = file.files?.[0]
+    const layer = select.value.trim()
+    if (layer === '') {
+      status(root, 'Name the layer first.', 'error')
+      return
+    }
     if (picked === undefined) {
       status(root, 'Pick a file first.', 'error')
       return
     }
-    void upload(picked, select.value)
+    void upload(picked, layer)
   })
 
   async function upload(picked: File, layer: string): Promise<void> {

@@ -71,7 +71,7 @@ async function main(): Promise<void> {
         'tr',
         {},
         el('td', {}, hit.title ?? el('span', { class: 'muted' }, 'untitled')),
-        el('td', {}, el('code', {}, hit.layer)),
+        el('td', {}, el('code', { class: 'slug' }, hit.layer)),
         el('td', {}, el('code', {}, hit.doc_id)),
         el('td', {}, hit.score.toFixed(3)),
       )
