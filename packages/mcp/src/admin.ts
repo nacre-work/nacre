@@ -22,7 +22,7 @@ import { logger, McpToolRefusal, MetadataError } from '@nacre.work/core'
 import { ADMIN_INSTRUCTIONS } from './admin-instructions.js'
 import type { AdminRunner } from './admin-services.js'
 import { AdminResult } from './admin-tools.js'
-import { ToolArgumentError, viewHtml, type McpMetrics } from './factory.js'
+import { ToolArgumentError, viewHtml, type AdminView, type McpMetrics } from './factory.js'
 import { callToolError, callToolResult, DISCOVER_TTL_MS, TOOLS_TTL_MS } from './results.js'
 
 export interface AdminServerBuild {
@@ -42,6 +42,29 @@ export interface AdminServerBuild {
 
 /** The change panel. Served on this surface only; the ordinary one never lists it. */
 export const CHANGE_VIEW = 'ui://nacre/change.html'
+
+/**
+ * The reads that open a panel, and which. docs/mcp-admin.md, "Panels". A read
+ * not named here answers in text only. Each panel reaches the server through
+ * the host with the same token and the same checks as the model's call — what
+ * it adds is that a person can press an actor, page the log or revoke a
+ * connection without asking the model to.
+ */
+export const READ_PANELS: Readonly<Record<string, Exclude<AdminView, 'change'>>> = {
+  query_audit: 'audit',
+  list_connections: 'connections',
+  effective_access: 'access',
+  layer_status: 'layer',
+}
+
+const PANEL_DESCRIPTIONS: Readonly<Record<Exclude<AdminView, 'change'>, string>> = {
+  audit: 'The access log as rows, an actor pressed to narrow to them, paged.',
+  connections: 'Connected applications — who, as whom, with which ceiling — and a revoke the person applies.',
+  access: 'What one principal reaches, layer by layer, in the permission colours, with the grants that decide it.',
+  layer: "A layer's documents by status, recent failures with a retry the person applies, and a reindex's progress.",
+}
+
+export const panelUri = (view: AdminView): string => `ui://nacre/${view}.html`
 
 /** Tools and prompts, neither of which changes during a session. */
 export const ADMIN_CAPABILITIES = {
@@ -153,18 +176,17 @@ export const ADMIN_PROMPTS: readonly AdminPrompt[] = [
   {
     name: 'layer-health',
     title: 'Layer health',
-    description: 'Documents failed and why, pending work, the model and any reindex, and what a retry would change.',
+    description: 'Documents failed and why, pending work, the model and any reindex, and which failures come back by themselves.',
     arguments: { layer: { description: 'The layer, by slug.', required: true } },
     text: (args) => {
       const layer = args.layer ?? '(no layer given — ask for one)'
       return [
         `Report on the health of the layer ${layer}.`,
         '',
-        `1. list_layers: its document count, failed count and whether it carries a skill.`,
+        `1. layer_status with layer ${layer}: documents by status, the most recent failures with their reason and whether each comes back by itself, the model and any reindex.`,
         `2. summarize_audit by day with layer ${layer} over the last 14 days, then by result: is ingest arriving, and are errors growing.`,
-        `3. query_audit with layer ${layer} and result error for the most recent failures.`,
         '',
-        'Say how many documents failed and what the log shows about why. A transient failure is retried by the worker on its own; one that is not comes back with a retry on the Layers screen or the documents directory. Say which you think these are and why, and change nothing.',
+        'Say how many documents failed and why. A transient failure is retried by the worker on its own. One that is not needs its cause fixed — a quota raised, a model corrected — and then the document re-sent, or retried through the API by somebody who may write to the layer. This surface changes no documents, so do not offer to retry one from here. Say which these are and why, and change nothing.',
         '',
         INJECTION,
       ].join('\n')
@@ -212,9 +234,26 @@ export function buildAdminServer(build: AdminServerBuild): McpServer {
       // not to offer them to the model, and docs/mcp-admin.md says that is
       // what the guarantee rests on.
       registerAppTool(server, definition.name, { ...config, _meta: { ui: { resourceUri: CHANGE_VIEW, visibility: ['app'] } } }, callback)
+    } else if (READ_PANELS[definition.name] !== undefined) {
+      registerAppTool(server, definition.name, { ...config, _meta: { ui: { resourceUri: panelUri(READ_PANELS[definition.name] as AdminView) } } }, callback)
     } else {
       server.registerTool(definition.name, config, callback)
     }
+  }
+
+  for (const view of Object.keys(PANEL_DESCRIPTIONS) as Exclude<AdminView, 'change'>[]) {
+    registerAppResource(
+      server,
+      `Nacre ${view}`,
+      panelUri(view),
+      {
+        mimeType: RESOURCE_MIME_TYPE,
+        description: PANEL_DESCRIPTIONS[view],
+        // No network: every panel reaches the server through the host.
+        _meta: { ui: { csp: { connectDomains: [] } } },
+      },
+      async (uri) => ({ contents: [{ uri: uri.href, mimeType: RESOURCE_MIME_TYPE, text: await viewHtml(view) }] }),
+    )
   }
 
   registerAppResource(

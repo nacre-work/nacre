@@ -3498,6 +3498,24 @@ never sends. The mail renderer keeps a line break inside a paragraph now, in
 both parts; nothing it sent before had one, and a list of layers run into one
 line reads as a sentence that lost its punctuation.
 
+**The administrative MCP's reads open panels — 0.36.0.** The access log,
+connections, effective access and a new `layer_status` each render beside the
+answer in a client that draws MCP Apps: rows an actor's press narrows, a revoke,
+a layer × permission matrix in the permission colours, and a layer's failures
+with whether each comes back by itself. A press is the same proposal the model
+would make, applied with the panel's key — a panel adds no path that skips the
+person.
+
+**The Layer panel had a Retry, and it was taken out rather than shipped.** It
+proposed `retry_document` and its apply went through the connection the panel
+holds — and the administrative connection's ceiling is `read` and `admin`, set
+at consent with a comment saying why: this surface changes no documents. So the
+button would have been refused on every press, and the live case that applied
+it was the first thing to say so. Widening the ceiling would have widened every
+administrative connection already approved, for one button; the panel says
+which failures will not recover instead, and the guide and the `layer-health`
+prompt stopped claiming a retry on a Layers screen that never had one.
+
 **Where to connect is on a screen**, which was asked for in those words. The MCP
 endpoint and the REST base lived in `docs/quickstart.md` and in an operator's
 `.env`, so a person handed a login had to ask somebody for an address the server

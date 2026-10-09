@@ -77,6 +77,21 @@ follows no skill of any level.
   skill. \`list_connections\` shows connected applications, their ceilings and
   whether they are administrative, like this one.
 
+## A layer's health
+
+\`layer_status\` answers "why did documents fail in this layer": counts by
+status, the most recent failures with their reason, and whether each recovers by
+itself — the worker retries a transient failure on its own, so waiting is the
+answer there. For one that will not, say what caused it: a quota to raise, a
+model to correct. Once it is fixed, somebody who may write to the layer re-sends
+the document or retries it through the API — this surface changes no documents,
+so do not offer to retry one from here.
+
+Where the client shows panels, \`query_audit\`, \`list_connections\`,
+\`effective_access\` and \`layer_status\` open one beside their answer. The
+person can narrow, page and press Revoke there; a press is a proposal they
+apply, exactly as yours are.
+
 ## Reading the access log
 
 - Start with \`summarize_audit\` to find the shape — by actor, action, layer,

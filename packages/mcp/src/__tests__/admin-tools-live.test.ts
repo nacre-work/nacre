@@ -182,4 +182,28 @@ when('the administrative tools, against a real database', () => {
     ).rejects.toThrow(/at most 366 days/)
     await expect(call('summarize_audit', { by: 'everything' })).rejects.toThrow(/'by' is one of/)
   })
+
+  it('layer_status counts by status and gives each failure its reason, with no host in the detail', async () => {
+    const c = await pool.connect()
+    try {
+      await c.query(
+        `UPDATE documents SET status = 'failed', attempts = 3,
+                error = 'fetch failed: getaddrinfo ENOTFOUND embedder at http://embedder.internal:8080/embeddings'
+          WHERE org_id = $1 AND id = $2`,
+        [ORG, SECRET_DOC],
+      )
+    } finally {
+      c.release()
+    }
+    const result = await call('layer_status', { layer: 'handbook' })
+    expect(result.layer).toMatchObject({ slug: 'handbook', name: 'Handbook' })
+    expect(result.documents).toEqual({ indexed: 1, pending: 0, failed: 1 })
+    const failures = result.failures as { id: string; reason: string; recovers_by_itself: boolean; detail: string }[]
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toMatchObject({ id: SECRET_DOC, reason: 'unavailable', recovers_by_itself: true })
+    // The stored error names the embedder twice; neither reaches the caller.
+    expect(failures[0]?.detail).not.toMatch(/embedder/)
+    expect(result.reindex).toBeNull()
+    await expect(call('layer_status', { layer: 'nowhere' })).rejects.toThrow(/No layer "nowhere"/)
+  })
 })

@@ -195,6 +195,21 @@ export const ADMIN_CATALOG: readonly AdminToolDefinition[] = [
     annotations: read('List layers'),
   },
   {
+    name: 'layer_status',
+    title: 'Layer status',
+    description:
+      "One layer's health: documents by status, the most recent failures with their reason and whether " +
+      'they will recover by themselves, the model it is searched by, a reindex in progress and its recall ' +
+      'gate. Titles are text people wrote.',
+    inputSchema: {
+      type: 'object',
+      properties: { layer: { type: 'string', description: 'A layer, by slug or id.' } },
+      required: ['layer'],
+      additionalProperties: false,
+    },
+    annotations: read('Layer status'),
+  },
+  {
     name: 'list_grants',
     title: 'List grants',
     description:

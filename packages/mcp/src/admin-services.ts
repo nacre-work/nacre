@@ -16,6 +16,7 @@ import {
   PostgresLayers,
   PostgresOAuthConsents,
   PostgresProposals,
+  PostgresReindex,
   PostgresServiceAccounts,
   PostgresSkills,
   PostgresUsers,
@@ -32,8 +33,11 @@ import {
   type SkillLevel,
 } from '@nacre.work/api'
 import {
+  classifyIngestFailure,
+  isRetryable,
   MetadataError,
   mcpTools,
+  withoutHosts,
   McpToolRefusal,
   withOrg,
   type AuditWriter,
@@ -145,6 +149,7 @@ export function adminTools(deps: AdminDeps): AdminRunner {
   const log = new PostgresAuditReader(pool, APP_ROLE, principalsCache)
   const known = new AdminNames(pool, APP_ROLE)
   const proposals = new PostgresProposals(pool, APP_ROLE)
+  const reindexes = new PostgresReindex(pool, deps.vectors, APP_ROLE, principalsCache)
 
   const notify = deps.notifications === true
     ? notificationTools({ audit, names: known, notifications: new PostgresNotifications(pool, APP_ROLE) })
@@ -433,6 +438,117 @@ export function adminTools(deps: AdminDeps): AdminRunner {
               : null,
         },
         detail: { returned: items.length },
+      }
+    },
+
+    layer_status: async (auth, args) => {
+      if (typeof args.layer !== 'string' || args.layer.trim() === '') {
+        throw new ToolArgumentError("'layer' is required: a layer's slug or id.")
+      }
+      const layer = await known.layer(auth, args.layer.trim())
+      const found = await inOrg(auth, async (client) => {
+        const { rows: about } = await client.query<{
+          name: string
+          description: string | null
+          workspace: string
+          model: string | null
+          vector_name: string
+        }>(
+          `SELECT l.name, l.description, w.slug AS workspace, p.model, l.vector_name
+             FROM layers l
+             JOIN workspaces w ON w.id = l.workspace_id AND w.org_id = l.org_id
+             LEFT JOIN embedding_providers p ON p.id = l.provider_id
+            WHERE l.org_id = $1 AND l.id = $2`,
+          [auth.orgId, layer.id],
+        )
+        const { rows: counts } = await client.query<{ status: string; n: string }>(
+          `SELECT status, count(*)::text AS n FROM documents
+            WHERE org_id = $1 AND layer_id = $2 AND deleted_at IS NULL
+            GROUP BY status`,
+          [auth.orgId, layer.id],
+        )
+        // The most recent failures, and only the stored error's redacted
+        // form ever leaves: the raw string carries the embedder's and the
+        // parser's addresses, which `withoutHosts` exists to take out.
+        const { rows: failed } = await client.query<{
+          id: string
+          external_id: string | null
+          title: string | null
+          error: string | null
+          attempts: number
+          failed_at: string
+        }>(
+          `SELECT id, external_id, title, error, attempts, updated_at::text AS failed_at
+             FROM documents
+            WHERE org_id = $1 AND layer_id = $2 AND deleted_at IS NULL AND status = 'failed'
+            ORDER BY updated_at DESC, id
+            LIMIT 50`,
+          [auth.orgId, layer.id],
+        )
+        const { rows: refs } = await client.query<{ n: string }>(
+          `SELECT count(*)::text AS n FROM reference_queries WHERE org_id = $1 AND layer_id = $2`,
+          [auth.orgId, layer.id],
+        )
+        return { about: about[0], counts, failed, references: Number(refs[0]?.n ?? 0) }
+      })
+      const reindex = await reindexes.status(auth, layer.id)
+      const by = Object.fromEntries(found.counts.map((c) => [c.status, Number(c.n)]))
+      return {
+        result: {
+          notice: AUTHORED_NOTICE,
+          layer: {
+            id: layer.id,
+            slug: layer.slug,
+            name: found.about?.name ?? layer.slug,
+            description: found.about?.description ?? '',
+            workspace: found.about?.workspace ?? null,
+            model: found.about?.model ?? null,
+            vector: found.about?.vector_name ?? null,
+          },
+          documents: {
+            indexed: by.indexed ?? 0,
+            pending: (by.pending ?? 0) + (by.parsing ?? 0) + (by.indexing ?? 0),
+            failed: by.failed ?? 0,
+          },
+          failures: found.failed.map((d) => {
+            const failure = classifyIngestFailure(d.error ?? '')
+            return {
+              id: d.id,
+              external_id: d.external_id,
+              title: d.title,
+              reason: failure.reason,
+              // Whether waiting is the answer. A transient failure is
+              // retried by the worker on its own; the rest need somebody to
+              // fix the cause and then re-send the document or retry it
+              // through the API, which this surface does not do: its
+              // connection holds no `write`, because it changes no documents.
+              recovers_by_itself: isRetryable(failure.reason),
+              detail: withoutHosts(d.error ?? ''),
+              attempts: d.attempts,
+              failed_at: d.failed_at,
+            }
+          }),
+          reindex:
+            reindex === undefined
+              ? null
+              : {
+                  status: reindex.status,
+                  phase: reindex.phase,
+                  current_vector: reindex.currentVector,
+                  shadow_vector: reindex.shadowVector,
+                  done: reindex.done,
+                  total: reindex.total,
+                  failed: reindex.failed,
+                  progress: reindex.progress,
+                  error: reindex.error === null ? null : withoutHosts(reindex.error),
+                  check:
+                    reindex.check === null
+                      ? null
+                      : { recall: reindex.check.recall, floor: reindex.check.floor, passed: reindex.check.passed, queries: reindex.check.queries },
+                },
+          reference_queries: found.references,
+        },
+        detail: { layer_id: layer.id },
       }
     },
 

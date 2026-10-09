@@ -170,7 +170,15 @@ export const viewUri = (view: View): string => `ui://nacre/${view}.html`
  * working directory. Built by `scripts/build-apps.mjs`; a missing file is a
  * build that did not run, and says so.
  */
-export async function viewHtml(view: View | 'change'): Promise<string> {
+/**
+ * The administrative surface's views: the change panel every write opens, and
+ * the four a read opens. Served on `/mcp/admin` only; the ordinary surface
+ * lists none of them.
+ */
+export const ADMIN_VIEWS = ['change', 'audit', 'connections', 'access', 'layer'] as const
+export type AdminView = (typeof ADMIN_VIEWS)[number]
+
+export async function viewHtml(view: View | AdminView): Promise<string> {
   const at = new URL(`../apps/build/${view}.html`, import.meta.url)
   try {
     return await readFile(at, 'utf8')
