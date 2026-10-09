@@ -1393,7 +1393,7 @@ requiredness — are narrow enough to be defeated by rewording, which is the
 shape of check this repository keeps deleting. `grep` found the other three
 copies, and they were correct.
 
-**Every case of T1–T39 in docs/authz.md that describes what is built runs** — thirty-three; T29, T30, T31, T32, T35 and T39, for the consent screen's skill box and the administrative MCP, are specified and pending — against real services, plus the truth
+**Every case of T1–T40 in docs/authz.md that describes what is built runs** — thirty-six; T31, T32, T35 and T39, for the administrative MCP, are specified and pending — against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
 round trip that puts the worker and the search path against each other.
 `acl-invariants` is a gate on what that document specifies — and only on that.
@@ -3185,9 +3185,7 @@ built. It follows **no skill**: its `instructions` carry its own text alone, and
 skill its tools read comes back marked as text under review, because a layer's
 skill is written by somebody with less authority than the `org_admin` that
 surface acts for, and following one there would be an escalation written in
-prose. T39 holds it, pending with the surface. So is the consent screen's per-layer "edit this layer's skill" box: until
-it exists a connected application writes a layer's skill only where its ceiling
-holds `admin` there.
+prose. T39 holds it, pending with the surface.
 
 **A connected application is listed only what its ceiling admits.** A person who
 approved a read-only connection approved a search client, and that client was
@@ -3268,6 +3266,57 @@ the actor column shrink to one letter and printed `dana@exam` over `ple.com`.
 character as a place to shrink to. Hyphens, colons and `@` are left alone,
 because a slug wrapping at its hyphen is correct; the first version flagged
 those, and that is how this was settled.
+
+**The consent screen has its Edit skill box, and `skill` is read in one file.**
+A token from the consent flow reaches REST as well as MCP, so `admin` on that
+screen would hand an MCP client renaming, deletion and grants. The box stores
+`skill` in a layer's ceiling instead (migration 0037), and `skill-ceiling.ts` is
+the only code that gives it a meaning: `may_write_layer_skill` resolves the
+*person*'s `admin` and asks that file whether the ceiling on the layer holds
+`admin` or `skill`. `resolve` never sees the value — `ceilingOf` strips it — so a
+`{skill}` connection resolves to nothing for every verb, which T29 asserts
+against renaming, deleting and granting with the person's own success beside
+each as the control. `lint:skill-ceiling` refuses a second reader anywhere in the
+server's sources, and refuses when the one reader stops reading or stops being
+asked. Each property was measured: a ceiling clause that always admits, `skill`
+handed to the resolver as `admin`, and the person left unasked each turned their
+case red.
+
+The box appears only where the person administers the layer, which the screen
+could not know: `GET /v1/layers` carries `permissions` now, what this caller may
+do on each layer. A screen that guesses offers what the server refuses.
+
+**Writing it found the layer catalog leaking past a narrowing, on both
+surfaces.** The search path says in its own words that a delegation must not be
+a way to learn which layers its person reaches, and T20 says a narrowed
+delegation gets nothing from another layer — while `GET /v1/layers` and MCP's
+`list_layers` listed it every layer its person reads, with names and document
+counts. MCP's catalog was worse: it built its resolve input by hand with no
+ceiling at all, so a `{write}` connection was listed everything — the fourth
+copy of a resolve input that `ceilingOf`'s own comment said a compile error
+would catch, and nothing caught. It goes through `contextFor` now, as an
+exported `layerCatalog` the suite can ask directly, and T40 holds both surfaces.
+
+**And the connections listing had never matched its contract.** The server sent
+the narrowing as `{ id, permissions? }` from the day a layer could carry a
+ceiling, under a contract saying bare ids, and never sent the `permissions` it
+documented — so the SDK's `map(String)` turned every narrowed connection into
+`[object Object]` and every ceiling into "none", and nothing displayed either,
+which is why nothing noticed. The contract says what is sent, the SDK reads it,
+a case pins the shape and failed on the old mapping, and the Connections screen
+says under each application what it may do — the only place a person can check
+afterwards what they approved. The same pass found `failed_count` filed under
+`Document` in the contract; it is the layer's.
+
+**The screenshot pass photographed neither screen before**, and the consent
+screen sits outside the nav, where the guard that reads the active nav item has
+nothing to read. It asserts the heading for such a screen instead. The first
+render showed what no rule measures: ticking any per-layer box hid "It may", and
+the group after it lost its gap, because `.choice + .field-group` holds only
+while the group directly follows a choice and a `hidden` one is still the
+previous sibling. The note beside it had already learned that and grown a second
+arm. A nested group carries its own margin now, since sibling margins collapse,
+so the gap no longer depends on what precedes it.
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.

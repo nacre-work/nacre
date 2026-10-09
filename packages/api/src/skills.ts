@@ -19,8 +19,9 @@ import {
 import type { Pool, PoolClient } from 'pg'
 
 import { contextFor, type PrincipalsCache } from './adapters.js'
-import { administers, administersTenants, delegatedLayers, withinDelegation, type AuthContext } from './auth.js'
+import { administers, administersTenants, delegatedLayers, type AuthContext } from './auth.js'
 import { encodeCursor, type Page, type PageResult } from './pagination.js'
+import { skillCeilingAdmits, skillCeilingLayers } from './skill-ceiling.js'
 
 /** Which skill. The installation's belongs to no organization. */
 export type SkillLevel =
@@ -230,20 +231,77 @@ export class PostgresSkills implements Skills {
   }
 
   /**
-   * `may_write_layer_skill` in docs/skills.md: `admin` resolved on the layer,
-   * and for a delegation the layer inside its narrowing for `admin`.
+   * `admin` resolved for the **person**, without the token's ceiling.
    *
-   * The consent screen's per-layer `skill` box is the second clause of the
-   * specification's disjunction and arrives with it; until then a delegation
-   * writes a layer's skill only where its ceiling holds `admin` there, which
-   * the ordinary consent screen never sets.
+   * The first clause of `may_write_layer_skill` in docs/skills.md, and the one
+   * place a ceiling is deliberately left out of a resolve input. It is safe for
+   * exactly one reason: the second clause, `skillCeilingAdmits`, is asked beside
+   * it every time, and that clause *is* the ceiling for this one write — `admin`
+   * or `skill` in the layer's. A plan from here is never used for anything else.
+   */
+  private async personAdmin(
+    client: PoolClient,
+    auth: AuthContext,
+  ): Promise<ReturnType<ReturnType<typeof activeResolver>['resolve']>> {
+    const { ceiling, ...person } = await contextFor(client, auth, this.principalsCache)
+    void ceiling
+    return activeResolver().resolve(person, 'admin')
+  }
+
+  /**
+   * `may_write_layer_skill` in docs/skills.md: `admin` resolved on the layer for
+   * the person, and a ceiling on that layer holding `admin` or `skill`.
+   *
+   * `skill` confers nothing the person lacks, because the first clause asks the
+   * person; and nothing else, because nothing but `skill-ceiling.ts` reads it.
    */
   private async mayWriteLayer(client: PoolClient, auth: AuthContext, layerId: string): Promise<boolean> {
     if (administersTenants(auth)) return false
-    const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'admin')
-    if (plan.kind === 'none') return false
-    if (plan.kind === 'scoped' && !plan.layers.includes(layerId)) return false
-    return withinDelegation(auth, layerId, 'admin')
+    if (!skillCeilingAdmits(auth, layerId)) return false
+    const plan = await this.personAdmin(client, auth)
+    return plan.kind === 'all' || (plan.kind === 'scoped' && plan.layers.includes(layerId))
+  }
+
+  /**
+   * The live layers whose skill a **delegation** may write and could not
+   * otherwise see.
+   *
+   * A connection whose ceiling holds `skill` on a layer and nothing else there
+   * resolves to no `read` and no `write`, so `visibleLayers` does not reach the
+   * layer — and a skill it may write but cannot read is one it can never write,
+   * because a write names the version it was based on. So the layers it may
+   * write are visible to it as skills, and as nothing else: the catalog, the
+   * documents and the search are all `resolve`'s, which never sees `skill`.
+   *
+   * Empty for everything that is not a delegation, and that is rule 7 rather
+   * than an omission: `admin` implies `read`, so every layer whose skill such a
+   * caller may write is visible already.
+   */
+  private async skillWritable(client: PoolClient, auth: AuthContext): Promise<ReadonlySet<string>> {
+    if (auth.delegation === undefined || administersTenants(auth)) return new Set()
+    const admitted = skillCeilingLayers(auth)
+    if (admitted !== undefined && admitted.length === 0) return new Set()
+    const plan = await this.personAdmin(client, auth)
+    if (plan.kind === 'none') return new Set()
+    const reached =
+      plan.kind === 'all'
+        ? admitted
+        : admitted === undefined
+          ? plan.layers
+          : plan.layers.filter((id) => admitted.includes(id))
+    const { rows } = await client.query<{ id: string }>(
+      `SELECT id FROM layers
+        WHERE org_id = $1 AND deleted_at IS NULL AND ($2::uuid[] IS NULL OR id = ANY($2::uuid[]))`,
+      [auth.orgId, reached === undefined ? null : [...reached]],
+    )
+    return new Set(rows.map((r) => r.id))
+  }
+
+  /** Every live layer whose skill this caller may see: visible, or writable by its ceiling. */
+  private async reachableLayers(client: PoolClient, auth: AuthContext): Promise<ReadonlySet<string>> {
+    const visible = await this.visibleLayers(client, auth)
+    const writable = await this.skillWritable(client, auth)
+    return writable.size === 0 ? visible : new Set([...visible, ...writable])
   }
 
   private mayReadLevel = async (client: PoolClient, auth: AuthContext, level: SkillLevel): Promise<boolean> => {
@@ -255,7 +313,7 @@ export class PostgresSkills implements Skills {
       case 'organization':
         return !administersTenants(auth)
       case 'layer':
-        return (await this.visibleLayers(client, auth)).has(level.layerId)
+        return (await this.reachableLayers(client, auth)).has(level.layerId)
     }
   }
 
@@ -325,7 +383,7 @@ export class PostgresSkills implements Skills {
       this.pool,
       auth.orgId,
       async (client): Promise<PageResult<SkillEntry>> => {
-        const visible = await this.visibleLayers(client, auth)
+        const visible = await this.reachableLayers(client, auth)
         if (visible.size === 0) return { items: [], nextCursor: null }
         // The newest version per layer, and only layers whose newest is live:
         // a cleared layer skill is no layer skill. Seeking on the layer's own
@@ -375,7 +433,7 @@ export class PostgresSkills implements Skills {
         const id = rows[0]?.id
         if (id === undefined) return undefined
         // A slug the caller cannot see is a slug that is not there.
-        return (await this.visibleLayers(client, auth)).has(id) ? id : undefined
+        return (await this.reachableLayers(client, auth)).has(id) ? id : undefined
       },
       this.scope,
     )

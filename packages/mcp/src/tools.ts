@@ -55,10 +55,21 @@ export interface ToolDefinition {
   readonly inputSchema: Record<string, unknown>
   readonly annotations: ToolAnnotations
   readonly permission: ToolPermission
+  /**
+   * The ceiling value that offers this tool to a delegation, where it is not
+   * `permission` itself.
+   *
+   * One tool has one: `update_skill` resolves `admin` for the person and is
+   * offered to a connection whose ceiling holds `skill` — the consent screen's
+   * per-layer "edit this layer's skill" box — as well as one holding `admin`.
+   * Declared here rather than recognised by name in the catalog filter,
+   * because a filter that knows tool names is one the next tool forgets.
+   */
+  readonly ceiling?: 'skill'
 }
 
-/** A tool as MCP defines one: no `permission`, because that field is ours. */
-export type WireTool = Omit<ToolDefinition, 'permission'>
+/** A tool as MCP defines one: no `permission` or `ceiling`, because those fields are ours. */
+export type WireTool = Omit<ToolDefinition, 'permission' | 'ceiling'>
 
 /**
  * The catalog as it goes on the wire.
@@ -76,8 +87,9 @@ export type WireTool = Omit<ToolDefinition, 'permission'>
  * compares the shape.
  */
 export const onTheWire = (tools: readonly ToolDefinition[]): WireTool[] =>
-  tools.map(({ permission, ...tool }) => {
+  tools.map(({ permission, ceiling, ...tool }) => {
     void permission
+    void ceiling
     return tool
   })
 
@@ -535,6 +547,7 @@ export function catalog(
         'and merge. A SKILL.md with no body clears the skill. Needs admin on the layer. Every version is ' +
         'kept and can be rolled back.',
       permission: 'admin',
+      ceiling: 'skill',
       inputSchema: {
         type: 'object',
         properties: {

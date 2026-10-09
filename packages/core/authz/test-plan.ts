@@ -1,5 +1,5 @@
 /**
- * The T1-T39 inventory from docs/authz.md section "Test plan".
+ * The T1-T40 inventory from docs/authz.md section "Test plan".
  *
  * This exists so the gap between "the suite the specification requires" and
  * "the suite that runs today" is a checked fact rather than a memory. A test
@@ -119,9 +119,9 @@ export const TEST_PLAN: readonly TestCase[] = [
     scenario: 'A principal holding only write on a layer sees that layer\u2019s skill' },
   { id: 'T28', group: 'delegation', status: 'implemented',
     scenario: 'A delegation narrowed to L whose person reads L and M lists L\u2019s skill and never M\u2019s' },
-  { id: 'T29', group: 'delegation', status: 'pending', blockedBy: 'the consent screen\'s per-layer skill box — the `skill` ceiling value — is not built yet',
+  { id: 'T29', group: 'delegation', status: 'implemented',
     scenario: 'Without skill in L\u2019s ceiling a layer admin\u2019s delegation cannot write L\u2019s skill; with it, it can, and still cannot rename, delete or grant' },
-  { id: 'T30', group: 'delegation', status: 'pending', blockedBy: 'the consent screen\'s per-layer skill box — the `skill` ceiling value — is not built yet',
+  { id: 'T30', group: 'delegation', status: 'implemented',
     scenario: 'skill in L\u2019s ceiling while the person holds only write on L: the skill write is refused' },
   { id: 'T31', group: 'delegation', status: 'pending', blockedBy: 'the administrative MCP is specified in docs/mcp-admin.md and not built yet',
     scenario: 'An administrative-resource token is refused by the API and /mcp, and an ordinary token by /mcp/admin' },
@@ -133,6 +133,11 @@ export const TEST_PLAN: readonly TestCase[] = [
     scenario: 'An organization\u2019s skill never reaches a caller from another organization, including through instructions' },
   { id: 'T35', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP is specified in docs/mcp-admin.md and not built yet',
     scenario: 'A notification to anything but an active user of the caller\u2019s organization is refused before composing' },
+  // The catalog is permission data. A delegation narrowed to L used to be
+  // listed M — its name, description and document count — on both surfaces,
+  // and the MCP catalog built its resolve input by hand with no ceiling in it.
+  { id: 'T40', group: 'delegation', status: 'implemented',
+    scenario: 'The layer catalog, over REST and MCP alike, lists the narrowing and nothing past the ceiling' },
   // A layer skill is written by a layer's administrator, who has less authority
   // than the org_admin the administrative surface acts for — so a layer skill
   // followed there is an escalation written in prose.

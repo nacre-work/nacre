@@ -427,13 +427,57 @@ const FIXTURES = {
     next_cursor: null,
   },
   'GET /v1/layers': {
+    // `permissions` is what the server says this caller may do on each layer,
+    // and the consent screen offers "Edit skill" only where it says `admin`.
+    // The two differ on purpose, so the picture has a row with the box and a
+    // row without it — a fixture where every layer is administered is a
+    // column whose other state nothing photographs.
     items: [
       { id: LAYER, slug: 'handbook', name: 'Handbook', workspace_id: WORKSPACE,
-        description: 'Onboarding and policy', document_count: 12 },
+        description: 'Onboarding and policy', document_count: 12, failed_count: 0,
+        permissions: ['read', 'write', 'admin'] },
       { id: '5c2f8a41-0e63-4d29-b7a8-9f14e6b30c72', slug: 'contracts', name: 'Contracts',
-        workspace_id: WORKSPACE, description: 'Signed agreements', document_count: 34 },
+        workspace_id: WORKSPACE, description: 'Signed agreements', document_count: 34, failed_count: 0,
+        permissions: ['read'] },
     ],
     next_cursor: null,
+  },
+  /*
+   * Connected applications, in the shape the server sends since 0.31.0: the
+   * narrowing as `{ id, permissions? }` and the ceiling beside it. Three kinds,
+   * because each draws a different line under its name — narrowed per layer
+   * with the skill box ticked, a ceiling with no narrowing, and an agent, which
+   * has no line because its reach is its grants.
+   */
+  'GET /v1/oauth/consents': {
+    items: [
+      {
+        id: 'c7a1e5d2-3b84-4f60-9e17-5d2c8a0b4f61', client_id: 'claude', client_name: 'Claude',
+        acts_as: 'user', service_account_id: null, service_account_name: null,
+        approved_by: DANA, approved_by_email: 'dana@example.com', approver_disabled: false,
+        layers: [
+          { id: LAYER, permissions: ['read', 'skill'] },
+          { id: CONTRACTS, permissions: ['read'] },
+        ],
+        permissions: ['read', 'skill'],
+        created_at: '2026-03-12T10:20:00.000Z', last_refreshed_at: '2026-03-15T08:41:00.000Z', revoked_at: null,
+      },
+      {
+        id: 'e2f84c17-9a63-4d05-b1e8-7c3a5f0d2b96', client_id: 'cursor', client_name: 'Cursor',
+        acts_as: 'user', service_account_id: null, service_account_name: null,
+        approved_by: '4f2c8e61-7a95-4d13-9b60-2e8a5c0f7b34', approved_by_email: 'sam@example.com',
+        approver_disabled: false, layers: [], permissions: ['read'],
+        created_at: '2026-03-02T15:00:00.000Z', last_refreshed_at: '2026-03-14T17:12:00.000Z', revoked_at: null,
+      },
+      {
+        id: '81d0b6a3-5e29-4c7f-a0d4-6b2e9f3c1a58', client_id: 'indexer', client_name: 'Nightly indexer',
+        acts_as: 'service_account', service_account_id: 'a93c7e15-8d40-4b62-9f81-2c6a4e0b7d93',
+        service_account_name: 'nightly-indexer', approved_by: DANA, approved_by_email: 'dana@example.com',
+        approver_disabled: false, layers: [], permissions: [],
+        created_at: '2026-02-18T11:05:00.000Z', last_refreshed_at: null, revoked_at: null,
+      },
+    ],
+    access_token_ttl_seconds: 900,
   },
   'GET /v1/grants': {
     items: [
@@ -652,7 +696,7 @@ process.on('exit', reportFailures)
  */
 const NOW = new Date('2026-03-15T09:00:00Z')
 
-async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} } = {}) {
+async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {}, heading } = {}) {
   // Short viewport plus `fullPage`, so each image is exactly as tall as its
   // screen rather than carrying a band of empty background.
   const page = await browser.newPage({ viewport: { width: 1280, height: 640 }, deviceScaleFactor: 2 })
@@ -713,7 +757,17 @@ async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} }
   // first one it will show, so asking for a screen you are not allowed to see
   // silently photographs a different screen, over the file named after the
   // one you asked for. Nothing said so.
-  if (hash !== '') {
+  if (heading !== undefined) {
+    // A screen outside the nav — the consent screen is one, reached from an
+    // application's redirect and never from a link here — has no active nav
+    // item to read, so the guard below would throw on a picture that is
+    // right. The same question asked of what it draws instead: the heading
+    // that screen and no other renders. Thrown for the same reason.
+    const drawn = await page.evaluate(() => document.querySelector('main h1, h1')?.textContent ?? '')
+    if (drawn !== heading) {
+      throw new Error(`${name}: expected the screen headed "${heading}" and the console drew "${drawn}".`)
+    }
+  } else if (hash !== '') {
     // The **rendered** route, not `location.hash`. The router falls back to
     // the first screen the caller may use and deliberately leaves the address
     // alone — a member who follows a bookmark keeps their bookmark — so the
@@ -801,6 +855,7 @@ const MANY_LAYERS = Array.from({ length: 120 }, (_, i) => {
     workspace_id: WORKSPACE,
     description: i % 3 === 0 ? 'Runbooks and on-call notes' : 'Design documents',
     document_count: (i * 7) % 90,
+    permissions: ['read'],
   }
 })
 await shot('layers-paged', {
@@ -1169,6 +1224,25 @@ await shot('skills-member', {
 // The installation's level, which is the one a platform administrator writes
 // and the only one this screen shows them — rule 2 keeps every organization's
 // own skill out of their reach.
+// The consent screen, with the per-layer "Edit skill" box: offered on the
+// layer the caller administers (Handbook) and not on the one they only read.
+await shot('consent', {
+  hash: '#/consent?client_id=claude&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&state=s1',
+  heading: 'Give an application access',
+})
+// Ticked: read the handbook and edit its skill. The connection-wide group
+// steps aside, because a per-layer answer is the answer.
+await shot('consent-skill', {
+  hash: '#/consent?client_id=claude&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&state=s1',
+  heading: 'Give an application access',
+  prepare: async (page) => {
+    await page.getByLabel('Read Handbook').check()
+    await page.getByLabel('Edit the skill of Handbook').check()
+  },
+})
+// What each connection may do, said under its name.
+await shot('connections', { hash: '#/connections' })
+
 await shot('skills-platform-admin', {
   hash: '#/skills',
   fixtures: {

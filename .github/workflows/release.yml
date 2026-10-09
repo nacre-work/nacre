@@ -202,6 +202,7 @@ jobs:
       - run: pnpm lint:chart-image
       - run: pnpm lint:chart-vendors
       - run: pnpm lint:admin-gate
+      - run: pnpm lint:skill-ceiling
       - run: pnpm lint:admin-classes
       - run: pnpm lint:admin-layout
       - run: pnpm lint:tokens

@@ -76,6 +76,7 @@ export type {
   Layer,
   LayerInput,
   Permission,
+  CeilingValue,
   PrincipalType,
   RecallCheck,
   ReferenceQuery,

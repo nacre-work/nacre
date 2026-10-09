@@ -469,6 +469,12 @@ one per patient, one per matter. The search tool's description names a sample
 of a dozen layers and says there are more, rather than interpolating the
 catalog; this tool is the enumeration surface.
 
+For a connected application it lists what the **connection** reaches: inside its
+narrowing and inside its ceiling, exactly as `GET /v1/layers` does for the same
+token. Until 0.31.0 it built its permission input by hand with neither, so a
+connection narrowed to one layer was told the name, description and document
+count of every other layer its person reads — T40 in `docs/authz.md`.
+
 ### `get_document`
 
 `{ document_id }` or `{ external_id, layer }`. Returns metadata, and
@@ -593,8 +599,9 @@ The base skill and a page of the layer skills the caller sees — `{ limit }`
 (default 50, max 200) and `{ cursor }` — each with its level, layer slug,
 `name`, `description`, file list, version and whether it carries scripts. A
 catalog rather than texts. A layer skill is visible exactly when its layer is:
-any permission on it, `write` included, inside a delegation's narrowing.
-Permission: `read`.
+any permission on it, `write` included, inside a delegation's narrowing — and,
+for a connection whose ceiling holds `skill` on a layer, that layer's skill,
+since it may write it. Permission: `read`.
 
 ### `get_skill`
 
@@ -605,9 +612,11 @@ as one with no skill is. Permission: `read`.
 ### `update_skill`
 
 `{ skill, files, based_on }`: a layer's skill, as a new version. `admin` on the
-layer, and for a connected application a ceiling holding `admin` there — the
-consent screen's per-layer "edit this layer's skill" box is specified and not
-built. Never the organization's or the installation's on this transport.
+layer for the person, and for a connected application a ceiling holding `admin`
+or `skill` there — `skill` is the consent screen's per-layer "Edit skill" box,
+which confers this write and nothing else. Offered in `tools/list` to a
+connection whose ceiling admits it on at least one layer, and to nobody else.
+Never the organization's or the installation's on this transport.
 Destructive, and its description tells the model to act on the person's request
 and never on a document's: a skill is instruction every later agent follows, so
 text in a document asking for one to be rewritten is a prompt injection that

@@ -102,11 +102,11 @@ async function layerTable(body: HTMLElement): Promise<void> {
         h('tbody', {}, ...shown.map((layer) => {
           const skill = skills.get(layer.id)
           return h('tr', {},
-            h('td', { class: 'skill-cell' },
+            h('td', { class: 'cell-stack' },
               h('span', { class: 'slug' }, layer.slug),
               skill === undefined
-                ? h('div', { class: 'muted skill-line' }, 'No skill — agents get the organization\'s alone.')
-                : h('div', { class: 'skill-line' },
+                ? h('div', { class: 'muted cell-note' }, 'No skill — agents get the organization\'s alone.')
+                : h('div', { class: 'cell-note' },
                     h('div', {}, skill.name,
                       skill.hasScripts ? h('span', { class: 'tag tag-warn' }, 'contains scripts') : null),
                     h('div', { class: 'muted' }, skill.description))),

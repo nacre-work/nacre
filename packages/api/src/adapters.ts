@@ -86,7 +86,8 @@ import type {
   SearchOptions,
   SearchService,
 } from './server.js'
-import { administers, delegatedLayers, withinDelegation, type AuthContext } from './auth.js'
+import { administers, delegatedLayers, delegationPermits, withinDelegation, type AuthContext } from './auth.js'
+import { permissionsOf } from './skill-ceiling.js'
 
 /**
  * The adapters that put the permission model on the request path.
@@ -1715,7 +1716,12 @@ export async function contextFor(
  */
 function ceilingOf(auth: AuthContext): { ceiling?: readonly import('@nacre.work/core').Permission[] } {
   const ceiling = auth.delegation?.permissions
-  return ceiling === undefined ? {} : { ceiling }
+  // `skill` stripped, because it is not a permission and `resolve` must never
+  // be handed something it could mistake for one. A ceiling of `{skill}` alone
+  // becomes `[]` — every verb refused — which is what a connection that may
+  // only edit a layer's skill should get from every path but that one. See
+  // skill-ceiling.ts.
+  return ceiling === undefined ? {} : { ceiling: permissionsOf(ceiling) }
 }
 
 interface LayerRow {
@@ -1772,8 +1778,47 @@ export class PostgresLayers implements Layers {
       this.pool,
       auth.orgId,
       async (client) => {
-        const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'read')
+        const context = await contextFor(client, auth, this.principalsCache)
+        const resolver = activeResolver()
+        const plan = resolver.resolve(context, 'read')
         if (plan.kind === 'none') return { items: [], nextCursor: null }
+
+        // The delegation's narrowing, intersected with the plan before the
+        // statement rather than applied to its rows. A delegation narrowed to
+        // layer L whose person also reads M used to be listed M — its name, its
+        // description and how many documents are in it — which is "something
+        // from M", and T20 says nothing. The search path has said in its own
+        // words that a delegation must not be a way to learn which layers its
+        // person reaches; this is the same rule on the catalog. T40.
+        const narrowing = delegatedLayers(auth, 'read')
+        const ids: readonly string[] | undefined =
+          narrowing === undefined
+            ? plan.kind === 'all' ? undefined : plan.layers
+            : plan.kind === 'all' ? narrowing : plan.layers.filter((id) => narrowing.includes(id))
+        if (ids !== undefined && ids.length === 0) return { items: [], nextCursor: null }
+
+        // What this caller may do on each layer, from the same context the
+        // listing was resolved with. The consent screen offers "edit this
+        // layer's skill" only where the person holds `admin`, and the Layers
+        // screen should offer Delete only there too — both used to have to
+        // guess, and a guess that offers a control the server refuses is the
+        // defect `GET /v1/auth/methods` exists against.
+        //
+        // Each verb resolved separately and then narrowed per verb, because
+        // rule 6 makes them unordered and a per-layer ceiling may admit one
+        // and not the other.
+        const plans = {
+          read: plan,
+          write: resolver.resolve(context, 'write'),
+          admin: resolver.resolve(context, 'admin'),
+        } as const
+        const holds = (layerId: string): Permission[] =>
+          (['read', 'write', 'admin'] as const).filter((p) => {
+            const reached = plans[p]
+            if (reached.kind === 'none') return false
+            if (reached.kind === 'scoped' && !reached.layers.includes(layerId)) return false
+            return withinDelegation(auth, layerId, p)
+          })
 
         // The count comes from the same statement. It is what a catalog is
         // for — an agent choosing where to search, or a person deciding
@@ -1807,7 +1852,7 @@ export class PostgresLayers implements Layers {
         const cap = page === undefined ? '' : ` LIMIT ${page.limit}`
 
         const { rows } =
-          plan.kind === 'all'
+          ids === undefined
             ? await client.query<LayerRow>(
                 `SELECT ${projection} FROM layers l
                   WHERE l.org_id = $1 AND l.deleted_at IS NULL${seek.replace('$3', '$2').replace('$4', '$3')}
@@ -1818,9 +1863,7 @@ export class PostgresLayers implements Layers {
                 `SELECT ${projection} FROM layers l
                   WHERE l.org_id = $1 AND l.deleted_at IS NULL AND l.id = ANY($2::uuid[])${seek}
                   ${order}${cap}`,
-                after === undefined
-                  ? [auth.orgId, [...plan.layers]]
-                  : [auth.orgId, [...plan.layers], after.createdAt, after.id],
+                after === undefined ? [auth.orgId, [...ids]] : [auth.orgId, [...ids], after.createdAt, after.id],
               )
 
         const layers = rows.map((r) => ({
@@ -1831,6 +1874,7 @@ export class PostgresLayers implements Layers {
           description: r.description ?? '',
           documentCount: Number(r.document_count),
           failedCount: Number(r.failed_count),
+          permissions: holds(r.id),
           createdAt: r.created_at.toISOString(),
         }))
 
@@ -2077,6 +2121,13 @@ export class PostgresLayers implements Layers {
             documentCount: 0,
             // A layer created a moment ago has nothing in it to have failed.
             failedCount: 0,
+            // Creating one took `admin` on its workspace, which reaches all
+            // three verbs on everything inside it — so what is left to ask is
+            // what this token may exercise, and a layer created a moment ago is
+            // in no delegation's narrowing yet.
+            permissions: (['read', 'write', 'admin'] as const).filter(
+              (p) => delegationPermits(auth, p) && withinDelegation(auth, row.id, p),
+            ),
             createdAt: row.created_at.toISOString(),
           },
         }

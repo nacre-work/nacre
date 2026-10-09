@@ -71,5 +71,5 @@ module that looks loaded and is not:
 `registerAuthzResolver` replaces permission evaluation. A commercial resolver
 still obeys every invariant in `docs/authz.md` — it does not get to relax rule 6
 or return `403` where the core returns `404`. The enterprise suite runs the same
-T1-T39 tests with multi-tenancy and deny rules enabled, precisely because it
+T1-T40 tests with multi-tenancy and deny rules enabled, precisely because it
 takes different code paths to the same guarantees.

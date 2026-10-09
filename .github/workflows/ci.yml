@@ -154,6 +154,10 @@ jobs:
       # which is how it comes to be listed here alongside the check that found
       # it — `lint:workflows` now fails on a `lint:*` script no workflow runs.
       - run: pnpm lint:admin-gate
+      # `skill` in a delegation's ceiling is read in skill-ceiling.ts and
+      # nowhere else. It is not a permission and grants exactly one write; a
+      # second reader is a value that grants something nobody reviewed.
+      - run: pnpm lint:skill-ceiling
       # Every class the admin UI puts on an element is one admin.css defines.
       # A class name is a contract between a TypeScript string and a CSS
       # selector with nothing in between: the consent screen shipped six uses

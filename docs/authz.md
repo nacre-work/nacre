@@ -318,13 +318,16 @@ both of the ways this document already guards against, plus one that is its own.
 | T36 | A delegation whose narrowing gives layer L `{read}` and layer M `{write}`, whose person holds both on both | reads L and not M, writes M and not L, and the search clause carries L alone |
 | T37 | A layer in the narrowing with no ceiling of its own | inherits the connection's ceiling |
 | T38 | `admin` in one layer's ceiling, under a connection ceiling of `{admin}`, for a person who is a `member` | reaches the layer and administers nothing — a layer's `admin` never confers the organization's |
+| T40 | A delegation narrowed to layer L whose person reads L and M, and one whose ceiling is `{write}`, list the layer catalog over REST and over MCP | L alone; nothing for `{write}` — a layer's name, description and document count are "something from M", and the catalog is the same permission data on both surfaces |
 
 ### Skills and the administrative surface
 
 Specified in [skills.md](./skills.md) and [mcp-admin.md](./mcp-admin.md).
-T26, T27, T28, T33 and T34 run against a real PostgreSQL in `skills.test.ts`;
-T29 and T30 wait for the consent screen's per-layer `skill` box, and T31, T32,
-T35 and T39 for the administrative MCP. `test-plan.ts` says which.
+T26, T27, T28, T33 and T34 run against a real PostgreSQL in `skills.test.ts`,
+and T29 and T30 in `delegation.test.ts`, where the `skill` value goes through the
+consent table and back through authentication rather than being handed in as a
+literal. T31, T32, T35 and T39 wait for the administrative MCP. `test-plan.ts`
+says which.
 
 T39 is the injection case. A layer's skill is written by that layer's
 administrator, and the administrative surface acts for an `org_admin` — so a

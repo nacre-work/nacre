@@ -29,7 +29,7 @@ import { readFile } from 'node:fs/promises'
 
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server'
 import { fromJsonSchema, McpServer, type CallToolResult } from '@modelcontextprotocol/server'
-import { delegationPermits, type AuthContext } from '@nacre.work/api'
+import { ceilingOffers, type AuthContext } from '@nacre.work/api'
 import { logger, MetadataError, readFrontmatter } from '@nacre.work/core'
 
 import { INSTRUCTIONS, instructionsFor, type InstructionSkill } from './instructions.js'
@@ -231,9 +231,11 @@ export async function buildServer(build: ServerBuild): Promise<McpServer> {
     // granted after connecting invisible until somebody reconnects. Every
     // call is still checked; this only ever removes.
     //
-    // `delegationPermits` is the predicate the request path asks, so the
-    // catalog and the refusal cannot disagree about what the ceiling admits.
-    if (!delegationPermits(build.auth, definition.permission)) continue
+    // `ceilingOffers` is the predicate the request path asks — the
+    // connection's ceiling for a permission, and `skill-ceiling.ts`'s own
+    // answer for the one tool a `skill` box offers — so the catalog and the
+    // refusal cannot disagree about what the ceiling admits.
+    if (!ceilingOffers(build.auth, definition.ceiling ?? definition.permission)) continue
 
     const config = {
       title: definition.title,
