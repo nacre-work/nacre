@@ -3444,10 +3444,21 @@ module cannot add a write that skips the person — and a proposal records its
 module, so a different module registering the same name later cannot be handed
 somebody else's proposal.
 
-The console grew a **Proposals** item that is in the nav only while something is
-waiting. It was there permanently first, and the screenshot pass showed the
-tenth item wrapping the nav onto a second line for every administrator to
-announce an empty screen.
+The console grew a **Proposals** screen and no nav item for it. A permanent
+item was an empty screen nearly always, and the screenshot pass showed it as the
+tenth item wrapping the nav onto a second line; an item shown only while
+something waited wrapped it too, and so did a link in the masthead, by taking
+the room the nav had left. What is waiting is a line above every other screen
+now — "2 changes an agent proposed are waiting for you. Review them" — which is
+also the more honest place for something that expires in ten minutes.
+
+Moving the count onto every navigation is what broke the WebAuthn end-to-end
+run in CI, and it was a real defect: after signing out, the old session's hash
+handler asked `client()` for proposals, `client()` throws synchronously with no
+token, and a `.catch` on the promise cannot see a throw that happens before the
+promise exists. The sign-in screen got a page error. It asks only with a token
+now, inside a `try`, and the event listener is one module-level property rather
+than one more `addEventListener` per sign-in.
 
 **Where to connect is on a screen**, which was asked for in those words. The MCP
 endpoint and the REST base lived in `docs/quickstart.md` and in an operator's

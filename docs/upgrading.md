@@ -298,7 +298,7 @@ recorded late.
 Eighteen write tools appear on the administrative MCP, each opening a change
 panel in a client that renders MCP Apps. **A client that does not** — a
 terminal — leaves the proposal on the console's new **Proposals** screen, which
-is in the nav only while something is waiting. Nothing changes for an
+a line above every other screen links to while something is waiting. Nothing changes for an
 ordinary `/mcp` connection, and an administrative connection approved before
 this release is offered the writes on its next `tools/list`: the consent screen
 always said changes were the person's to make, and they still are — pressing

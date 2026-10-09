@@ -1380,6 +1380,14 @@ await shot('connect-examples', {
 // where a client that renders no panel leaves it.
 await shot('proposals', {
   hash: '#/proposals',
+  // Outside the nav — the masthead's "waiting" link is the way in — so the
+  // guard reads the heading rather than an active nav item.
+  heading: 'Proposed changes',
+  fixtures: { 'GET /v1/proposals': { items: PENDING_PROPOSALS } },
+})
+// The same "waiting" link from another screen, which is how a person finds it.
+await shot('proposals-waiting', {
+  hash: '#/layers',
   fixtures: { 'GET /v1/proposals': { items: PENDING_PROPOSALS } },
 })
 

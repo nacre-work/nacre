@@ -157,7 +157,8 @@ get as far as a proposal on somebody's screen, and no further.
   the same person and nobody else: the API answers those routes for a person's
   own session and for nothing a connected application holds, so the model
   cannot reach that screen either. The result the model reads names the screen,
-  and the console's nav shows it only while something is waiting.
+  and while something is waiting the console says so in a line above every
+  screen.
 - There is **no "apply directly" setting.** It was specified as an
   organization's choice for clients without panels and dropped once the console
   could hold the button instead: every way of making that switch safe ends up
