@@ -54,10 +54,17 @@ docker compose --profile full up -d   # migrate runs first; api/mcp/worker wait
 ```
 
 ```bash
-# Helm
-helm upgrade nacre nacre/nacre -f values.yaml --set image.tag=0.4.0
+# Helm — the chart is attached to every release from 0.29.3, versioned with it
+V=0.29.3
+helm upgrade nacre "https://github.com/nacre-work/nacre/releases/download/v$V/nacre-$V.tgz" -f values.yaml
 # the migration Job is a pre-upgrade hook; it completes before any pod is replaced
 ```
+
+The chart's `appVersion` is the release, so an untouched `image.tag` already
+names the images of the version you are installing; `--set image.tag` is only
+for pinning one workload apart from the rest. From a checkout, the same chart is
+`./deploy/helm/nacre` at the release's tag. Before 0.29.3 this said
+`nacre/nacre`, a chart repository that never existed.
 
 Then read [the checks](#after) below. If either command's migration step fails,
 **stop** — the section on [when a migration fails](#when-a-migration-fails) is
@@ -277,6 +284,25 @@ matching covers the whole corpus rather than the recent end of it.
 
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
+
+### 0.29.3 — the Helm chart is public, and attached to the release
+
+Nothing to do for Compose. **For Helm**, the chart is in this repository at
+`deploy/helm` and every release from this one carries it packaged, at
+`https://github.com/nacre-work/nacre/releases/download/v0.29.3/nacre-0.29.3.tgz`
+— see [the short version](#the-short-version). Its `version` and `appVersion`
+are the release's; a chart installed before this, from wherever it came,
+continues to work with the same values.
+
+The migrations Job applies the migrator of every module named in `modules`, by
+that list, after the core's. It used to apply whichever module migrators the
+image happened to carry; a deployment that names its modules sees the same
+migrations run, and one whose image carries modules it does not load no longer
+creates their tables.
+
+The four runbooks about operating the product are in
+[`docs/operations`](./operations/): restoring from a backup, rotating the JWT
+key, rolling back a reindex, and a climbing tombstone backlog.
 
 ### 0.29.2 — a connected application is shown what it may use
 

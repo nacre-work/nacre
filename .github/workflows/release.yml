@@ -405,6 +405,37 @@ jobs:
               ;;
           esac
 
+      # The Helm chart, attached to the release it was released with.
+      #
+      # `docs/upgrading.md` told operators to run `helm upgrade nacre
+      # nacre/nacre` for the whole life of the chart, and no chart repository by
+      # that name ever existed — the chart sat in a private repository nobody
+      # outside could add. It lives in `deploy/helm` now, its version is the
+      # release's (`lint:chart-version`), and this puts the packaged chart where
+      # every other artifact of a version already is: one URL per version that
+      # `helm install` takes directly, public, with nothing to make visible by
+      # hand the way a new registry package would need.
+      #
+      # The packaged name is checked rather than assumed, because `helm package`
+      # names the file after `Chart.yaml`, not after this workflow's idea of the
+      # version. `--clobber` keeps a re-run over a finished release a no-op.
+      - uses: azure/setup-helm@v4
+        if: ${{ inputs.dry_run != true }}
+      - name: the Helm chart, attached to the release
+        if: ${{ inputs.dry_run != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          helm package deploy/helm/nacre --destination /tmp/chart
+          chart="/tmp/chart/nacre-$VERSION.tgz"
+          if [ ! -f "$chart" ]; then
+            echo "::error::helm package wrote $(ls /tmp/chart) and not nacre-$VERSION.tgz — Chart.yaml's version is not the release's"
+            exit 1
+          fi
+          gh release upload "v$VERSION" "$chart" --clobber
+
 
   # The container images the Helm chart names in its defaults —
   # ghcr.io/nacre-work/nacre and -parser — mirrored to Docker Hub as
