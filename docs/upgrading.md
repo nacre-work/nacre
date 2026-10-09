@@ -285,6 +285,34 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.34.0 — the administrative MCP writes, as proposals a person applies
+
+**Migration 0039, and nothing to configure.** It adds `admin_proposals` — a
+change an agent proposed on `/mcp/admin`, waiting ten minutes for its person to
+apply it — and a unique key on `oauth_consents (id, org_id)` that the new
+table's composite foreign key needs. The worker sweeps expired proposals once a
+minute, so it has to run the new image too; until it does, an expired proposal
+is still refused (the check is on `expires_at`, not on the status) and is only
+recorded late.
+
+Eighteen write tools appear on the administrative MCP, each opening a change
+panel in a client that renders MCP Apps. **A client that does not** — a
+terminal — leaves the proposal on the console's new **Proposals** screen, which
+a line above every other screen links to while something is waiting. Nothing changes for an
+ordinary `/mcp` connection, and an administrative connection approved before
+this release is offered the writes on its next `tools/list`: the consent screen
+always said changes were the person's to make, and they still are — pressing
+Apply is that.
+
+**`GET /v1/endpoints`** says where a client connects — the REST base, the MCP
+endpoint, and for an organization administrator the administrative one — from
+`NACRE_CANONICAL_URL` and `NACRE_MCP_CANONICAL_URL`, and the console's
+Connections screen shows them with example requests. **If those addresses are
+wrong, the screen is now where people read them**: check that
+`NACRE_CANONICAL_URL` is the name your users reach the front door by, and set
+`NACRE_MCP_CANONICAL_URL` on the API as well as on the MCP process if the
+transport is published at a different origin.
+
 ### 0.33.0 — the skill panel
 
 **Nothing to do.** A fourth MCP App view, `ui://nacre/skill.html`, opens from

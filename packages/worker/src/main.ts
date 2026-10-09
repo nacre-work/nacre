@@ -41,6 +41,7 @@ import {
   isLiveCollection,
   markReindexed,
   PostgresDocumentStore,
+  expireProposals,
   pruneAuditEvents,
   pruneExpiredTokens,
   QdrantVectorWriter,
@@ -88,6 +89,12 @@ const GC_EVERY_MS = 60_000
 // document never indexed.
 const REAP_BATCH = 20
 const REAP_EVERY_MS = 60_000
+
+// Proposals on the administrative MCP that ran out. Every minute rather than on
+// the retention clock: a proposal lives ten minutes, and its expiry is a fact
+// an administrator reading the access log should find within one more.
+const EXPIRE_BATCH = 200
+const EXPIRE_EVERY_MS = 60_000
 
 // Retention. Hourly, because neither table is urgent and both are large: an
 // expired refresh token is inert and an audit event a day past a 400-day
@@ -562,6 +569,7 @@ async function main(): Promise<void> {
   // checked by the upsert is what overlap needs, and this comment exists so
   // the next reader does not take the sentence above for that guarantee.
   let lastReap = 0
+  let lastExpire = 0
 
   let running = true
   // Woken by the signal handler so an idle sleep does not have to run out.
@@ -634,6 +642,18 @@ async function main(): Promise<void> {
           }
         } catch (error) {
           logger.error('reap pass failed', { error: String(error) })
+        }
+      }
+
+      // Recording what nobody applied. Its own try/catch for the reason the
+      // others have theirs: a refusal here must not stop collection.
+      if (Date.now() - lastExpire >= EXPIRE_EVERY_MS) {
+        lastExpire = Date.now()
+        try {
+          const expired = await expireProposals(pool, EXPIRE_BATCH)
+          if (expired > 0) logger.info('proposals expired', { expired })
+        } catch (error) {
+          logger.error('proposal expiry pass failed', { error: String(error) })
         }
       }
 

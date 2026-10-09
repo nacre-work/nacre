@@ -15,12 +15,15 @@ import {
   registerIngestGate,
   admitSignIn,
   registerSignInGate,
+  mcpTools,
+  registerMcpTools,
   resetExtensionsForTests,
   withLoadingModuleForTests,
   type AdminRoute,
   type AuthzResolver,
   type IngestContext,
   type IngestGate,
+  type McpTool,
 } from '../extensions.js'
 import type { SignInContext, SignInGate, SignInVerdict } from '../extensions.js'
 import type { AccessPlan, ResolveInput } from '../authz/resolve.js'
@@ -92,6 +95,7 @@ describe('the default registry', () => {
       routes: 0,
       gates: [],
       signIn: [],
+      mcpTools: [],
     })
   })
 
@@ -303,6 +307,7 @@ describe('loadModules', () => {
       routes: 0,
       gates: [],
       signIn: [],
+      mcpTools: [],
     })
   })
 
@@ -352,6 +357,7 @@ describe('loadModules', () => {
       routes: 0,
       gates: ['tenancy:quota'],
       signIn: ['tenancy:policy'],
+      mcpTools: [],
     })
   })
 })
@@ -525,5 +531,58 @@ describe('sign-in gates', () => {
   it('reports its gates on the startup line', () => {
     withLoadingModuleForTests('policy', () => registerSignInGate(gate('second-factor', { kind: 'admit' })))
     expect(loadedExtensions().signIn).toEqual(['policy:second-factor'])
+  })
+})
+
+/*
+ * The seventh point: a module adding tools to the administrative MCP. What the
+ * registry holds is that a write has two halves — the core stores the proposal
+ * and is the only caller of `apply` — and that a name is one tool.
+ */
+describe('registerMcpTools', () => {
+  afterEach(() => resetExtensionsForTests())
+
+  const write = (name: string): McpTool => ({
+    kind: 'write',
+    name,
+    title: name,
+    description: name,
+    inputSchema: { type: 'object' },
+    propose: async () => ({ summary: 's', details: [], input: {} }),
+    apply: async () => ({}),
+  })
+  const read = (name: string): McpTool => ({
+    kind: 'read',
+    name,
+    title: name,
+    description: name,
+    inputSchema: { type: 'object' },
+    run: async () => ({}),
+  })
+
+  it('holds what a module registered, under that module, for the administrative surface', () => {
+    withLoadingModuleForTests('acl', () => registerMcpTools('admin', write('issue_deny'), read('list_denies')))
+    expect(mcpTools('admin').map((t) => `${t.module}:${t.tool.name}`)).toEqual(['acl:issue_deny', 'acl:list_denies'])
+    expect(loadedExtensions().mcpTools).toEqual(['acl:admin.issue_deny', 'acl:admin.list_denies'])
+  })
+
+  it('refuses two modules naming one tool, naming both', () => {
+    withLoadingModuleForTests('a', () => registerMcpTools('admin', write('issue_deny')))
+    expect(() => withLoadingModuleForTests('b', () => registerMcpTools('admin', write('issue_deny')))).toThrow(/a and b/)
+  })
+
+  it('refuses a write that is one function — a write that skips the person', () => {
+    const one = { ...write('issue_deny'), apply: undefined } as unknown as McpTool
+    expect(() => withLoadingModuleForTests('m', () => registerMcpTools('admin', one))).toThrow(/propose and apply/)
+    const neither = { ...read('x'), kind: 'neither' } as unknown as McpTool
+    expect(() => withLoadingModuleForTests('m', () => registerMcpTools('admin', neither))).toThrow(/neither a read nor a write/)
+  })
+
+  it('refuses the ordinary surface, a name a proposal could not store, and a late registration', () => {
+    expect(() =>
+      withLoadingModuleForTests('m', () => registerMcpTools('default' as unknown as 'admin', write('x'))),
+    ).toThrow(/administrative surface only/)
+    expect(() => withLoadingModuleForTests('m', () => registerMcpTools('admin', write('Issue-Deny')))).toThrow(/not a tool name/)
+    expect(() => registerMcpTools('admin', write('late'))).toThrow(/outside module loading/)
   })
 })

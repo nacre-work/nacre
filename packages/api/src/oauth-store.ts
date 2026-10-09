@@ -14,6 +14,7 @@ import type { Pool } from 'pg'
 
 import { administers, administersTenants } from './auth.js'
 import type { AuthContext, Delegations } from './auth.js'
+import { CANCELLED_BY_REVOCATION } from './proposals.js'
 import type { CeilingValue } from './skill-ceiling.js'
 
 export interface RegisteredClient {
@@ -226,7 +227,7 @@ export interface OAuthConsents {
    * End it. Returns false when there is nothing of theirs by that id, which is
    * the same answer as "no such connection" — invariant 4.
    */
-  revoke(auth: AuthContext, id: string): Promise<boolean>
+  revoke(auth: AuthContext, id: string, surface?: 'api' | 'mcp-admin'): Promise<boolean>
 }
 
 export interface OAuthRefreshTokens {
@@ -603,7 +604,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
     )
   }
 
-  async revoke(auth: AuthContext, id: string): Promise<boolean> {
+  async revoke(auth: AuthContext, id: string, surface: 'api' | 'mcp-admin' = 'api'): Promise<boolean> {
     if (!/^[0-9a-f-]{36}$/i.test(id)) return false
     return withOrg(
       this.pool,
@@ -628,6 +629,35 @@ export class PostgresOAuthConsents implements OAuthConsents {
         // about a credential whose whole purpose was to be exchanged, and a row
         // kept is a hash kept.
         await client.query('DELETE FROM oauth_refresh_tokens WHERE org_id = $1 AND consent_id = $2', [auth.orgId, id])
+
+        // And what it proposed on the administrative surface ends too, in the
+        // same transaction. A proposal can only be applied while its
+        // connection is unrevoked, but approving the same application again
+        // un-revokes the *same row* — so without this, a change proposed in
+        // the last ten minutes of the old connection would come back to life
+        // with the new one. Each is recorded as cancelled, by whoever revoked.
+        await client.query(
+          `WITH ended AS (
+             UPDATE admin_proposals
+                SET status = 'cancelled', decided_at = now(), error = 'the connection was revoked'
+              WHERE org_id = $1 AND consent_id = $2 AND status = 'open'
+              RETURNING id, tool, module
+           )
+           INSERT INTO audit_events (org_id, actor_type, actor_id, actor_label, action, surface, client, target, result, detail)
+           SELECT $1, $3, $4, $5, $6, $7, 'connection:' || $2,
+                  jsonb_strip_nulls(jsonb_build_object('proposal', id, 'tool', tool, 'module', module)),
+                  'allow', jsonb_build_object('reason', 'the connection was revoked')
+             FROM ended`,
+          [
+            auth.orgId,
+            id,
+            auth.principal.type,
+            auth.principal.id,
+            `${auth.principal.type}:${auth.principal.id}`,
+            CANCELLED_BY_REVOCATION.action,
+            surface,
+          ],
+        )
         return true
       },
       this.role === undefined ? {} : { role: this.role },

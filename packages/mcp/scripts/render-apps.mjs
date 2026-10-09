@@ -66,6 +66,29 @@ const hostScript = host.outputFiles[0].text
 
 const text = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] })
 
+/** A fixture answer that is a refusal rather than a value. */
+class Refusal {
+  constructor(message) {
+    this.message = message
+  }
+}
+
+const PROPOSED = {
+  proposed: 'Give the person dana@example.com read on the layer handbook.',
+  details: [
+    { label: 'person', value: 'dana@example.com' },
+    { label: 'layer', value: 'handbook' },
+    { label: 'permission', value: 'read' },
+  ],
+  status: 'Waiting for the person to apply it. Nothing has changed.',
+  expires_at: new Date(Date.now() + 9 * 60_000).toISOString(),
+  how_it_is_applied: 'The person applies or cancels it in the panel shown with this result.',
+}
+const withProposal = (value) => ({
+  ...text(value),
+  _meta: { 'nacre/proposal': { id: '3f1c2b9e-5d7a-4e21-9c84-0a6b2f1d7e55', key: 'k7Qm2pXv9aLr4TnB8sWc1dYe6fGh3jKu5oZi0xNq_Rw', expires_at: value.expires_at } },
+})
+
 const SKILL_MD = `---
 name: handbook
 description: How the handbook is kept — one page per policy, named by topic.
@@ -172,6 +195,56 @@ const SCENARIOS = [
     },
   },
   {
+    view: 'change',
+    name: 'change',
+    input: { person: 'dana@example.com', layer: 'handbook', permission: 'read' },
+    result: withProposal(PROPOSED),
+    calls: {
+      apply_proposal: (args) => {
+        if (args.proposal !== '3f1c2b9e-5d7a-4e21-9c84-0a6b2f1d7e55') throw new Error(`applied ${String(args.proposal)}, not the proposal in _meta`)
+        // The key is what makes the press the panel's: without it the server
+        // answers as if the proposal were not there.
+        if (args.key !== 'k7Qm2pXv9aLr4TnB8sWc1dYe6fGh3jKu5oZi0xNq_Rw') throw new Error('the panel did not present the key it was handed')
+        return { applied: true, result: { grant_id: 'g1' } }
+      },
+    },
+    check: async (frame) => {
+      if ((await frame.locator('.facts dt').count()) !== 3) throw new Error('the panel does not show the three facts')
+      if (!(await frame.locator('.when').textContent())?.includes('expires in')) throw new Error('the panel does not say when it expires')
+      await frame.locator('button', { hasText: 'Apply' }).click()
+      await frame.locator('.status', { hasText: 'Applied.' }).waitFor()
+      const display = await frame.locator('button', { hasText: 'Apply' }).evaluate((b) => getComputedStyle(b).display)
+      if (display !== 'none') throw new Error(`Apply is still displayed (${display}) after applying`)
+    },
+  },
+  {
+    view: 'change',
+    name: 'change-refused',
+    input: { person: 'dana@example.com', layer: 'handbook', permission: 'read' },
+    result: withProposal(PROPOSED),
+    calls: {
+      apply_proposal: () => new Refusal('That scope is not one you may administer, or it no longer exists.'),
+    },
+    check: async (frame) => {
+      await frame.locator('button', { hasText: 'Apply' }).click()
+      await frame.locator('.status[data-kind=error]', { hasText: 'may administer' }).waitFor()
+    },
+  },
+  {
+    view: 'change',
+    name: 'change-no-panel-id',
+    input: {},
+    result: text(PROPOSED),
+    calls: {},
+    check: async (frame) => {
+      // A host that drops _meta: the panel must not offer a button it cannot honour.
+      if ((await frame.locator('button', { hasText: 'Apply' }).evaluate((b) => getComputedStyle(b).display)) !== 'none') {
+        throw new Error('Apply is offered with no proposal to apply')
+      }
+      if (!(await frame.locator('.status').textContent())?.includes('Proposals screen')) throw new Error('the panel does not say where the proposal waits')
+    },
+  },
+  {
     view: 'layers',
     name: 'layers',
     input: {},
@@ -205,7 +278,9 @@ try {
         await page.exposeFunction('__call', (name, args) => {
           const answer = scenario.calls[name]
           if (answer === undefined) return { content: [{ type: 'text', text: `no fixture for ${name}` }], isError: true }
-          return text(answer(args))
+          const value = answer(args)
+          if (value instanceof Refusal) return { content: [{ type: 'text', text: value.message }], isError: true }
+          return text(value)
         })
         await page.setContent(
           `<!doctype html><html><head><style>html,body{margin:0;background:${theme === 'dark' ? '#111' : '#fff'}}iframe{border:0;width:100%;height:880px;display:block}</style></head><body><iframe sandbox="allow-scripts allow-same-origin"></iframe><script>${hostScript}</script></body></html>`,

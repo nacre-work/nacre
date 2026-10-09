@@ -1,17 +1,26 @@
 import {
+  AdminNames,
   administers,
+  applyProposal,
   AUDIT_GROUPINGS,
+  cancelProposal,
+  coreAdminWrites,
   decodeCursor,
   encodeCursor,
   PostgresAccess,
   PostgresAuditReader,
   PostgresGrants,
   PostgresGroups,
+  PostgresLayers,
   PostgresOAuthConsents,
+  PostgresProposals,
   PostgresServiceAccounts,
   PostgresSkills,
   PostgresUsers,
   PostgresWorkspaces,
+  recordProposal,
+  recordRefusedProposal,
+  writeLookup,
   type AccessSubject,
   type AuditGrouping,
   type AuditQuery,
@@ -20,10 +29,20 @@ import {
   type Reach,
   type SkillLevel,
 } from '@nacre.work/api'
-import { withOrg, type AuditWriter } from '@nacre.work/core'
+import { MetadataError, mcpTools, McpToolRefusal, withOrg, type AuditWriter, type McpTool } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
-import { AUTHORED_NOTICE, skillNotice } from './admin-tools.js'
+import {
+  ADMIN_CATALOG,
+  AdminResult,
+  AUTHORED_NOTICE,
+  DECIDE_CATALOG,
+  PROPOSAL_META,
+  readDefinition,
+  skillNotice,
+  writeDefinition,
+  type AdminToolDefinition,
+} from './admin-tools.js'
 import { ToolArgumentError, type ToolRunner } from './factory.js'
 
 /**
@@ -36,6 +55,13 @@ import { ToolArgumentError, type ToolRunner } from './factory.js'
  * person by email and a layer by slug rather than by uuid, putting a name
  * beside every id, and opening each result that carries somebody else's text
  * with a sentence saying what that text is.
+ *
+ * Every write **proposes**. The tool resolves what the model named, writes the
+ * sentence a person reads, stores it, and answers with it; the change is made
+ * by `apply` when the person presses Apply — in the panel, through the app-only
+ * `apply_proposal` below, or on the console's Proposals screen through the API.
+ * The core's writes and every module's are found by the same lookup and go the
+ * same way, so a module cannot add a write that skips the person.
  *
  * Two reads are written here rather than borrowed, and both are behind
  * `administers` at the top of `call`: the layer listing, because the
@@ -61,9 +87,34 @@ export interface AdminDeps {
   readonly pool: Pool
   readonly audit: AuditWriter
   readonly principalsCache?: PrincipalsCache
+  /**
+   * The vector store, for the two layer writes: creating one asks which named
+   * vectors the collection has, and deleting one stops its points matching
+   * before its rows go. The same port the API hands its layers adapter.
+   */
+  readonly vectors: ConstructorParameters<typeof PostgresLayers>[1]
+  /**
+   * The console's address, where a person applies a proposal from a client
+   * that renders no panel — the consent URL without its route. Absent, the
+   * answer says "the console" without a link.
+   */
+  readonly consoleUrl?: string
 }
 
-export function adminTools(deps: AdminDeps): ToolRunner {
+/** The runner, and the catalog it answers for — composed once, at startup. */
+export interface AdminRunner extends ToolRunner {
+  readonly catalog: readonly AdminToolDefinition[]
+}
+
+
+/** The sentence a refusal gave its caller, or nothing for a failure that was not one. */
+function refusalOf(error: unknown): string | undefined {
+  return error instanceof McpToolRefusal || error instanceof ToolArgumentError || error instanceof MetadataError
+    ? error.message
+    : undefined
+}
+
+export function adminTools(deps: AdminDeps): AdminRunner {
   const { pool, audit, principalsCache } = deps
   const users = new PostgresUsers(pool, APP_ROLE)
   const accounts = new PostgresServiceAccounts(pool, APP_ROLE)
@@ -74,91 +125,40 @@ export function adminTools(deps: AdminDeps): ToolRunner {
   const skills = new PostgresSkills(pool, APP_ROLE, principalsCache)
   const consents = new PostgresOAuthConsents(pool, APP_ROLE)
   const log = new PostgresAuditReader(pool, APP_ROLE, principalsCache)
+  const known = new AdminNames(pool, APP_ROLE)
+  const proposals = new PostgresProposals(pool, APP_ROLE)
+
+  const writes = coreAdminWrites({
+    pool,
+    role: APP_ROLE,
+    audit,
+    grants,
+    groups,
+    users,
+    workspaces,
+    layers: new PostgresLayers(pool, deps.vectors, APP_ROLE, principalsCache),
+    skills,
+    consents,
+  })
+  const lookupWrite = writeLookup(writes)
 
   const inOrg = <T>(auth: AuthContext, run: (client: import('pg').PoolClient) => Promise<T>): Promise<T> =>
     withOrg(pool, auth.orgId, run, { role: APP_ROLE })
 
   // ── names ──────────────────────────────────────────────────────────────
+  //
+  // `AdminNames`, shared with the API so the console resolves the same names
+  // the MCP process proposed with. Its refusals are `McpToolRefusal`, which
+  // reaches the caller as their own words.
 
-  /** A principal named by email, name or id, in this organization — or a refusal naming the reference. */
-  const principal = async (auth: AuthContext, args: Record<string, unknown>): Promise<AccessSubject> => {
-    const given = (['person', 'group', 'service_account'] as const).filter((k) => typeof args[k] === 'string')
-    if (given.length !== 1) {
-      throw new ToolArgumentError('Name exactly one of person, group or service_account.')
-    }
-    const kind = given[0] as 'person' | 'group' | 'service_account'
-    const ref = (args[kind] as string).trim()
-    const found = await lookup(auth, kind, ref)
-    if (found === undefined) throw new ToolArgumentError(`No ${kind.replace('_', ' ')} "${ref}" in this organization.`)
-    return found
-  }
-
-  const lookup = (
-    auth: AuthContext,
-    kind: 'person' | 'group' | 'service_account',
-    ref: string,
-  ): Promise<AccessSubject | undefined> =>
-    inOrg(auth, async (client) => {
-      const byId = UUID.test(ref)
-      const [table, column, type] =
-        kind === 'person'
-          ? (['users', 'lower(email)', 'user'] as const)
-          : kind === 'group'
-            ? (['groups', 'name', 'group'] as const)
-            : (['service_accounts', 'name', 'service_account'] as const)
-      const { rows } = await client.query<{ id: string }>(
-        `SELECT id FROM ${table} WHERE org_id = $1 AND ${byId ? 'id = $2::uuid' : `${column} = $2`} LIMIT 2`,
-        [auth.orgId, byId ? ref : kind === 'person' ? ref.toLowerCase() : ref],
-      )
-      return rows.length === 1 && rows[0] !== undefined ? { type, id: rows[0].id } : undefined
-    })
-
-  /** A layer by slug or id, as both — the log records both shapes. */
+  const principal = (auth: AuthContext, args: Record<string, unknown>): Promise<AccessSubject> => known.principal(auth, args)
+  const lookup = (auth: AuthContext, kind: 'person' | 'group' | 'service_account', ref: string) => known.lookup(auth, kind, ref)
   const layer = async (auth: AuthContext, ref: string): Promise<{ id: string; slug: string }> => {
-    const found = await inOrg(auth, async (client) => {
-      const { rows } = await client.query<{ id: string; slug: string }>(
-        `SELECT id, slug FROM layers WHERE org_id = $1 AND deleted_at IS NULL AND ${UUID.test(ref) ? 'id = $2::uuid' : 'slug = $2'}`,
-        [auth.orgId, ref],
-      )
-      return rows[0]
-    })
-    if (found === undefined) throw new ToolArgumentError(`No layer "${ref}" in this organization.`)
-    return found
+    const found = await known.layer(auth, ref)
+    return { id: found.id, slug: found.slug }
   }
-
-  const workspace = async (auth: AuthContext, ref: string): Promise<string> => {
-    const found = await inOrg(auth, async (client) => {
-      const { rows } = await client.query<{ id: string }>(
-        `SELECT id FROM workspaces WHERE org_id = $1 AND ${UUID.test(ref) ? 'id = $2::uuid' : 'slug = $2'}`,
-        [auth.orgId, ref],
-      )
-      return rows[0]?.id
-    })
-    if (found === undefined) throw new ToolArgumentError(`No workspace "${ref}" in this organization.`)
-    return found
-  }
-
-  /**
-   * A name beside every id: an email for a person, a name for a group or a
-   * service account, a slug for a layer or a workspace. Ids the organization
-   * does not have come back unnamed rather than refused — a deleted layer is
-   * still in last month's log.
-   */
-  const names = (auth: AuthContext, ids: Iterable<string>): Promise<ReadonlyMap<string, string>> => {
-    const wanted = [...new Set([...ids].filter((id) => UUID.test(id)))]
-    if (wanted.length === 0) return Promise.resolve(new Map())
-    return inOrg(auth, async (client) => {
-      const { rows } = await client.query<{ id: string; name: string }>(
-        `SELECT id::text, email AS name FROM users WHERE org_id = $1 AND id = ANY($2::uuid[])
-         UNION ALL SELECT id::text, name FROM service_accounts WHERE org_id = $1 AND id = ANY($2::uuid[])
-         UNION ALL SELECT id::text, name FROM groups WHERE org_id = $1 AND id = ANY($2::uuid[])
-         UNION ALL SELECT id::text, slug FROM layers WHERE org_id = $1 AND id = ANY($2::uuid[])
-         UNION ALL SELECT id::text, slug FROM workspaces WHERE org_id = $1 AND id = ANY($2::uuid[])`,
-        [auth.orgId, wanted],
-      )
-      return new Map(rows.map((r) => [r.id, r.name]))
-    })
-  }
+  const workspace = async (auth: AuthContext, ref: string): Promise<string> => (await known.workspace(auth, ref)).id
+  const names = (auth: AuthContext, ids: Iterable<string>): Promise<ReadonlyMap<string, string>> => known.names(auth, ids)
 
   const idOfRef = (ref: string | null): string => (ref ?? '').split(':')[1] ?? ''
 
@@ -235,6 +235,26 @@ export function adminTools(deps: AdminDeps): ToolRunner {
       surface: 'mcp-admin',
       target: { tool },
       detail,
+      requestId,
+    })
+  }
+
+  /**
+   * A read that was refused or failed, recorded like one that answered: what an
+   * agent asked for and did not get is part of what it did. The reason is the
+   * sentence the caller was given, and nothing for a failure — an error's own
+   * message is not something to keep.
+   */
+  const refused = async (auth: AuthContext, requestId: string, tool: string, error: unknown): Promise<void> => {
+    const reason = refusalOf(error)
+    await audit.write({
+      orgId: auth.orgId,
+      actor: `${auth.principal.type}:${auth.principal.id}`,
+      ...(tool === 'query_audit' || tool === 'summarize_audit' ? RECORDED.log : RECORDED.read),
+      result: reason === undefined ? 'error' : 'deny',
+      surface: 'mcp-admin',
+      target: { tool },
+      detail: reason === undefined ? {} : { reason: reason.slice(0, 300) },
       requestId,
     })
   }
@@ -618,18 +638,137 @@ export function adminTools(deps: AdminDeps): ToolRunner {
     },
   }
 
+  // ── composing the catalog ──────────────────────────────────────────────
+  //
+  // The core's reads and writes, each module's, and the panel's two buttons.
+  // A name twice is a startup failure naming both: a tool silently shadowed is
+  // a tool somebody believes they called.
+
+  const modules = mcpTools('admin')
+  const owners = new Map<string, string>()
+  const claim = (name: string, owner: string): void => {
+    const taken = owners.get(name)
+    if (taken !== undefined) {
+      throw new Error(`the administrative tool ${name} is registered twice — by ${taken} and by ${owner}`)
+    }
+    owners.set(name, owner)
+  }
+  for (const d of ADMIN_CATALOG) claim(d.name, 'the core')
+  for (const w of writes) claim(w.name, 'the core')
+  for (const d of DECIDE_CATALOG) claim(d.name, 'the core')
+  for (const m of modules) claim(m.tool.name, m.module)
+
+  const catalog: readonly AdminToolDefinition[] = [
+    ...ADMIN_CATALOG,
+    ...writes.map(writeDefinition),
+    ...modules.map((m) => (m.tool.kind === 'write' ? writeDefinition(m.tool) : readDefinition(m.tool))),
+    ...DECIDE_CATALOG,
+  ]
+  const moduleOf = new Map<string, { readonly module: string; readonly tool: McpTool }>(modules.map((m) => [m.tool.name, m]))
+  const proposalWord = (deps.consoleUrl === undefined ? 'the console' : `${deps.consoleUrl.replace(/#.*$/, '')}#/proposals`)
+
+  /**
+   * A write: propose, store, record, and answer with what would happen.
+   *
+   * The answer is for the model and the person both. Its text says what is
+   * proposed and where it is decided. The proposal's id and the key that
+   * applies it are in `_meta`, for the panel — and the key is nowhere else: the
+   * id is in the access log, which this surface reads, so the id alone must not
+   * be enough to apply anything.
+   */
+  const propose = async (
+    auth: AuthContext,
+    requestId: string,
+    entry: { readonly tool: McpTool & { readonly kind: 'write' }; readonly module: string | null },
+    args: Record<string, unknown>,
+  ): Promise<AdminResult> => {
+    let proposal
+    try {
+      proposal = await entry.tool.propose({ auth, requestId }, args)
+    } catch (error) {
+      await recordRefusedProposal({ audit }, auth, { tool: entry.tool.name, module: entry.module }, refusalOf(error), requestId)
+      throw error
+    }
+    const stored = await recordProposal({ proposals, audit }, auth, { tool: entry.tool.name, module: entry.module, proposal }, requestId)
+    return new AdminResult(
+      {
+        proposed: proposal.summary,
+        details: proposal.details,
+        status: 'Waiting for the person to apply it. Nothing has changed.',
+        expires_at: stored.expiresAt,
+        how_it_is_applied:
+          'The person applies or cancels it in the panel shown with this result. A client that shows no panel ' +
+          `leaves it on the console's Proposals screen: ${proposalWord}. You cannot apply it, and should not ` +
+          'say it is done.',
+      },
+      { [PROPOSAL_META]: { id: stored.id, key: stored.panelKey, expires_at: stored.expiresAt } },
+    )
+  }
+
+  /** The panel's buttons, for this connection's own proposals and nothing else. */
+  const decide = async (auth: AuthContext, requestId: string, name: string, args: Record<string, unknown>): Promise<unknown> => {
+    const id = typeof args.proposal === 'string' ? args.proposal : ''
+    const key = typeof args.key === 'string' ? args.key : ''
+    const consentId = auth.delegation?.id as string
+    const by = { through: 'panel' as const, consentId, key }
+    const outcome =
+      name === 'apply_proposal'
+        ? await applyProposal({ proposals, audit, writes: lookupWrite }, auth, id, by, requestId)
+        : await cancelProposal({ proposals, audit }, auth, id, by, requestId)
+    switch (outcome.kind) {
+      case 'applied':
+        return { applied: true, result: outcome.result }
+      case 'cancelled':
+        return { cancelled: true }
+      case 'refused':
+        throw new McpToolRefusal(outcome.reason)
+      default:
+        throw new McpToolRefusal('That proposal is no longer open: it was applied, cancelled or has expired.')
+    }
+  }
+
   return {
+    catalog,
     async call(name, args, auth, requestId) {
       // Authentication admitted only an organization administrator's
       // administrative connection to this surface. Asked again here because
       // a runner that trusts its caller's wiring is one `createMcpServer`
       // option away from serving somebody else.
       if (!administers(auth) || auth.delegation?.surface !== 'admin') throw new Error('not an administrative caller')
-      const tool = tools[name]
-      if (tool === undefined) throw new Error(`no administrative tool ${name}`)
-      const { result, detail } = await tool(auth, args)
-      await recorded(auth, requestId, name, detail)
-      return result
+
+      const read = tools[name]
+      if (read !== undefined) {
+        let done
+        try {
+          done = await read(auth, args)
+        } catch (error) {
+          await refused(auth, requestId, name, error)
+          throw error
+        }
+        await recorded(auth, requestId, name, done.detail)
+        return done.result
+      }
+
+      if (name === 'apply_proposal' || name === 'cancel_proposal') return decide(auth, requestId, name, args)
+
+      const core = writes.find((w) => w.name === name)
+      if (core !== undefined) return propose(auth, requestId, { tool: core, module: null }, args)
+
+      const added = moduleOf.get(name)
+      if (added !== undefined) {
+        if (added.tool.kind === 'write') return propose(auth, requestId, { tool: added.tool, module: added.module }, args)
+        let result
+        try {
+          result = await added.tool.run({ auth, requestId }, args)
+        } catch (error) {
+          await refused(auth, requestId, name, error)
+          throw error
+        }
+        await recorded(auth, requestId, name, { module: added.module })
+        return result
+      }
+
+      throw new Error(`no administrative tool ${name}`)
     },
   }
 }

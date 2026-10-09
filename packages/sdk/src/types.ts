@@ -529,6 +529,19 @@ export interface AuditPage {
   readonly nextCursor?: string
 }
 
+/** Where a client connects — `GET /v1/endpoints`. */
+export interface Endpoints {
+  /** The REST API's base, ending in `/v1`. */
+  readonly api: string
+  /** The MCP endpoint, Streamable HTTP. */
+  readonly mcp: string
+  /** The administrative MCP endpoint — present only for somebody who administers the organization. */
+  readonly mcpAdmin?: string
+  /** The OpenAPI document for the release the server was built from. */
+  readonly contract: string
+  readonly version: string
+}
+
 /**
  * The caller, as the server sees them.
  *
@@ -593,6 +606,34 @@ export interface Self {
  * token looks idle here, and claiming otherwise would be a number that reads as
  * fact and is a guess.
  */
+/**
+ * A change an agent proposed on the administrative MCP, waiting for the person
+ * who approved that connection. docs/mcp-admin.md.
+ *
+ * `summary` and `details` are the server's own words, written from names it
+ * resolved — what a person reads before pressing Apply.
+ */
+export interface Proposal {
+  readonly id: string
+  readonly tool: string
+  /** The module that registered the tool; null for the core's own. */
+  readonly module: string | null
+  readonly summary: string
+  readonly details: readonly { readonly label: string; readonly value: string }[]
+  readonly createdAt: string
+  readonly expiresAt: string
+  /** The administrative connection it came through. */
+  readonly connection: { readonly id: string; readonly application: string | null }
+}
+
+/** What pressing Apply did. */
+export type ProposalOutcome =
+  | { readonly kind: 'applied'; readonly result: unknown }
+  /** The change itself was refused, in the server's words; the proposal is spent. */
+  | { readonly kind: 'refused'; readonly reason: string }
+  /** Applied, cancelled, expired, or not this person's — one answer. */
+  | { readonly kind: 'gone' }
+
 export interface Connection {
   readonly id: string
   readonly clientId: string

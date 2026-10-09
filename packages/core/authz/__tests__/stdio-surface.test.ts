@@ -181,7 +181,7 @@ describe('baseline · the MCP local transport', () => {
     // Generated from the caller's own layers, exactly as over HTTP. A local
     // transport that listed every layer would be handing an agent the names of
     // things it may not read, which is permission data.
-    expect(tools.find((t) => t.name === 'search')?.description).toContain('Handbook')
+    expect(tools.find((t) => t.name === 'search')?.description).toMatch(/handbook/i)
   })
 
   it('a tool call carries the token’s organization and nothing else', async () => {

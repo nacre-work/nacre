@@ -225,7 +225,7 @@ when('delegation · the administrative MCP is a resource of its own', () => {
       layers: { forCaller: async () => ({ layers: [], nextCursor: null }) },
       tools: { call: async () => ({}) },
       skills: { base: (auth) => skills.base(auth) },
-      admin: { tools: adminTools({ pool, audit: new PostgresAudit(pool, AS_APP) }) },
+      admin: { tools: adminTools({ pool, audit: new PostgresAudit(pool, AS_APP), vectors: { vectorsOf: async () => ({}), tombstoneLayer: async () => undefined } }) },
     })
     mcpBase = await listen(mcp)
   })

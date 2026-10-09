@@ -21,6 +21,7 @@ export {
   protectedResourceMetadata,
   PROTECTED_RESOURCE_PATH,
 } from './oauth.js'
+export { packageVersion } from './version.js'
 export { allowedRequestHeaders, corsHeaders, isPreflight, mcpWalkHeaders, preflightHeaders } from './cors.js'
 export {
   AUTHORIZATION_SERVER_PATH,
@@ -47,11 +48,14 @@ export {
   authProviders,
   loadModules,
   loadedExtensions,
+  mcpTools,
+  McpToolRefusal,
   mountAdminRoutes,
   registerAuditSink,
   registerAuthProvider,
   registerAuthzResolver,
   registerIngestGate,
+  registerMcpTools,
   registerSignInGate,
   resetExtensionsForTests,
   withAuditSinks,
@@ -70,6 +74,13 @@ export type {
   IngestGate,
   IngestRefusal,
   IngestVerdict,
+  McpProposal,
+  McpProposalDetail,
+  McpReadTool,
+  McpSurface,
+  McpTool,
+  McpToolCall,
+  McpWriteTool,
   ResolvedPrincipal,
   SignInContext,
   SignInGate,

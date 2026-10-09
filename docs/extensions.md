@@ -340,27 +340,74 @@ way, and the password door is the one a gate closes.
 With no module loaded there are no gates, and the open core mints a session for
 every credential it verifies, exactly as it did before this point existed.
 
-## `registerMcpTools(surface, ...tools)` — specified, not built
+## `registerMcpTools(surface, ...tools)`
 
 The seventh point, and the first that adds to what an agent is offered rather
-than to what the server decides. Specified in [mcp-admin.md](./mcp-admin.md);
-this section is the contract a module is written against once it exists.
+than to what the server decides. Built in 0.34.0; the surface is described in
+[mcp-admin.md](./mcp-admin.md).
 
-- **`surface` is `'admin'`** in the first version. The ordinary surface takes no
-  module tools: its catalog is what every connected agent reads, and a module
-  adding to it would change what a search client is told without the person who
-  approved the connection seeing it.
-- **A tool declares its gate**, and the core applies it: `administers(auth)` on
-  the administrative surface, always, before the module's code runs. A module
-  cannot register a tool that skips it.
-- **A write is a proposal.** A module registers `propose` and `apply`, not one
-  function that writes; the core stores the proposal, opens the change panel,
-  and calls `apply` only from the panel's app-only tool. So a module's write goes
-  past a person exactly as a core one does.
-- **Names are unique across the core and every module**, and a collision is a
-  startup failure naming both — a tool silently shadowed is the second-resolver
+```ts
+import { McpToolRefusal, registerMcpTools } from '@nacre.work/core'
+
+registerMcpTools('admin',
+  {
+    kind: 'read',
+    name: 'list_document_denies',
+    title: 'Deny rules on documents',
+    description: 'Every deny rule on a document in a layer.',
+    inputSchema: { type: 'object', properties: { layer: { type: 'string' } }, required: ['layer'] },
+    async run(call, args) { /* read, scoped to call.auth.orgId */ },
+  },
+  {
+    kind: 'write',
+    name: 'issue_document_deny',
+    title: 'Deny a group a document',
+    description: 'Propose a deny rule on one document.',
+    inputSchema: { /* … */ },
+    // Resolves names and describes the change. Changes nothing.
+    async propose(call, args) {
+      const doc = await findDocument(call.auth, args)
+      if (doc === undefined) throw new McpToolRefusal('No document by that name in that layer.')
+      return {
+        summary: `Deny the group ${group.name} read on "${doc.title}".`,
+        details: [{ label: 'group', value: group.name }, { label: 'document', value: doc.title }],
+        input: { group: group.id, document: doc.id },
+      }
+    },
+    // Called only when the person applies — with the input propose returned.
+    async apply(call, input) { /* the write */ },
+  },
+)
+```
+
+- **`surface` is `'admin'`.** The ordinary surface takes no module tools: its
+  catalog is what every connected agent reads, and a module adding to it would
+  change what a search client is told without the person who approved the
+  connection seeing it. Any other value is refused at registration.
+- **The gate is the surface's, and the module never sees a request that has not
+  passed it**: an `org_admin`, acting as themselves through an administrative
+  connection, re-checked on every call. `call.auth` is that principal, with the
+  organization from the token.
+- **A write is two functions.** `propose` resolves and describes, and its
+  `input` is stored as the proposal; `apply` is called with that `input` only
+  when the person presses Apply — in the change panel, or on the console's
+  Proposals screen — and never on the call that proposed it. There is no third
+  shape, so a module cannot add a write that skips the person. `apply` should
+  still check what it is about to change: ten minutes is long enough for a
+  group to be deleted.
+- **`McpToolRefusal`'s message reaches the caller**, from either function. Any
+  other error is logged and answered with a generic failure, because an error's
+  message is not something a module has decided to say to a model.
+- **Names are unique across the core and every module**, `[a-z][a-z0-9_]*`, at
+  most 64 characters. A collision — with a core tool or between two modules — is
+  a startup failure naming both: a tool silently shadowed is the second-resolver
   failure this registry already refuses.
-- Registration is open only while `loadModules` runs, like every point here.
+- **A proposal records its module.** If that module is no longer the one
+  offering the tool when the person applies — removed from `NACRE_MODULES`, or
+  replaced by another registering the same name — applying is refused rather
+  than handed to code that did not make the proposal.
+- Registration is open only while `loadModules` runs, like every point here, and
+  the startup line lists what was registered as `module:admin.name`.
 
 `acl-advanced` is the first caller: document-scoped grants and deny rules, which
 the core evaluates and refuses to issue, become proposals on the administrative

@@ -5,13 +5,12 @@ import type { ToolAnnotations } from './tools.js'
 /**
  * The administrative MCP's catalog. docs/mcp-admin.md.
  *
- * **Reads only, in this release.** Every write on this surface is specified as
- * a proposal a person applies in a panel, and the panel is what makes a planted
- * instruction stop at somebody's screen; a write tool shipped before the panel
- * would be the one write the design exists to prevent. So the catalog is what
- * an administrator reads to decide — people, groups, layers, grants, what
- * somebody can reach and why, skills, connections and the access log — and the
- * guide says where a change is made instead.
+ * Reads, which answer on the call, and writes, which **propose**: a write tool
+ * stores what it would do and answers with that, and the change happens when the
+ * person presses Apply — in the panel the host renders beside the result, or on
+ * the console's Proposals screen. The panel's two buttons are tools too, and
+ * they are app-only: a host leaves them out of what the model is offered, so a
+ * planted instruction gets a change as far as somebody's screen and no further.
  *
  * No tool here returns a document's contents, and none takes an organization:
  * it is the token's, as everywhere.
@@ -23,7 +22,30 @@ export interface AdminToolDefinition {
   readonly description: string
   readonly inputSchema: Record<string, unknown>
   readonly annotations: ToolAnnotations
+  /**
+   * `read` answers; `write` proposes and opens the change panel; `decide` is
+   * one of the panel's own buttons, offered to the panel and not to the model.
+   * Absent is `read`.
+   */
+  readonly kind?: 'read' | 'write' | 'decide'
 }
+
+/**
+ * A result with something for the panel beside it.
+ *
+ * `_meta` is the host's and the view's, not the model's: the proposal's id
+ * travels there so the panel can apply it and the model, which never sees it,
+ * cannot name it to anything.
+ */
+export class AdminResult {
+  constructor(
+    readonly result: unknown,
+    readonly meta: Readonly<Record<string, unknown>>,
+  ) {}
+}
+
+/** The key the change panel reads the proposal from. */
+export const PROPOSAL_META = 'nacre/proposal'
 
 /**
  * What every result carrying text somebody else wrote opens with.
@@ -262,5 +284,77 @@ export const ADMIN_CATALOG: readonly AdminToolDefinition[] = [
       additionalProperties: false,
     },
     annotations: read('Summarize the access log'),
+  },
+]
+
+const WRITE: Omit<ToolAnnotations, 'title'> = {
+  readOnlyHint: false,
+  // A proposal changes nothing, but what it proposes may, and the hint is what
+  // a client shows a person before the call: better a confirmation too many
+  // than a delete presented as harmless.
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: false,
+}
+
+/** A write, from the core or a module, as the catalog serves it. */
+export function writeDefinition(tool: {
+  readonly name: string
+  readonly title: string
+  readonly description: string
+  readonly inputSchema: Readonly<Record<string, unknown>>
+}): AdminToolDefinition {
+  return {
+    name: tool.name,
+    title: tool.title,
+    description: `${tool.description} Returns a proposal; nothing changes until the person applies it.`,
+    inputSchema: { ...tool.inputSchema },
+    annotations: { ...WRITE, title: tool.title },
+    kind: 'write',
+  }
+}
+
+/** A module's read, as the catalog serves it. */
+export function readDefinition(tool: {
+  readonly name: string
+  readonly title: string
+  readonly description: string
+  readonly inputSchema: Readonly<Record<string, unknown>>
+}): AdminToolDefinition {
+  return { name: tool.name, title: tool.title, description: tool.description, inputSchema: { ...tool.inputSchema }, annotations: read(tool.title), kind: 'read' }
+}
+
+const proposalArg = {
+  type: 'object',
+  properties: {
+    proposal: { type: 'string', description: 'The proposal id the panel was handed.' },
+    key: { type: 'string', description: 'The key the panel was handed beside it.' },
+  },
+  required: ['proposal', 'key'],
+  additionalProperties: false,
+} as const
+
+/**
+ * The change panel's two buttons. App-only: `_meta.ui.visibility: ["app"]`,
+ * which a host honours by not offering them to the model. What the guarantee
+ * rests on is stated in docs/mcp-admin.md rather than implied — and the id they
+ * take is in the result's `_meta`, which the model is not shown either.
+ */
+export const DECIDE_CATALOG: readonly AdminToolDefinition[] = [
+  {
+    name: 'apply_proposal',
+    title: 'Apply a proposed change',
+    description: 'The change panel\'s Apply button. Not for the model: a person presses it.',
+    inputSchema: { ...proposalArg },
+    annotations: { ...WRITE, title: 'Apply a proposed change' },
+    kind: 'decide',
+  },
+  {
+    name: 'cancel_proposal',
+    title: 'Cancel a proposed change',
+    description: 'The change panel\'s Cancel button. Not for the model: a person presses it.',
+    inputSchema: { ...proposalArg },
+    annotations: { ...WRITE, destructiveHint: false, idempotentHint: true, title: 'Cancel a proposed change' },
+    kind: 'decide',
   },
 ]

@@ -1,6 +1,7 @@
 import type { CeilingValue, Connection } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
+import { connectPanel } from '../connect.js'
 import { agoCell, clear, h } from '../dom.js'
 import { listing } from '../listing.js'
 
@@ -90,9 +91,10 @@ function mayLine(c: Connection, names: ReadonlyMap<string, string>): string | un
   // The administrative connection's reach is fixed by the server rather than
   // chosen, so the line says what it is rather than reading out a ceiling of
   // `read` and `admin` that would suggest it can read documents and change
-  // things — it can do neither. docs/mcp-admin.md.
+  // things directly — it can do neither. A change it asks for is a proposal
+  // that waits for its person to apply it. docs/mcp-admin.md.
   if (c.surface === 'admin') {
-    return 'Administrative: may read how the organization is set up and its access log, and change nothing.'
+    return 'Administrative: may read how the organization is set up and its access log, and propose changes that wait for its person to apply them.'
   }
   const verbs = (values: readonly CeilingValue[]): string =>
     values.length === 0 ? 'do anything its person can' : sentence(values.map((v) => VERB[v]))
@@ -122,6 +124,9 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
           'Forgetting an application ends that one connection; the agent, or the person, keeps working.'),
       ),
     ),
+    // Where to connect sits above what is connected: it is the question a
+    // person arriving here with nothing connected yet came to ask.
+    connectPanel(),
     message,
     h('div', { class: 'panel' }, body),
   )

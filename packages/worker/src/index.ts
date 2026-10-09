@@ -15,6 +15,7 @@ export type {
 export {
   claimPurgeable,
   claimStranded,
+  expireProposals,
   HttpParser,
   PostgresDocumentStore,
   QdrantVectorWriter,

@@ -1393,7 +1393,7 @@ requiredness — are narrow enough to be defeated by rewording, which is the
 shape of check this repository keeps deleting. `grep` found the other three
 copies, and they were correct.
 
-**Every case of T1–T41 in docs/authz.md that describes what is built runs** — thirty-nine; T32 and T35, for the administrative MCP's writes and notifications, are specified and pending — against real services, plus the truth
+**Every case of T1–T41 in docs/authz.md that describes what is built runs** — forty; T35, for the administrative MCP's notifications, is specified and pending — against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
 round trip that puts the worker and the search path against each other.
 `acl-invariants` is a gate on what that document specifies — and only on that.
@@ -3143,7 +3143,9 @@ repository that does not exist answers `401`, which reads as "went private".
 The commercial image is deliberately **not** mirrored:
 it is gated by a GitHub token on `ghcr.io`, a second registry is a second
 credential for the same customer, and the private repositories cannot read the
-organization's Docker Hub secrets on this plan anyway.
+organization's Docker Hub secrets on this plan — `nacre-enterprise` carries
+`DOCKER_USER` and `DOCKER_PAT` as repository secrets of its own for exactly that
+reason, to sign its CI's pulls in.
 
 `get_document` carries its presigned `source_url` twice now: in the JSON, and
 as a `resource_link` block, which is the revision's word for "the result is
@@ -3200,7 +3202,7 @@ conventions and never how permissions work. `instructions.test.ts` holds every
 tool in the catalog against the guide — dropping one sentence names the tool —
 and writes an organization's own skill to ask that the mechanics survive it.
 
-**The administrative MCP reads, and nothing on it writes yet** —
+**The administrative MCP reads** —
 [docs/mcp-admin.md](./docs/mcp-admin.md). `/mcp/admin` is a second resource on
 the MCP process with its own audience, `${NACRE_JWT_AUDIENCE}/admin`, chosen when
 a token is minted from the connection's `surface` (migration 0038) rather than
@@ -3208,9 +3210,10 @@ from the request, because a renewal has no request. Its consent is an RFC 8707
 indicator naming that path: an `org_admin` only, as the person, no layers and no
 permissions. Thirteen read tools — people, groups, layers, grants by principal or
 scope, what anybody can reach computed by the active resolver, skills, connections,
-the access log and counts over it — and four prompts. Every write is specified as
-a proposal a person applies in a panel, so until the panel exists there is no
-write at all: one that skipped it would be the write the design exists to stop.
+the access log and counts over it — and four prompts. Its writes came in 0.34.0,
+below, and only as proposals: until there was a panel to apply one in, there was
+no write at all, because one that skipped the person would be the write the
+design exists to stop.
 
 T31 is held **twice, and each half was measured alone**: the audience, which the
 API and `/mcp` compare exactly, and the connection the token names. Removing the
@@ -3382,6 +3385,107 @@ while the group directly follows a choice and a `hidden` one is still the
 previous sibling. The note beside it had already learned that and grown a second
 arm. A nested group carries its own margin now, since sibling margins collapse,
 so the gap no longer depends on what precedes it.
+
+**The administrative MCP writes, and every write is a proposal a person
+applies — 0.34.0.** Eighteen tools — people, groups, workspaces, layers, grants,
+skills, connections — and each one *proposes*: it resolves the names it was
+given, stores what it would do in `admin_proposals` (migration 0039) bound to
+the connection and its person, answers with the server's own sentence, and
+changes nothing. The change happens when the person presses **Apply**: in the
+change panel beside the conversation, through the app-only tool
+`apply_proposal` a host leaves out of what the model is offered, or on the
+console's Proposals screen, which answers a person's own session and nothing a
+connected application holds. Either way it is one `UPDATE` from `open` to
+`applying`, conditioned on the row being open, unexpired, the caller's, and its
+connection not revoked — so two presses apply it once and an expired one is the
+same refusal as one that never existed. T32 holds the whole of it against a real
+PostgreSQL, and four guards were each measured by removing them alone — the
+connection in the panel's claim, the expiry, the console refusing a delegation,
+and `propose` writing nothing.
+
+**And the first version let the model apply its own proposal**, which a full
+review found before it shipped and reproduced against the real server. The id
+travelled in `_meta` "and nowhere the model reads" — and in the access log,
+which this surface's own `query_audit` returns; and a legacy-era client, which
+is what the hosts rendering apps are today, was offered `apply_proposal`
+because nothing tells the server it will not honour `visibility: ["app"]`. So
+`issue_grant`, `query_audit`, `apply_proposal` granted access with nobody in
+front of it. The panel's Apply presents a **key** now, handed to the panel in
+`_meta` beside the id, stored only as a hash, and written nowhere a model
+reads — so the id being findable stops mattering. The case that held "the
+model is not given the id" asserted it of the result text alone, which is the
+narrow-projection defect this file names three times; the new case reads the
+id out of the log the way a model would and is refused three ways.
+
+The same review found four smaller things, each with a case now: revoking a
+connection hid its proposals but re-approving the application re-opened the
+same row and **revived** them, so revocation cancels them in its own
+transaction; the expiry sweep failed an apply still running across its expiry;
+a write refused at proposal time and a press on a proposal that was not there
+left **nothing in the log**, which is the half of an injection that shows; and
+a 36-character non-UUID id was a `500`.
+
+Asking the stand what the default skill reads like, as an agent would, found
+the search tool describing a layer with no description as `Engineering —  (3
+docs)`, and naming layers by the name when `layers` takes the slug. It names
+them by slug now, and the per-tenant leak checks beside it had to become
+case-insensitive — a negative looking for the capitalised name would have
+passed by not finding a spelling the description no longer uses.
+
+The specification offered an organization a switch to **apply directly** for
+clients that cannot render a panel. It was dropped rather than built: every way
+of making that switch safe ended at a person pressing Apply somewhere, and once
+the console held the button there was somewhere. A setting whose safe value is
+"never" is a setting somebody turns on.
+
+`registerMcpTools` is the seventh extension point, and its shape is the
+argument: a module's write is `propose` and `apply`, never one function, so a
+module cannot add a write that skips the person — and a proposal records its
+module, so a different module registering the same name later cannot be handed
+somebody else's proposal.
+
+The console grew a **Proposals** screen and no nav item for it. A permanent
+item was an empty screen nearly always, and the screenshot pass showed it as the
+tenth item wrapping the nav onto a second line; an item shown only while
+something waited wrapped it too, and so did a link in the masthead, by taking
+the room the nav had left. What is waiting is a line above every other screen
+now — "2 changes an agent proposed are waiting for you. Review them" — which is
+also the more honest place for something that expires in ten minutes.
+
+Moving the count onto every navigation is what broke the WebAuthn end-to-end
+run in CI, and it was a real defect: after signing out, the old session's hash
+handler asked `client()` for proposals, `client()` throws synchronously with no
+token, and a `.catch` on the promise cannot see a throw that happens before the
+promise exists. The sign-in screen got a page error. It asks only with a token
+now, inside a `try`, and the event listener is one module-level property rather
+than one more `addEventListener` per sign-in.
+
+**Where to connect is on a screen**, which was asked for in those words. The MCP
+endpoint and the REST base lived in `docs/quickstart.md` and in an operator's
+`.env`, so a person handed a login had to ask somebody for an address the server
+already knew. `GET /v1/endpoints` says it — built from `NACRE_CANONICAL_URL` and
+`NACRE_MCP_CANONICAL_URL`, not from the page's own origin, which is the answer
+only where everything shares one — and gives the administrative MCP only to
+somebody who administers, because its consent screen refuses everybody else.
+The Connections screen shows the three addresses with copy controls and example
+requests that run as written, and the dialog that shows a new service account
+key once says where to send it.
+
+Rendering it found a defect in the geometry rule rather than in the screen: the
+contents of a closed `<details>` keep their boxes in Chromium, which hides them
+with `content-visibility`, so the headroom rule measured collapsed examples six
+pixels above the table under them. It asks `checkVisibility()` now, and still
+named the one real defect — a copy control flush against the panel's heading —
+when that was put back.
+
+**And CI's database stopped being pulled anonymously.** The commercial modules'
+0.10.16 release failed three times running on `toomanyrequests` from Docker Hub
+before a line of that repository ran, and a re-run cannot help: the limit is the
+runner's address, not ours. Every service container here whose image names no
+registry signs in with `DOCKER_USER` and `DOCKER_PAT` now — thirteen blocks in
+four workflows — and `check-workflows.mjs` asks it of every such block, in both
+repositories, in the same words. The first attempt was a registry mirror; a
+login is the smaller change, and the credentials were already there.
 
 **A connected application could approve itself a wider connection, and 0.31.1
 closes it.** The consent endpoint refused an agent — "a service account cannot

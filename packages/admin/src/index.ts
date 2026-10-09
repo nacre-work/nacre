@@ -22,6 +22,7 @@ import { loadExtensions, type ConsoleView, type ConsoleViewer } from './extensio
 import { accountsView } from './views/accounts.js'
 import { auditView } from './views/audit.js'
 import { connectionsView } from './views/connections.js'
+import { proposalsView } from './views/proposals.js'
 import { consentView } from './views/consent.js'
 import { grantsView } from './views/grants.js'
 import { layersView } from './views/layers.js'
@@ -81,7 +82,7 @@ import { skillsView } from './views/skills.js'
  * rather than two: a screen from `nacre-enterprise-web` decides who it is for
  * by asking exactly what a screen in this file asks.
  */
-type Viewer = ConsoleViewer & { readonly managesEmbedders: boolean }
+type Viewer = ConsoleViewer & { readonly managesEmbedders: boolean; readonly pendingProposals: number }
 
 /**
  * A core route, whose `shows`/`render` take the richer internal `Viewer`.
@@ -96,6 +97,12 @@ interface Route {
   readonly label: string
   readonly shows: (viewer: Viewer) => boolean
   readonly render: (root: HTMLElement, viewer: Viewer) => void
+  /**
+   * Reachable, and never a nav item — not even while it is the screen open.
+   * The proposals screen, whose way in is the line `route` draws above every
+   * other screen while something waits.
+   */
+  readonly navless?: boolean
 }
 
 const anybody = (): boolean => true
@@ -174,6 +181,24 @@ const PERSONAL_ROUTES: readonly Route[] = [
     label: 'Connections',
     render: (root) => void connectionsView(root),
     shows: anybody,
+  },
+  // Personal rather than administrative, although only an administrator has
+  // any: a proposal waits for the one person whose connection made it, and no
+  // other administrator sees it. The administrative MCP's own result names
+  // this hash, so a client that renders no panel has somewhere to send them.
+  //
+  // Not in the nav at all. It was there permanently first — an empty screen
+  // nearly always, since a proposal lives ten minutes — and then only while
+  // something waited, and either way it was the tenth item and wrapped the nav
+  // onto a second line at 1280. A link in the masthead wrapped it too, by
+  // taking the room the nav had left. So what is waiting is a line above the
+  // screen, on every screen but this one — see `route`.
+  {
+    hash: '#/proposals',
+    label: 'Proposals',
+    render: (root) => void proposalsView(root),
+    shows: administers,
+    navless: true,
   },
 ]
 
@@ -307,6 +332,7 @@ function route(main: HTMLElement, nav: HTMLElement, viewer: Viewer): void {
 
   clear(nav)
   for (const r of allowed) {
+    if (r.navless === true) continue
     nav.append(
       h('a', {
         href: r.hash,
@@ -367,6 +393,23 @@ function route(main: HTMLElement, nav: HTMLElement, viewer: Viewer): void {
    * describes a correct arrangement, and this one describes an image that needs
    * changing.
    */
+  /*
+   * What an agent proposed and nobody has decided yet, said above every screen
+   * but the one that lists it. A proposal expires in ten minutes, so a person
+   * who does not see this in time loses it — which is the argument for a line
+   * on every screen over an item in a nav that is already full.
+   */
+  document.getElementById('waiting')?.remove()
+  const n = viewer.pendingProposals
+  if (n > 0 && current.hash !== '#/proposals') {
+    main.before(
+      h('p', { class: 'banner', id: 'waiting' },
+        n === 1 ? 'A change an agent proposed is waiting for you. ' : `${String(n)} changes an agent proposed are waiting for you. `,
+        h('a', { href: '#/proposals' }, n === 1 ? 'Review it' : 'Review them'),
+        ' — nothing happens until you apply.'),
+    )
+  }
+
   const broken = document.getElementById('extensions')
   broken?.remove()
   if (extensionProblem !== null) {
@@ -811,6 +854,10 @@ function signInView(): void {
   show(0)
 }
 
+/** What the Proposals screen's `nacre:proposals` event calls: the current session's refresh. */
+let onProposalsChanged: () => void = () => undefined
+window.addEventListener('nacre:proposals', () => onProposalsChanged())
+
 function start(): void {
   // Re-registered on every start so a session that ends mid-use puts the
   // sign-in screen back rather than leaving a console nothing can load into.
@@ -829,10 +876,45 @@ function start(): void {
   // not derivable from it: `false` there covers a member and a platform
   // administrator alike, and only one of them is owed an explanation for the
   // screens that are missing.
-  let viewer: Viewer = { administers: false, platformAdmin: false, managesEmbedders: false }
+  let viewer: Viewer = { administers: false, platformAdmin: false, managesEmbedders: false, pendingProposals: 0 }
   const draw = (): void => route(main, nav, viewer)
   draw()
-  window.onhashchange = draw
+
+  // What is waiting, for an administrator — nobody else can have any. Asked
+  // again on every navigation and whenever the Proposals screen decides one,
+  // because a proposal arrives from a conversation in another window and the
+  // nav that said "(2)" before Apply must not go on saying it after. Redrawn
+  // only when the count moved. A failure is "nothing waiting": the screen is
+  // still reachable by its link, and an older API answers 404 here.
+  //
+  // Asked only while signed in: signing out leaves this closure's listeners
+  // behind until the next `start`, and `client()` throws synchronously with no
+  // token — outside the promise, where `.catch` cannot see it, which surfaced
+  // as a page error on the sign-in screen.
+  const refreshPending = (): void => {
+    if (!viewer.administers || readToken() === null) return
+    let asking: Promise<readonly unknown[]>
+    try {
+      asking = client().proposals.list()
+    } catch {
+      return
+    }
+    void asking
+      .then((pending) => {
+        if (pending.length === viewer.pendingProposals) return
+        viewer = { ...viewer, pendingProposals: pending.length }
+        draw()
+      })
+      .catch(() => undefined)
+  }
+  window.onhashchange = () => {
+    draw()
+    refreshPending()
+  }
+  // A property rather than `addEventListener`, so a second `start` replaces
+  // the first one's listener instead of adding to it — the same reason the
+  // hash handler is `onhashchange`.
+  onProposalsChanged = refreshPending
 
   void client()
     .me()
@@ -853,8 +935,9 @@ function start(): void {
       // access log — and to choose which sentence to show. That is
       // `administersTenants(auth)` in the API, which is the role and has no
       // ceiling question, so there is nothing else to ask for.
-      viewer = { administers: me.administers, platformAdmin: me.role === 'platform_admin', managesEmbedders: me.managesEmbedders }
+      viewer = { administers: me.administers, platformAdmin: me.role === 'platform_admin', managesEmbedders: me.managesEmbedders, pendingProposals: 0 }
       draw()
+      refreshPending()
     })
     .catch(() => {
       // Left as a member. An older API with no /v1/me answers 404, and a

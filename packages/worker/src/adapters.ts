@@ -842,6 +842,65 @@ export async function pruneAuditEvents(
 }
 
 /**
+ * Proposals on the administrative MCP that nobody applied in time.
+ *
+ * Applying refuses an expired one on its own — the claim compares `expires_at`
+ * with the database's clock — so nothing here is needed for correctness. What
+ * this adds is the **record**: a proposal that expired is written to the
+ * journal as `proposal.expired`, naming the tool, the person and the
+ * connection, because a stream of proposals nobody applied is what an
+ * injection attempt looks like from the outside, and a row that silently goes
+ * stale is not something an investigation can count. docs/mcp-admin.md, "Audit".
+ *
+ * One statement, so the status and the event cannot disagree: the rows it
+ * expires are the rows it records, and a second worker running the same pass
+ * finds them already expired. `applying` past its window too — a process that
+ * died between claiming a proposal and settling it — ends as `failed`, so the
+ * row does not read as in flight forever.
+ */
+/** Literal, so `lint:audit-actions` can see it is recorded — the statement takes it as a parameter. */
+const EXPIRED = { action: 'proposal.expired' } as const
+
+export async function expireProposals(pool: Pool, limit: number): Promise<number> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{ expired: string }>(
+      `WITH due AS (
+         SELECT id FROM admin_proposals
+          -- An open proposal ends at its expiry. One being applied does not:
+          -- it was claimed while valid, and an apply that takes a few seconds
+          -- across the expiry is still applying — ending it then would mark
+          -- failed a change that went on to happen. It is ended only once it
+          -- has been applying far longer than any apply takes, which is what
+          -- a process that died mid-apply leaves behind.
+          WHERE (status = 'open' AND expires_at < now())
+             OR (status = 'applying' AND decided_at < now() - make_interval(mins => 15))
+          ORDER BY expires_at
+          LIMIT $1
+          FOR UPDATE SKIP LOCKED
+       ), ended AS (
+         UPDATE admin_proposals p
+            SET status = CASE WHEN p.status = 'open' THEN 'expired' ELSE 'failed' END,
+                decided_at = COALESCE(p.decided_at, now()),
+                error = CASE WHEN p.status = 'applying' THEN 'interrupted while being applied' ELSE p.error END
+           FROM due WHERE p.id = due.id
+         RETURNING p.org_id, p.id, p.tool, p.module, p.proposed_by, p.consent_id, p.status
+       ), recorded AS (
+         INSERT INTO audit_events (org_id, actor_type, actor_id, actor_label, action, surface, client, target, result, detail)
+         SELECT org_id, 'system', NULL, 'system', $2, 'system', 'connection:' || consent_id,
+                jsonb_strip_nulls(jsonb_build_object('proposal', id, 'tool', tool, 'module', module)),
+                'allow',
+                jsonb_build_object('proposed_by', 'user:' || proposed_by, 'ended_as', status)
+           FROM ended
+         RETURNING 1
+       )
+       SELECT count(*)::text AS expired FROM recorded`,
+      [limit, EXPIRED.action],
+    )
+    return Number(rows[0]?.expired ?? 0)
+  })
+}
+
+/**
  * Superseded collections whose rollback window has closed.
  *
  * Cross-tenant, oldest first, so a backlog drains in the order it accumulated

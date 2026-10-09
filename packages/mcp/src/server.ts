@@ -37,6 +37,7 @@ import {
 } from '@nacre.work/api'
 
 import { buildAdminServer } from './admin.js'
+import type { AdminRunner } from './admin-services.js'
 import { buildServer, type Layers, type McpMetrics, type ToolRunner, type SkillSource } from './factory.js'
 import { dispatchCatalog } from './tools.js'
 
@@ -171,7 +172,7 @@ export interface McpOptions {
    * and nothing else is accepted, and its `instructions` carry no skill.
    */
   readonly admin?: {
-    readonly tools: ToolRunner
+    readonly tools: AdminRunner
   }
 }
 
@@ -425,6 +426,7 @@ function faces(options: McpOptions): { readonly default: Faces; readonly admin?:
             return buildAdminServer({
               auth: verified.auth,
               requestId: () => verified.requestId,
+              ui: verified.ui,
               tools: admin.tools,
               ...(options.serverVersion === undefined ? {} : { serverVersion: options.serverVersion }),
               ...(options.observe === undefined ? {} : { observe: options.observe }),

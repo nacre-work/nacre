@@ -51,7 +51,7 @@ const call = async (name: string, args: Record<string, unknown> = {}): Promise<R
 when('the administrative tools, against a real database', () => {
   beforeAll(async () => {
     pool = createPool({ connectionString: url as string })
-    tools = adminTools({ pool, audit: new PostgresAudit(pool, 'nacre_app') })
+    tools = adminTools({ pool, audit: new PostgresAudit(pool, 'nacre_app'), vectors: { vectorsOf: async () => ({}), tombstoneLayer: async () => undefined } })
 
     const c = await pool.connect()
     try {

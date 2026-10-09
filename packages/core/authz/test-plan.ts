@@ -125,13 +125,16 @@ export const TEST_PLAN: readonly TestCase[] = [
     scenario: 'skill in L\u2019s ceiling while the person holds only write on L: the skill write is refused' },
   { id: 'T31', group: 'delegation', status: 'implemented',
     scenario: 'An administrative-resource token is refused by the API and /mcp, and an ordinary token by /mcp/admin' },
-  { id: 'T32', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP reads only; its proposals and writes are specified in docs/mcp-admin.md and not built yet',
+  // A write on the administrative surface proposes; a person applies. A
+  // planted instruction gets as far as a proposal on a screen, and one nobody
+  // applied changes nothing and is still on the record.
+  { id: 'T32', group: 'adversarial', status: 'implemented',
     scenario: 'An administrative write called and never applied changes nothing, and the expired proposal is recorded' },
   { id: 'T33', group: 'baseline', status: 'implemented',
     scenario: 'platform_admin never reads an organization\u2019s skill; only that role writes the installation skill' },
   { id: 'T34', group: 'baseline', status: 'implemented',
     scenario: 'An organization\u2019s skill never reaches a caller from another organization, including through instructions' },
-  { id: 'T35', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP reads only; its proposals and writes are specified in docs/mcp-admin.md and not built yet',
+  { id: 'T35', group: 'adversarial', status: 'pending', blockedBy: 'notifications from the administrative MCP are specified in docs/mcp-admin.md and not built yet; its proposals and writes are',
     scenario: 'A notification to anything but an active user of the caller\u2019s organization is refused before composing' },
   // The catalog is permission data. A delegation narrowed to L used to be
   // listed M — its name, description and document count — on both surfaces,
