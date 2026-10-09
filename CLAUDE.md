@@ -1389,7 +1389,7 @@ requiredness — are narrow enough to be defeated by rewording, which is the
 shape of check this repository keeps deleting. `grep` found the other three
 copies, and they were correct.
 
-**All 25 cases from docs/authz.md run** against real services, plus the truth
+**All 25 cases from docs/authz.md that describe what is built run** — T26–T35, for skills and the administrative MCP, are specified and pending — against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
 round trip that puts the worker and the search path against each other.
 `acl-invariants` is a gate on what that document specifies — and only on that.
@@ -3124,7 +3124,19 @@ somewhere else" and what lets a client fetch the whole file out of band. One
 block per call and only there — `search` still carries none, for the reason
 already written: ten bearer capabilities where the caller wanted an ordering.
 
-## Conventions
+**Skills and an administrative MCP are specified, ahead of the code.**
+[docs/skills.md](./docs/skills.md) and [docs/mcp-admin.md](./docs/mcp-admin.md),
+with T26–T35 in `docs/authz.md` pending. The goal of the first is one sentence —
+an agent that has just connected already knows how to work here, what to store
+and how — through a skill in Claude's own folder format at installation,
+organization and layer level, delivered in `instructions` and readable and
+writable over MCP and REST. The second is a separate resource with its own token
+audience, so `admin` can be on its consent screen without reaching REST, and
+every write it makes is a proposal a person applies in a panel. Notifications go
+to user ids in the caller's organization and never to an address, which is the
+whole of the argument that they are not a way out.
+
+
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.

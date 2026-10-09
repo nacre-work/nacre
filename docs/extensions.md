@@ -88,7 +88,7 @@ settle by precedence: the loser stays loaded, appears to be in force, and is
 not. Same argument `loadJwtKeys` makes about a secret and a key reference.
 
 The default is the built-in resolver, which is what makes this repository
-complete with nothing plugged in — and is why the T1–T25 suite still tests the
+complete with nothing plugged in — and is why the T1–T35 suite still tests the
 model rather than a stub.
 
 ## `registerAuthProvider(provider)`
@@ -340,6 +340,32 @@ way, and the password door is the one a gate closes.
 With no module loaded there are no gates, and the open core mints a session for
 every credential it verifies, exactly as it did before this point existed.
 
+## `registerMcpTools(surface, ...tools)` — specified, not built
+
+The seventh point, and the first that adds to what an agent is offered rather
+than to what the server decides. Specified in [mcp-admin.md](./mcp-admin.md);
+this section is the contract a module is written against once it exists.
+
+- **`surface` is `'admin'`** in the first version. The ordinary surface takes no
+  module tools: its catalog is what every connected agent reads, and a module
+  adding to it would change what a search client is told without the person who
+  approved the connection seeing it.
+- **A tool declares its gate**, and the core applies it: `administers(auth)` on
+  the administrative surface, always, before the module's code runs. A module
+  cannot register a tool that skips it.
+- **A write is a proposal.** A module registers `propose` and `apply`, not one
+  function that writes; the core stores the proposal, opens the change panel,
+  and calls `apply` only from the panel's app-only tool. So a module's write goes
+  past a person exactly as a core one does.
+- **Names are unique across the core and every module**, and a collision is a
+  startup failure naming both — a tool silently shadowed is the second-resolver
+  failure this registry already refuses.
+- Registration is open only while `loadModules` runs, like every point here.
+
+`acl-advanced` is the first caller: document-scoped grants and deny rules, which
+the core evaluates and refuses to issue, become proposals on the administrative
+surface where the module is loaded.
+
 ## The console's extension file
 
 The six points above are for the API process. This one is for the browser, and
@@ -463,7 +489,7 @@ not refuse every installation older than the check.
 
 ## Testing a module against these rules
 
-The T1–T25 suite in `docs/authz.md` is written against the model, not against
+The T1–T35 suite in `docs/authz.md` is written against the model, not against
 the built-in implementation. A module registering a resolver runs it — from
 this repository's version of the file, not a copy — because a resolver reaching
 the same guarantees down different code paths is exactly the thing a copied test
