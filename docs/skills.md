@@ -51,7 +51,7 @@ anything else.
 
 | Level | Stored as | Written by | When absent |
 |---|---|---|---|
-| **Built-in instructions** | `packages/mcp/src/instructions.ts` | nobody — part of the release | — |
+| **Built-in guide** | `packages/mcp/src/instructions.ts` | nobody — part of the release | — |
 | **Installation** | `installation_skill_versions` — no organization, so no policy | `platform_admin` | the default skill shipped in the image |
 | **Organization** | `skill_versions`, `layer_id NULL` | `org_admin` | the installation's |
 | **Layer** | `skill_versions`, `layer_id` | `admin` on that layer | nothing |
@@ -61,12 +61,20 @@ row in the tenant table: a NULL row would need a policy that admits it to every
 tenant and a write path outside `withOrg`, and a table holding nothing of any
 tenant's needs neither. Migration 0036 has the argument.
 
-**The built-in instructions are always present and cannot be edited.** They
-state the permission model's observable behaviour — an empty result is an
-answer, "not permitted" and "not there" are one reply, `write` does not imply
-`read` — and a skill that could remove them would let an organization's own
-text unteach an agent the rules it is held to. A skill adds to them; it never
-replaces them.
+**The built-in guide is always present and cannot be edited.** It states how
+the server works: the permission model's observable behaviour — an empty result
+is an answer, "not permitted" and "not there" are one reply, `write` does not
+imply `read` — the mechanics of every tool, how to read a skill and what a skill
+may decide, and what the panels are. A skill that could remove it would let an
+organization's own text unteach an agent the rules it is held to, and would
+take the mechanics with it. A skill adds to the guide; it never replaces it.
+
+**The line between them is who knows the fact.** That an ingest answers
+`queued` and is not done until `indexed`, that a file goes through
+`request_upload`, that the same `external_id` replaces a document — those are
+true of this server and live in the guide. That contracts are signed PDFs, that
+a layer's documents are named by ticket number, that secrets never go in —
+those are an organization's, and live in a skill.
 
 **The organization's skill replaces the installation's, entirely.** Not a
 merge: two skills concatenated are one skill nobody wrote, and the
@@ -81,14 +89,13 @@ are named, which metadata keys it expects, its language, what never goes in it.
 The **default skill** is shipped in the image, as `packages/core/default-skill.ts`
 — a module rather than a Markdown file, because the build emits `dist/` and
 nothing else — and is the one an agent gets on an installation nobody has configured. It is the
-most important artifact here, because it is what most agents will ever read: how
-to search (meaning and exact terms both; an empty result is an answer), what to
-store (one subject per document, no secrets, no personal data unless a layer's
-skill says otherwise), how to store it (a stable `external_id` so a resend
-replaces; lower-case metadata keys; `ingest_document` for text the agent wrote,
-`request_upload` for a file it holds, `upload_file` for a file a person picks;
-`ingest_status` until it settles), and to read a layer's skill before writing to
-it. It is judged by running it: a fresh agent connected to the demo stand with no
+most important artifact here, because it is what most agents will ever read. It
+is the organization's half only — search before answering, what belongs, what
+never goes in (secrets, personal data, unchecked guesses), and how a document is
+written: one subject, a title and a summary, an `external_id` derived from the
+subject, lower-case tags, a layer's skill read first. The server's mechanics are
+deliberately not in it, because an organization's skill replaces this one and
+would take them along; they are the built-in guide's. It is judged by running it: a fresh agent connected to the demo stand with no
 other guidance, storing and finding things correctly.
 
 ## Who sees what

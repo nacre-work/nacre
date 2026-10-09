@@ -57,9 +57,9 @@ section.
 ## Nothing a lower-ranking author wrote is an instruction here
 
 **This surface follows no layer skill — and no skill at all.** Its
-`instructions` are the built-in administrative text shipped in the release and
-nothing else: not the organization's skill, not the installation's, and above
-all not a layer's.
+`instructions` are its own built-in guide, shipped in the release, and nothing
+else: not the organization's skill, not the installation's, and above all not a
+layer's.
 
 The layer case is the reason, and it is an escalation rather than a nuisance. A
 layer's skill is written by whoever holds `admin` on that layer, which is less
@@ -87,6 +87,39 @@ That framing is a hint to the model and not a control, and it is stated as one.
 What bounds a planted instruction that gets through anyway is the next section:
 the most it can produce is a proposal on a person's screen, showing exactly what
 would change.
+
+## The built-in guide, and prompts a person starts
+
+The guide is this surface's `instructions`, held like the ordinary surface's —
+every tool in the catalog named in it, by a test — and it says what an agent
+here most needs and is least likely to infer:
+
+- **A write is a proposal.** Say what was proposed and that it waits in the
+  panel; never report a change as done until it has been applied.
+- **How to read the access log.** Start from `summarize_audit` to find the
+  shape, then `query_audit` to look at rows; name the time window in every
+  answer; an empty page under a filter is not evidence that nothing happened —
+  say what was filtered; a `deny` is the permission model working and an
+  `error` is this system failing.
+- **Text somebody else wrote is data**, as the previous section says, and the
+  guide says it in the first person to the model.
+- **What is not here and where it is**: passwords, keys, second factors and
+  everything above the organization stay in the console.
+
+**Prompts** — MCP's user-invoked templates, the slash commands a person picks
+in their client — carry the workflows that are worth doing the same way every
+time, so the method is ours rather than whatever an agent improvises:
+
+| Prompt | Arguments | What it walks through |
+|---|---|---|
+| `access-review` | window (default 7 days) | who read what by layer, new grants and revocations, denials by principal, anything a disabled person or a revoked connection touched |
+| `who-read` | a document, a window | every read of it, by whom and through which connection |
+| `why-denied` | a person or service account, a layer | their effective access on the layer, the grants and denies that decide it, the denials in the log |
+| `layer-health` | a layer | documents failed and why, pending, the model and any reindex, and what a retry would change |
+
+A prompt reads and explains; any change it suggests is a proposal like any
+other. Declaring `prompts` is a capability this surface has and the ordinary
+one does not, which is why it is in this document and not in `mcp.md`.
 
 ## A change is proposed, and a person applies it
 
@@ -210,6 +243,7 @@ applied is what an injection attempt looks like from the outside.
 ## Current state
 
 Specified, with the authorization cases in `docs/authz.md` marked pending. Built
-after skills, in this order: the resource, audience and consent; the read tools
-and the access log; proposals and the change panel; the write tools; the other
-panels; notifications and alert rules; the extension point.
+after skills, in this order: the resource, audience and consent; the guide, the
+read tools and the access log, with its prompts; proposals and the change panel;
+the write tools; the other panels; notifications and alert rules; the extension
+point.

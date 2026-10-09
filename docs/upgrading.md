@@ -278,6 +278,17 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.29.1 — the built-in guide
+
+Nothing to do, and nothing in the schema. What an MCP client receives in
+`instructions` is now a guide in four parts — permissions, how to work with the
+tools, how to read a skill and what a skill may decide, and what the panels are
+— followed by the base skill as before. The default skill shrank to the
+organization's half: what to store, what never goes in, and how a document is
+written. If you wrote an organization skill on 0.29.0 that restates how ingest
+works, it can drop that now; the guide says it, and an organization's skill no
+longer has to.
+
 ### 0.29.0 — skills: an agent that connects already knows how to work here
 
 **Migration 0036**, run by the migrator as usual: two tables, `skill_versions`
