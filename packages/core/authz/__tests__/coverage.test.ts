@@ -66,6 +66,20 @@ describe('test plan coverage', () => {
     expect(missing, 'marked implemented but no test names them').toEqual([])
   })
 
+  it('no pending case is carried by a test — a marker means exactly one case', () => {
+    // The direction the assertion above cannot see. Three per-layer ceiling
+    // tests were labelled T26–T28 before docs/authz.md had rows for them, and
+    // the skills cases were then given those numbers: the moment one of them
+    // was marked implemented, a test about something else would have satisfied
+    // it. A pending case with a marker in the suite is either implemented and
+    // mislabelled in the plan, or a collision; both are refused here.
+    const carried = pending()
+      .filter((t) => new RegExp(`\\b${t.id}\\b`).test(suiteText))
+      .map((t) => t.id)
+
+    expect(carried, 'pending, yet a test names them').toEqual([])
+  })
+
   it('every pending case says what it is waiting for', () => {
     const unexplained = pending()
       .filter((t) => !t.blockedBy || t.blockedBy.trim() === '')
