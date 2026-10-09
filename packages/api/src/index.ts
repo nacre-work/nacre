@@ -86,6 +86,18 @@ export type {
   SearchDeps,
 } from './adapters.js'
 export { PostgresGroups, PostgresUsers, looksLikeEmail } from './principals.js'
+export { INSTRUCTIONS_SKILL_LIMIT, PostgresSkills } from './skills.js'
+export { decodeCursor, encodeCursor, MAX_LIMIT } from './pagination.js'
+export type {
+  EffectiveBase,
+  SkillEntry,
+  SkillLevel,
+  Skills,
+  SkillSurface,
+  SkillVersion,
+  SkillVersionMeta,
+  SkillWrite,
+} from './skills.js'
 // Re-exported rather than defined here. It moved to the core when the second
 // copy of its word list was found; this keeps an existing importer working and
 // makes it visibly one function rather than two agreeing.

@@ -1,8 +1,8 @@
 # Skills
 
-> **Specified, not built.** Everything below is the contract the implementation
-> is written to. Where the code and this document disagree once it exists, one
-> of them is a bug — say which.
+> **Built, except where [Current state](#current-state) says otherwise.** This is
+> the contract the implementation is written to. Where the code and this
+> document disagree, one of them is a bug — say which.
 
 An agent connected to Nacre over MCP learns two things today: the tool schemas,
 and a few paragraphs of `instructions` about the permission model. It does not
@@ -52,9 +52,14 @@ anything else.
 | Level | Stored as | Written by | When absent |
 |---|---|---|---|
 | **Built-in instructions** | `packages/mcp/src/instructions.ts` | nobody — part of the release | — |
-| **Installation** | `org_id NULL, layer_id NULL` | `platform_admin` | the default skill shipped in the image |
-| **Organization** | `org_id, layer_id NULL` | `org_admin` | the installation's |
-| **Layer** | `org_id, layer_id` | `admin` on that layer | nothing |
+| **Installation** | `installation_skill_versions` — no organization, so no policy | `platform_admin` | the default skill shipped in the image |
+| **Organization** | `skill_versions`, `layer_id NULL` | `org_admin` | the installation's |
+| **Layer** | `skill_versions`, `layer_id` | `admin` on that layer | nothing |
+
+The installation's level has a table of its own rather than an `org_id NULL`
+row in the tenant table: a NULL row would need a policy that admits it to every
+tenant and a write path outside `withOrg`, and a table holding nothing of any
+tenant's needs neither. Migration 0036 has the argument.
 
 **The built-in instructions are always present and cannot be edited.** They
 state the permission model's observable behaviour — an empty result is an
@@ -73,8 +78,9 @@ organization goes back to the installation's.
 optional. It says what belongs in that layer: the documents it holds, how they
 are named, which metadata keys it expects, its language, what never goes in it.
 
-The **default skill** is shipped in the image, under `packages/core/skills/default/`,
-and is the one an agent gets on an installation nobody has configured. It is the
+The **default skill** is shipped in the image, as `packages/core/default-skill.ts`
+— a module rather than a Markdown file, because the build emits `dist/` and
+nothing else — and is the one an agent gets on an installation nobody has configured. It is the
 most important artifact here, because it is what most agents will ever read: how
 to search (meaning and exact terms both; an empty result is an answer), what to
 store (one subject per document, no secrets, no personal data unless a layer's
@@ -116,8 +122,14 @@ organization's.** An organization's skill is that organization's text, and rule
 | Level | Over REST | Over MCP |
 |---|---|---|
 | Installation | `administersTenants(auth)` | **never** |
-| Organization | `administers(auth)` | `administers(auth)` — the admin MCP, see [mcp-admin.md](./mcp-admin.md) |
+| Organization | `administers(auth)` | only the admin MCP, see [mcp-admin.md](./mcp-admin.md) — never `/mcp` |
 | Layer | `admin` resolved on the layer | the same, and for a delegation `skill ∈ ceiling(L)` |
+
+**The organization's skill is not written over `/mcp`**, even by a token that
+`administers`: a connection whose consent carried no ceiling would otherwise
+let any MCP client its administrator connected rewrite what every agent in the
+organization is told. That write belongs to the administrative surface, where
+it is a proposal a person applies.
 
 **The installation's skill is never written over MCP**, by decision: rights that
 span tenants stay in the API and the console, where a person is doing it.
@@ -183,6 +195,12 @@ silent overwrite: two agents editing one skill otherwise erase each other with
 both believing they succeeded. Each version records who wrote it, through which
 surface and connection, when, how many files, and whether it contains scripts.
 
+**History is shown to whoever may write the level**, not to everybody who reads
+it: it says who wrote what through which connection, and the current version is
+all a reader needs. A version is **written by an agent** when it came through
+MCP, through a connected application, or from a service account — that is the
+marker the console and the panel show.
+
 ## Surfaces
 
 ### MCP
@@ -201,9 +219,20 @@ surface and connection, when, how many files, and whether it contains scripts.
 - **`get_skill`** — `read`-only. `{ skill }` (`"base"` or a layer slug) returns
   `SKILL.md`; with `{ path }` it returns that file. Not found for a layer the
   caller cannot see, exactly as for one without a skill.
-- **`update_skill`** — destructive. `{ skill, files, based_on }`. Organization
-  level needs `administers(auth)`; layer level needs `may_write_layer_skill`.
-  An empty `SKILL.md` clears.
+- **`update_skill`** — destructive. `{ skill, files, based_on }`, where `skill`
+  is a layer slug: on `/mcp` it writes a layer's skill and nothing else, and
+  needs `may_write_layer_skill`. A `SKILL.md` with no body clears. A refusal
+  about the call itself — a stale `based_on` naming the current version, a
+  folder the format refuses and why, a layer the caller sees and may not write —
+  is said in words, because an agent told "not found" about its own arguments
+  retries a call that can never succeed; a layer it cannot see is not found,
+  like everything else.
+- **The administrative MCP follows no skill.** Its `instructions` carry its own
+  built-in text and no skill of any level, and a skill its tools read is returned
+  as text under review rather than as guidance: a layer's skill is written by
+  somebody with less authority than the `org_admin` that surface acts for, so
+  following one there would be an escalation through text. See
+  [mcp-admin.md](./mcp-admin.md).
 - **`list_layers`** carries, per layer, whether it has a skill and its
   `description`, so "read the layer's skill before writing" costs one call.
 - **The skill panel**, `ui://nacre/skill.html`, opened by `get_skill` and
@@ -215,7 +244,9 @@ surface and connection, when, how many files, and whether it contains scripts.
 ### REST
 
 ```
-GET    /v1/skills                                   what the caller sees: base + layers
+GET    /v1/skills                                   what the caller sees: base + a page of layers
+GET    /v1/skills/base                              the base this caller is given, with files
+GET    /v1/skills/base/export                       the same, as a zip
 GET    /v1/skills/{level}                           current version, files
 PUT    /v1/skills/{level}                           write: JSON files, or application/zip
 DELETE /v1/skills/{level}                           clear (falls back a level)
@@ -226,6 +257,13 @@ GET    /v1/skills/{level}/export                    application/zip, a folder na
 
 {level} = installation | organization | layers/{layer_id}
 ```
+
+`base` is read-only: it is not a level anybody writes but the answer to "which
+of them applies to me", which is what `instructions` carry. A write names
+`based_on` — in the JSON body, or in the query beside a `.zip` and on `DELETE`
+— and a stale one is `409` with `current_version`. A caller who sees a skill
+and may not write it gets `403`; one who cannot see it gets the `404` a missing
+one gets.
 
 The export is installable as it is: unzip it into `~/.claude/skills/` for Claude
 Code, or upload it as a skill on claude.ai.
@@ -243,7 +281,9 @@ platform-administrator screens.
 
 `skill.updated`, `skill.restored` and `skill.cleared`, as administrative events,
 with `detail` carrying the level, the layer, the new version, the file count,
-whether it has scripts, the surface and the connection. Reading a skill is not
+whether it has scripts, the surface and the connection. The console writes
+through REST, so its writes are `rest`. A refused write — a level the caller
+cannot see or cannot write — is recorded as a `deny`. Reading a skill is not
 recorded: it is not a document, and the log is about who reached what the
 organization holds.
 
@@ -256,7 +296,14 @@ installation skill is in `nacre-enterprise`.
 
 ## Current state
 
-Specified, with the authorization cases in `docs/authz.md` marked pending. Built
-in this order: the cases, the default skill (judged on a live agent), storage and
-versions, the REST surface, the MCP tools and `instructions`, the panel, the
-console, and the consent screen's per-layer box.
+**Built:** the format and its zip, the default skill, storage and versions
+(migration 0036), the REST surface, the SDK's `skills`, the MCP tools and
+`instructions`, and the authorization cases T26, T27, T28, T33 and T34, against a real
+PostgreSQL.
+
+**Not built yet, in this order:** the default skill judged on a live agent —
+a fresh agent on the demo stand with no other guidance, storing and finding
+things correctly; the skill panel; the console screens; and the consent
+screen's per-layer box, which is what T29 and T30 wait for. Until that box
+exists, a connected application writes a layer's skill only where its ceiling
+holds `admin` on that layer — which the ordinary consent screen never sets.

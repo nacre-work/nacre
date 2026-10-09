@@ -22,8 +22,11 @@ other is a build failure.
 | `upload_file` | the upload panel, in a client that renders MCP Apps |
 | `ingest_status` | what became of an ingest |
 | `delete_document` | remove one |
+| `list_skills` | the skills that say how to work here — the base one and each layer's |
+| `get_skill` | read one: its `SKILL.md`, or another file in it |
+| `update_skill` | write a layer's skill, as a new version, with `admin` on the layer |
 
-Eight tools, and the write ones are why **an MCP client is already a
+Eleven tools, and the write ones are why **an MCP client is already a
 connector**: an agent that can reach Confluence, a ticket tracker or a drive
 puts documents in through the same session it searches them out of, with its own
 permissions, and no integration code of ours in between. For a source nobody is

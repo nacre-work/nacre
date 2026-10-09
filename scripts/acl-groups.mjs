@@ -63,6 +63,11 @@ export const ACL_GROUPS = [
     selector: 'a writer can see its own ingest',
     title: 'rule 6 · a writer sees its job and never the document',
   },
+  // T26, T27, T28, T33 and T34. A skill is visible exactly when its layer is,
+  // so a slip here turns the skill listing into a directory of layers another
+  // principal holds — invariant I6 through a side door — or hands one tenant's
+  // instructions to another through a shared cache.
+  { selector: 'skills ·', title: 'skills · a layer skill is visible exactly when its layer is' },
 ]
 
 /** The property run is its own step with its own run count; not a group. */

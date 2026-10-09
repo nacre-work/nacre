@@ -41,6 +41,12 @@ import type {
   WebAuthnRegistrationOptions,
   UploadDescriptor,
   UploadTicketRequest,
+  BaseSkill,
+  SkillEntry,
+  SkillFiles,
+  SkillLevel,
+  SkillVersion,
+  SkillWrite,
 } from './types.js'
 
 /**
@@ -144,6 +150,11 @@ interface RequestOptions {
   /** Safe or idempotent, so a transient failure may be retried. */
   readonly retryable?: boolean
   /**
+   * The answer is bytes — a skill exported as a zip — rather than JSON. A
+   * refusal is still a problem document and still throws.
+   */
+  readonly bytes?: boolean
+  /**
    * The sign-in endpoints and the internal renewal set this, so a `401` from
    * them is an answer rather than a trigger for another renewal — a refresh
    * that itself `401`s means the session is over, not that it should recurse.
@@ -218,7 +229,7 @@ export class NacreClient {
           authorization: `Bearer ${this.#token}`,
           ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
           ...(options.raw === undefined ? {} : { 'content-type': options.raw.contentType }),
-          accept: 'application/json',
+          accept: options.bytes === true ? 'application/zip, application/problem+json' : 'application/json',
         },
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
         ...(options.multipart === undefined ? {} : { body: formData(options.multipart) }),
@@ -241,6 +252,7 @@ export class NacreClient {
     }
 
     if (response.status === 204) return undefined
+    if (options.bytes === true && response.ok) return new Uint8Array(await response.arrayBuffer())
 
     const text = await response.text()
     let parsed: unknown
@@ -1075,6 +1087,152 @@ export class NacreClient {
       })
       return body === undefined ? undefined : (body.items ?? []).map(referenceQueryFrom)
     },
+  }
+
+  // ─── skills ──────────────────────────────────────────────────────────────
+
+  /**
+   * What an agent is told about this installation, this organization and a
+   * layer — Claude's skill format, at three levels. docs/skills.md.
+   *
+   * Every write names the version it starts from and a stale one comes back as
+   * `{ kind: 'conflict', current }` rather than as an error, because the next
+   * step is ordinary: read, merge, write again.
+   */
+  readonly skills = {
+    /** The base skill and every layer skill this token sees, walked to the end. */
+    list: async (): Promise<{ readonly base: SkillEntry; readonly layers: readonly SkillEntry[] }> => {
+      const LIMIT = 200
+      const MAX_PAGES = 50
+      const layers: SkillEntry[] = []
+      let base: SkillEntry | undefined
+      let cursor: string | undefined
+      for (let page = 0; page < MAX_PAGES; page += 1) {
+        const params = new URLSearchParams({ limit: String(LIMIT) })
+        if (cursor !== undefined) params.set('cursor', cursor)
+        const query = `?${params.toString()}`
+        const body = (await this.#request({
+          method: 'GET',
+          path: `/v1/skills${query}`,
+          retryable: true,
+        })) as { base?: unknown; items?: unknown[]; next_cursor?: string | null }
+        base ??= skillEntryFrom(body.base as Record<string, unknown>)
+        for (const row of body.items ?? []) layers.push(skillEntryFrom(row as Record<string, unknown>))
+        if (body.next_cursor === null || body.next_cursor === undefined || body.next_cursor === '') {
+          return { base, layers }
+        }
+        cursor = body.next_cursor
+      }
+      throw new Error(
+        `More than ${String(LIMIT * MAX_PAGES)} layer skills are visible to this token; page /v1/skills with ?cursor.`,
+      )
+    },
+
+    /** The skill this token's agents are given, with its files. */
+    base: async (): Promise<BaseSkill> => {
+      const body = (await this.#request({ method: 'GET', path: '/v1/skills/base', retryable: true })) as Record<
+        string,
+        unknown
+      >
+      return { ...skillEntryFrom(body), files: (body.files ?? {}) as SkillFiles }
+    },
+
+    /** The base skill as a zip Claude installs. */
+    exportBase: async (): Promise<Uint8Array> =>
+      (await this.#request({ method: 'GET', path: '/v1/skills/base/export', retryable: true, bytes: true })) as Uint8Array,
+
+    /** The current version with its files, or `undefined` where none is set or visible. */
+    get: async (level: SkillLevel): Promise<SkillVersion | undefined> => {
+      const body = await this.#maybe<Record<string, unknown>>({
+        method: 'GET',
+        path: `/v1/skills/${skillSegment(level)}`,
+        retryable: true,
+      })
+      return body === undefined ? undefined : skillVersionFrom(body)
+    },
+
+    /**
+     * Write a new version — a folder as `files`, or a `.zip` as Claude exports
+     * one. `basedOn` is the version this starts from, 0 for a level never
+     * written. `undefined` where the level is not there or not visible.
+     */
+    write: async (
+      level: SkillLevel,
+      skill: { readonly files: SkillFiles } | { readonly zip: Uint8Array },
+      basedOn: number,
+    ): Promise<SkillWrite | undefined> =>
+      this.#skillWrite(() =>
+        'zip' in skill
+          ? this.#request({
+              method: 'PUT',
+              path: `/v1/skills/${skillSegment(level)}${basedOnQuery(basedOn)}`,
+              raw: { bytes: skill.zip, contentType: 'application/zip' },
+            })
+          : this.#request({
+              method: 'PUT',
+              path: `/v1/skills/${skillSegment(level)}`,
+              body: { files: skill.files, based_on: basedOn },
+            }),
+      ),
+
+    /** Clear it, so the level above applies. A version too. */
+    clear: async (level: SkillLevel, basedOn: number): Promise<SkillWrite | undefined> =>
+      this.#skillWrite(() =>
+        this.#request({ method: 'DELETE', path: `/v1/skills/${skillSegment(level)}${basedOnQuery(basedOn)}` }),
+      ),
+
+    /** History, newest first, walked to the end. `undefined` unless this token may write the level. */
+    versions: async (level: SkillLevel): Promise<readonly SkillVersion[] | undefined> => {
+      try {
+        return await this.#listAll(`/v1/skills/${skillSegment(level)}/versions`, skillVersionFrom)
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return undefined
+        throw error
+      }
+    },
+
+    /** One version, with its files. */
+    version: async (level: SkillLevel, version: number): Promise<SkillVersion | undefined> => {
+      const body = await this.#maybe<Record<string, unknown>>({
+        method: 'GET',
+        path: `/v1/skills/${skillSegment(level)}/versions/${String(version)}`,
+        retryable: true,
+      })
+      return body === undefined ? undefined : skillVersionFrom(body)
+    },
+
+    /** Roll back to `version`, as a new version. */
+    restore: async (level: SkillLevel, version: number, basedOn: number): Promise<SkillWrite | undefined> =>
+      this.#skillWrite(() =>
+        this.#request({
+          method: 'POST',
+          path: `/v1/skills/${skillSegment(level)}/versions/${String(version)}/restore`,
+          body: { based_on: basedOn },
+        }),
+      ),
+
+    /** The current version as a zip Claude installs, or `undefined`. */
+    export: async (level: SkillLevel): Promise<Uint8Array | undefined> =>
+      this.#maybe<Uint8Array>({
+        method: 'GET',
+        path: `/v1/skills/${skillSegment(level)}/export`,
+        retryable: true,
+        bytes: true,
+      }),
+  }
+
+  /** A write's three answers: written, a conflict to merge, or not there. */
+  async #skillWrite(send: () => Promise<unknown>): Promise<SkillWrite | undefined> {
+    try {
+      const body = (await send()) as Record<string, unknown>
+      return { kind: 'written', version: skillVersionFrom(body), cleared: body.cleared === true || body.name === null }
+    } catch (error) {
+      if (error instanceof NacreError && error.isNotFound) return undefined
+      if (error instanceof NacreError && error.status === 409 && error.type.endsWith('/skill-version-conflict')) {
+        return { kind: 'conflict', current: currentVersionOf(error) }
+      }
+      throw error
+    }
   }
 
   // ─── grants ──────────────────────────────────────────────────────────────
@@ -2033,6 +2191,52 @@ function reindexFrom(r: Record<string, unknown>): ReindexStatus {
     // for a layer with no reference set is the permanent and correct answer.
     check: check === null || check === undefined ? null : recallCheckFrom(check),
   }
+}
+
+/** The version a write starts from, as the query string a zip upload and a clear carry it in. */
+function basedOnQuery(basedOn: number): string {
+  return `?based_on=${String(basedOn)}`
+}
+
+/** `organization`, `installation`, or `layers/{id}` — the level as a path. */
+function skillSegment(level: SkillLevel): string {
+  return typeof level === 'string' ? level : `layers/${encodeURIComponent(level.layerId)}`
+}
+
+function skillEntryFrom(row: Record<string, unknown>): SkillEntry {
+  return {
+    level: row.level as SkillEntry['level'],
+    layerId: (row.layer_id as string | null | undefined) ?? null,
+    layerSlug: (row.layer_slug as string | null | undefined) ?? null,
+    name: String(row.name ?? ''),
+    description: String(row.description ?? ''),
+    version: (row.version as number | null | undefined) ?? null,
+    hasScripts: row.has_scripts === true,
+    paths: (row.paths as string[] | undefined) ?? [],
+  }
+}
+
+function skillVersionFrom(row: Record<string, unknown>): SkillVersion {
+  return {
+    version: Number(row.version),
+    name: (row.name as string | null | undefined) ?? null,
+    description: (row.description as string | null | undefined) ?? null,
+    hasScripts: row.has_scripts === true,
+    fileCount: Number(row.file_count ?? 0),
+    principal: String(row.principal ?? ''),
+    surface: row.surface as SkillVersion['surface'],
+    connectionId: (row.connection_id as string | null | undefined) ?? null,
+    byAgent: row.by_agent === true,
+    restoredFrom: (row.restored_from as number | null | undefined) ?? null,
+    createdAt: String(row.created_at ?? ''),
+    ...(row.files === undefined ? {} : { files: row.files as SkillFiles }),
+  }
+}
+
+/** The version a 409 says is current — a member of the problem document. */
+function currentVersionOf(error: NacreError): number {
+  const value = error.extensions.current_version
+  return typeof value === 'number' ? value : 0
 }
 
 function recallCheckFrom(c: Record<string, unknown>): RecallCheck {

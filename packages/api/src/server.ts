@@ -45,6 +45,9 @@ import {
   type ProtectedResourceMetadata,
   type Permission,
   type IngestFailureReason,
+  readSkillZip,
+  writeSkillZip,
+  type SkillFiles,
 } from '@nacre.work/core'
 
 import {
@@ -87,6 +90,7 @@ import {
   toNdjson,
 } from './audit-export.js'
 import { decodeCursor, readPage, type Page, type PageResult } from './pagination.js'
+import type { SkillEntry, SkillLevel, Skills, SkillVersionMeta, SkillWrite } from './skills.js'
 export type { Page, PageResult }
 
 /**
@@ -1031,6 +1035,8 @@ export interface ApiOptions {
   readonly reindex?: Reindex
   /** The reindex recall gate's query set. Absent means those paths answer 404. */
   readonly referenceQueries?: ReferenceQueries
+  /** Skills — docs/skills.md. Absent means `/v1/skills` answers 404. */
+  readonly skills?: Skills
   /** Reads the access log back. Absent means `/v1/audit` answers 404. */
   readonly auditReader?: AuditReader
   /** `Idempotency-Key` on unsafe methods. Absent means the header is ignored. */
@@ -1317,6 +1323,11 @@ async function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<u
   return JSON.parse(raw.toString('utf8'))
 }
 
+/** `application/zip`, with or without parameters, in any case. */
+function isZip(contentType: string | undefined): boolean {
+  return contentType?.split(';')[0]?.trim().toLowerCase() === 'application/zip'
+}
+
 /**
  * A multipart body, reduced to the same shape a JSON one has.
  *
@@ -1411,6 +1422,278 @@ function referenceQueryJson(q: ReferenceQuery): Record<string, unknown> {
 /** At most this many queries in a set, and this many expected documents in one. */
 const MAX_REFERENCE_QUERIES = 50
 const MAX_EXPECTED_PER_QUERY = 10
+
+// ── skills ───────────────────────────────────────────────────────────────────
+//
+// docs/skills.md. Everything about who may see and write which level is the
+// port's; this is the wire — paths, bodies, status codes, the journal.
+
+/**
+ * `/v1/skills`, then a level, then what about it.
+ *
+ * `base` is the skill an agent of this caller is given — the organization's,
+ * else the installation's, else the default — and is read-only: it is not a
+ * level anybody writes, it is the answer to "which of them applies to me".
+ */
+const SKILL_PATH =
+  /^\/v1\/skills(?:\/(base|installation|organization|layers\/([0-9a-f-]{36})))?(?:\/(export|versions)(?:\/(\d{1,9})(\/restore)?)?)?$/i
+
+/** Literal, so `lint:audit-actions` can see that each is recorded. */
+const SKILL_AUDIT = {
+  updated: { action: 'skill.updated' },
+  cleared: { action: 'skill.cleared' },
+  restored: { action: 'skill.restored' },
+} as const
+
+function skillEntryJson(entry: SkillEntry): Record<string, unknown> {
+  return {
+    level: entry.level,
+    layer_id: entry.layerId,
+    layer_slug: entry.layerSlug,
+    name: entry.name,
+    description: entry.description,
+    version: entry.version,
+    has_scripts: entry.hasScripts,
+    paths: entry.paths,
+  }
+}
+
+function skillVersionJson(version: SkillVersionMeta, files?: SkillFiles): Record<string, unknown> {
+  return {
+    version: version.version,
+    name: version.name,
+    description: version.description,
+    has_scripts: version.hasScripts,
+    file_count: version.fileCount,
+    principal: version.principal,
+    surface: version.surface,
+    connection_id: version.connectionId,
+    by_agent: version.byAgent,
+    restored_from: version.restoredFrom,
+    created_at: version.createdAt,
+    ...(files === undefined ? {} : { files }),
+  }
+}
+
+/** A non-negative integer from wherever the caller put it, or a reason it is not one. */
+function readBasedOn(value: unknown): number | { error: string } {
+  const n = typeof value === 'string' && /^\d{1,9}$/.test(value) ? Number(value) : value
+  if (typeof n !== 'number' || !Number.isInteger(n) || n < 0) {
+    return {
+      error:
+        "'based_on' is required: the version this write starts from, 0 for a level that has never been written. " +
+        'A write that names no version would silently overwrite whatever another writer just saved.',
+    }
+  }
+  return n
+}
+
+function sendZip(res: ServerResponse, requestId: string, name: string, zip: Buffer): void {
+  res.writeHead(200, {
+    'content-type': 'application/zip',
+    // `name` passed the skill-name pattern, so it needs no quoting rules.
+    'content-disposition': `attachment; filename="${name}.zip"`,
+    'content-length': String(zip.length),
+    'x-request-id': requestId,
+  })
+  res.end(zip)
+}
+
+async function handleSkills(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  instance: string,
+  requestId: string,
+  auth: AuthContext,
+  body: unknown,
+  zipped: Buffer | undefined,
+  matched: RegExpExecArray,
+  skills: Skills,
+  options: ApiOptions,
+): Promise<void> {
+  const method = req.method ?? 'GET'
+  const fail = (problem: Problem): void => send(res, problem.status, problem.toJSON(), requestId)
+  const missing = (): void => fail(notFound(instance, requestId))
+
+  const which = matched[1]?.toLowerCase()
+  const tail = matched[3]?.toLowerCase()
+  const n = matched[4] === undefined ? undefined : Number(matched[4])
+  const restore = matched[5] !== undefined
+
+  // ── the catalogue ──
+  if (which === undefined) {
+    if (tail !== undefined || method !== 'GET') return missing()
+    const page = readPage(url.searchParams, instance, requestId, 'uuid')
+    if (page instanceof Problem) return fail(page)
+    const listed = await skills.list(auth, page)
+    send(
+      res,
+      200,
+      { base: skillEntryJson(listed.base), items: listed.layers.items.map(skillEntryJson), next_cursor: listed.layers.nextCursor },
+      requestId,
+    )
+    return
+  }
+
+  // ── the base: read-only ──
+  if (which === 'base') {
+    if (method !== 'GET' || (tail !== undefined && tail !== 'export') || n !== undefined) return missing()
+    const base = await skills.base(auth)
+    if (tail === 'export') return sendZip(res, requestId, base.name, writeSkillZip(base.name, base.files))
+    send(res, 200, { ...skillEntryJson(base), files: base.files }, requestId)
+    return
+  }
+
+  const level: SkillLevel =
+    which === 'installation'
+      ? { kind: 'installation' }
+      : which === 'organization'
+        ? { kind: 'organization' }
+        : { kind: 'layer', layerId: (matched[2] as string).toLowerCase() }
+  const target = { skill: level.kind, ...(level.kind === 'layer' ? { layer_id: level.layerId } : {}) }
+
+  // ── reads ──
+  if (method === 'GET') {
+    if (tail === undefined) {
+      const current = await skills.current(auth, level)
+      if (current === undefined) return missing()
+      send(res, 200, skillVersionJson(current, current.files), requestId)
+      return
+    }
+    if (tail === 'export') {
+      if (n !== undefined) return missing()
+      const current = await skills.current(auth, level)
+      if (current === undefined || current.name === null) return missing()
+      return sendZip(res, requestId, current.name, writeSkillZip(current.name, current.files))
+    }
+    if (restore) return missing()
+    if (n === undefined) {
+      const page = readPage(url.searchParams, instance, requestId, 'sequence')
+      if (page instanceof Problem) return fail(page)
+      const history = await skills.versions(auth, level, page)
+      if (history === undefined) return missing()
+      send(res, 200, { items: history.items.map((v) => skillVersionJson(v)), next_cursor: history.nextCursor }, requestId)
+      return
+    }
+    const one = await skills.version(auth, level, n)
+    if (one === undefined) return missing()
+    send(res, 200, skillVersionJson(one, one.files), requestId)
+    return
+  }
+
+  // ── writes ──
+  let outcome: SkillWrite
+  let kind: keyof typeof SKILL_AUDIT
+  if (method === 'POST' && tail === 'versions' && n !== undefined && restore) {
+    const basedOn = readBasedOn((body as { based_on?: unknown } | undefined)?.based_on)
+    if (typeof basedOn !== 'number') return fail(badRequest(instance, requestId, basedOn.error))
+    outcome = await skills.restore(auth, level, n, basedOn, 'rest')
+    kind = 'restored'
+  } else if ((method === 'PUT' || method === 'DELETE') && tail === undefined) {
+    let files: unknown
+    let basedOnRaw: unknown
+    if (method === 'DELETE') {
+      files = {}
+      basedOnRaw = url.searchParams.get('based_on') ?? undefined
+    } else if (zipped !== undefined) {
+      const read = readSkillZip(zipped)
+      if ('error' in read) return fail(badRequest(instance, requestId, `The archive is not a skill: ${read.error}.`))
+      files = read.files
+      basedOnRaw = url.searchParams.get('based_on') ?? undefined
+    } else {
+      const fields = body as { files?: unknown; based_on?: unknown } | undefined
+      if (fields === undefined || typeof fields !== 'object' || fields === null || !('files' in fields)) {
+        return fail(
+          badRequest(
+            instance,
+            requestId,
+            "A skill is written as JSON — { \"files\": { \"SKILL.md\": \"…\" }, \"based_on\": n } — " +
+              'or as an application/zip body in the format Claude exports, with ?based_on=n.',
+          ),
+        )
+      }
+      files = fields.files
+      basedOnRaw = fields.based_on
+    }
+    const basedOn = readBasedOn(basedOnRaw)
+    if (typeof basedOn !== 'number') return fail(badRequest(instance, requestId, basedOn.error))
+    outcome = await skills.write(auth, level, files, basedOn, 'rest')
+    kind = method === 'DELETE' || (outcome.kind === 'written' && outcome.cleared) ? 'cleared' : 'updated'
+  } else {
+    return missing()
+  }
+
+  if (outcome.kind === 'written' || outcome.kind === 'not_found' || outcome.kind === 'forbidden') {
+    await options.audit.write({
+      orgId: auth.orgId,
+      actor: `${auth.principal.type}:${auth.principal.id}`,
+      ...SKILL_AUDIT[kind],
+      result: outcome.kind === 'written' ? 'allow' : 'deny',
+      target: { ...target },
+      // What changed and through what — never the text. A skill is the
+      // organization's own words, and the journal is read by more people than
+      // the skill is written by.
+      detail:
+        outcome.kind === 'written'
+          ? {
+              ...target,
+              version: outcome.version.version,
+              file_count: outcome.version.fileCount,
+              has_scripts: outcome.version.hasScripts,
+              surface: 'rest',
+              ...(n === undefined ? {} : { restored_from: n }),
+              ...(auth.delegation === undefined ? {} : { connection_id: auth.delegation.id }),
+            }
+          : target,
+      requestId,
+    })
+  }
+
+  switch (outcome.kind) {
+    case 'written':
+      send(res, 200, { ...skillVersionJson(outcome.version), cleared: outcome.cleared }, requestId)
+      return
+    case 'not_found':
+      return missing()
+    case 'forbidden':
+      // Visible, so not a 404: the caller is reading this skill and may not
+      // write it, and saying "not found" about what is on their screen would
+      // send them looking for it. docs/skills.md, "Who writes what".
+      return fail(
+        new Problem({
+          type: 'https://nacre.work/errors/forbidden',
+          title: 'Forbidden',
+          status: 403,
+          detail:
+            level.kind === 'layer'
+              ? "Writing a layer's skill needs admin on that layer."
+              : level.kind === 'organization'
+                ? "Writing the organization's skill needs an organization administrator."
+                : "The installation's skill is written by a platform administrator, through the API.",
+          instance,
+          requestId,
+        }),
+      )
+    case 'conflict': {
+      const problem = new Problem({
+        type: 'https://nacre.work/errors/skill-version-conflict',
+        title: 'Conflict',
+        status: 409,
+        detail:
+          `This skill is at version ${String(outcome.current)}, and the write was based on another. ` +
+          'Read the current version, apply the change to it, and write again naming it.',
+        instance,
+        requestId,
+      })
+      // The number as a member too, so a client can retry without parsing prose.
+      send(res, 409, { ...problem.toJSON(), current_version: outcome.current }, requestId)
+      return
+    }
+    case 'refused':
+      return fail(badRequest(instance, requestId, `Not a skill: ${outcome.reason}.`))
+  }
+}
 
 /**
  * The reference set from a request body.
@@ -3703,10 +3986,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   // Held aside from `body` on purpose — see multipartBody.
   let uploaded: MultipartPart | undefined
   let wasMultipart = false
+  // A skill uploaded as Claude exports one. Held aside for the same reason as
+  // a multipart file: an archive is bytes, and bytes do not belong in the
+  // object that gets scanned, logged and quoted in errors.
+  let zipped: Buffer | undefined
   try {
     const limit = options.maxBodyBytes ?? MAX_BODY_BYTES
     const boundary = multipartBoundary(req.headers['content-type'])
-    if (boundary === undefined) {
+    if (isZip(req.headers['content-type'])) {
+      zipped = await readRaw(req, limit)
+    } else if (boundary === undefined) {
       body = await readBody(req, limit)
     } else {
       const reduced = multipartBody(parseMultipart(await readRaw(req, limit), boundary))
@@ -5207,6 +5496,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       })
 
       send(res, answer.status, answer.body ?? null, requestId)
+      return
+    }
+
+    // `/v1/skills…` — docs/skills.md.
+    const skillPath = pathMatch(SKILL_PATH, instance)
+    if (skillPath !== null) {
+      if (options.skills === undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      await handleSkills(req, res, url, instance, requestId, auth, body, zipped, skillPath, options.skills, options)
       return
     }
 

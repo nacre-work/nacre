@@ -10,6 +10,10 @@ import {
   type AuthContext,
   type PrincipalsCache,
   PostgresJobs,
+  PostgresSkills,
+  decodeCursor,
+  type SkillLevel,
+  type SkillWrite,
 } from '@nacre.work/api'
 import {
   createPool,
@@ -34,7 +38,7 @@ import {
 import { postgresVerification, TICKET_TTL_SECONDS, uploadDescriptor, type UploadTicketStore } from '@nacre.work/api'
 import type { Pool } from 'pg'
 
-import type { Layers, ToolRunner } from './factory.js'
+import { ToolArgumentError, type Layers, type SkillSource, type ToolRunner } from './factory.js'
 import type { Layer } from './tools.js'
 
 /**
@@ -48,6 +52,12 @@ import type { Layer } from './tools.js'
  */
 
 export const APP_ROLE = 'nacre_app'
+
+/** Literal, so `lint:audit-actions` can see that each is recorded. */
+const SKILL_AUDIT = {
+  updated: { action: 'skill.updated' },
+  cleared: { action: 'skill.cleared' },
+} as const
 
 export interface Services {
   readonly pool: Pool
@@ -63,6 +73,7 @@ export interface Services {
   readonly verification: ReturnType<typeof postgresVerification>
   readonly layers: Layers
   readonly tools: ToolRunner
+  readonly skills: SkillSource
 }
 
 /**
@@ -121,6 +132,10 @@ export function buildServices(
   // presigner below: an agent asking what became of its ingest and an operator
   // asking through REST must not get two different answers about one document.
   const jobs = new PostgresJobs(pool, APP_ROLE, principalsCache)
+
+  // The same port the REST surface uses, so "who sees which skill" has one
+  // answer across both doors. docs/skills.md.
+  const skills = new PostgresSkills(pool, APP_ROLE, principalsCache)
 
   // The same presigner as REST. `get_document` over MCP and `GET /v1/documents`
   // describe the same document, and one of them handing back a link while the
@@ -207,10 +222,15 @@ export function buildServices(
             name: string
             description: string
             documents: string
+            has_skill: boolean
           }>(
             `SELECT l.id, l.slug, l.name, l.description,
                     (SELECT count(*) FROM documents d
-                      WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS documents
+                      WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS documents,
+                    -- The newest version decides: a cleared skill is no skill.
+                    COALESCE((SELECT s.name IS NOT NULL FROM skill_versions s
+                               WHERE s.org_id = l.org_id AND s.layer_id = l.id
+                               ORDER BY s.version DESC LIMIT 1), false) AS has_skill
                FROM layers l
               WHERE l.org_id = $1 AND l.deleted_at IS NULL
                 AND ($2::boolean OR l.id = ANY($3::uuid[]))
@@ -235,6 +255,7 @@ export function buildServices(
               name: r.name,
               description: r.description,
               documentCount: Number(r.documents),
+              hasSkill: r.has_skill,
             })),
             nextCursor: rows.length > bounded && last !== undefined ? last.id : null,
           }
@@ -519,6 +540,132 @@ export function buildServices(
             ...(job.error === undefined ? {} : { error: job.error }),
           }
         }
+        case 'list_skills': {
+          const limit =
+            typeof args.limit === 'number' && Number.isInteger(args.limit) ? Math.min(Math.max(1, args.limit), 200) : 50
+          const raw = typeof args.cursor === 'string' && args.cursor !== '' ? args.cursor : undefined
+          const after = raw === undefined ? undefined : decodeCursor(raw, 'uuid')
+          if (raw !== undefined && after === undefined) {
+            throw new ToolArgumentError('cursor is not one this tool issued; start again without one')
+          }
+          const listed = await skills.list(auth, { limit, after })
+          return { base: listed.base, layers: listed.layers.items, next_cursor: listed.layers.nextCursor }
+        }
+        case 'get_skill': {
+          const which = args.skill
+          if (typeof which !== 'string' || which === '') throw new ToolArgumentError('skill is required')
+          const path = typeof args.path === 'string' && args.path !== '' ? args.path : 'SKILL.md'
+          // "base", or a layer the caller sees. A layer they cannot see and one
+          // without a skill answer the same, or this is a layer-name oracle.
+          const found =
+            which === 'base'
+              ? await skills.base(auth)
+              : await (async () => {
+                  const layerId = await skills.layerBySlug(auth, which)
+                  if (layerId === undefined) return undefined
+                  const current = await skills.current(auth, { kind: 'layer', layerId })
+                  return current === undefined
+                    ? undefined
+                    : {
+                        level: 'layer' as const,
+                        name: current.name ?? '',
+                        description: current.description ?? '',
+                        version: current.version,
+                        hasScripts: current.hasScripts,
+                        files: current.files,
+                      }
+                })()
+          if (found === undefined) throw new Error('not found')
+          const content = found.files[path]
+          if (content === undefined) {
+            // The skill is visible, so naming its files is not a leak.
+            throw new ToolArgumentError(`this skill has no file ${path}; it has ${Object.keys(found.files).join(', ')}`)
+          }
+          return {
+            skill: which,
+            level: found.level,
+            name: found.name,
+            description: found.description,
+            version: found.version,
+            has_scripts: found.hasScripts,
+            paths: Object.keys(found.files),
+            path,
+            content,
+          }
+        }
+        case 'update_skill': {
+          const which = args.skill
+          if (typeof which !== 'string' || which === '') throw new ToolArgumentError('skill is required')
+          // A layer's, and only a layer's. The organization's skill is written
+          // by an organization administrator in the console or through the
+          // administrative MCP, and the installation's never over MCP at all —
+          // rights spanning tenants stay where a person is doing it.
+          if (which === 'base' || which === 'organization' || which === 'installation') {
+            throw new ToolArgumentError(
+              "this tool writes a layer's skill. The organization's is written in the console or through the " +
+                "administrative MCP, and the installation's only through the API.",
+            )
+          }
+          const basedOn = args.based_on
+          if (typeof basedOn !== 'number' || !Number.isInteger(basedOn) || basedOn < 0) {
+            throw new ToolArgumentError('based_on is required: the version you read, or 0 for a layer with no skill')
+          }
+          const layerId = await skills.layerBySlug(auth, which)
+          const level: SkillLevel | undefined = layerId === undefined ? undefined : { kind: 'layer', layerId }
+          const outcome: SkillWrite =
+            level === undefined ? { kind: 'not_found' } : await skills.write(auth, level, args.files, basedOn, 'mcp')
+
+          if (outcome.kind === 'written' || outcome.kind === 'not_found' || outcome.kind === 'forbidden') {
+            const target = { skill: 'layer', layer_id: layerId ?? null, layer: which }
+            await audit.write({
+              orgId: auth.orgId,
+              actor: `${auth.principal.type}:${auth.principal.id}`,
+              ...(outcome.kind === 'written' && outcome.cleared ? SKILL_AUDIT.cleared : SKILL_AUDIT.updated),
+              result: outcome.kind === 'written' ? 'allow' : 'deny',
+              surface: 'mcp',
+              target: { ...target },
+              detail:
+                outcome.kind === 'written'
+                  ? {
+                      ...target,
+                      version: outcome.version.version,
+                      file_count: outcome.version.fileCount,
+                      has_scripts: outcome.version.hasScripts,
+                      surface: 'mcp',
+                      ...(auth.delegation === undefined ? {} : { connection_id: auth.delegation.id }),
+                    }
+                  : target,
+              requestId,
+            })
+          }
+
+          switch (outcome.kind) {
+            case 'written':
+              return {
+                skill: which,
+                version: outcome.version.version,
+                cleared: outcome.cleared,
+                has_scripts: outcome.version.hasScripts,
+              }
+            case 'not_found':
+              throw new Error('not found')
+            case 'forbidden':
+              // The layer's skill is visible to this caller, so saying why the
+              // write is refused names nothing they cannot already see.
+              throw new ToolArgumentError(
+                "writing this layer's skill needs admin on the layer, and for a connected application the " +
+                  "person's consent to edit it",
+              )
+            case 'conflict':
+              throw new ToolArgumentError(
+                `this skill is at version ${String(outcome.current)}; read it again with get_skill, apply your ` +
+                  'change to that version, and write naming it as based_on',
+              )
+            case 'refused':
+              throw new ToolArgumentError(`not a skill: ${outcome.reason}`)
+          }
+          throw new Error('unreachable')
+        }
         case 'delete_document': {
           const id = await resolveId(auth, args)
           const removed = id === undefined ? false : await ingest.remove(auth, id)
@@ -544,5 +691,11 @@ export function buildServices(
       }
     },
   }
-  return { pool, layers, tools, verification: postgresVerification(pool, APP_ROLE) }
+  return {
+    pool,
+    layers,
+    tools,
+    skills: { base: (auth) => skills.base(auth) },
+    verification: postgresVerification(pool, APP_ROLE),
+  }
 }

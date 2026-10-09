@@ -596,9 +596,11 @@ describe('baseline · the MCP surface', () => {
     // `notifications/tools/list_changed`, and saying so beats leaving a client
     // to infer it from an absent field.
     expect(body.result.capabilities).toEqual({ tools: { listChanged: false }, resources: { listChanged: false } })
-    // Nothing in it depends on who asked — unlike tools/list, which is scoped
-    // to the caller's layers and is `private` for exactly that reason.
-    expect(body.result.cacheScope).toBe('public')
+    // Private since skills: `server/discover` carries `instructions`, and they
+    // carry the organization's own skill — a shared cache would hand one
+    // tenant's text to another. It said `public` while nothing in it depended
+    // on who asked; docs/skills.md is what changed that.
+    expect(body.result.cacheScope).toBe('private')
     expect(body.result._meta['io.modelcontextprotocol/serverInfo']?.name).toBe('nacre')
   })
 
@@ -918,6 +920,12 @@ describe('baseline · the MCP surface', () => {
     // A ticket is a promise of a write and is minted on nothing less.
     expect(permission('request_upload')).toBe('write')
     expect(permission('upload_file')).toBe('write')
+    // A layer's skill is visible on any permission on the layer and written
+    // on `admin` — instruction every later agent follows, so the write needs
+    // the permission that already implies both. docs/skills.md.
+    expect(permission('list_skills')).toBe('read')
+    expect(permission('get_skill')).toBe('read')
+    expect(permission('update_skill')).toBe('admin')
   })
   /**
    * The SDK's own client, in both eras, against the real transport.

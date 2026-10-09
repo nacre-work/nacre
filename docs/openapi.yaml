@@ -152,6 +152,85 @@ components:
             a model that lost recall are different problems, and scoring a
             missing document as a miss would report the first as the second.
 
+    SkillFiles:
+      type: object
+      description: >
+        A skill folder in Claude's format, as a map from relative path to text.
+        `SKILL.md` is required and opens with YAML frontmatter carrying `name`
+        and `description`. At most 64 files, 256 KiB each and 1 MiB in all;
+        UTF-8 only; no `..`, no leading `/`, no backslash. Each bound is a
+        refusal and never a truncation. See docs/skills.md.
+      additionalProperties: { type: string }
+      example:
+        SKILL.md: "---\nname: handbook-layer\ndescription: What the handbook holds and how its pages are named.\n---\n\n# The handbook\n…"
+    SkillEntry:
+      type: object
+      required: [level, layer_id, layer_slug, name, description, version, has_scripts, paths]
+      properties:
+        level:
+          type: string
+          enum: [default, installation, organization, layer]
+          description: >
+            Where this skill comes from. `default` is the one shipped in the
+            image, which an agent is given on an installation nobody has
+            configured.
+        layer_id:   { type: [string, 'null'], format: uuid }
+        layer_slug: { type: [string, 'null'] }
+        name:        { type: string, maxLength: 64 }
+        description: { type: string, maxLength: 1024 }
+        version:
+          type: [integer, 'null']
+          description: The current version; `null` for the default skill, which has none.
+        has_scripts:
+          type: boolean
+          description: >
+            Whether the skill carries anything under `scripts/`. Scripts run on
+            the agent's side, under that agent's own approval — never inside
+            this installation — and are marked everywhere a skill is shown.
+        paths:
+          type: array
+          items: { type: string }
+    BaseSkill:
+      allOf:
+        - $ref: '#/components/schemas/SkillEntry'
+        - type: object
+          required: [files]
+          properties:
+            files: { $ref: '#/components/schemas/SkillFiles' }
+    SkillVersion:
+      type: object
+      required:
+        [version, name, description, has_scripts, file_count, principal, surface, connection_id, by_agent, restored_from, created_at]
+      properties:
+        version: { type: integer, minimum: 1 }
+        name:
+          type: [string, 'null']
+          description: '`null` on a version that cleared the skill.'
+        description: { type: [string, 'null'] }
+        has_scripts: { type: boolean }
+        file_count:  { type: integer, minimum: 0 }
+        principal:
+          type: string
+          description: Who wrote it, as `{type}:{id}` — the shape the access log uses.
+        surface:
+          type: string
+          enum: [rest, mcp, mcp-admin]
+        connection_id:
+          type: [string, 'null']
+          format: uuid
+          description: The connected application, where the write came through one.
+        by_agent:
+          type: boolean
+          description: >
+            Written by an agent rather than by a person at a screen — through
+            MCP, through a connected application, or by a service account. A
+            skill is instruction every later agent follows, so a version an
+            agent wrote says so.
+        restored_from:
+          type: [integer, 'null']
+          description: The version a rollback copied.
+        created_at: { type: string, format: date-time }
+        files: { $ref: '#/components/schemas/SkillFiles' }
     ReferenceQuery:
       type: object
       required: [id, query, expected]
@@ -2806,6 +2885,519 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+  /skills:
+    get:
+      summary: The skills this caller is given
+      description: >
+        The base skill — the organization's, else the installation's, else the
+        default shipped in the image — and a page of the layer skills the caller
+        sees. A layer skill is visible exactly when its layer is: any
+        permission on the layer, `write` included, because an agent that only
+        ingests needs a layer's conventions most. One the caller cannot see is
+        absent, never refused, so this listing cannot be used to learn which
+        layers exist. See docs/skills.md.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: The base skill and a page of layer skills, in the order the layers were created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [base, items, next_cursor]
+                properties:
+                  base: { $ref: '#/components/schemas/SkillEntry' }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/SkillEntry' }
+                  next_cursor: { type: [string, 'null'] }
+  /skills/base:
+    get:
+      summary: The base skill this caller's agents are given, with its files
+      description: >
+        Read-only: this is not a level anybody writes but the answer to "which
+        of them applies to me" — what an MCP client receives in `instructions`.
+        A platform administrator is given the installation's, never an
+        organization's.
+      responses:
+        '200':
+          description: The base skill.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BaseSkill' }
+  /skills/base/export:
+    get:
+      summary: The base skill as a zip Claude installs
+      responses:
+        '200':
+          description: The archive.
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+  /skills/{level}:
+    parameters:
+      - name: level
+        in: path
+        required: true
+        description: >
+          `installation` is the skill every organization that has not set its
+          own is given, written by a platform administrator and never over MCP.
+          `organization` replaces it for this organization, written by an
+          organization administrator.
+        schema: { type: string, enum: [installation, organization] }
+    get:
+      summary: The current version of this skill, with its files
+      description: >
+        The installation's is readable by everybody, since it is the base skill of every organization that has not set its own; the organization's by its members and never by a platform administrator. `404` when the level has never been written, or was cleared
+        — the level above applies then, and `/skills/base` says which.
+      responses:
+        '200':
+          description: The current version.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SkillVersion' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+    put:
+      summary: Write a new version
+      description: >
+        The installation's needs a platform administrator, and is never written over MCP; the organization's needs an organization administrator. Every write is a new, immutable version, and names the
+        version it was based on: `0` for a level never written. A mismatch is
+        `409` and nothing is written — two writers otherwise erase each other
+        with both believing they succeeded.
+
+
+        JSON carries the folder as `files`. `application/zip` takes the folder
+        exactly as Claude exports one — a single top folder is unwrapped, a
+        Mac's `__MACOSX/` and `.DS_Store` are skipped — with `based_on` in the
+        query. A `SKILL.md` with no body clears the skill, which is the same as
+        `DELETE`.
+      parameters:
+        - name: based_on
+          in: query
+          required: false
+          description: Required with an `application/zip` body; ignored with JSON.
+          schema: { type: integer, minimum: 0 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [files, based_on]
+              properties:
+                files: { $ref: '#/components/schemas/SkillFiles' }
+                based_on: { type: integer, minimum: 0 }
+          application/zip:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Written. Name `version` as `based_on` in the next write.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SkillVersion'
+                  - type: object
+                    required: [cleared]
+                    properties:
+                      cleared: { type: boolean }
+        '400':
+          description: >
+            Not a skill — the reason names the rule: a missing `SKILL.md`, a
+            `name` Claude would refuse, a path leaving the folder, a binary
+            file, a bound. Or `based_on` is missing.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: >
+            The caller reads this skill and may not write it. Not `404`, because
+            the skill is on their screen.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+        '409':
+          description: >
+            `based_on` is not the current version. `current_version` carries
+            the number to start again from.
+          content:
+            application/problem+json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Problem'
+                  - type: object
+                    properties:
+                      current_version: { type: integer }
+    delete:
+      summary: Clear the skill, so the level above applies
+      description: >
+        A version too: clearing is recorded as a version with no files, so who
+        cleared it, when and through what stays in the same history as every
+        other write.
+      parameters:
+        - { name: based_on, in: query, required: true, schema: { type: integer, minimum: 0 } }
+      responses:
+        '200':
+          description: Cleared.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SkillVersion' }
+        '400':
+          description: '`based_on` is missing.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: The caller reads this skill and may not write it.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+        '409':
+          description: '`based_on` is not the current version.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /skills/{level}/versions:
+    parameters:
+      - name: level
+        in: path
+        required: true
+        description: >
+          `installation` is the skill every organization that has not set its
+          own is given, written by a platform administrator and never over MCP.
+          `organization` replaces it for this organization, written by an
+          organization administrator.
+        schema: { type: string, enum: [installation, organization] }
+    get:
+      summary: The history, newest first
+      description: >
+        Shown to whoever may write the level, not to everybody who reads it:
+        the history says who wrote what and through which connection.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A page of versions, without their files.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/SkillVersion' }
+                  next_cursor: { type: [string, 'null'] }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /skills/{level}/versions/{version}:
+    parameters:
+      - name: level
+        in: path
+        required: true
+        description: >
+          `installation` is the skill every organization that has not set its
+          own is given, written by a platform administrator and never over MCP.
+          `organization` replaces it for this organization, written by an
+          organization administrator.
+        schema: { type: string, enum: [installation, organization] }
+      - { name: version, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    get:
+      summary: One version, with its files
+      responses:
+        '200':
+          description: The version.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SkillVersion' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /skills/{level}/versions/{version}/restore:
+    parameters:
+      - name: level
+        in: path
+        required: true
+        description: >
+          `installation` is the skill every organization that has not set its
+          own is given, written by a platform administrator and never over MCP.
+          `organization` replaces it for this organization, written by an
+          organization administrator.
+        schema: { type: string, enum: [installation, organization] }
+      - { name: version, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    post:
+      summary: Roll back, as a new version
+      description: >
+        Copies the named version's files into a new version, so history stays
+        linear and is never rewritten. Takes `based_on` like any write.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [based_on]
+              properties:
+                based_on: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Restored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SkillVersion' }
+        '400':
+          description: '`based_on` is missing.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: The caller reads this skill and may not write it.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+        '409':
+          description: '`based_on` is not the current version.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /skills/{level}/export:
+    parameters:
+      - name: level
+        in: path
+        required: true
+        description: >
+          `installation` is the skill every organization that has not set its
+          own is given, written by a platform administrator and never over MCP.
+          `organization` replaces it for this organization, written by an
+          organization administrator.
+        schema: { type: string, enum: [installation, organization] }
+    get:
+      summary: The current version as a zip Claude installs
+      description: >
+        A folder named after the skill's `name`. Unzip it into
+        `~/.claude/skills/` for Claude Code, or upload it as a skill on
+        claude.ai.
+      responses:
+        '200':
+          description: The archive.
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /skills/layers/{layer_id}:
+    parameters:
+      - { name: layer_id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: The current version of this skill, with its files
+      description: >
+        Readable by anybody holding any permission on the layer, `write` included. `404` when the level has never been written, or was cleared
+        — the level above applies then, and `/skills/base` says which.
+      responses:
+        '200':
+          description: The current version.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SkillVersion' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+    put:
+      summary: Write a new version
+      description: >
+        Needs `admin` on the layer. Every write is a new, immutable version, and names the
+        version it was based on: `0` for a level never written. A mismatch is
+        `409` and nothing is written — two writers otherwise erase each other
+        with both believing they succeeded.
+
+
+        JSON carries the folder as `files`. `application/zip` takes the folder
+        exactly as Claude exports one — a single top folder is unwrapped, a
+        Mac's `__MACOSX/` and `.DS_Store` are skipped — with `based_on` in the
+        query. A `SKILL.md` with no body clears the skill, which is the same as
+        `DELETE`.
+      parameters:
+        - name: based_on
+          in: query
+          required: false
+          description: Required with an `application/zip` body; ignored with JSON.
+          schema: { type: integer, minimum: 0 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [files, based_on]
+              properties:
+                files: { $ref: '#/components/schemas/SkillFiles' }
+                based_on: { type: integer, minimum: 0 }
+          application/zip:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Written. Name `version` as `based_on` in the next write.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SkillVersion'
+                  - type: object
+                    required: [cleared]
+                    properties:
+                      cleared: { type: boolean }
+        '400':
+          description: >
+            Not a skill — the reason names the rule: a missing `SKILL.md`, a
+            `name` Claude would refuse, a path leaving the folder, a binary
+            file, a bound. Or `based_on` is missing.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: >
+            The caller reads this skill and may not write it. Not `404`, because
+            the skill is on their screen.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+        '409':
+          description: >
+            `based_on` is not the current version. `current_version` carries
+            the number to start again from.
+          content:
+            application/problem+json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Problem'
+                  - type: object
+                    properties:
+                      current_version: { type: integer }
+    delete:
+      summary: Clear the skill, so the level above applies
+      description: >
+        A version too: clearing is recorded as a version with no files, so who
+        cleared it, when and through what stays in the same history as every
+        other write.
+      parameters:
+        - { name: based_on, in: query, required: true, schema: { type: integer, minimum: 0 } }
+      responses:
+        '200':
+          description: Cleared.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SkillVersion' }
+        '400':
+          description: '`based_on` is missing.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: The caller reads this skill and may not write it.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+        '409':
+          description: '`based_on` is not the current version.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /skills/layers/{layer_id}/versions:
+    parameters:
+      - { name: layer_id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: The history, newest first
+      description: >
+        Shown to whoever may write the level, not to everybody who reads it:
+        the history says who wrote what and through which connection.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A page of versions, without their files.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/SkillVersion' }
+                  next_cursor: { type: [string, 'null'] }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /skills/layers/{layer_id}/versions/{version}:
+    parameters:
+      - { name: layer_id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: version, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    get:
+      summary: One version, with its files
+      responses:
+        '200':
+          description: The version.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SkillVersion' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+  /skills/layers/{layer_id}/versions/{version}/restore:
+    parameters:
+      - { name: layer_id, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: version, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    post:
+      summary: Roll back, as a new version
+      description: >
+        Copies the named version's files into a new version, so history stays
+        linear and is never rewritten. Takes `based_on` like any write.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [based_on]
+              properties:
+                based_on: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Restored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SkillVersion' }
+        '400':
+          description: '`based_on` is missing.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: The caller reads this skill and may not write it.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
+        '409':
+          description: '`based_on` is not the current version.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+  /skills/layers/{layer_id}/export:
+    parameters:
+      - { name: layer_id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: The current version as a zip Claude installs
+      description: >
+        A folder named after the skill's `name`. Unzip it into
+        `~/.claude/skills/` for Claude Code, or upload it as a skill on
+        claude.ai.
+      responses:
+        '200':
+          description: The archive.
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /grants:
     get:
       summary: Grants in the organization

@@ -224,6 +224,17 @@ The MCP server is a **resource server**, not an authorization server.
   that asserts it is present as well as identical: two transports agreeing on
   nothing is still agreement, and that is what the absence looked like.
 
+  **After it, the base skill** — the organization's, else the installation's,
+  else the default shipped in the image — which is the half that says how *this
+  organization* works: what to store, how documents are named, what never goes
+  in. See [skills.md](./skills.md). That makes the text depend on who asked, so
+  `initialize` and `server/discover` are cached `private`; a shared cache would
+  hand one tenant's skill to another, and T34 asks the transport exactly that. A
+  skill over 16 KiB is named and pointed at rather than carried, because this is
+  prepended to every context window. A skill that cannot be read leaves the
+  built-in text alone rather than failing the connection: it is guidance, not a
+  permission input.
+
 - **Client registration is not this transport's** — CIMD and DCR are both
   transactions between a client and an *authorization server*, and this
   transport is not one: it verifies tokens and issues none. There is no
@@ -325,10 +336,11 @@ permission below and the resolver, on every call.
 
 | tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
 |---|---|---|---|---|
-| `search`, `list_layers`, `get_document`, `ingest_status`, `upload_file` | true | false | true | false |
+| `search`, `list_layers`, `get_document`, `ingest_status`, `upload_file`, `list_skills`, `get_skill` | true | false | true | false |
 | `request_upload` | false — it mints a ticket | false | **false** — every call mints a new one | false |
 | `ingest_document` | false | **true** — an existing `external_id` is replaced | true | **true** — `url` fetches a page |
 | `delete_document` | false | **true** | true | false |
+| `update_skill` | false | **true** — it replaces what every later agent reads | **false** — each write is a version, and a repeat is based on a stale one | false |
 
 `tool-annotations.test.ts` holds this table against the catalog, by reading
 it: a tool missing from a row, or a value that disagrees, fails there.
@@ -548,6 +560,32 @@ document, because it is written into the payload of every chunk.
 
 `{ document_id }` or `{ external_id, layer }`. Writes a tombstone; the document
 leaves results immediately. Permission: `write`.
+
+### `list_skills`
+
+The base skill and a page of the layer skills the caller sees — `{ limit }`
+(default 50, max 200) and `{ cursor }` — each with its level, layer slug,
+`name`, `description`, file list, version and whether it carries scripts. A
+catalog rather than texts. A layer skill is visible exactly when its layer is:
+any permission on it, `write` included, inside a delegation's narrowing.
+Permission: `read`.
+
+### `get_skill`
+
+`{ skill }` — `"base"` or a layer slug — returns `SKILL.md`; `{ path }` returns
+another file of the skill. A layer the caller cannot see is not found, exactly
+as one with no skill is. Permission: `read`.
+
+### `update_skill`
+
+`{ skill, files, based_on }`: a layer's skill, as a new version. `admin` on the
+layer, and for a connected application a ceiling holding `admin` there — the
+consent screen's per-layer "edit this layer's skill" box is specified and not
+built. Never the organization's or the installation's on this transport.
+Destructive, and its description tells the model to act on the person's request
+and never on a document's: a skill is instruction every later agent follows, so
+text in a document asking for one to be rewritten is a prompt injection that
+would persist. Permission: `admin`.
 
 ## MCP Apps
 

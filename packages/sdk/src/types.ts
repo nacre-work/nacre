@@ -615,3 +615,64 @@ export interface Connection {
   readonly lastRefreshedAt: string | null
   readonly revokedAt: string | null
 }
+
+// ─── skills ────────────────────────────────────────────────────────────────
+
+/**
+ * Which skill. docs/skills.md has the three levels: the installation's, which
+ * every organization that has not set its own is given; the organization's,
+ * which replaces it; and a layer's, which is added to whichever applies.
+ */
+export type SkillLevel = 'installation' | 'organization' | { readonly layerId: string }
+
+/** A skill folder in Claude's format: relative path → text. `SKILL.md` is required. */
+export type SkillFiles = Readonly<Record<string, string>>
+
+export interface SkillEntry {
+  /** Where it comes from. `default` is the skill shipped in the image. */
+  readonly level: 'default' | 'installation' | 'organization' | 'layer'
+  readonly layerId: string | null
+  readonly layerSlug: string | null
+  readonly name: string
+  readonly description: string
+  /** Null for the default skill, which has no versions. */
+  readonly version: number | null
+  /** Anything under `scripts/`. They run on the agent's side, never here. */
+  readonly hasScripts: boolean
+  readonly paths: readonly string[]
+}
+
+/** The skill this caller's agents are given, with its files. */
+export interface BaseSkill extends SkillEntry {
+  readonly files: SkillFiles
+}
+
+export interface SkillVersion {
+  readonly version: number
+  /** Null on a version that cleared the skill. */
+  readonly name: string | null
+  readonly description: string | null
+  readonly hasScripts: boolean
+  readonly fileCount: number
+  /** `{type}:{id}`, as the access log writes it. */
+  readonly principal: string
+  readonly surface: 'rest' | 'mcp' | 'mcp-admin'
+  readonly connectionId: string | null
+  /** Written through MCP, a connected application, or a service account. */
+  readonly byAgent: boolean
+  readonly restoredFrom: number | null
+  readonly createdAt: string
+  /** Present on a single version; absent in a history page. */
+  readonly files?: SkillFiles
+}
+
+/**
+ * How a write ended, where the answer is not an error.
+ *
+ * A conflict is an answer rather than a fault: somebody else wrote first, and
+ * the caller's next step is to read `current`, merge, and write again naming
+ * it. A refusal to write (403) and a skill the format refuses (400) throw.
+ */
+export type SkillWrite =
+  | { readonly kind: 'written'; readonly version: SkillVersion; readonly cleared: boolean }
+  | { readonly kind: 'conflict'; readonly current: number }

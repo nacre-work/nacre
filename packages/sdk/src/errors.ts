@@ -16,6 +16,9 @@ export interface Problem {
   readonly request_id: string
 }
 
+/** The six members every problem document here carries; anything else is an extension. */
+const STANDARD_MEMBERS: ReadonlySet<string> = new Set(['type', 'title', 'status', 'detail', 'instance', 'request_id'])
+
 export class NacreError extends Error {
   readonly status: number
   /** The stable error identifier, e.g. `https://nacre.work/errors/not-found`. */
@@ -29,6 +32,12 @@ export class NacreError extends Error {
    * failure the caller saw to the record of what happened.
    */
   readonly requestId: string
+  /**
+   * Members beyond the RFC 9457 six, which RFC 9457 calls extensions — a
+   * `409` on a skill carries `current_version`, so a client can start again
+   * from it without parsing prose.
+   */
+  readonly extensions: Readonly<Record<string, unknown>>
 
   constructor(problem: Problem) {
     super(`${problem.title} (${problem.status}): ${problem.detail}`)
@@ -39,6 +48,9 @@ export class NacreError extends Error {
     this.detail = problem.detail
     this.instance = problem.instance
     this.requestId = problem.request_id
+    this.extensions = Object.fromEntries(
+      Object.entries(problem).filter(([key]) => !STANDARD_MEMBERS.has(key)),
+    )
   }
 
   /**

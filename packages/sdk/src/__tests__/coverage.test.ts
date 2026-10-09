@@ -171,6 +171,24 @@ const COVERAGE: Record<string, string | null> = {
 
   'GET /audit': 'audit.read',
 
+  'GET /skills': 'skills.list',
+  'GET /skills/base': 'skills.base',
+  'GET /skills/base/export': 'skills.exportBase',
+  'GET /skills/{level}': 'skills.get',
+  'PUT /skills/{level}': 'skills.write',
+  'DELETE /skills/{level}': 'skills.clear',
+  'GET /skills/{level}/versions': 'skills.versions',
+  'GET /skills/{level}/versions/{version}': 'skills.version',
+  'POST /skills/{level}/versions/{version}/restore': 'skills.restore',
+  'GET /skills/{level}/export': 'skills.export',
+  'GET /skills/layers/{layer_id}': 'skills.get',
+  'PUT /skills/layers/{layer_id}': 'skills.write',
+  'DELETE /skills/layers/{layer_id}': 'skills.clear',
+  'GET /skills/layers/{layer_id}/versions': 'skills.versions',
+  'GET /skills/layers/{layer_id}/versions/{version}': 'skills.version',
+  'POST /skills/layers/{layer_id}/versions/{version}/restore': 'skills.restore',
+  'GET /skills/layers/{layer_id}/export': 'skills.export',
+
   // Discovery documents, read by an OAuth client rather than by an
   // application. A method here would be a wrapper around one `fetch` for a
   // consumer that is not this library's audience, and both are unauthenticated

@@ -198,6 +198,12 @@ jobs:
       - name: rule 6 · a writer sees its job and never the document
         run: pnpm test:acl:group "a writer can see its own ingest"
 
+      # Who sees which skill. Its own step because the failure is a leak that
+      # reads as a feature: a skill listing that names a layer the caller holds
+      # nothing on, or `instructions` carrying another organization's text.
+      - name: skills · a layer skill is visible exactly when its layer is
+        run: pnpm test:acl:group "skills ·"
+
       # Fast on a pull request, exhaustive at night. The nightly run is where a
       # rare interaction between deny and inheritance actually gets found.
       - name: property · resolve vs the reference implementation

@@ -547,7 +547,7 @@ when('delegation · a person lending their own reach', () => {
     expect(widened.delegation?.layers).toBeUndefined()
   })
 
-  it('T26 · a per-layer ceiling narrows that layer and leaves the other alone', async () => {
+  it('T36 · a per-layer ceiling narrows that layer and leaves the other alone', async () => {
     // The case the screen could not express: read the handbook, write to
     // scratch. As two independent questions the only approximation was `write`
     // on both, which is what this closes.
@@ -607,7 +607,7 @@ when('delegation · a person lending their own reach', () => {
     expect(filter.must).toContainEqual({ key: 'layer_id', match: { any: [LAYER_L] } })
   })
 
-  it('T27 · a layer with no ceiling of its own inherits the connection\'s', async () => {
+  it('T37 · a layer with no ceiling of its own inherits the connection\'s', async () => {
     // Which is what every narrowing written before per-layer ceilings meant,
     // and the reason the column is nullable rather than defaulted.
     const { token } = await connect(
@@ -623,7 +623,7 @@ when('delegation · a person lending their own reach', () => {
     expect(delegatedLayers(auth, 'write')).toEqual([LAYER_M])
   })
 
-  it('T28 · a per-layer ceiling never reaches administration', async () => {
+  it('T38 · a per-layer ceiling never reaches administration', async () => {
     // `admin` inside one layer is not authority over the organization holding
     // it. Minting a user is gated on the connection's ceiling and never on a
     // layer's, so this delegation administers nothing — and the endpoint

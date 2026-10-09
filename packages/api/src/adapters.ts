@@ -1681,7 +1681,7 @@ async function principalsFor(
 }
 
 /** The per-request permission context, loaded once and asked several questions. */
-async function contextFor(
+export async function contextFor(
   client: import('pg').PoolClient,
   auth: AuthContext,
   cache?: PrincipalsCache,

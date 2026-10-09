@@ -1,5 +1,5 @@
 /**
- * The T1-T35 inventory from docs/authz.md section "Test plan".
+ * The T1-T39 inventory from docs/authz.md section "Test plan".
  *
  * This exists so the gap between "the suite the specification requires" and
  * "the suite that runs today" is a checked fact rather than a memory. A test
@@ -98,29 +98,46 @@ export const TEST_PLAN: readonly TestCase[] = [
   { id: 'T25', group: 'delegation', status: 'implemented',
     scenario: 'An org_admin with a {read} ceiling reads the whole organization and every org_admin-gated endpoint refuses' },
 
+  // Per-layer ceilings. Implemented and tested before they had a row here, and
+  // labelled T26–T28 in the suite — the numbers the skills cases below were
+  // then given, so a skills case would have been "covered" by a test about
+  // something else. Numbered after the skills cases for that reason, and the
+  // coverage suite now refuses a pending case whose marker a test carries.
+  { id: 'T36', group: 'delegation', status: 'implemented',
+    scenario: 'A narrowing with {read} on L and {write} on M reads L only, writes M only, and the search clause carries L alone' },
+  { id: 'T37', group: 'delegation', status: 'implemented',
+    scenario: 'A layer in the narrowing with no ceiling of its own inherits the connection\u2019s' },
+  { id: 'T38', group: 'delegation', status: 'implemented',
+    scenario: 'admin in one layer\u2019s ceiling reaches that layer and never administration of the organization' },
+
   // ── skills and the administrative surface ──
   // Specified ahead of the code on purpose: written after, they get written to
   // match whatever was built rather than what docs/authz.md asks.
-  { id: 'T26', group: 'baseline', status: 'pending', blockedBy: 'skills are specified in docs/skills.md and not built yet',
+  { id: 'T26', group: 'baseline', status: 'implemented',
     scenario: 'A layer skill on a layer the caller holds no permission on is absent, and answers as a layer with no skill' },
-  { id: 'T27', group: 'baseline', status: 'pending', blockedBy: 'skills are specified in docs/skills.md and not built yet',
+  { id: 'T27', group: 'baseline', status: 'implemented',
     scenario: 'A principal holding only write on a layer sees that layer\u2019s skill' },
-  { id: 'T28', group: 'delegation', status: 'pending', blockedBy: 'skills are specified in docs/skills.md and not built yet',
+  { id: 'T28', group: 'delegation', status: 'implemented',
     scenario: 'A delegation narrowed to L whose person reads L and M lists L\u2019s skill and never M\u2019s' },
-  { id: 'T29', group: 'delegation', status: 'pending', blockedBy: 'skills are specified in docs/skills.md and not built yet',
+  { id: 'T29', group: 'delegation', status: 'pending', blockedBy: 'the consent screen\'s per-layer skill box — the `skill` ceiling value — is not built yet',
     scenario: 'Without skill in L\u2019s ceiling a layer admin\u2019s delegation cannot write L\u2019s skill; with it, it can, and still cannot rename, delete or grant' },
-  { id: 'T30', group: 'delegation', status: 'pending', blockedBy: 'skills are specified in docs/skills.md and not built yet',
+  { id: 'T30', group: 'delegation', status: 'pending', blockedBy: 'the consent screen\'s per-layer skill box — the `skill` ceiling value — is not built yet',
     scenario: 'skill in L\u2019s ceiling while the person holds only write on L: the skill write is refused' },
   { id: 'T31', group: 'delegation', status: 'pending', blockedBy: 'the administrative MCP is specified in docs/mcp-admin.md and not built yet',
     scenario: 'An administrative-resource token is refused by the API and /mcp, and an ordinary token by /mcp/admin' },
   { id: 'T32', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP is specified in docs/mcp-admin.md and not built yet',
     scenario: 'An administrative write called and never applied changes nothing, and the expired proposal is recorded' },
-  { id: 'T33', group: 'baseline', status: 'pending', blockedBy: 'skills are specified in docs/skills.md and not built yet',
+  { id: 'T33', group: 'baseline', status: 'implemented',
     scenario: 'platform_admin never reads an organization\u2019s skill; only that role writes the installation skill' },
-  { id: 'T34', group: 'baseline', status: 'pending', blockedBy: 'skills are specified in docs/skills.md and not built yet',
+  { id: 'T34', group: 'baseline', status: 'implemented',
     scenario: 'An organization\u2019s skill never reaches a caller from another organization, including through instructions' },
   { id: 'T35', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP is specified in docs/mcp-admin.md and not built yet',
     scenario: 'A notification to anything but an active user of the caller\u2019s organization is refused before composing' },
+  // A layer skill is written by a layer's administrator, who has less authority
+  // than the org_admin the administrative surface acts for — so a layer skill
+  // followed there is an escalation written in prose.
+  { id: 'T39', group: 'adversarial', status: 'pending', blockedBy: 'the administrative MCP is specified in docs/mcp-admin.md and not built yet',
+    scenario: 'The administrative surface\u2019s instructions carry no skill, and a skill read through it is marked as text under review, never guidance' },
 ]
 
 export const pending = (): readonly TestCase[] =>
