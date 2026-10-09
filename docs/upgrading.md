@@ -285,6 +285,15 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.33.0 — the skill panel
+
+**Nothing to do.** A fourth MCP App view, `ui://nacre/skill.html`, opens from
+`get_skill` and `list_skills` in a client that renders apps; a client that does
+not ignores it. `get_skill` gains `writable` and, for a layer's skill,
+`by_agent`; `update_skill` takes `zip_base64` as an alternative to `files`, and
+no longer requires `files` on its own — exactly one of the two. No schema
+change, no variable.
+
 ### 0.32.0 — the administrative MCP reads, and the access log names the connection
 
 **Migration 0038, and nothing to configure.** It adds `oauth_consents.surface`,

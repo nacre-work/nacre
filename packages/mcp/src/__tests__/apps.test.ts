@@ -133,6 +133,9 @@ describe('the MCP App views', () => {
     expect(csp('upload')?.connectDomains).toEqual([API])
     expect(csp('search')?.connectDomains).toEqual([])
     expect(csp('layers')?.connectDomains).toEqual([])
+    // The skill view reaches the server through the host and nothing else —
+    // its one write is `update_skill`, called through the host like any tool.
+    expect(csp('skill')?.connectDomains).toEqual([])
   })
 
   it('search and list_layers carry their view, under both keys', async () => {
@@ -144,7 +147,12 @@ describe('the MCP App views', () => {
     expect(meta('search')?.['ui/resourceUri']).toBe(viewUri('search'))
     expect((meta('list_layers')?.ui as { resourceUri?: string } | undefined)?.resourceUri).toBe(viewUri('layers'))
     expect((meta('upload_file')?.ui as { resourceUri?: string } | undefined)?.resourceUri).toBe(viewUri('upload'))
+    expect((meta('get_skill')?.ui as { resourceUri?: string } | undefined)?.resourceUri).toBe(viewUri('skill'))
+    expect((meta('list_skills')?.ui as { resourceUri?: string } | undefined)?.resourceUri).toBe(viewUri('skill'))
     expect(meta('ingest_document')).toBeUndefined()
+    // The write the panel makes carries no view of its own: it is called
+    // from one, and opening a second panel for its answer would be noise.
+    expect(meta('update_skill')).toBeUndefined()
   })
 
   it('offers upload_file to a client that renders apps, and not to one that said it cannot', async () => {

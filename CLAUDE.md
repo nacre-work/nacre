@@ -3100,6 +3100,29 @@ now, the press is refused without a cursor whatever the button looks like, and
 that one. The render harness presses More twice and reads the button's
 computed display, which is the check that could not have passed before.
 
+**That harness was never committed, and the sentence above described it for
+three releases.** A property held by a script on one machine is held by
+nobody. It is `packages/mcp/scripts/render-apps.mjs` now, as `lint:apps` in the
+`console` job: the built HTML in an iframe, the extension's own `AppBridge` as
+the host, tool calls answered from fixtures, every view at 600 and 390 in both
+themes — and More pressed twice, asserted, because the claim was made in this
+file and nothing checked it.
+
+**There is a fourth view, the skill panel**, opened by `get_skill` and
+`list_skills`: the file tree, `SKILL.md` rendered and as source, who wrote the
+version and whether it carries scripts, and — where `get_skill` says
+`writable` — loading a folder or a `.zip`. Its Markdown is the console's own
+module, imported across the package boundary at build time, because a skill is
+written by somebody with `admin` on one layer and read by people with more, and
+that module is the one place already made to draw it as text. A second renderer
+is a second chance to get `javascript:` wrong. The `.zip` goes to `update_skill`
+as `zip_base64` and is read by the server's one bounded reader: a browser has no
+`zlib`, and a second reader is a second place for a zip bomb.
+
+The first render broke inline code mid-word — `l` / `eave-policy` — because the
+shared `code { word-break: break-all }` is right for an id in a table and wrong
+in prose. Found by looking, which is the only way it could have been.
+
 **The images are mirrored to Docker Hub, and `ghcr.io` stays canonical.**
 `docker pull nacre` is where somebody who has not read a document looks first,
 so the release pushes every image to `docker.io/nacrecontextlayer/<image>` as
