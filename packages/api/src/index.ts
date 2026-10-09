@@ -72,6 +72,10 @@ export { AdminNames, isUuid } from './admin-names.js'
 export type { NamedLayer, PrincipalKind } from './admin-names.js'
 export { coreAdminWrites } from './admin-writes.js'
 export type { AdminWritePorts } from './admin-writes.js'
+export { notificationTools } from './admin-notify.js'
+export type { NotifyPorts } from './admin-notify.js'
+export { MAX_ALERT_RULES, PostgresNotifications } from './notifications.js'
+export type { AlertRule, Enqueued, NewAlertRule, NotificationStore } from './notifications.js'
 export {
   applyProposal,
   cancelProposal,

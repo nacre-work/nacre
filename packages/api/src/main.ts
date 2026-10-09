@@ -61,6 +61,9 @@ import { RedisUploadTickets } from './uploads.js'
 import { PostgresGroups, PostgresUsers } from './principals.js'
 import { PostgresSkills } from './skills.js'
 import { coreAdminWrites } from './admin-writes.js'
+import { notificationTools } from './admin-notify.js'
+import { AdminNames } from './admin-names.js'
+import { PostgresNotifications } from './notifications.js'
 import { PostgresProposals, writeLookup } from './proposals.js'
 import { PostgresServiceAccounts } from './service-keys.js'
 import { postgresVerification } from './verification.js'
@@ -227,6 +230,20 @@ async function main(): Promise<void> {
    * off the screen rather than showing one that answers 404.
    */
   const mailer = createMailer(loadMailConfig())
+
+  /*
+   * The audit port the administrative writes hold. They record their own
+   * events, so the sinks are wrapped here rather than by `createApi` —
+   * `withAuditSinks` marks what it wrapped, so the two never fan an event out
+   * twice.
+   */
+  const adminAudit = withAuditSinks(new PostgresAudit(pool, APP_ROLE), (sink, event, error) => {
+    logger.warn('audit sink failed; the event is still in the table', {
+      sink,
+      action: event.action,
+      error: String(error).slice(0, 200),
+    })
+  })
   const recovery =
     mailer === undefined
       ? undefined
@@ -467,17 +484,11 @@ async function main(): Promise<void> {
      */
     proposals: {
       store: new PostgresProposals(pool, APP_ROLE),
-      writes: writeLookup(
-        coreAdminWrites({
+      writes: writeLookup([
+        ...coreAdminWrites({
           pool,
           role: APP_ROLE,
-          audit: withAuditSinks(new PostgresAudit(pool, APP_ROLE), (sink, event, error) => {
-            logger.warn('audit sink failed; the event is still in the table', {
-              sink,
-              action: event.action,
-              error: String(error).slice(0, 200),
-            })
-          }),
+          audit: adminAudit,
           grants: new PostgresGrants(pool, APP_ROLE, principalsCache),
           groups: new PostgresGroups(pool, APP_ROLE),
           users: new PostgresUsers(pool, APP_ROLE),
@@ -486,7 +497,17 @@ async function main(): Promise<void> {
           skills: new PostgresSkills(pool, APP_ROLE, principalsCache),
           consents: new PostgresOAuthConsents(pool, APP_ROLE),
         }),
-      ),
+        // Only where there is a relay, as on the MCP process: a proposal made
+        // while one was configured and applied after it was removed finds no
+        // tool here, and is refused rather than queued for nobody to send.
+        ...(mailer === undefined
+          ? []
+          : notificationTools({
+              audit: adminAudit,
+              names: new AdminNames(pool, APP_ROLE),
+              notifications: new PostgresNotifications(pool, APP_ROLE),
+            }).filter((t) => t.kind === 'write')),
+      ]),
     },
 
     /**

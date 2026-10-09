@@ -557,7 +557,12 @@ mail:
   # The From: address. A relay refuses a sender it does not own.
   from: ""
   #
-  # Under networkPolicy.strict the API also needs egress to the relay, which is
+  # The API sends recovery links and security notices; since 0.35.0 the worker
+  # sends the administrative MCP's notifications and alert rules, so it gets the
+  # relay too. The MCP transport gets only `from`, to know the tools are worth
+  # offering — never the URL with its password.
+  #
+  # Under networkPolicy.strict the API and the worker need egress to the relay, which is
   # an external destination like Postgres and S3 — see networkPolicy.extraEgress
   # below. Without it the message is never sent and the failure is a log line on
   # a pod nobody is reading.

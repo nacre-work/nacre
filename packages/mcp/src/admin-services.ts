@@ -6,6 +6,8 @@ import {
   cancelProposal,
   coreAdminWrites,
   decodeCursor,
+  notificationTools,
+  PostgresNotifications,
   encodeCursor,
   PostgresAccess,
   PostgresAuditReader,
@@ -29,7 +31,16 @@ import {
   type Reach,
   type SkillLevel,
 } from '@nacre.work/api'
-import { MetadataError, mcpTools, McpToolRefusal, withOrg, type AuditWriter, type McpTool } from '@nacre.work/core'
+import {
+  MetadataError,
+  mcpTools,
+  McpToolRefusal,
+  withOrg,
+  type AuditWriter,
+  type McpReadTool,
+  type McpTool,
+  type McpWriteTool,
+} from '@nacre.work/core'
 import type { Pool } from 'pg'
 
 import {
@@ -99,6 +110,13 @@ export interface AdminDeps {
    * answer says "the console" without a link.
    */
   readonly consoleUrl?: string
+  /**
+   * Whether the installation has a mail relay. The notification tools are
+   * offered only where it does: a tool that queues a message nothing will send
+   * is a tool that says it did something it did not. This process never sends —
+   * the worker does — so it is told the fact, not handed a sender.
+   */
+  readonly notifications?: boolean
 }
 
 /** The runner, and the catalog it answers for — composed once, at startup. */
@@ -128,7 +146,13 @@ export function adminTools(deps: AdminDeps): AdminRunner {
   const known = new AdminNames(pool, APP_ROLE)
   const proposals = new PostgresProposals(pool, APP_ROLE)
 
-  const writes = coreAdminWrites({
+  const notify = deps.notifications === true
+    ? notificationTools({ audit, names: known, notifications: new PostgresNotifications(pool, APP_ROLE) })
+    : []
+  const coreReads = notify.filter((t): t is McpReadTool => t.kind === 'read')
+
+  const writes = [
+    ...coreAdminWrites({
     pool,
     role: APP_ROLE,
     audit,
@@ -139,7 +163,9 @@ export function adminTools(deps: AdminDeps): AdminRunner {
     layers: new PostgresLayers(pool, deps.vectors, APP_ROLE, principalsCache),
     skills,
     consents,
-  })
+    }),
+    ...notify.filter((t): t is McpWriteTool => t.kind === 'write'),
+  ]
   const lookupWrite = writeLookup(writes)
 
   const inOrg = <T>(auth: AuthContext, run: (client: import('pg').PoolClient) => Promise<T>): Promise<T> =>
@@ -654,12 +680,14 @@ export function adminTools(deps: AdminDeps): AdminRunner {
     owners.set(name, owner)
   }
   for (const d of ADMIN_CATALOG) claim(d.name, 'the core')
+  for (const r of coreReads) claim(r.name, 'the core')
   for (const w of writes) claim(w.name, 'the core')
   for (const d of DECIDE_CATALOG) claim(d.name, 'the core')
   for (const m of modules) claim(m.tool.name, m.module)
 
   const catalog: readonly AdminToolDefinition[] = [
     ...ADMIN_CATALOG,
+    ...coreReads.map(readDefinition),
     ...writes.map(writeDefinition),
     ...modules.map((m) => (m.tool.kind === 'write' ? writeDefinition(m.tool) : readDefinition(m.tool))),
     ...DECIDE_CATALOG,
@@ -750,6 +778,21 @@ export function adminTools(deps: AdminDeps): AdminRunner {
       }
 
       if (name === 'apply_proposal' || name === 'cancel_proposal') return decide(auth, requestId, name, args)
+
+      // The core's reads written in the module shape — the notification
+      // tools, present only where there is a relay.
+      const coreRead = coreReads.find((r) => r.name === name)
+      if (coreRead !== undefined) {
+        let result
+        try {
+          result = await coreRead.run({ auth, requestId }, args)
+        } catch (error) {
+          await refused(auth, requestId, name, error)
+          throw error
+        }
+        await recorded(auth, requestId, name, {})
+        return result
+      }
 
       const core = writes.find((w) => w.name === name)
       if (core !== undefined) return propose(auth, requestId, { tool: core, module: null }, args)

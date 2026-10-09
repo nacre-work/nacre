@@ -6431,6 +6431,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         detail: {
           client_id: clientId,
           client_name: client.clientName,
+          // Which resource the connection is for. The `admin_connection` alert
+          // rule reads this, and "when was an administrative connection
+          // approved" is the question it answers for a person too.
+          surface: administrative ? 'admin' : 'default',
           acts_as: subject.actsAs,
           ...(delegating
             ? {

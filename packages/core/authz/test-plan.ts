@@ -134,7 +134,11 @@ export const TEST_PLAN: readonly TestCase[] = [
     scenario: 'platform_admin never reads an organization\u2019s skill; only that role writes the installation skill' },
   { id: 'T34', group: 'baseline', status: 'implemented',
     scenario: 'An organization\u2019s skill never reaches a caller from another organization, including through instructions' },
-  { id: 'T35', group: 'adversarial', status: 'pending', blockedBy: 'notifications from the administrative MCP are specified in docs/mcp-admin.md and not built yet; its proposals and writes are',
+  // Three bounds, and the case asks each: the tool refuses before anything is
+  // stored, applying refuses somebody disabled since, and the worker reads
+  // addresses from the notification's own organization at sending time — so a
+  // row naming somebody elsewhere still reaches nobody.
+  { id: 'T35', group: 'adversarial', status: 'implemented',
     scenario: 'A notification to anything but an active user of the caller\u2019s organization is refused before composing' },
   // The catalog is permission data. A delegation narrowed to L used to be
   // listed M — its name, description and document count — on both surfaces,

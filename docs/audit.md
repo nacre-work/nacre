@@ -121,6 +121,22 @@ A press on the console carries `surface: "api"` and the person as actor, with
 `client` naming the connection that *proposed* it — so a filter on a connection
 finds the change it led to wherever it was applied.
 
+**A notification is two events, since 0.35.0.** Applying one an agent proposed
+is `send_notification`, naming the queued notification and the connection; the
+worker then writes `notification.sent` for it **whatever became of it** — `allow`
+with the user ids it went to, or `error` with the outcome (`dropped`, `failed`)
+and the reason: nobody it named is active any more, a relay that refused three
+times, a message nobody could send within a day, one a worker died sending and
+did not send again. A message that did not go is the one somebody needs to
+find, so it is never left out. A rule's message is `notification.sent` naming
+the rule; creating and removing one are `create_alert_rule` and
+`remove_alert_rule`. The address is never in the log — the ids are, and the
+person behind each is one listing away.
+
+`oauth.consent` carries `surface` since the same release — `admin` for the
+administrative MCP, `default` for the other — which is what the
+`admin_connection` alert rule reads.
+
 **Retention is enforced**, and the decision that was open is made. The worker
 prunes hourly in bounded batches, and `NACRE_AUDIT_RETENTION_DAYS` is what it
 prunes against.

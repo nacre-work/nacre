@@ -1,4 +1,4 @@
-import { consoleUrl, message, type Message } from '@nacre.work/core'
+import { consoleUrl, message, notificationMessage, ruleSentence, type Message } from '@nacre.work/core'
 
 /**
  * Every message this product sends, in one file.
@@ -115,6 +115,11 @@ export function secondFactorMessage(to: string, what: 'enrolled' | 'removed'): M
  * All of them, for anything that has to reason about the set rather than about
  * one — the preview, and whatever comes after it.
  *
+ * Including the notification, which is written in the core because the worker
+ * sends it and cannot import this package. Listed here all the same, in both
+ * of its forms: the set is what the preview renders, and a message missing
+ * from it is a message nobody looked at in a mail client.
+ *
  * A list rather than a count, because a count is the thing that goes stale.
  */
 export const everyMessage = (to: string, consoleBase: string): readonly Message[] => [
@@ -123,4 +128,30 @@ export const everyMessage = (to: string, consoleBase: string): readonly Message[
   passwordChangedMessage(to, 'recovery-link'),
   secondFactorMessage(to, 'enrolled'),
   secondFactorMessage(to, 'removed'),
+  notificationMessage(
+    to,
+    consoleBase,
+    {
+      subject: 'Contracts layer reorganised',
+      body:
+        'The contracts layer now holds signed agreements only. Drafts moved to contracts-drafts.\n\n' +
+        'Grants on contracts are unchanged; ask an administrator if you need the drafts.',
+    },
+    { source: 'agent', appliedBy: 'dana@example.com', application: 'Claude' },
+  ),
+  notificationMessage(
+    to,
+    consoleBase,
+    {
+      subject: '12 documents failed to index',
+      body:
+        '12 documents failed to index in the last 60 minutes:\n\n- handbook: 9\n- contracts: 3\n\n' +
+        'Each failed document carries its reason.',
+    },
+    {
+      source: 'rule',
+      when: ruleSentence({ kind: 'documents_failed', layerSlug: null, threshold: 10, windowMinutes: 60 }),
+      ruleBy: 'dana@example.com',
+    },
+  ),
 ]

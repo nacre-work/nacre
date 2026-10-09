@@ -20,6 +20,7 @@ export {
   PostgresDocumentStore,
   QdrantVectorWriter,
 } from './adapters.js'
+export { evaluateAlertRules, expireNotifications, sendNotifications } from './notify.js'
 export { collectOnce } from './collect.js'
 export type { CollectPorts, CollectResult, PurgeTarget } from './collect.js'
 export { reapOnce } from './reap.js'

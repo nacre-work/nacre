@@ -1393,7 +1393,7 @@ requiredness — are narrow enough to be defeated by rewording, which is the
 shape of check this repository keeps deleting. `grep` found the other three
 copies, and they were correct.
 
-**Every case of T1–T41 in docs/authz.md that describes what is built runs** — forty; T35, for the administrative MCP's notifications, is specified and pending — against real services, plus the truth
+**Every case of T1–T41 in docs/authz.md runs** — all forty-one, since notifications closed T35 — against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
 round trip that puts the worker and the search path against each other.
 `acl-invariants` is a gate on what that document specifies — and only on that.
@@ -3459,6 +3459,44 @@ token, and a `.catch` on the promise cannot see a throw that happens before the
 promise exists. The sign-in screen got a page error. It asks only with a token
 now, inside a `try`, and the event listener is one module-level property rather
 than one more `addEventListener` per sign-in.
+
+**The administrative MCP sends mail, and only to people in the organization —
+0.35.0.** `send_notification` proposes an email; alert rules — a skill version
+an agent wrote, one adding scripts, an administrative connection approved, a
+denial spike, documents failing — are kept by the organization and checked by
+the worker every minute with no agent connected. All four tools are proposals
+or reads, and exist only where a relay is configured.
+
+T35 is held three times rather than once, and each was measured alone by
+removing it: the tool resolves every address to an **active person in the
+caller's organization** and refuses before anything is stored, with one
+sentence for "elsewhere" and "nowhere" so the refusal is not an oracle; the
+apply resolves again, because somebody disabled in the ten minutes between is
+somebody the organization just decided not to reach; and the worker reads the
+address **at sending time** from the notification's own organization — so a row
+written straight into the outbox naming another tenant's administrator reaches
+nobody, which the case writes one to prove. What is stored is ids: there is no
+column an address could go in, which is the whole of the leak argument made
+structural rather than checked.
+
+A notification **carries no links**. It is somebody's prose from the
+installation's own address, which is a phishing message's exact shape on the one
+surface whose threat model is a planted instruction — so a scheme, `www.` or a
+dotted name with a path is refused, the only link is to the access log, and the
+message says an agent wrote it and who approved it. An application's registered
+name is the one string in an alert somebody outside chose, so it is broken where
+a mail client would make it a link. Thirty an hour per organization, at most
+once per message — a worker that dies mid-send leaves it `failed`, not resent —
+and `notification.sent` for every one whatever became of it, because the one
+that did not go is the one somebody needs to find.
+
+**The relay reached a second process, and a third gets only the fact of it.**
+The worker sends, so the chart gives it `NACRE_SMTP_URL`; the transport only
+decides whether to offer the tools, so it reads `NACRE_MAIL_FROM` — the half of
+the pair that is not a secret — and the relay's password stays out of a pod that
+never sends. The mail renderer keeps a line break inside a paragraph now, in
+both parts; nothing it sent before had one, and a list of layers run into one
+line reads as a sentence that lost its punctuation.
 
 **Where to connect is on a screen**, which was asked for in those words. The MCP
 endpoint and the REST base lived in `docs/quickstart.md` and in an operator's

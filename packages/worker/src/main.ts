@@ -14,6 +14,8 @@ import {
   endpointUrl,
   modelEndpointRefused,
   installGuards,
+  loadMailConfig,
+  createMailer,
   logger,
   S3,
   VectorStore,
@@ -51,6 +53,7 @@ import {
   EMBED_TIMEOUT_MS,
 } from './adapters.js'
 import { DEFAULT_CHUNK_CONFIG } from './chunk.js'
+import { evaluateAlertRules, expireNotifications, sendNotifications } from './notify.js'
 import { ingest } from './ingest.js'
 import { collectOnce } from './collect.js'
 import { pruneOnce } from './prune.js'
@@ -95,6 +98,18 @@ const REAP_EVERY_MS = 60_000
 // an administrator reading the access log should find within one more.
 const EXPIRE_BATCH = 200
 const EXPIRE_EVERY_MS = 60_000
+
+// Notifications: alert rules looked at, the outbox sent. Every thirty seconds,
+// because a rule is checked about once a minute and what it found should not
+// then wait for another minute in the outbox; when nothing is queued the pass
+// is one partial-index lookup that returns no rows. Sent one message at a time
+// to a relay, so the batch is small.
+const NOTIFY_BATCH = 20
+const NOTIFY_EVERY_MS = 30_000
+// How long a finished message's body is kept. The access log keeps that it was
+// sent, to whom and why for as long as it keeps anything; the text itself is
+// somebody's prose and has no reason to outlive the month it was sent in.
+const NOTIFY_RETENTION_DAYS = 30
 
 // Retention. Hourly, because neither table is urgent and both are large: an
 // expired refresh token is inert and an audit event a day past a 400-day
@@ -570,6 +585,13 @@ async function main(): Promise<void> {
   // the next reader does not take the sentence above for that guarantee.
   let lastReap = 0
   let lastExpire = 0
+  let lastNotify = 0
+
+  // The installation's relay, when it has one. Without one nothing is sent and
+  // no rule is looked at — the tools that make either are not offered then —
+  // and the expiry pass still says, in the access log, that a queued message
+  // never went.
+  const mailer = createMailer(loadMailConfig())
 
   let running = true
   // Woken by the signal handler so an idle sleep does not have to run out.
@@ -654,6 +676,25 @@ async function main(): Promise<void> {
           if (expired > 0) logger.info('proposals expired', { expired })
         } catch (error) {
           logger.error('proposal expiry pass failed', { error: String(error) })
+        }
+      }
+
+      // After the proposals, for the same reason they have their own clock: a
+      // failure here must not stop collection, and a relay that is down is the
+      // likeliest failure in this whole loop.
+      if (Date.now() - lastNotify >= NOTIFY_EVERY_MS) {
+        lastNotify = Date.now()
+        try {
+          if (mailer !== undefined) {
+            const rules = await evaluateAlertRules(pool)
+            if (rules.fired > 0 || rules.held > 0) logger.info('alert rules fired', { ...rules })
+            const out = await sendNotifications(pool, mailer, config.canonicalUrl, NOTIFY_BATCH)
+            if (out.sent + out.dropped + out.failed > 0) logger.info('notifications', { ...out })
+          }
+          const loose = await expireNotifications(pool, NOTIFY_RETENTION_DAYS)
+          if (loose.ended > 0) logger.warn('notifications not sent', { ended: loose.ended })
+        } catch (error) {
+          logger.error('notification pass failed', { error: String(error) })
         }
       }
 

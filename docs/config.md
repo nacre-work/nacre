@@ -136,6 +136,14 @@ NACRE_EMA_TRUSTED_ISSUERS=
 # The link in a message is built from NACRE_CANONICAL_URL and never from a Host
 # header: a recovery link built from a request header points wherever the
 # requester said.
+#
+# Three processes read these since 0.35.0, and not alike. The API sends recovery
+# links and security notices; the worker sends the administrative MCP's
+# notifications and what alert rules find (docs/mcp-admin.md, "Notifications");
+# the MCP transport reads NACRE_MAIL_FROM alone, to decide whether to offer those
+# tools at all, and never needs the relay's password — the chart hands it that
+# one variable and nothing else. Unset everywhere, the notification tools are
+# not offered and nothing is sent.
 NACRE_SMTP_URL=                        # smtp:// or smtps://user:pass@host:port
 NACRE_MAIL_FROM=                       # the From: address; a relay refuses one it does not own
 

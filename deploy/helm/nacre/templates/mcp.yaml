@@ -53,6 +53,7 @@ spec:
               value: {{ .Values.mcp.port | quote }}
             {{- include "nacre.env" . | nindent 12 }}
             {{- include "nacre.jwtVerifyEnv" . | nindent 12 }}
+            {{- include "nacre.mailPresenceEnv" . | nindent 12 }}
           volumeMounts:
             {{- include "nacre.tmpVolumeMount" . | nindent 12 }}
             {{- include "nacre.jwtVerifyVolumeMount" . | nindent 12 }}
