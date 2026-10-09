@@ -63,6 +63,35 @@ const checked = new Set((checkedLine?.[1] ?? '').trim().split(/\s+/).filter(Bool
 
 let failed = false
 
+/**
+ * The Docker Hub mirror, held per push step rather than trusted.
+ *
+ * Every image is pushed to ghcr.io, which is canonical, and to
+ * docker.io/nacrecontextlayer under the same name and the same tags. A
+ * registry added to one `tags:` block and not the next is a mirror that is
+ * missing one image with nothing anywhere saying so — the property-in-N-places
+ * shape, in a workflow. So each `tags:` block has to carry, for every ghcr.io
+ * line, the docker.io line with the same name and tag, and the architecture
+ * loop has to read the mirror's manifest back as well as the canonical one.
+ */
+const MIRROR = 'docker.io/nacrecontextlayer'
+for (const block of workflow.matchAll(/tags:\s*\|\n((?:[ \t]+\S[^\n]*\n)+)/g)) {
+  const lines = block[1].split('\n').map((l) => l.trim()).filter(Boolean)
+  for (const line of lines) {
+    const m = /^ghcr\.io\/nacre-work\/([a-z0-9-]+):(.+)$/.exec(line)
+    if (m === null) continue
+    const want = `${MIRROR}/${m[1]}:${m[2]}`
+    if (!lines.includes(want)) {
+      console.error(`::error file=${RELEASE}::\`${line}\` is pushed and \`${want}\` is not — the Docker Hub mirror would be missing it, and nothing reads the mirror back.`)
+      failed = true
+    }
+  }
+}
+if (!workflow.includes(`"${MIRROR}/$image:`)) {
+  console.error(`::error file=${RELEASE}::the architecture check reads ghcr.io back and not ${MIRROR}; a mirror nobody inspects is a mirror that can be one architecture short.`)
+  failed = true
+}
+
 for (const file of dockerfiles) {
   const path = `${DOCKER}/${file}`
   if (!pushed.has(path)) {

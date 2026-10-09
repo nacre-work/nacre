@@ -3082,6 +3082,42 @@ columns of a hit did not fit, so a document's id and a layer's description are
 a second line under the first cell rather than a column, which is the
 console's own treatment of a value that is an annotation.
 
+**And the layers view's More button appended the first page again on every
+press.** Reported from a real host with the picture: twenty-four rows that
+were eight rows three times, and "24 layers you may read." under a More
+button that should not have been there. The view sets `hidden` on the button
+once the server answers with no cursor, and `hidden` is the user-agent's
+`display: none` — which the restyle's `.btn { display: inline-flex }` beats,
+so the attribute did nothing. The console learned exactly this on a dialog
+field, in a repository this one can read, and the lesson did not travel to the
+next stylesheet. `[hidden] { display: none !important }` is in every view
+now, the press is refused without a cursor whatever the button looks like, and
+`apps.test.ts` holds the rule in every built view — removing it from one names
+that one. The render harness presses More twice and reads the button's
+computed display, which is the check that could not have passed before.
+
+**The images are mirrored to Docker Hub, and `ghcr.io` stays canonical.**
+`docker pull nacre` is where somebody who has not read a document looks first,
+so the release pushes every image to `docker.io/nacrecontextlayer/<image>` as
+well, from the same build, at the same tags. Canonical stays `ghcr.io` because
+Docker Hub rate-limits pulls by account and nothing here reads the mirror
+back — the chart, the Compose files and every document name `ghcr.io`. The
+mirror is held by `lint:images` rather than trusted: every `tags:` block has
+to carry the mirror line beside each canonical one, and the architecture loop
+has to inspect both registries, because a registry added to one push step and
+not the next is this file's first paragraph arriving in a workflow. Both
+refusals were produced. The planner asks both registries before it skips the
+containers job, because that job is skipped once `ghcr.io` has the tag — so a
+first attempt that reached `ghcr.io` and failed on Docker Hub would otherwise
+never be re-run into the mirror. It asks Docker Hub's web API rather than its
+registry: an anonymous manifest `HEAD` there counts against the pull-rate
+limit and answered `429` from the first machine it was tried on, and a
+repository that does not exist answers `401`, which reads as "went private".
+The commercial image is deliberately **not** mirrored:
+it is gated by a GitHub token on `ghcr.io`, a second registry is a second
+credential for the same customer, and the private repositories cannot read the
+organization's Docker Hub secrets on this plan anyway.
+
 `get_document` carries its presigned `source_url` twice now: in the JSON, and
 as a `resource_link` block, which is the revision's word for "the result is
 somewhere else" and what lets a client fetch the whole file out of band. One

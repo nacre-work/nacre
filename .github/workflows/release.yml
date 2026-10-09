@@ -403,7 +403,8 @@ jobs:
 
 
   # The container images the Helm chart names in its defaults —
-  # ghcr.io/nacre-work/nacre and -parser. Nothing built them: this workflow
+  # ghcr.io/nacre-work/nacre and -parser — mirrored to Docker Hub as
+  # docker.io/nacrecontextlayer/<image> by the same build. Nothing built them: this workflow
   # published the npm packages and stopped, so `helm install` on the chart's
   # defaults pulled a tag that did not exist. Built here, from the same tree the
   # npm packages came from and only once they have published, so the two halves
@@ -444,6 +445,17 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Docker Hub is a mirror and ghcr.io stays canonical: the chart, the
+      # Compose files and every document name ghcr.io, and Docker Hub rate-limits
+      # pulls by account. The mirror exists because `docker pull nacre` is where
+      # somebody who has not read a document looks first. `DOCKER_USER` and
+      # `DOCKER_PAT` are organization secrets; a missing one fails this step by
+      # name rather than quietly publishing to one registry of two.
+      - uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PAT }}
 
       - name: nacre (api, mcp, worker — one image, three entry points)
         uses: docker/build-push-action@v6
@@ -459,6 +471,8 @@ jobs:
           tags: |
             ghcr.io/nacre-work/nacre:${{ needs.decide.outputs.version }}
             ghcr.io/nacre-work/nacre:latest
+            docker.io/nacrecontextlayer/nacre:${{ needs.decide.outputs.version }}
+            docker.io/nacrecontextlayer/nacre:latest
 
       # The admin UI, and it should have been here from the start.
       #
@@ -487,6 +501,8 @@ jobs:
           tags: |
             ghcr.io/nacre-work/nacre-web:${{ needs.decide.outputs.version }}
             ghcr.io/nacre-work/nacre-web:latest
+            docker.io/nacrecontextlayer/nacre-web:${{ needs.decide.outputs.version }}
+            docker.io/nacrecontextlayer/nacre-web:latest
 
       - name: nacre-parser (the Python sidecar)
         uses: docker/build-push-action@v6
@@ -498,6 +514,8 @@ jobs:
           tags: |
             ghcr.io/nacre-work/nacre-parser:${{ needs.decide.outputs.version }}
             ghcr.io/nacre-work/nacre-parser:latest
+            docker.io/nacrecontextlayer/nacre-parser:${{ needs.decide.outputs.version }}
+            docker.io/nacrecontextlayer/nacre-parser:latest
 
       # Absent from `airgapped` and absent from `minimal`, but published: the
       # `hosted` Compose profile builds it from source and a Kubernetes
@@ -514,6 +532,8 @@ jobs:
           tags: |
             ghcr.io/nacre-work/nacre-embedding-adapter:${{ needs.decide.outputs.version }}
             ghcr.io/nacre-work/nacre-embedding-adapter:latest
+            docker.io/nacrecontextlayer/nacre-embedding-adapter:${{ needs.decide.outputs.version }}
+            docker.io/nacrecontextlayer/nacre-embedding-adapter:latest
 
       # The published manifest, read back rather than assumed.
       #
@@ -529,14 +549,17 @@ jobs:
         if: ${{ inputs.dry_run != true }}
         run: |
           set -euo pipefail
+          # Both registries, because one build pushed to two is still two
+          # manifests, and the mirror is the one nobody reads a log for.
           for image in nacre nacre-web nacre-parser nacre-embedding-adapter; do
-            ref="ghcr.io/nacre-work/$image:${{ needs.decide.outputs.version }}"
-            platforms="$(docker buildx imagetools inspect "$ref" --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}')"
-            echo "$ref -> $platforms"
-            for want in linux/amd64 linux/arm64; do
-              case " $platforms " in
-                *" $want "*) ;;
-                *) echo "::error::$ref carries no $want"; exit 1 ;;
-              esac
+            for ref in "ghcr.io/nacre-work/$image:${{ needs.decide.outputs.version }}" "docker.io/nacrecontextlayer/$image:${{ needs.decide.outputs.version }}"; do
+              platforms="$(docker buildx imagetools inspect "$ref" --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}')"
+              echo "$ref -> $platforms"
+              for want in linux/amd64 linux/arm64; do
+                case " $platforms " in
+                  *" $want "*) ;;
+                  *) echo "::error::$ref carries no $want"; exit 1 ;;
+                esac
+              done
             done
           done

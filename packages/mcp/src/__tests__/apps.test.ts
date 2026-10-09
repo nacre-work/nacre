@@ -93,6 +93,17 @@ describe('the MCP App views', () => {
     }
   })
 
+  it('hide with the attribute whatever a class says about display', () => {
+    // `.btn` is `display: inline-flex`, and the user-agent's `[hidden]` rule
+    // loses to any author display rule — so a hidden More button stayed on
+    // the screen and re-appended the first page on every press. The rule
+    // that makes the attribute win has to be in every view.
+    for (const view of VIEWS) {
+      const html = readFileSync(new URL(`../../apps/build/${view}.html`, import.meta.url), 'utf8')
+      expect(html, `${view}.html`).toMatch(/\[hidden\]\s*\{\s*display:\s*none\s*!important/)
+    }
+  })
+
   it('are listed with the extension media type, and read back as HTML', async () => {
     const client = new Client({ name: 'apps', version: '0' }, { versionNegotiation: { mode: 'auto' } })
     await client.connect(

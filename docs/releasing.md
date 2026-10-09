@@ -36,7 +36,15 @@ publishable and absent here fails, and so does one listed here that has become
 `private`. The table is not decoration — it is the thing that made somebody read
 the section below.
 
-Images are separate and are listed in [upgrading.md](./upgrading.md).
+Images are separate and are listed in [upgrading.md](./upgrading.md). Each is
+pushed to `ghcr.io/nacre-work/<image>` and, by the same build, mirrored to
+Docker Hub as `nacrecontextlayer/<image>`; `lint:images` holds the mirror tag
+beside every canonical one, so a registry added to one push step and not the
+next fails here. The two secrets the mirror signs in with, `DOCKER_USER` and
+`DOCKER_PAT`, are organization secrets, which the private repositories cannot
+read on this plan — the commercial image is not mirrored, and that is also a
+decision: it is gated by a GitHub token on `ghcr.io`, and a second registry
+would be a second credential for the same customer.
 
 ## Adding a publishable package
 

@@ -46,6 +46,12 @@ export const STYLE = `
   }
 
   *, *::before, *::after { box-sizing: border-box; }
+  /* The attribute wins over any display rule below, or it does nothing:
+     \`hidden\` is the user-agent's \`display: none\`, and \`.btn\` sets
+     \`display: inline-flex\` — so the layers view's More button stayed on the
+     screen with its \`hidden\` attribute set, and every press appended the
+     first page again. The console learned this one on a dialog field. */
+  [hidden] { display: none !important; }
   html, body { margin: 0; }
   body {
     padding: 14px 16px 16px;
@@ -127,7 +133,6 @@ export const STYLE = `
   progress::-webkit-progress-bar { background: var(--n-surface-sunk); border-radius: var(--n-radius-pill); }
   progress::-webkit-progress-value { background: var(--n-sheen); border-radius: var(--n-radius-pill); transition: width var(--n-motion-base) var(--n-ease); }
   progress::-moz-progress-bar { background: var(--n-sheen); border-radius: var(--n-radius-pill); }
-  progress[hidden] { display: none; }
 `
 
 /** The connected app, with the host's theme applied and tracked. */

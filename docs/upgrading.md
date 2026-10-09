@@ -26,6 +26,12 @@ What comes out of one release:
 | `ghcr.io/nacre-work/nacre-parser:{version}` and `:latest` | the Python sidecar |
 | `ghcr.io/nacre-work/nacre-embedding-adapter:{version}` and `:latest` | the hosted-embeddings sidecar, `hosted` profile only |
 
+Each is mirrored to Docker Hub as `nacrecontextlayer/<image>` at the same tags
+by the same build. `ghcr.io` is the canonical address and the one every
+Compose file and the chart name: Docker Hub rate-limits pulls by account, and
+an installation that pins the mirror pins a registry with a different failure
+mode.
+
 `@nacre.work/worker` and `@nacre.work/admin` are `private` and deliberately not
 on the registry: the worker is reached through the image's entry point and the
 admin UI is a static bundle the `web` front door serves, so neither is something
@@ -271,6 +277,15 @@ matching covers the whole corpus rather than the recent end of it.
 
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
+
+### 0.28.1 — a Docker Hub mirror, and the layers view's More button
+
+Nothing to do. The four images are now also pushed to Docker Hub as
+`nacrecontextlayer/<image>` at the same tags by the same build; `ghcr.io`
+stays the canonical address and the one the chart and the Compose files name,
+because Docker Hub rate-limits pulls by account. And the MCP layers view's
+More button is gone once the last page has been read — it stayed on the
+screen and appended the first page again on every press.
 
 ### 0.28.0 — the MCP server on the reference SDK
 

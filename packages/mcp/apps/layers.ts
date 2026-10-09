@@ -70,6 +70,9 @@ async function main(): Promise<void> {
   }
 
   more.addEventListener('click', () => {
+    // No cursor is no next page. The button is hidden in that state, and a
+    // press that reaches here anyway must not ask for the first page again.
+    if (cursor === null) return
     void (async () => {
       more.disabled = true
       const answer = await call(app, 'list_layers', { limit: 100, ...(cursor === null ? {} : { cursor }) })
