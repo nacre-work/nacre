@@ -171,6 +171,21 @@ export type {
 export type { SparseVector } from './text/bm25.js'
 export { classifyIngestFailure, isRetryable, withoutHosts } from './ingest-failure.js'
 export {
+  checkSkill,
+  readFrontmatter,
+  readSkillZip,
+  skillBody,
+  skillPathError,
+  writeSkillZip,
+  SKILL_FILE,
+  SKILL_LIMITS,
+  type Skill,
+  type SkillCheck,
+  type SkillFiles,
+} from './skill.js'
+export { DEFAULT_SKILL } from './default-skill.js'
+
+export {
   BINARY_FORMATS,
   SIGNATURES,
   SIGNATURE_NAMES,
