@@ -7,7 +7,6 @@ import {
   NOTIFY_PER_HOUR,
   notificationText,
   ruleSentence,
-  type AlertKind,
   type AuditWriter,
   type McpReadTool,
   type McpToolCall,
