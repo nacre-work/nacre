@@ -43,6 +43,15 @@ CREATE TABLE admin_proposals (
     -- What `apply` receives: ids, not names, resolved when it was proposed.
     input         jsonb       NOT NULL CHECK (jsonb_typeof(input) = 'object'),
 
+    -- The hash of a key handed to the change panel in the result's `_meta`,
+    -- and nowhere else: not the text the model reads, not the access log. The
+    -- panel's Apply presents it; the console authenticates by session instead.
+    -- The id alone is not enough because the id is in the access log, and the
+    -- administrative surface reads the access log — so without this a model
+    -- could look its own proposal up with `query_audit` and apply it, in any
+    -- host that offered it the panel's tools.
+    panel_key_hash bytea      NOT NULL CHECK (octet_length(panel_key_hash) = 32),
+
     status        text        NOT NULL DEFAULT 'open'
                   CHECK (status IN ('open', 'applying', 'applied', 'failed', 'cancelled', 'expired')),
     created_at    timestamptz NOT NULL DEFAULT now(),

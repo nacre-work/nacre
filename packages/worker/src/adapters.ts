@@ -866,7 +866,14 @@ export async function expireProposals(pool: Pool, limit: number): Promise<number
     const { rows } = await client.query<{ expired: string }>(
       `WITH due AS (
          SELECT id FROM admin_proposals
-          WHERE status IN ('open', 'applying') AND expires_at < now()
+          -- An open proposal ends at its expiry. One being applied does not:
+          -- it was claimed while valid, and an apply that takes a few seconds
+          -- across the expiry is still applying — ending it then would mark
+          -- failed a change that went on to happen. It is ended only once it
+          -- has been applying far longer than any apply takes, which is what
+          -- a process that died mid-apply leaves behind.
+          WHERE (status = 'open' AND expires_at < now())
+             OR (status = 'applying' AND decided_at < now() - make_interval(mins => 15))
           ORDER BY expires_at
           LIMIT $1
           FOR UPDATE SKIP LOCKED

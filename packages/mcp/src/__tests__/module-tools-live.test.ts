@@ -106,15 +106,15 @@ when('module tools on the administrative MCP', () => {
     expect(proposed).toBeInstanceOf(AdminResult)
     expect(applied, 'apply ran on the call that proposed').toEqual([])
     expect(proposedWith[0]?.auth.orgId).toBe(ORG)
-    const proposal = ((proposed as AdminResult).meta['nacre/proposal'] as { id: string }).id
+    const { id: proposal, key } = (proposed as AdminResult).meta['nacre/proposal'] as { id: string; key: string }
 
     // A refusal from propose is the caller's to read, and stores nothing.
     await expect(tools.call('issue_deny', { on: 'nothing' }, auth, 'r2')).rejects.toThrow('Nothing to deny.')
 
-    const result = await tools.call('apply_proposal', { proposal }, auth, 'r3')
+    const result = await tools.call('apply_proposal', { proposal, key }, auth, 'r3')
     expect(result).toEqual({ applied: true, result: { denied: 'contracts' } })
     expect(applied).toEqual([{ input: { on: 'contracts' }, proposal: 'panel' }])
-    await expect(tools.call('apply_proposal', { proposal }, auth, 'r4')).rejects.toThrow(/no longer open/)
+    await expect(tools.call('apply_proposal', { proposal, key }, auth, 'r4')).rejects.toThrow(/no longer open/)
     expect(applied).toHaveLength(1)
   })
 
@@ -131,7 +131,7 @@ when('module tools on the administrative MCP', () => {
       }),
     )
     const before = adminTools({ pool, audit: new PostgresAudit(pool, 'nacre_app'), vectors })
-    const proposal = ((await before.call('tag_layer', {}, auth, 'r1')) as AdminResult).meta['nacre/proposal'] as { id: string }
+    const proposal = ((await before.call('tag_layer', {}, auth, 'r1')) as AdminResult).meta['nacre/proposal'] as { id: string; key: string }
 
     // The module is gone and another registers the same name.
     resetExtensionsForTests()
@@ -147,7 +147,7 @@ when('module tools on the administrative MCP', () => {
       }),
     )
     const after = adminTools({ pool, audit: new PostgresAudit(pool, 'nacre_app'), vectors })
-    await expect(after.call('apply_proposal', { proposal: proposal.id }, auth, 'r2')).rejects.toThrow(/no longer offered/)
+    await expect(after.call('apply_proposal', { proposal: proposal.id, key: proposal.key }, auth, 'r2')).rejects.toThrow(/no longer offered/)
   })
 
   it('a module tool named like a core one stops the process, naming the module', () => {

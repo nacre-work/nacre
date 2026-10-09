@@ -1,3 +1,5 @@
+import { createHash, randomBytes } from 'node:crypto'
+
 import {
   mcpTools,
   McpToolRefusal,
@@ -9,6 +11,7 @@ import {
 } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
+import { isUuid } from './admin-names.js'
 import type { AuthContext } from './auth.js'
 
 /**
@@ -33,8 +36,13 @@ export const PROPOSAL_TTL_MS = 10 * 60_000
 
 /** Who is deciding: the connection's panel, or the person in the console. */
 export type ProposalDecider =
-  | { readonly through: 'panel'; readonly consentId: string }
+  /** The change panel: this connection, holding the key the panel was handed. */
+  | { readonly through: 'panel'; readonly consentId: string; readonly key: string }
+  /** The console: the person's own session, which is its own proof. */
   | { readonly through: 'console'; readonly personId: string }
+
+/** The panel key as stored: its SHA-256, so a database read hands over nothing that applies. */
+const keyHash = (key: string): Buffer => createHash('sha256').update(key, 'utf8').digest()
 
 export interface ProposalView {
   readonly id: string
@@ -55,6 +63,9 @@ interface Claimed {
 }
 
 /** Literal, so `lint:audit-actions` can see each is recorded. */
+/** What revoking a connection records for each proposal it ends. oauth-store.ts. */
+export const CANCELLED_BY_REVOCATION = { action: 'proposal.cancelled' } as const
+
 const RECORDED = {
   created: { action: 'proposal.created' },
   applied: { action: 'proposal.applied' },
@@ -79,15 +90,17 @@ export class PostgresProposals {
   async create(
     auth: AuthContext,
     entry: { readonly tool: string; readonly module: string | null; readonly proposal: McpProposal },
-  ): Promise<{ readonly id: string; readonly expiresAt: string }> {
+  ): Promise<{ readonly id: string; readonly expiresAt: string; readonly panelKey: string }> {
     const consentId = auth.delegation?.id
     if (consentId === undefined || auth.delegation?.surface !== 'admin' || auth.principal.type !== 'user') {
       throw new Error('a proposal is made on an administrative connection, by a person')
     }
+    // Handed to the panel once, in `_meta`, and kept here only as a hash.
+    const panelKey = randomBytes(32).toString('base64url')
     return this.inOrg(auth, async (client) => {
       const { rows } = await client.query<{ id: string; expires_at: string }>(
-        `INSERT INTO admin_proposals (org_id, consent_id, proposed_by, tool, module, summary, details, input, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, now() + make_interval(secs => $9))
+        `INSERT INTO admin_proposals (org_id, consent_id, proposed_by, tool, module, summary, details, input, expires_at, panel_key_hash)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, now() + make_interval(secs => $9), $10)
          RETURNING id, to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS expires_at`,
         [
           auth.orgId,
@@ -99,10 +112,11 @@ export class PostgresProposals {
           JSON.stringify(entry.proposal.details),
           JSON.stringify(entry.proposal.input),
           PROPOSAL_TTL_MS / 1000,
+          keyHash(panelKey),
         ],
       )
       const row = rows[0] as { id: string; expires_at: string }
-      return { id: row.id, expiresAt: row.expires_at }
+      return { id: row.id, expiresAt: row.expires_at, panelKey }
     })
   }
 
@@ -116,18 +130,20 @@ export class PostgresProposals {
    * console at once each run it, and exactly one gets a row.
    */
   async claim(auth: AuthContext, id: string, by: ProposalDecider): Promise<Claimed | undefined> {
-    if (!/^[0-9a-f-]{36}$/i.test(id)) return undefined
+    if (!isUuid(id) || (by.through === 'panel' && by.key === '')) return undefined
     return this.inOrg(auth, async (client) => {
       const { rows } = await client.query<{ tool: string; module: string | null; input: Record<string, unknown>; consent_id: string }>(
         `UPDATE admin_proposals p
             SET status = 'applying', decided_at = now(), decided_through = $3
           WHERE p.org_id = $1 AND p.id = $2::uuid
             AND p.status = 'open' AND p.expires_at > now()
-            AND ${by.through === 'panel' ? 'p.consent_id = $4::uuid' : 'p.proposed_by = $4::uuid'}
+            AND ${by.through === 'panel' ? 'p.consent_id = $4::uuid AND p.panel_key_hash = $5' : 'p.proposed_by = $4::uuid'}
             AND EXISTS (SELECT 1 FROM oauth_consents c
                          WHERE c.org_id = p.org_id AND c.id = p.consent_id AND c.revoked_at IS NULL)
         RETURNING p.tool, p.module, p.input, p.consent_id`,
-        [auth.orgId, id, by.through, by.through === 'panel' ? by.consentId : by.personId],
+        by.through === 'panel'
+          ? [auth.orgId, id, by.through, by.consentId, keyHash(by.key)]
+          : [auth.orgId, id, by.through, by.personId],
       )
       const row = rows[0]
       return row === undefined ? undefined : { tool: row.tool, module: row.module, input: row.input, consentId: row.consent_id }
@@ -147,15 +163,17 @@ export class PostgresProposals {
 
   /** Decline one. The same single answer as `claim` for anything not the caller's. */
   async cancel(auth: AuthContext, id: string, by: ProposalDecider): Promise<{ readonly tool: string; readonly module: string | null; readonly consentId: string } | undefined> {
-    if (!/^[0-9a-f-]{36}$/i.test(id)) return undefined
+    if (!isUuid(id) || (by.through === 'panel' && by.key === '')) return undefined
     return this.inOrg(auth, async (client) => {
       const { rows } = await client.query<{ tool: string; module: string | null; consent_id: string }>(
         `UPDATE admin_proposals
             SET status = 'cancelled', decided_at = now(), decided_through = $3
           WHERE org_id = $1 AND id = $2::uuid AND status = 'open' AND expires_at > now()
-            AND ${by.through === 'panel' ? 'consent_id = $4::uuid' : 'proposed_by = $4::uuid'}
+            AND ${by.through === 'panel' ? 'consent_id = $4::uuid AND panel_key_hash = $5' : 'proposed_by = $4::uuid'}
         RETURNING tool, module, consent_id`,
-        [auth.orgId, id, by.through, by.through === 'panel' ? by.consentId : by.personId],
+        by.through === 'panel'
+          ? [auth.orgId, id, by.through, by.consentId, keyHash(by.key)]
+          : [auth.orgId, id, by.through, by.personId],
       )
       const row = rows[0]
       return row === undefined ? undefined : { tool: row.tool, module: row.module, consentId: row.consent_id }
@@ -235,6 +253,32 @@ export interface DecideDeps {
 const surfaceOf = (by: ProposalDecider) => (by.through === 'panel' ? ('mcp-admin' as const) : ('api' as const))
 
 /**
+ * A press on something that was not there to press: decided already, expired,
+ * another connection's, or — from the panel — without the key the panel was
+ * handed. Recorded as a `deny`, since a model applying an id it read out of the
+ * access log arrives exactly here.
+ */
+async function recordGone(
+  deps: Pick<DecideDeps, 'audit'>,
+  auth: AuthContext,
+  action: { readonly action: string },
+  id: string,
+  by: ProposalDecider,
+  requestId: string,
+): Promise<void> {
+  await deps.audit.write({
+    orgId: auth.orgId,
+    actor: `${auth.principal.type}:${auth.principal.id}`,
+    ...action,
+    result: 'deny',
+    surface: surfaceOf(by),
+    target: { proposal: isUuid(id) ? id : 'not a proposal id' },
+    detail: { through: by.through, reason: 'not open, or not this caller\'s to decide' },
+    requestId,
+  })
+}
+
+/**
  * Apply one, as the person deciding. The panel and the console both come
  * here, so there is one answer to what applying means.
  *
@@ -252,7 +296,10 @@ export async function applyProposal(
   requestId: string,
 ): Promise<DecideOutcome> {
   const claimed = await deps.proposals.claim(auth, id, by)
-  if (claimed === undefined) return { kind: 'gone' }
+  if (claimed === undefined) {
+    await recordGone(deps, auth, RECORDED.applied, id, by, requestId)
+    return { kind: 'gone' }
+  }
 
   const record = (result: 'allow' | 'deny' | 'error', detail: Record<string, unknown>) =>
     deps.audit.write({
@@ -301,7 +348,10 @@ export async function cancelProposal(
   requestId: string,
 ): Promise<DecideOutcome> {
   const cancelled = await deps.proposals.cancel(auth, id, by)
-  if (cancelled === undefined) return { kind: 'gone' }
+  if (cancelled === undefined) {
+    await recordGone(deps, auth, RECORDED.cancelled, id, by, requestId)
+    return { kind: 'gone' }
+  }
   await deps.audit.write({
     orgId: auth.orgId,
     actor: `${auth.principal.type}:${auth.principal.id}`,
@@ -317,12 +367,38 @@ export async function cancelProposal(
 }
 
 /** Store one and record that an agent asked for it. */
+/**
+ * A write that could not be proposed — a name that matched nothing, a value the
+ * tool will not take, or a failure. Recorded as `proposal.created` with `deny`
+ * or `error`, because the stream of what an agent *tried* is the part of the
+ * log an injection shows up in, and a model probing names leaves nothing
+ * otherwise.
+ */
+export async function recordRefusedProposal(
+  deps: Pick<DecideDeps, 'audit'>,
+  auth: AuthContext,
+  entry: { readonly tool: string; readonly module: string | null },
+  reason: string | undefined,
+  requestId: string,
+): Promise<void> {
+  await deps.audit.write({
+    orgId: auth.orgId,
+    actor: `${auth.principal.type}:${auth.principal.id}`,
+    ...RECORDED.created,
+    result: reason === undefined ? 'error' : 'deny',
+    surface: 'mcp-admin',
+    target: { tool: entry.tool, ...(entry.module === null ? {} : { module: entry.module }) },
+    detail: reason === undefined ? {} : { reason: reason.slice(0, 300) },
+    requestId,
+  })
+}
+
 export async function recordProposal(
   deps: Pick<DecideDeps, 'proposals' | 'audit'>,
   auth: AuthContext,
   entry: { readonly tool: string; readonly module: string | null; readonly proposal: McpProposal },
   requestId: string,
-): Promise<{ readonly id: string; readonly expiresAt: string }> {
+): Promise<{ readonly id: string; readonly expiresAt: string; readonly panelKey: string }> {
   const stored = await deps.proposals.create(auth, entry)
   await deps.audit.write({
     orgId: auth.orgId,

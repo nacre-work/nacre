@@ -109,7 +109,17 @@ recorded as what it is — `issue_grant`, `create_user` and the rest — with
 `surface: "mcp-admin"` and the proposal's id in `detail`, so a filter on the
 action finds an applied proposal beside the same change made in the console.
 A run of proposals nobody applied is what a prompt injection looks like from
-outside, which is why the ones that were never applied are recorded at all.
+outside, which is why the ones that were never applied are recorded at all —
+and so are the attempts that went nowhere: a write whose names matched nothing
+is `proposal.created` with `deny` and the sentence the agent was given, and a
+press on a proposal that was decided, expired, another connection's, or pressed
+from the panel without its key is `proposal.applied` (or `cancelled`) with
+`deny`. Revoking a connection cancels its open proposals and records each one,
+with whoever revoked as the actor.
+
+A press on the console carries `surface: "api"` and the person as actor, with
+`client` naming the connection that *proposed* it — so a filter on a connection
+finds the change it led to wherever it was applied.
 
 **Retention is enforced**, and the decision that was open is made. The worker
 prunes hourly in bounded batches, and `NACRE_AUDIT_RETENTION_DAYS` is what it

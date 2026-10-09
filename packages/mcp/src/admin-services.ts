@@ -19,6 +19,7 @@ import {
   PostgresUsers,
   PostgresWorkspaces,
   recordProposal,
+  recordRefusedProposal,
   writeLookup,
   type AccessSubject,
   type AuditGrouping,
@@ -28,7 +29,7 @@ import {
   type Reach,
   type SkillLevel,
 } from '@nacre.work/api'
-import { mcpTools, McpToolRefusal, withOrg, type AuditWriter, type McpTool } from '@nacre.work/core'
+import { MetadataError, mcpTools, McpToolRefusal, withOrg, type AuditWriter, type McpTool } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
 import {
@@ -103,6 +104,14 @@ export interface AdminDeps {
 /** The runner, and the catalog it answers for — composed once, at startup. */
 export interface AdminRunner extends ToolRunner {
   readonly catalog: readonly AdminToolDefinition[]
+}
+
+
+/** The sentence a refusal gave its caller, or nothing for a failure that was not one. */
+function refusalOf(error: unknown): string | undefined {
+  return error instanceof McpToolRefusal || error instanceof ToolArgumentError || error instanceof MetadataError
+    ? error.message
+    : undefined
 }
 
 export function adminTools(deps: AdminDeps): AdminRunner {
@@ -226,6 +235,26 @@ export function adminTools(deps: AdminDeps): AdminRunner {
       surface: 'mcp-admin',
       target: { tool },
       detail,
+      requestId,
+    })
+  }
+
+  /**
+   * A read that was refused or failed, recorded like one that answered: what an
+   * agent asked for and did not get is part of what it did. The reason is the
+   * sentence the caller was given, and nothing for a failure — an error's own
+   * message is not something to keep.
+   */
+  const refused = async (auth: AuthContext, requestId: string, tool: string, error: unknown): Promise<void> => {
+    const reason = refusalOf(error)
+    await audit.write({
+      orgId: auth.orgId,
+      actor: `${auth.principal.type}:${auth.principal.id}`,
+      ...(tool === 'query_audit' || tool === 'summarize_audit' ? RECORDED.log : RECORDED.read),
+      result: reason === undefined ? 'error' : 'deny',
+      surface: 'mcp-admin',
+      target: { tool },
+      detail: reason === undefined ? {} : { reason: reason.slice(0, 300) },
       requestId,
     })
   }
@@ -642,8 +671,10 @@ export function adminTools(deps: AdminDeps): AdminRunner {
    * A write: propose, store, record, and answer with what would happen.
    *
    * The answer is for the model and the person both. Its text says what is
-   * proposed and where it is decided; the proposal's id is in `_meta`, for the
-   * panel, and nowhere the model reads.
+   * proposed and where it is decided. The proposal's id and the key that
+   * applies it are in `_meta`, for the panel — and the key is nowhere else: the
+   * id is in the access log, which this surface reads, so the id alone must not
+   * be enough to apply anything.
    */
   const propose = async (
     auth: AuthContext,
@@ -651,7 +682,13 @@ export function adminTools(deps: AdminDeps): AdminRunner {
     entry: { readonly tool: McpTool & { readonly kind: 'write' }; readonly module: string | null },
     args: Record<string, unknown>,
   ): Promise<AdminResult> => {
-    const proposal = await entry.tool.propose({ auth, requestId }, args)
+    let proposal
+    try {
+      proposal = await entry.tool.propose({ auth, requestId }, args)
+    } catch (error) {
+      await recordRefusedProposal({ audit }, auth, { tool: entry.tool.name, module: entry.module }, refusalOf(error), requestId)
+      throw error
+    }
     const stored = await recordProposal({ proposals, audit }, auth, { tool: entry.tool.name, module: entry.module, proposal }, requestId)
     return new AdminResult(
       {
@@ -664,15 +701,16 @@ export function adminTools(deps: AdminDeps): AdminRunner {
           `leaves it on the console's Proposals screen: ${proposalWord}. You cannot apply it, and should not ` +
           'say it is done.',
       },
-      { [PROPOSAL_META]: { id: stored.id, expires_at: stored.expiresAt } },
+      { [PROPOSAL_META]: { id: stored.id, key: stored.panelKey, expires_at: stored.expiresAt } },
     )
   }
 
   /** The panel's buttons, for this connection's own proposals and nothing else. */
   const decide = async (auth: AuthContext, requestId: string, name: string, args: Record<string, unknown>): Promise<unknown> => {
     const id = typeof args.proposal === 'string' ? args.proposal : ''
+    const key = typeof args.key === 'string' ? args.key : ''
     const consentId = auth.delegation?.id as string
-    const by = { through: 'panel' as const, consentId }
+    const by = { through: 'panel' as const, consentId, key }
     const outcome =
       name === 'apply_proposal'
         ? await applyProposal({ proposals, audit, writes: lookupWrite }, auth, id, by, requestId)
@@ -700,9 +738,15 @@ export function adminTools(deps: AdminDeps): AdminRunner {
 
       const read = tools[name]
       if (read !== undefined) {
-        const { result, detail } = await read(auth, args)
-        await recorded(auth, requestId, name, detail)
-        return result
+        let done
+        try {
+          done = await read(auth, args)
+        } catch (error) {
+          await refused(auth, requestId, name, error)
+          throw error
+        }
+        await recorded(auth, requestId, name, done.detail)
+        return done.result
       }
 
       if (name === 'apply_proposal' || name === 'cancel_proposal') return decide(auth, requestId, name, args)
@@ -713,7 +757,13 @@ export function adminTools(deps: AdminDeps): AdminRunner {
       const added = moduleOf.get(name)
       if (added !== undefined) {
         if (added.tool.kind === 'write') return propose(auth, requestId, { tool: added.tool, module: added.module }, args)
-        const result = await added.tool.run({ auth, requestId }, args)
+        let result
+        try {
+          result = await added.tool.run({ auth, requestId }, args)
+        } catch (error) {
+          await refused(auth, requestId, name, error)
+          throw error
+        }
         await recorded(auth, requestId, name, { module: added.module })
         return result
       }

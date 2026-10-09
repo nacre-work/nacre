@@ -236,11 +236,14 @@ describe('baseline · the MCP surface', () => {
     const describe = (r: ToolsListResult) =>
       r.result.tools.find((t) => t.name === 'search')?.description ?? ''
 
-    expect(describe(a)).toContain('Contracts')
-    expect(describe(b)).toContain('Payroll')
+    // Case-insensitive, because the description names a layer by its slug and
+    // a negative that looked for the capitalised name would pass by not
+    // finding a spelling the description no longer uses.
+    expect(describe(a)).toMatch(/contracts/i)
+    expect(describe(b)).toMatch(/payroll/i)
     // The names are the leak: one tenant must not learn the other's layers.
-    expect(describe(a)).not.toContain('Payroll')
-    expect(describe(b)).not.toContain('Contracts')
+    expect(describe(a)).not.toMatch(/payroll/i)
+    expect(describe(b)).not.toMatch(/contracts/i)
   })
 
   it('a service account key authenticates on this transport', async () => {
@@ -291,7 +294,18 @@ describe('baseline · the MCP surface', () => {
 
   it('the generated description names the layers and their sizes', () => {
     const text = searchDescription(LAYERS[ORG_A] as Layer[])
-    expect(text).toContain('Contracts — Signed agreements (812 docs)')
+    // By the slug `layers` takes; the name is left out where it only
+    // capitalises the slug.
+    expect(text).toContain('contracts — Signed agreements (812 docs)')
+  })
+
+  it('a layer with no description is not introduced by a dash, and a name that says more is kept', () => {
+    const text = searchDescription([
+      { id: 'e', slug: 'engineering', name: 'Engineering', description: '', documentCount: 3, hasSkill: false },
+      { id: 'h', slug: 'hr', name: 'People team', description: '  ', documentCount: 7, hasSkill: false },
+    ] as Layer[])
+    expect(text).toContain('Available: engineering (3 docs); hr — People team (7 docs).')
+    expect(text).not.toMatch(/—\s+\(/)
   })
 
   it('T2 · params naming an organization are refused', async () => {
@@ -951,7 +965,7 @@ describe('baseline · the MCP surface', () => {
         try {
           const list = await client.listTools()
           expect(list.tools.map((t) => t.name)).toContain('search')
-          expect(list.tools.find((t) => t.name === 'search')?.description).toContain('Contracts')
+          expect(list.tools.find((t) => t.name === 'search')?.description).toMatch(/contracts/i)
           const called = (await client.callTool({ name: 'search', arguments: { query: 'x' } })) as {
             isError?: boolean
             content: { text: string }[]

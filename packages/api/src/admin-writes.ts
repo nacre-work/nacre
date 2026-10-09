@@ -434,7 +434,10 @@ export function coreAdminWrites(ports: AdminWritePorts): readonly McpWriteTool[]
         additionalProperties: false,
       },
       async propose(_call, args) {
-        const email = text(args, 'email', 'their email address', 254).toLowerCase()
+        // Trimmed and otherwise kept as given, which is what `POST /v1/users`
+        // stores — two routes that normalise one address two ways are two
+        // answers about who `Dana@` is.
+        const email = text(args, 'email', 'their email address', 254).trim()
         if (!looksLikeEmail(email)) throw new McpToolRefusal(`"${email}" is not an email address.`)
         const role = args.role === undefined ? 'member' : oneOf(args, 'role', ['member', 'org_admin'] as const)
         return proposal(
@@ -859,7 +862,7 @@ export function coreAdminWrites(ports: AdminWritePorts): readonly McpWriteTool[]
       },
       async apply(call, input) {
         const id = ids(input, 'connection_id')
-        const revoked = await ports.consents.revoke(auth(call), id)
+        const revoked = await ports.consents.revoke(auth(call), id, 'mcp-admin')
         await record(call, { action: 'oauth.revoke' }, revoked ? 'allow' : 'deny', { connection_id: id })
         if (!revoked) throw new McpToolRefusal('That connection is already gone.')
         return { revoked: true }

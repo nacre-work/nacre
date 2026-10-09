@@ -86,7 +86,7 @@ const PROPOSED = {
 }
 const withProposal = (value) => ({
   ...text(value),
-  _meta: { 'nacre/proposal': { id: '3f1c2b9e-5d7a-4e21-9c84-0a6b2f1d7e55', expires_at: value.expires_at } },
+  _meta: { 'nacre/proposal': { id: '3f1c2b9e-5d7a-4e21-9c84-0a6b2f1d7e55', key: 'k7Qm2pXv9aLr4TnB8sWc1dYe6fGh3jKu5oZi0xNq_Rw', expires_at: value.expires_at } },
 })
 
 const SKILL_MD = `---
@@ -202,6 +202,9 @@ const SCENARIOS = [
     calls: {
       apply_proposal: (args) => {
         if (args.proposal !== '3f1c2b9e-5d7a-4e21-9c84-0a6b2f1d7e55') throw new Error(`applied ${String(args.proposal)}, not the proposal in _meta`)
+        // The key is what makes the press the panel's: without it the server
+        // answers as if the proposal were not there.
+        if (args.key !== 'k7Qm2pXv9aLr4TnB8sWc1dYe6fGh3jKu5oZi0xNq_Rw') throw new Error('the panel did not present the key it was handed')
         return { applied: true, result: { grant_id: 'g1' } }
       },
     },

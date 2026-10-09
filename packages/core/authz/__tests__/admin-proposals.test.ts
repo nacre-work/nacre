@@ -132,10 +132,11 @@ const textOf = (result: unknown): string =>
     .map((c) => c.text ?? '')
     .join('')
 
-const proposalOf = (result: unknown): string => {
-  const meta = (result as { _meta?: Record<string, { id?: string }> })._meta?.['nacre/proposal']
-  if (typeof meta?.id !== 'string') throw new Error('the result carries no proposal in _meta')
-  return meta.id
+/** What the panel is handed: the proposal's id, and the key its Apply presents. */
+const proposalOf = (result: unknown): { id: string; key: string } => {
+  const meta = (result as { _meta?: Record<string, { id?: string; key?: string }> })._meta?.['nacre/proposal']
+  if (typeof meta?.id !== 'string' || typeof meta.key !== 'string') throw new Error('the result carries no proposal in _meta')
+  return { id: meta.id, key: meta.key }
 }
 
 /** Whether MEMBER holds `read` on the layer — the change every case proposes. */
@@ -185,13 +186,13 @@ const recorded = async (action: string, proposal: string): Promise<{ result: str
   }
 }
 
-const propose = async (client: Client): Promise<{ id: string; text: string }> => {
+const propose = async (client: Client): Promise<{ id: string; key: string; text: string }> => {
   const result = await client.callTool({
     name: 'issue_grant',
     arguments: { person: 'member@ap.test', layer: 'handbook', permission: 'read' },
   })
   expect(result.isError, textOf(result)).toBeFalsy()
-  return { id: proposalOf(result), text: textOf(result) }
+  return { ...proposalOf(result), text: textOf(result) }
 }
 
 when('adversarial · a change on the administrative MCP waits for a person', () => {
@@ -296,12 +297,13 @@ when('adversarial · a change on the administrative MCP waits for a person', () 
     await revokeAll()
     const client = await connect(adminToken)
     try {
-      const { id: proposal, text } = await propose(client)
+      const { id: proposal, key, text } = await propose(client)
       // What the model reads says what would happen and that nothing has —
-      // and does not carry the id the panel applies with.
+      // and does not carry the id the panel applies with, nor its key.
       expect(text).toContain('member@ap.test')
       expect(text).toContain('Nothing has changed')
       expect(text).not.toContain(proposal)
+      expect(text).not.toContain(key)
       expect(await granted(), 'a proposal changed something').toBe(false)
       expect(await recorded('proposal.created', proposal)).toHaveLength(1)
 
@@ -313,7 +315,7 @@ when('adversarial · a change on the administrative MCP waits for a person', () 
         c.release()
       }
       // Applying an expired one is refused, and still nothing changes.
-      const late = await client.callTool({ name: 'apply_proposal', arguments: { proposal } })
+      const late = await client.callTool({ name: 'apply_proposal', arguments: { proposal, key } })
       expect(late.isError).toBe(true)
       expect(await granted()).toBe(false)
 
@@ -335,8 +337,8 @@ when('adversarial · a change on the administrative MCP waits for a person', () 
     await revokeAll()
     const client = await connect(adminToken)
     try {
-      const { id: proposal } = await propose(client)
-      const applied = await client.callTool({ name: 'apply_proposal', arguments: { proposal } })
+      const { id: proposal, key } = await propose(client)
+      const applied = await client.callTool({ name: 'apply_proposal', arguments: { proposal, key } })
       expect(applied.isError, textOf(applied)).toBeFalsy()
       expect(await granted()).toBe(true)
       expect(await statusOf(proposal)).toBe('applied')
@@ -345,7 +347,7 @@ when('adversarial · a change on the administrative MCP waits for a person', () 
 
       // Single use: the claim is the UPDATE that finds an open row.
       await revokeAll()
-      const again = await client.callTool({ name: 'apply_proposal', arguments: { proposal } })
+      const again = await client.callTool({ name: 'apply_proposal', arguments: { proposal, key } })
       expect(again.isError).toBe(true)
       expect(await granted()).toBe(false)
     } finally {
@@ -358,17 +360,18 @@ when('adversarial · a change on the administrative MCP waits for a person', () 
     const mine = await connect(adminToken)
     const theirs = await connect(secondToken)
     try {
-      const { id: proposal } = await propose(mine)
-      const foreign = await theirs.callTool({ name: 'apply_proposal', arguments: { proposal } })
+      const { id: proposal, key } = await propose(mine)
+      // Even holding the key: the connection is part of the claim.
+      const foreign = await theirs.callTool({ name: 'apply_proposal', arguments: { proposal, key } })
       expect(foreign.isError).toBe(true)
       expect(await granted()).toBe(false)
       expect(await statusOf(proposal)).toBe('open')
 
-      const cancelled = await mine.callTool({ name: 'cancel_proposal', arguments: { proposal } })
+      const cancelled = await mine.callTool({ name: 'cancel_proposal', arguments: { proposal, key } })
       expect(cancelled.isError, textOf(cancelled)).toBeFalsy()
       expect(await statusOf(proposal)).toBe('cancelled')
       expect(await recorded('proposal.cancelled', proposal)).toHaveLength(1)
-      const after = await mine.callTool({ name: 'apply_proposal', arguments: { proposal } })
+      const after = await mine.callTool({ name: 'apply_proposal', arguments: { proposal, key } })
       expect(after.isError).toBe(true)
       expect(await granted()).toBe(false)
     } finally {
@@ -411,7 +414,12 @@ when('adversarial · a change on the administrative MCP waits for a person', () 
     const applied = await post(own, `/v1/proposals/${proposal}/apply`)
     expect(applied.status).toBe(200)
     expect(await granted()).toBe(true)
-    expect((await recorded('proposal.applied', proposal)).map((e) => e.surface)).toEqual(['api'])
+    // The press that applied it — and the other administrator's attempt above,
+    // which is recorded as refused rather than vanishing.
+    expect((await recorded('proposal.applied', proposal)).map((e) => `${e.result}:${e.surface}`).sort()).toEqual([
+      'allow:api',
+      'deny:api',
+    ])
     expect((await post(own, `/v1/proposals/${proposal}/apply`)).status).toBe(404)
   })
 
@@ -471,7 +479,13 @@ when('adversarial · a change on the administrative MCP waits for a person', () 
       const res = await fetch(`${apiBase}/v1/proposals/${proposal}/apply`, { method: 'POST', headers: { authorization: `Bearer ${own}` } })
       expect(res.status).toBe(404)
       expect(await granted()).toBe(false)
+      // Ended, not merely hidden: cancelled in the revocation's own transaction
+      // and recorded as such.
+      expect(await statusOf(proposal)).toBe('cancelled')
+      expect((await recorded('proposal.cancelled', proposal)).map((e) => e.result)).toEqual(['allow'])
     } finally {
+      // Approving the same application again un-revokes the same row, which
+      // is what this does — and the proposal must not come back with it.
       const c = await pool.connect()
       try {
         await c.query(`UPDATE oauth_consents SET revoked_at = NULL WHERE id = $1`, [adminConnection])
@@ -479,5 +493,114 @@ when('adversarial · a change on the administrative MCP waits for a person', () 
         c.release()
       }
     }
+    const res = await fetch(`${apiBase}/v1/proposals/${proposal}/apply`, { method: 'POST', headers: { authorization: `Bearer ${own}` } })
+    expect(res.status, 'a re-approved connection revived what the old one proposed').toBe(404)
+    expect(await granted()).toBe(false)
+  })
+
+  it('the id the model can read applies nothing: the access log names it, and the key is the panel\'s alone', async () => {
+    await revokeAll()
+    const client = await connect(adminToken)
+    try {
+      const { id: proposal, key } = await propose(client)
+      // The administrative surface reads the access log, and the log names the
+      // proposal — so the id is something a model can have.
+      const log = await client.callTool({ name: 'query_audit', arguments: { action: 'proposal.created' } })
+      expect(textOf(log)).toContain(proposal)
+      // The key is nowhere a model reads: not the log, not any audit row.
+      expect(textOf(log)).not.toContain(key)
+      const c = await pool.connect()
+      try {
+        const { rowCount } = await c.query(
+          `SELECT 1 FROM audit_events WHERE org_id = $1 AND (target::text LIKE $2 OR detail::text LIKE $2)`,
+          [ORG, `%${key}%`],
+        )
+        expect(rowCount, 'the panel key reached the access log').toBe(0)
+      } finally {
+        c.release()
+      }
+
+      // What a model holding the id can do with it: nothing, and it is recorded.
+      for (const args of [{ proposal }, { proposal, key: '' }, { proposal, key: 'a'.repeat(43) }]) {
+        const tried = await client.callTool({ name: 'apply_proposal', arguments: args })
+        expect(tried.isError, JSON.stringify(args)).toBe(true)
+      }
+      const cancelTried = await client.callTool({ name: 'cancel_proposal', arguments: { proposal, key: 'b'.repeat(43) } })
+      expect(cancelTried.isError).toBe(true)
+      expect(await granted()).toBe(false)
+      expect(await statusOf(proposal)).toBe('open')
+      expect((await recorded('proposal.applied', proposal)).map((e) => e.result)).toContain('deny')
+
+      // And the panel, which holds the key, still can.
+      const applied = await client.callTool({ name: 'apply_proposal', arguments: { proposal, key } })
+      expect(applied.isError, textOf(applied)).toBeFalsy()
+      expect(await granted()).toBe(true)
+    } finally {
+      await client.close()
+    }
+  })
+
+  it('a write that cannot be proposed is recorded as tried', async () => {
+    const client = await connect(adminToken)
+    try {
+      const before = await triedCount()
+      const refused = await client.callTool({
+        name: 'issue_grant',
+        arguments: { person: 'nobody@ap.test', layer: 'handbook', permission: 'read' },
+      })
+      expect(refused.isError).toBe(true)
+      expect(await triedCount()).toBe(before + 1)
+    } finally {
+      await client.close()
+    }
+  })
+
+  it('the sweep ends an apply that died, and leaves one still running across the expiry', async () => {
+    await revokeAll()
+    const client = await connect(adminToken)
+    let running: string
+    let dead: string
+    try {
+      running = (await propose(client)).id
+      dead = (await propose(client)).id
+    } finally {
+      await client.close()
+    }
+    const c = await pool.connect()
+    try {
+      // Both claimed and past their expiry; one a second ago, one long ago.
+      await c.query(
+        `UPDATE admin_proposals SET status = 'applying', created_at = now() - interval '11 minutes',
+                expires_at = now() - interval '1 minute', decided_at = now() - interval '1 second', decided_through = 'panel'
+          WHERE id = $1`,
+        [running],
+      )
+      await c.query(
+        `UPDATE admin_proposals SET status = 'applying', created_at = now() - interval '40 minutes',
+                expires_at = now() - interval '30 minutes', decided_at = now() - interval '31 minutes', decided_through = 'panel'
+          WHERE id = $1`,
+        [dead],
+      )
+    } finally {
+      c.release()
+    }
+    await expireProposals(pool, 100)
+    expect(await statusOf(running), 'an apply in progress was marked failed').toBe('applying')
+    expect(await statusOf(dead)).toBe('failed')
   })
 })
+
+/** How many refused or failed proposals this organization's log holds. */
+const triedCount = async (): Promise<number> => {
+  const c = await pool.connect()
+  try {
+    const { rows } = await c.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM audit_events
+        WHERE org_id = $1 AND action = 'proposal.created' AND result IN ('deny', 'error') AND target->>'tool' = 'issue_grant'`,
+      [ORG],
+    )
+    return Number(rows[0]?.n ?? 0)
+  } finally {
+    c.release()
+  }
+}

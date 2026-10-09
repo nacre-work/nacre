@@ -49,6 +49,9 @@ export async function proposalsView(root: HTMLElement): Promise<void> {
       return
     }
     clear(body)
+    // The nav's count is read from the server, and this screen is where it
+    // changes most: tell it to ask again.
+    window.dispatchEvent(new Event('nacre:proposals'))
     if (listed.length === 0) {
       body.append(
         h('div', { class: 'empty' },

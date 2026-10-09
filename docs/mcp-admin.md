@@ -137,14 +137,21 @@ get as far as a proposal on somebody's screen, and no further.
 - A proposal is stored server-side, bound to the connection that made it and
   to its person, single-use, and expires in ten minutes. Applying an expired,
   decided or foreign one is refused with the same answer as one that does not
-  exist, and a revoked connection's proposals cannot be applied at all.
+  exist. **Revoking the connection cancels what it proposed**, in the same
+  transaction — approving the same application again re-opens the same
+  connection row, and must not re-open its proposals with it.
+- **The panel's Apply presents a key, not just the id.** The id is in the
+  access log, and this surface reads the access log — so on its own the id is
+  something a model can have, and a host that offered the model the panel's
+  tools would let it apply its own proposal. The key is handed to the panel in
+  the result's `_meta`, stored only as a hash, and written nowhere else: not in
+  the text the model reads, not in the log. The console needs no key; a
+  person's own session is its proof.
 - **Applying is one statement**: the row moves from `open` to `applying` only if
   it is open, unexpired, and the caller's — so two presses, two tabs or the
   panel and the console at once apply it exactly once.
-- The proposal's identifier travels in the result's `_meta` for the panel, not in
-  the text the model reads. Everything the panel and the console show is the
-  server's own sentence, written from names it resolved, never text the model
-  typed.
+- Everything the panel and the console show is the server's own sentence,
+  written from names it resolved, never text the model typed.
 - **A client that cannot render panels** — a terminal, say — leaves the proposal
   on the console's **Proposals** screen, which is the same Apply and Cancel for
   the same person and nobody else: the API answers those routes for a person's
@@ -156,11 +163,13 @@ get as far as a proposal on somebody's screen, and no further.
   could hold the button instead: every way of making that switch safe ends up
   being a person pressing Apply somewhere, and the console is somewhere.
 
-What this guarantee rests on is the host not offering an app-only tool to the
-model, and that is stated rather than implied. A host that offered it anyway
-would let the model apply only proposals its own connection made, to the
-organization its person administers — the panel's call is checked like any
-other.
+What this guarantee rests on is stated rather than implied: a host that keeps
+the result's `_meta` from the model, which is what `_meta` is for. A host that
+also offered the model the panel's tools — anything that does not know
+`visibility: ["app"]` — still gives it nothing to apply with, because the key
+is not in anything the model reads. A host that handed the model `_meta` *and*
+the tools would let it apply only proposals its own connection made, to the
+organization its person administers.
 
 ## Tools
 
@@ -266,12 +275,15 @@ believes they called.
 ## Audit
 
 Every call from this surface is recorded with `surface: "mcp-admin"` and the
-connection. A proposal leaves `proposal.created` when it is made and one of
+connection — including the ones that were refused: a read that failed, a write
+whose names matched nothing, a press on a proposal that was not there to press.
+A proposal leaves `proposal.created` when it is made and one of
 `proposal.applied`, `proposal.cancelled` or `proposal.expired` when it is
-decided — the last written by the worker, which sweeps them once a minute — and
-an applied one also leaves the ordinary record of the change itself, with the
-proposal's id beside it. A stream of proposals nobody applied is what an
-injection attempt looks like from the outside.
+decided — the last written by the worker, which sweeps them once a minute, and
+a revocation writing `cancelled` for each one it ends — and an applied one also
+leaves the ordinary record of the change itself, with the proposal's id beside
+it. A stream of proposals nobody applied, or of presses that were refused, is
+what an injection attempt looks like from the outside.
 
 ## Current state
 

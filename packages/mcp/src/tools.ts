@@ -146,9 +146,19 @@ export function searchDescription(
     return `${WHAT_SEARCH_DOES} No layers are available to you.`
   }
 
+  // By slug, because `layers` takes slugs and an agent narrowing a search
+  // should not have to call list_layers to learn what to pass. The name only
+  // where it says more than the slug, and the description only where there is
+  // one: a layer with none was described as "Engineering —  (3 docs)", a dash
+  // introducing nothing, in the one sentence every caller reads first.
   const catalog = layers
     .slice(0, CATALOG_SAMPLE)
-    .map((l) => `${l.name} — ${l.description} (${l.documentCount} docs)`)
+    .map((l) => {
+      const about = [l.name.trim().toLowerCase() === l.slug.toLowerCase() ? '' : l.name.trim(), l.description.trim()]
+        .filter((part) => part !== '')
+        .join(': ')
+      return `${l.slug}${about === '' ? '' : ` — ${about}`} (${String(l.documentCount)} docs)`
+    })
     .join('; ')
 
   return options.more || layers.length > CATALOG_SAMPLE

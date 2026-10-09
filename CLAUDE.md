@@ -3403,6 +3403,35 @@ PostgreSQL, and four guards were each measured by removing them alone — the
 connection in the panel's claim, the expiry, the console refusing a delegation,
 and `propose` writing nothing.
 
+**And the first version let the model apply its own proposal**, which a full
+review found before it shipped and reproduced against the real server. The id
+travelled in `_meta` "and nowhere the model reads" — and in the access log,
+which this surface's own `query_audit` returns; and a legacy-era client, which
+is what the hosts rendering apps are today, was offered `apply_proposal`
+because nothing tells the server it will not honour `visibility: ["app"]`. So
+`issue_grant`, `query_audit`, `apply_proposal` granted access with nobody in
+front of it. The panel's Apply presents a **key** now, handed to the panel in
+`_meta` beside the id, stored only as a hash, and written nowhere a model
+reads — so the id being findable stops mattering. The case that held "the
+model is not given the id" asserted it of the result text alone, which is the
+narrow-projection defect this file names three times; the new case reads the
+id out of the log the way a model would and is refused three ways.
+
+The same review found four smaller things, each with a case now: revoking a
+connection hid its proposals but re-approving the application re-opened the
+same row and **revived** them, so revocation cancels them in its own
+transaction; the expiry sweep failed an apply still running across its expiry;
+a write refused at proposal time and a press on a proposal that was not there
+left **nothing in the log**, which is the half of an injection that shows; and
+a 36-character non-UUID id was a `500`.
+
+Asking the stand what the default skill reads like, as an agent would, found
+the search tool describing a layer with no description as `Engineering —  (3
+docs)`, and naming layers by the name when `layers` takes the slug. It names
+them by slug now, and the per-tenant leak checks beside it had to become
+case-insensitive — a negative looking for the capitalised name would have
+passed by not finding a spelling the description no longer uses.
+
 The specification offered an organization a switch to **apply directly** for
 clients that cannot render a panel. It was dropped rather than built: every way
 of making that switch safe ended at a person pressing Apply somewhere, and once

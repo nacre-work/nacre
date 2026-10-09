@@ -78,6 +78,7 @@ export {
   PostgresProposals,
   PROPOSAL_TTL_MS,
   recordProposal,
+  recordRefusedProposal,
   writeLookup,
 } from './proposals.js'
 export type { DecideDeps, DecideOutcome, ProposalDecider, ProposalView, WriteLookup } from './proposals.js'

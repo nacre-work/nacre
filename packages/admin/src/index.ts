@@ -859,7 +859,29 @@ function start(): void {
   let viewer: Viewer = { administers: false, platformAdmin: false, managesEmbedders: false, pendingProposals: 0 }
   const draw = (): void => route(main, nav, viewer)
   draw()
-  window.onhashchange = draw
+
+  // What is waiting, for an administrator — nobody else can have any. Asked
+  // again on every navigation and whenever the Proposals screen decides one,
+  // because a proposal arrives from a conversation in another window and the
+  // nav that said "(2)" before Apply must not go on saying it after. Redrawn
+  // only when the count moved. A failure is "nothing waiting": the screen is
+  // still reachable by its link, and an older API answers 404 here.
+  const refreshPending = (): void => {
+    if (!viewer.administers) return
+    void client()
+      .proposals.list()
+      .then((pending) => {
+        if (pending.length === viewer.pendingProposals) return
+        viewer = { ...viewer, pendingProposals: pending.length }
+        draw()
+      })
+      .catch(() => undefined)
+  }
+  window.onhashchange = () => {
+    draw()
+    refreshPending()
+  }
+  window.addEventListener('nacre:proposals', refreshPending)
 
   void client()
     .me()
@@ -882,20 +904,7 @@ function start(): void {
       // ceiling question, so there is nothing else to ask for.
       viewer = { administers: me.administers, platformAdmin: me.role === 'platform_admin', managesEmbedders: me.managesEmbedders, pendingProposals: 0 }
       draw()
-      // What is waiting, asked once the server has said this is an
-      // administrator — nobody else can have any. A failure is "nothing
-      // waiting": the screen is still reachable by its link, and an older API
-      // answers 404 here.
-      if (me.administers) {
-        void client()
-          .proposals.list()
-          .then((pending) => {
-            if (pending.length === 0) return
-            viewer = { ...viewer, pendingProposals: pending.length }
-            draw()
-          })
-          .catch(() => undefined)
-      }
+      refreshPending()
     })
     .catch(() => {
       // Left as a member. An older API with no /v1/me answers 404, and a

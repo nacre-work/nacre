@@ -25,6 +25,8 @@ interface Proposed {
 
 interface ProposalMeta {
   readonly id?: string
+  /** What Apply presents. Handed to this panel and to nothing the model reads. */
+  readonly key?: string
   readonly expires_at?: string
 }
 
@@ -52,6 +54,7 @@ async function main(): Promise<void> {
   root.append(summary, facts, when, el('div', { class: 'row' }, apply, cancel))
 
   let id: string | undefined
+  let key: string | undefined
   let expiresAt = Number.NaN
   let decided = false
   let timer: ReturnType<typeof setInterval> | undefined
@@ -102,8 +105,9 @@ async function main(): Promise<void> {
 
     const meta = (result._meta as Record<string, unknown> | undefined)?.['nacre/proposal'] as ProposalMeta | undefined
     id = typeof meta?.id === 'string' ? meta.id : undefined
+    key = typeof meta?.key === 'string' ? meta.key : undefined
     expiresAt = Date.parse(meta?.expires_at ?? value.expires_at ?? '')
-    if (id === undefined) {
+    if (id === undefined || key === undefined) {
       // A host that drops `_meta` cannot hand the panel what it applies. The
       // proposal is still waiting, where the person can reach it.
       status(root, "This panel was not handed the proposal, so it cannot apply it. It is waiting on the console's Proposals screen.")
@@ -118,11 +122,11 @@ async function main(): Promise<void> {
 
   const decide = (tool: 'apply_proposal' | 'cancel_proposal'): void => {
     // No id is nothing to decide, whatever the buttons look like.
-    if (id === undefined || decided) return
+    if (id === undefined || key === undefined || decided) return
     void (async () => {
       apply.disabled = true
       cancel.disabled = true
-      const answer = await call(app, tool, { proposal: id })
+      const answer = await call(app, tool, { proposal: id, key })
       if (answer.ok) {
         settle(tool === 'apply_proposal' ? 'Applied.' : 'Cancelled. Nothing changed.')
         root.querySelector('.status')?.classList.add('decided')

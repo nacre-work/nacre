@@ -45,7 +45,7 @@ export class AdminResult {
 }
 
 /** The key the change panel reads the proposal from. */
-export const PROPOSAL_META = 'nacre/proposal' 
+export const PROPOSAL_META = 'nacre/proposal'
 
 /**
  * What every result carrying text somebody else wrote opens with.
@@ -326,8 +326,11 @@ export function readDefinition(tool: {
 
 const proposalArg = {
   type: 'object',
-  properties: { proposal: { type: 'string', description: 'The proposal id the panel was handed.' } },
-  required: ['proposal'],
+  properties: {
+    proposal: { type: 'string', description: 'The proposal id the panel was handed.' },
+    key: { type: 'string', description: 'The key the panel was handed beside it.' },
+  },
+  required: ['proposal', 'key'],
   additionalProperties: false,
 } as const
 
