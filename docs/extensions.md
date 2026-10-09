@@ -409,9 +409,49 @@ registerMcpTools('admin',
 - Registration is open only while `loadModules` runs, like every point here, and
   the startup line lists what was registered as `module:admin.name`.
 
+### A read can open a core panel
+
+A read may name a panel the core ships, and the core draws its result there:
+
+```ts
+{
+  kind: 'read',
+  name: 'list_document_grants',
+  // …
+  async run(call, args) { /* answer in the grants panel's shape */ },
+  panel: {
+    view: 'grants',
+    offers: (args) => [
+      { tool: 'issue_document_grant', label: 'Give access to a document', document: 'required', fixed: { layer: String(args.layer) } },
+      { tool: 'issue_deny', label: 'Deny', document: 'optional', fixed: { layer: String(args.layer) } },
+    ],
+  },
+}
+```
+
+- **The panel is the core's and so is its HTML.** A module names one — `grants`
+  is the only one today — and answers in that panel's shape, which is the shape
+  the core's own read for it returns: for `grants`, `list_grants`'s
+  `{ grants: [{ id, principal: { type, name }, scope: { type, id, name },
+  permission, effect }] }`. A module ships no markup and no script, so there is
+  no second renderer of somebody else's text and nothing of the module's runs in
+  the host's sandbox.
+- **An offer is a write the panel's form may propose**, with the arguments it
+  fills in for the scope the read was about. It is checked by the core before
+  the panel sees it: the tool must be a write in this surface's catalog — the
+  core's or any module's — the label must say something, and every fixed value
+  must be text. Anything else is dropped, so an offer can never name
+  `apply_proposal`, a read, or a tool no longer loaded. A press proposes exactly
+  as the model's call would, and the person applies it; an offer adds no path
+  that skips them.
+- **`offers` is asked with the read's own arguments** on every call, and a
+  module whose function throws still answers its read — the panel shows no form
+  and the failure is logged.
+
 `acl-advanced` is the first caller: document-scoped grants and deny rules, which
 the core evaluates and refuses to issue, become proposals on the administrative
-surface where the module is loaded.
+surface where the module is loaded — and its document listing opens the grants
+panel with a form to give or deny access to a document.
 
 ## The console's extension file
 

@@ -378,10 +378,47 @@ interface McpToolBase {
   readonly inputSchema: Readonly<Record<string, unknown>>
 }
 
+/**
+ * A panel the core ships that a module's read may open. docs/mcp-admin.md,
+ * "Panels". The core's own reads open these too, which is what makes it the
+ * core's: with no module loaded, `list_grants` still opens `grants`.
+ */
+export type McpPanelView = 'grants'
+
+/**
+ * A write a panel may offer from its form. Pressing it **proposes** — the same
+ * call the model would make, answered with the same sentence and applied only
+ * when the person presses Apply — so an offer adds no path that skips the
+ * person, and an offer naming anything but a write on this surface is dropped
+ * by the core before the panel sees it.
+ */
+export interface McpPanelOffer {
+  /** A write tool on this surface, the core's or a module's. */
+  readonly tool: string
+  /** The button's words: "Give access", "Deny". */
+  readonly label: string
+  /** Whether the form asks for a document, and whether it must have one. */
+  readonly document: 'none' | 'optional' | 'required'
+  /** Arguments the panel sends as given — the scope the read was about. */
+  readonly fixed: Readonly<Record<string, string>>
+}
+
+/** Which core panel a read opens, and what it may offer there. */
+export interface McpPanel {
+  readonly view: McpPanelView
+  /** Asked with the read's own arguments, so an offer can fix the scope it was about. */
+  offers?(args: Readonly<Record<string, unknown>>): readonly McpPanelOffer[]
+}
+
 /** A read: answered on the call, recorded as a read. */
 export interface McpReadTool extends McpToolBase {
   readonly kind: 'read'
   run(call: McpToolCall, args: Readonly<Record<string, unknown>>): Promise<unknown>
+  /**
+   * A core panel to show its result in. The result must be the shape that
+   * panel reads — for `grants`, the shape `list_grants` answers with.
+   */
+  readonly panel?: McpPanel
 }
 
 /**

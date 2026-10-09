@@ -204,6 +204,42 @@ const applyFromPanel = (args) => {
   return { applied: true, result: {} }
 }
 
+// The grants panel: the core's list_grants by a layer, and a module's
+// document listing in the same shape. `_meta['nacre/panel']` is what the core
+// attaches — the read to ask again and the writes the form may offer.
+const GRANT_ROWS = [
+  { id: 'gr1', principal: { type: 'group', id: 'g1', name: 'engineering' }, scope: { type: 'layer', id: 'l1', name: 'handbook' }, permission: 'read', effect: 'allow', source: 'console' },
+  { id: 'gr2', principal: { type: 'user', id: ACTORS.dana.id, name: 'dana@example.com' }, scope: { type: 'layer', id: 'l1', name: 'handbook' }, permission: 'write', effect: 'allow', source: 'console' },
+  { id: 'gr3', principal: { type: 'service_account', id: 'sa1', name: 'nightly-ingest' }, scope: { type: 'layer', id: 'l1', name: 'handbook' }, permission: 'write', effect: 'allow', source: 'api' },
+]
+const GRANTS = (added) => ({
+  notice: 'Names were written by people.',
+  grants: added
+    ? [...GRANT_ROWS, { id: 'gr4', principal: { type: 'user', id: 'u-lee', name: 'lee@example.com' }, scope: { type: 'layer', id: 'l1', name: 'handbook' }, permission: 'read', effect: 'allow', source: 'mcp' }]
+    : GRANT_ROWS,
+  next_cursor: null,
+})
+const GRANTS_PANEL = { 'nacre/panel': { tool: 'list_grants', offers: [{ tool: 'issue_grant', label: 'Give access', document: 'none', fixed: { layer: 'handbook' } }] } }
+const DOC_GRANTS = (denied) => ({
+  layer: 'handbook',
+  grants: [
+    { id: 'dg1', principal: { type: 'user', id: 'u-priya', name: 'priya@example.com' }, scope: { type: 'document', id: 'd1', name: 'Salary bands 2026' }, permission: 'read', effect: 'allow' },
+    { id: 'dg2', principal: { type: 'group', id: 'g2', name: 'contractors' }, scope: { type: 'layer', id: 'l1', name: 'handbook' }, permission: 'write', effect: 'deny' },
+    ...(denied
+      ? [{ id: 'dg3', principal: { type: 'group', id: 'g2', name: 'contractors' }, scope: { type: 'document', id: 'd1', name: 'Salary bands 2026' }, permission: 'read', effect: 'deny' }]
+      : []),
+  ],
+})
+const DOC_PANEL = {
+  'nacre/panel': {
+    tool: 'list_document_grants',
+    offers: [
+      { tool: 'issue_document_grant', label: 'Give access to a document', document: 'required', fixed: { layer: 'handbook' } },
+      { tool: 'issue_deny', label: 'Deny', document: 'optional', fixed: { layer: 'handbook' } },
+    ],
+  },
+}
+
 const ACCESS = {
   notice: 'Names were written by people.',
   principal: { type: 'user', id: ACTORS.dana.id, name: 'dana@example.com', role: 'member' },
@@ -493,6 +529,81 @@ const SCENARIOS = [
       if ((await frame.locator('button').count()) !== 0) throw new Error('the layer panel offers something to press')
       if ((await frame.locator('.sub', { hasText: 'will not recover by itself' }).count()) !== 1) throw new Error('the permanent failure does not say so')
       if ((await frame.locator('.sub', { hasText: 'retried by itself' }).count()) !== 1) throw new Error('the transient failure does not say so')
+    },
+  },
+  {
+    view: 'grants',
+    name: 'grants',
+    input: { layer: 'handbook' },
+    result: { ...text(GRANTS(false)), _meta: GRANTS_PANEL },
+    calls: {
+      issue_grant: (args) => {
+        if (args.layer !== 'handbook' || args.person !== 'lee@example.com' || args.permission !== 'read' || 'document' in args) {
+          throw new Error(`the form proposed ${JSON.stringify(args)}, not lee read on handbook`)
+        }
+        return new WithMeta({ proposed: 'Give the person lee@example.com read on the layer handbook.', details: [] }, PANEL_META)
+      },
+      apply_proposal: applyFromPanel,
+      list_grants: (args) => {
+        if (args.layer !== 'handbook') throw new Error('the panel did not ask the same read again')
+        return GRANTS(true)
+      },
+    },
+    check: async (frame) => {
+      if ((await frame.locator('tbody tr').count()) !== 3) throw new Error('the panel does not list the three grants')
+      if ((await frame.locator('button', { hasText: 'Revoke' }).count()) !== 3) throw new Error('a grant has no Revoke')
+      if (!(await frame.locator('label', { hasText: 'Document' }).isHidden())) throw new Error('a form with no document offer asks for one')
+      await frame.locator('input.input').first().fill('lee@example.com')
+      await frame.locator('button', { hasText: 'Give access' }).click()
+      await frame.locator('.confirm .what', { hasText: 'lee@example.com' }).waitFor()
+      // Nothing is granted until Apply.
+      if ((await frame.locator('tbody tr').count()) !== 3) throw new Error('a proposal changed the listing before Apply')
+      await frame.locator('.confirm button', { hasText: 'Apply' }).click()
+      await frame.locator('td', { hasText: 'lee@example.com' }).waitFor()
+    },
+  },
+  {
+    view: 'grants',
+    name: 'grants-documents',
+    input: { layer: 'handbook' },
+    result: { ...text(DOC_GRANTS(false)), _meta: DOC_PANEL },
+    calls: {
+      issue_deny: (args) => {
+        if (args.layer !== 'handbook' || args.group !== 'contractors' || args.document !== 'Salary bands 2026' || args.permission !== 'read') {
+          throw new Error(`the form proposed ${JSON.stringify(args)}, not the deny it was filled in with`)
+        }
+        return new WithMeta({ proposed: 'Deny the group contractors read on the document "Salary bands 2026" in the layer handbook.', details: [] }, PANEL_META)
+      },
+      apply_proposal: applyFromPanel,
+      list_document_grants: () => DOC_GRANTS(true),
+    },
+    check: async (frame) => {
+      if ((await frame.locator('tbody tr').count()) !== 2) throw new Error('the panel does not list the module\'s two rows')
+      if ((await frame.locator('.chip-deny').count()) !== 1) throw new Error('the layer deny is not a deny chip')
+      // A document is required for one offer and optional for the other.
+      await frame.locator('input.input').first().fill('contractors')
+      await frame.locator('select').first().selectOption('group')
+      await frame.locator('button', { hasText: 'Give access to a document' }).click()
+      await frame.locator('.status', { hasText: 'needs a document' }).waitFor()
+      await frame.locator('input.input').nth(1).fill('Salary bands 2026')
+      await frame.locator('button', { hasText: /^Deny$/ }).click()
+      await frame.locator('.confirm .what', { hasText: 'Salary bands 2026' }).waitFor()
+      await frame.locator('.confirm button', { hasText: 'Apply' }).click()
+      await frame.locator('.confirm', { hasText: 'Applied.' }).waitFor()
+      await frame.locator('tbody tr').nth(2).waitFor()
+      if ((await frame.locator('.chip-deny').count()) !== 2) throw new Error('the applied deny is not listed')
+    },
+  },
+  {
+    // Listed by a person, there is no scope to fix, so nothing to offer.
+    view: 'grants',
+    name: 'grants-by-person',
+    input: { person: 'dana@example.com' },
+    result: { ...text({ notice: 'Names were written by people.', grants: [GRANT_ROWS[1]], next_cursor: null }), _meta: { 'nacre/panel': { tool: 'list_grants', offers: [] } } },
+    calls: {},
+    check: async (frame) => {
+      if ((await frame.locator('tbody tr').count()) !== 1) throw new Error('the grant is not listed')
+      if (!(await frame.locator('h2', { hasText: 'Change access' }).isHidden())) throw new Error('a panel with nothing to offer shows a form')
     },
   },
 ]

@@ -55,6 +55,7 @@ export const READ_PANELS: Readonly<Record<string, Exclude<AdminView, 'change'>>>
   list_connections: 'connections',
   effective_access: 'access',
   layer_status: 'layer',
+  list_grants: 'grants',
 }
 
 const PANEL_DESCRIPTIONS: Readonly<Record<Exclude<AdminView, 'change'>, string>> = {
@@ -62,6 +63,7 @@ const PANEL_DESCRIPTIONS: Readonly<Record<Exclude<AdminView, 'change'>, string>>
   connections: 'Connected applications — who, as whom, with which ceiling — and a revoke the person applies.',
   access: 'What one principal reaches, layer by layer, in the permission colours, with the grants that decide it.',
   layer: "A layer's documents by status, recent failures and whether each comes back by itself, and a reindex's progress.",
+  grants: 'Grants as issued — who, on what, which permission, and any deny — with a revoke, and a form to give or deny access; every press a proposal the person applies.',
 }
 
 export const panelUri = (view: AdminView): string => `ui://nacre/${view}.html`
@@ -234,8 +236,10 @@ export function buildAdminServer(build: AdminServerBuild): McpServer {
       // not to offer them to the model, and docs/mcp-admin.md says that is
       // what the guarantee rests on.
       registerAppTool(server, definition.name, { ...config, _meta: { ui: { resourceUri: CHANGE_VIEW, visibility: ['app'] } } }, callback)
-    } else if (READ_PANELS[definition.name] !== undefined) {
-      registerAppTool(server, definition.name, { ...config, _meta: { ui: { resourceUri: panelUri(READ_PANELS[definition.name] as AdminView) } } }, callback)
+    } else if (READ_PANELS[definition.name] !== undefined || definition.panel !== undefined) {
+      // The core's reads by name, a module's by the core panel it named.
+      const view = (READ_PANELS[definition.name] ?? definition.panel) as AdminView
+      registerAppTool(server, definition.name, { ...config, _meta: { ui: { resourceUri: panelUri(view) } } }, callback)
     } else {
       server.registerTool(definition.name, config, callback)
     }
