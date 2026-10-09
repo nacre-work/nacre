@@ -319,6 +319,7 @@ both of the ways this document already guards against, plus one that is its own.
 | T37 | A layer in the narrowing with no ceiling of its own | inherits the connection's ceiling |
 | T38 | `admin` in one layer's ceiling, under a connection ceiling of `{admin}`, for a person who is a `member` | reaches the layer and administers nothing — a layer's `admin` never confers the organization's |
 | T40 | A delegation narrowed to layer L whose person reads L and M, and one whose ceiling is `{write}`, list the layer catalog over REST and over MCP | L alone; nothing for `{write}` — a layer's name, description and document count are "something from M", and the catalog is the same permission data on both surfaces |
+| T41 | A connected application presents its own token to the consent endpoint, asking for a connection for a client it registered, with no ceiling | refused as `404`, and nothing stored — approving is the person's act in a session they signed into, or one request turns a `{read}` connection into one that reaches everything its person does |
 
 ### Skills and the administrative surface
 

@@ -1,5 +1,5 @@
 /**
- * The T1-T40 inventory from docs/authz.md section "Test plan".
+ * The T1-T41 inventory from docs/authz.md section "Test plan".
  *
  * This exists so the gap between "the suite the specification requires" and
  * "the suite that runs today" is a checked fact rather than a memory. A test
@@ -138,6 +138,10 @@ export const TEST_PLAN: readonly TestCase[] = [
   // and the MCP catalog built its resolve input by hand with no ceiling in it.
   { id: 'T40', group: 'delegation', status: 'implemented',
     scenario: 'The layer catalog, over REST and MCP alike, lists the narrowing and nothing past the ceiling' },
+  // A delegation is a person's token, and REST accepts it — so the consent
+  // endpoint has to refuse one, or a connection approves itself a wider one.
+  { id: 'T41', group: 'adversarial', status: 'implemented',
+    scenario: 'A connected application cannot approve a connection, so it cannot widen its own ceiling' },
   // A layer skill is written by a layer's administrator, who has less authority
   // than the org_admin the administrative surface acts for — so a layer skill
   // followed there is an escalation written in prose.

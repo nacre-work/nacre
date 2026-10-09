@@ -1393,7 +1393,7 @@ requiredness — are narrow enough to be defeated by rewording, which is the
 shape of check this repository keeps deleting. `grep` found the other three
 copies, and they were correct.
 
-**Every case of T1–T40 in docs/authz.md that describes what is built runs** — thirty-six; T31, T32, T35 and T39, for the administrative MCP, are specified and pending — against real services, plus the truth
+**Every case of T1–T41 in docs/authz.md that describes what is built runs** — thirty-six; T31, T32, T35 and T39, for the administrative MCP, are specified and pending — against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
 round trip that puts the worker and the search path against each other.
 `acl-invariants` is a gate on what that document specifies — and only on that.
@@ -3317,6 +3317,19 @@ while the group directly follows a choice and a `hidden` one is still the
 previous sibling. The note beside it had already learned that and grown a second
 arm. A nested group carries its own margin now, since sibling margins collapse,
 so the gap no longer depends on what precedes it.
+
+**A connected application could approve itself a wider connection, and 0.31.1
+closes it.** The consent endpoint refused an agent — "a service account cannot
+consent on behalf of anybody" — and checked nothing else, because a person's
+token was taken to mean a person in a session. A delegation is a person's token
+too, and REST accepts it: an application connected `{read}` could register a
+client of its own, `POST /v1/oauth/consent` with its own token and no ceiling,
+and exchange the code for a connection reaching everything its person reaches.
+Found while reading that handler to add the administrative MCP's consent, not by
+any case — the ceiling's suite asks what a token may do, and approving a consent
+was never on its list of things a token might do. T41 is that case now, over the
+real handler and a real database, and with the guard removed it answered `200`
+and a code.
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.

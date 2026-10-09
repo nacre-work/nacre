@@ -5,7 +5,7 @@ model, and reworking it after search is written is expensive.
 
 | Document | Covers |
 |---|---|
-| [authz.md](./authz.md) | **Start here.** Permission model, algorithm, invariants, the T1–T40 test plan |
+| [authz.md](./authz.md) | **Start here.** Permission model, algorithm, invariants, the T1–T41 test plan |
 | [architecture.md](./architecture.md) | Components, data flow, vector storage, reindexing, backups |
 | [mcp.md](./mcp.md) | MCP server: transport, authorization, tools |
 | [skills.md](./skills.md) | Skills: what an agent is told on connecting, at installation, organization and layer level — *built; the panel, the console screens and the consent box are not* |

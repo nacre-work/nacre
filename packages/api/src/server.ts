@@ -5925,6 +5925,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
+      // Nor can a connected application, and this is the one a person's token
+      // does not rule out by its type. A delegation *is* a person's token, and
+      // REST accepts it — so an application connected read-only could register
+      // a client of its own, approve a consent for it here with no ceiling, and
+      // exchange the code for a connection reaching everything its person
+      // does. The ceiling the person chose, escaped in one request. Approving
+      // is the person's act, in a session they signed into. T41.
+      if (auth.delegation !== undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
 
       const consent = (body ?? {}) as Record<string, unknown>
       const need = (field: string): string | undefined =>
