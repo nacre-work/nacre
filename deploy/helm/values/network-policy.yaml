@@ -1,0 +1,67 @@
+# The chart with NetworkPolicy on, in strict mode — so CI renders and validates
+# every NetworkPolicy object on every run rather than leaving the feature
+# unexercised. Same minimal shape as example.yaml; the only additions are the
+# networkPolicy block and the datastore egress a strict deployment must supply.
+
+canonicalUrl: https://nacre.example.com
+
+postgres:
+  existingSecret: nacre-postgres
+  existingSecretKey: url
+  migrations:
+    existingSecret: nacre-postgres-owner
+    existingSecretKey: url
+
+qdrant:
+  url: http://qdrant.data.svc.cluster.local:6333
+
+redis:
+  existingSecret: nacre-redis
+  existingSecretKey: url
+
+embedding:
+  endpoint: http://embedder.models.svc.cluster.local:80
+  model: bge-m3
+  dimensions: 1024
+
+# On here so the two policies that come with it render and get validated: who
+# may reach a process holding vendor credentials, and where that process may
+# reach — 443 to the public internet with every private range excepted, which is
+# the one rule in this chart that opens outbound on purpose.
+embeddingAdapter:
+  enabled: true
+  routes: embed-large=openai-compatible
+  vendors:
+    openaiCompatible:
+      endpoint: https://embeddings.example.com/v1
+      existingSecret: nacre-embed-openai-compatible
+
+jwt:
+  privateKeyExistingSecret: nacre-jwt
+  privateKeyFile: signing.pem
+  publicKeyExistingSecret: nacre-jwt-public
+  publicKeyFile: signing.pub
+  issuer: https://nacre.example.com
+
+ingress:
+  enabled: true
+  className: nginx
+  host: nacre.example.com
+  tls:
+    enabled: true
+    secretName: nacre-tls
+
+networkPolicy:
+  enabled: true
+  strict: true
+  # The datastores this cluster's Nacre talks to. A strict policy without these
+  # is a deployment that resolves DNS and reaches nothing else.
+  extraEgress:
+    - to:
+        - ipBlock: { cidr: 10.0.0.0/8 }
+      ports:
+        - { protocol: TCP, port: 5432 }   # Postgres
+        - { protocol: TCP, port: 6333 }   # Qdrant
+        - { protocol: TCP, port: 6379 }   # Redis
+        - { protocol: TCP, port: 80 }     # embedder
+        - { protocol: TCP, port: 465 }    # the SMTP relay, where mail.* is set

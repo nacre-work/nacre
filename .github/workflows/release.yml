@@ -197,6 +197,10 @@ jobs:
       - run: pnpm lint:platform-admin-target
       - run: pnpm lint:image-packages
       - run: pnpm lint:published
+      - run: pnpm lint:chart-version
+      - run: pnpm lint:chart-components
+      - run: pnpm lint:chart-image
+      - run: pnpm lint:chart-vendors
       - run: pnpm lint:admin-gate
       - run: pnpm lint:admin-classes
       - run: pnpm lint:admin-layout

@@ -1,0 +1,107 @@
+{{- if .Values.embeddingAdapter.enabled }}
+{{/*
+The embedding adapter — one protocol in, several hosted vendors out.
+
+The same shape as the parser: a stateless sidecar service the worker and both
+surfaces share, holding a job the core deliberately does not learn. The worker's
+indexing path speaks exactly one protocol, so the vendor differences live here
+rather than as a `protocol` column and a three-way branch that would put a
+vendor credential's name in Postgres and therefore in every dump.
+
+**Off unless a deployment asks for it, and inert until it asks twice.** Nothing
+in this chart points an embedder at this Service — the worker and the surfaces
+resolve one through `embedding_providers.endpoint` in Postgres — so rendering
+this Deployment is a container that is running and a Service nothing calls. A
+document reaches a vendor only when an operator creates a provider row naming
+this Service and a model `routes` names. Two steps, on purpose: the trade being
+made is that the text of your documents leaves your installation, and deploying
+a container is not consent to that.
+
+It gets no database URL, no Qdrant URL and no JWT material. It embeds a batch of
+text; none of them are its business.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nacre.fullname" . }}-embedding-adapter
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: embedding-adapter
+spec:
+  replicas: {{ .Values.embeddingAdapter.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: embedding-adapter
+  template:
+    metadata:
+      labels:
+        {{- include "nacre.labels" . | nindent 8 }}
+        app.kubernetes.io/component: embedding-adapter
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # The same pod plumbing as every other workload, which the parser template
+      # records having once dropped: a cluster with a taint-based node pool
+      # scheduled four workloads and stranded the fifth.
+      serviceAccountName: {{ include "nacre.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      volumes:
+        {{- include "nacre.tmpVolume" . | nindent 8 }}
+      containers:
+        - name: embedding-adapter
+          image: {{ printf "%s:%s" .Values.embeddingAdapter.image.repository (default .Chart.AppVersion .Values.embeddingAdapter.image.tag) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8091
+          env:
+            {{- include "nacre.embeddingAdapterEnv" . | nindent 12 }}
+          volumeMounts:
+            {{- include "nacre.tmpVolumeMount" . | nindent 12 }}
+          # /health answers from the routing table and touches no vendor. A
+          # probe that called one would bill for liveness and would take the pod
+          # out of rotation when somebody else's API had an incident — which is
+          # the outage this service exists to keep off the ingest path, not one
+          # to import into the readiness signal.
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          resources: {{- toYaml .Values.embeddingAdapter.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nacre.fullname" . }}-embedding-adapter
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: embedding-adapter
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8091
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: {{ include "nacre.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: embedding-adapter
+{{- end }}

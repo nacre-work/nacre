@@ -1,0 +1,144 @@
+# Every optional block on at once, so nothing renders only in the path nobody
+# takes. Object storage, reranking, autoscaling and a commercial module.
+
+canonicalUrl: https://nacre.example.com
+
+# One Secret, two keys: the application connects as `nacre_app` and the
+# migration Job as the role that owns the tables. Same secret is fine; the same
+# secret *and* the same key is refused, because then it is one role.
+postgres:
+  existingSecret: nacre-postgres
+  existingSecretKey: url
+  migrations: { existingSecret: nacre-postgres, existingSecretKey: owner-url }
+qdrant: { url: http://qdrant:6333, apiKeyExistingSecret: nacre-qdrant, apiKeyExistingSecretKey: key }
+redis: { existingSecret: nacre-redis, existingSecretKey: url }
+
+embedding: { endpoint: http://embedder:80, model: bge-m3, dimensions: 1024 }
+reranker: { enabled: true, endpoint: http://reranker:80, candidates: 50 }
+
+# The embedding adapter, with all four vendors routed, both route forms used and
+# a reranker configured — so every branch of the environment it is given renders
+# here rather than only in the path nobody takes.
+#
+# `reranker.endpoint` above still names a TEI container, which is the other
+# arrangement and the one this file was written with. Pointing it at
+# `http://t-nacre-embedding-adapter:8091` instead is what a deployment with no
+# GPU does: the adapter answers TEI's `/rerank`, so nothing in the core changes.
+#
+# Turning it on deploys a Service and changes nothing else: the worker and the
+# surfaces resolve an embedder through `embedding_providers.endpoint` in
+# Postgres, so no document reaches a vendor until an operator writes a provider
+# row naming `http://t-nacre-embedding-adapter:8091` and one of these models.
+# The two steps are deliberately not one — the trade is that document text
+# leaves the installation, and deploying a container is not consent to it.
+embeddingAdapter:
+  enabled: true
+  # The fourth entry is the `vendor:upstream-model` form: the routing key stays
+  # `bge-m3`, which is what a provider row and therefore a layer's named vector
+  # already say, and Cloudflare's spelling of the same weights is what goes
+  # upstream. Without it, moving onto a vendor's copy would mean renaming the
+  # model, and a renamed model is a different vector slot and a reindex.
+  routes: >-
+    embed-large=openai-compatible,
+    @cf/baai/bge-m3=cloudflare,
+    gemini-embedding-001=google,
+    voyage-3=voyage,
+    bge-m3=cloudflare:@cf/baai/bge-m3
+  vendors:
+    openaiCompatible:
+      endpoint: https://embeddings.example.com/v1
+      existingSecret: nacre-embed-openai-compatible
+    cloudflare:
+      account: 0123456789abcdef0123456789abcdef
+      existingSecret: nacre-embed-cloudflare
+    google:
+      existingSecret: nacre-embed-google
+    voyage:
+      existingSecret: nacre-embed-voyage
+  rerank:
+    vendor: cohere
+    model: rerank-v3.5
+    vendors:
+      cohere:
+        existingSecret: nacre-rerank-cohere
+
+s3:
+  enabled: true
+  endpoint: https://s3.example.com
+  bucket: nacre
+  existingSecret: nacre-s3
+
+jwt:
+  privateKeyExistingSecret: nacre-jwt
+  privateKeyFile: signing.pem
+  previousKeyFile: previous.pem
+
+# A second factor, and password recovery by email. Both are the API's alone and
+# both are optional; this file has them on so the `helm` job renders the
+# branches rather than only the empty defaults.
+secondFactor:
+  existingSecret: nacre-2fa
+
+mail:
+  existingSecret: nacre-smtp
+  from: Nacre <nacre@example.com>
+
+# Commercial modules, and the image that has them in it.
+#
+# This file said `modules:` and left `image.repository` at the open default for
+# as long as it has existed, which describes a deployment that cannot start: the
+# processes import a module by name and the open image carries only the open
+# packages. It rendered, so nothing said so — the chart refuses it now, and this
+# is what the refusal is asking for.
+#
+# The tag names both versions because an enterprise image pins one core, and
+# `0.5.5` alone would leave nobody able to say which.
+image:
+  repository: ghcr.io/nacre-work/nacre-enterprise
+  tag: "0.9.1-core0.25.0"
+  pullSecrets:
+    - name: nacre-enterprise-pull
+
+modules: "@nacre.work/enterprise-audit,@nacre.work/enterprise-sso"
+
+# And the front door that has screens for them.
+#
+# The same mistake one image over, and the one this file made for the API until
+# it was corrected: naming `modules` while the console is the open image gives a
+# deployment where the API answers `/v1/admin/*` and nothing in the browser can
+# reach any of it. It is **not** refused, because unlike the API image it starts
+# and renders — a customer serving the console themselves wants exactly this —
+# so `NOTES.txt` says it and this file demonstrates the paired arrangement.
+web:
+  image:
+    repository: ghcr.io/nacre-work/nacre-enterprise-web
+    tag: "0.9.1-core0.25.0"
+
+api:
+  autoscaling: { enabled: true, minReplicas: 3, maxReplicas: 20, targetCPUUtilizationPercentage: 70 }
+
+worker: { replicas: 3 }
+
+ingress:
+  enabled: true
+  className: traefik
+  host: nacre.example.com
+  annotations: { cert-manager.io/cluster-issuer: letsencrypt }
+  tls: { enabled: true, secretName: nacre-tls }
+
+metrics:
+  existingSecret: nacre-metrics
+  serviceMonitor: { enabled: true }
+
+extraEnv:
+  - name: NACRE_REINDEX_MIN_RECALL
+    value: "0.8"
+  - name: NACRE_OAUTH_AUTHORIZATION_SERVER
+    value: https://idp.example.com
+
+# The admin bundle is served on the API's origin by the same ingress here, so
+# the consent screen is a path under it and the core's default is right. Named
+# anyway, because "the default happens to be correct for this shape" is a thing
+# worth writing down where the next reader can check it.
+oauth:
+  consentUrl: https://nacre.example.com/#/consent

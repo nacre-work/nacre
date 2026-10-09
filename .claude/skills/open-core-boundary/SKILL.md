@@ -22,14 +22,13 @@ and the commercial half stops being worth buying.
 
 Data model · ingest · chunking · embeddings · hybrid search · reranking · the
 MCP server · the REST API · basic RBAC · a single organization · email and
-password authentication · Docker Compose.
+password authentication · Docker Compose · the Helm chart.
 
 ## Commercial, separate repository
 
 Multi-tenancy and collection isolation · SSO (OIDC/SAML) and SCIM ·
 document-level ACLs with deny rules · EMA and ID-JAG · the audit log, its export
-and SIEM forwarding · the global admin · quotas · closed-network delivery · HA
-Helm charts.
+and SIEM forwarding · the global admin · quotas · closed-network delivery.
 
 ## The mechanical rule
 

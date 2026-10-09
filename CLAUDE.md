@@ -72,7 +72,9 @@ packages/sdk         TypeScript SDK
 packages/cli         the `nacre` command, over the SDK
 packages/admin       community admin UI, single organization
 services/parser      Python sidecar: bytes -> {text, blocks, metadata}
+deploy/helm          the Kubernetes chart, versioned with the release
 docs/                specifications. These are normative, not descriptive
+  operations/        runbooks: restore, key rotation, reindex rollback, backlog
 ```
 
 `packages/core/authz` is a directory inside `@nacre.work/core`, **not** a
@@ -3199,6 +3201,24 @@ only, because that is fixed for the token's life, while grants move between
 calls and a catalog listed once per session must not freeze them. It only ever
 removes. `ceiling-catalog.test.ts` asks the wire, and taking the line out turns
 three of its four cases red.
+
+**The Helm chart lives here now, beside the images it names.** It spent its
+life in a private infrastructure repository with a version of its own, and that
+boundary is what every one of its defects crossed: `appVersion` drifted three
+releases behind the templates, so the console Deployment set a variable the
+image it named had never heard of; the chart carried a second copy of the
+embedding adapter's vendor tables that had to be fetched from here on a clock to
+be compared; and a new workload was named by no NetworkPolicy rule. A self-hoster
+on Kubernetes wants exactly this file, and the commercial list's "HA Helm
+charts" named nothing anybody was ever sold. So it is Apache 2.0 under
+`deploy/helm`, its `version` and `appVersion` are the release's and
+`lint:chart-version` holds them to the manifests, and the other three checks it
+carried read the adapter and the templates in this tree instead of over the
+network. The migrations Job now applies the migrator of each module named in
+`modules` rather than globbing a private package family's names, which put the
+commercial scope into the open chart and applied tables for modules nobody
+loads. The four runbooks that are about operating the product came with it,
+into `docs/operations`.
 
 
 

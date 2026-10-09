@@ -342,11 +342,11 @@ under its path the same way the embedder's does.
 ## Kubernetes on a Mac
 
 Docker Desktop's Kubernetes, k3d, kind and minikube on an M-series Mac all give
-you an arm64 node, and the chart in
-[nacre-infra](https://github.com/nacre-work/nacre-infra) needs nothing
-architecture-specific once the images carry both — which, from 0.5.2, they do.
-There is a `helm/values/apple-silicon.yaml` in that repository sized for a
-laptop: replica counts of one, the embedder pointed at the host, and no ingress.
+you an arm64 node, and the chart in [`deploy/helm`](../deploy/helm/README.md)
+needs nothing architecture-specific once the images carry both — which, from
+0.5.2, they do. [`deploy/helm/values/apple-silicon.yaml`](../deploy/helm/values/apple-silicon.yaml)
+is sized for a laptop: replica counts of one, the embedder pointed at the host,
+and no ingress.
 
 A chart deployed against an image tag of **0.5.1 or earlier will still be
 emulated**, because the manifest for those tags has one architecture in it. That

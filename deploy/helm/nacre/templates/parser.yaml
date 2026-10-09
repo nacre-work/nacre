@@ -1,0 +1,99 @@
+{{- if .Values.parser.enabled }}
+{{/*
+The Python parser sidecar, as a Deployment rather than a sidecar.
+
+It is stateless and shared: one per API replica would be waste, and the worker
+needs it too. `bytes -> {text, blocks, metadata}` and nothing else, which is
+also why it gets no database credentials — it never sees one.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nacre.fullname" . }}-parser
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: parser
+spec:
+  replicas: {{ .Values.parser.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: parser
+  template:
+    metadata:
+      labels:
+        {{- include "nacre.labels" . | nindent 8 }}
+        app.kubernetes.io/component: parser
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # The same pod plumbing as every other workload. The parser used to be the
+      # one Deployment that dropped serviceAccountName, podAnnotations,
+      # nodeSelector, tolerations and affinity — so a cluster with a taint-based
+      # node pool scheduled four workloads and stranded the fifth, and the strand
+      # was the one in the ingest path. It still gets no database credential; it
+      # never sees one.
+      serviceAccountName: {{ include "nacre.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      volumes:
+        {{- include "nacre.tmpVolume" . | nindent 8 }}
+      containers:
+        - name: parser
+          image: {{ printf "%s:%s" .Values.parser.image.repository (default .Chart.AppVersion .Values.parser.image.tag) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8090
+          env:
+            - name: PORT
+              value: "8090"
+            {{- if .Values.parser.allowPrivateUrls }}
+            # Off by default. On, the parser may fetch private and link-local
+            # addresses on ingest-by-URL — an SSRF surface opened deliberately
+            # for a deployment ingesting from an internal source it controls.
+            - name: NACRE_PARSER_ALLOW_PRIVATE_URLS
+              value: "true"
+            {{- end }}
+          volumeMounts:
+            {{- include "nacre.tmpVolumeMount" . | nindent 12 }}
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          resources: {{- toYaml .Values.parser.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nacre.fullname" . }}-parser
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: parser
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: {{ include "nacre.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: parser
+{{- end }}

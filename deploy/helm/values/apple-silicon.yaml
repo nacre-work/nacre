@@ -1,0 +1,125 @@
+# A laptop cluster on Apple Silicon — Docker Desktop's Kubernetes, k3d, kind or
+# minikube on an M-series Mac.
+#
+# The architecture is not what makes this file different. Since core 0.5.2 both
+# images carry linux/arm64 alongside linux/amd64, so the chart deploys onto an
+# arm64 node with nothing here saying so, and there is no nodeSelector below for
+# that reason. What makes it different is that it is one machine: single
+# replicas, no autoscaling, no PodDisruptionBudget, no ingress, and requests
+# small enough that everything schedules on a node that is also running a
+# browser.
+#
+# **On a mixed-architecture cluster** — arm64 and amd64 nodes together — the
+# thing to set is `nodeSelector: {kubernetes.io/arch: arm64}`, and the reason is
+# never the images: they resolve per node. It is a deployment that also runs an
+# amd64-only sidecar, or a node pool with different hardware behind it.
+#
+# **An image tag of 0.5.1 or earlier is still emulated**, whatever this file
+# says. Those manifests carry one architecture and no values file can add the
+# other; move `image.tag` (or leave it at the chart's appVersion) forward.
+#
+# This is an example, like every other file here — it renders in CI and is not a
+# profile to install unedited. Every value naming a Secret names one you create.
+
+canonicalUrl: http://localhost:8080
+
+# One of everything. The chart's defaults are two API and two MCP replicas,
+# which is right for a cluster with more than one node to put them on and is
+# two copies of the same pod competing for the same laptop otherwise.
+api:
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 768Mi }
+  autoscaling:
+    enabled: false
+
+mcp:
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 768Mi }
+
+worker:
+  replicas: 1
+  resources:
+    requests: { cpu: 200m, memory: 512Mi }
+    limits: { memory: 1Gi }
+
+parser:
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 384Mi }
+
+# One node, so there is nothing for a disruption budget to protect and a
+# `maxUnavailable: 1` against a single replica blocks a drain instead.
+podDisruptionBudget:
+  enabled: false
+
+# Nothing in front. `kubectl port-forward svc/nacre-api 8080:8080` is the
+# laptop equivalent, and it is why canonicalUrl above names localhost.
+ingress:
+  enabled: false
+
+postgres:
+  existingSecret: nacre-postgres
+  existingSecretKey: url
+  migrations:
+    existingSecret: nacre-postgres-owner
+    existingSecretKey: url
+
+qdrant:
+  url: http://qdrant:6333
+
+redis:
+  existingSecret: nacre-redis
+  existingSecretKey: url
+
+# The embedder runs on macOS, not in the cluster.
+#
+# Text Embeddings Inference — what the Compose `full` profile starts and what a
+# server deployment usually runs in-cluster — publishes no arm64 image at all.
+# So on this hardware the embedder is a native process on the host, against
+# Metal, which is both the way around that and much faster than an emulated CPU
+# build would be. Ollama on 11434 is the shortest path; see the core's
+# docs/apple-silicon.md.
+#
+# **Reaching the host from a pod is cluster-specific and this value is the part
+# to check first.** Docker Desktop's Kubernetes resolves `host.docker.internal`
+# from pods; k3d publishes `host.k3d.internal` instead; kind and minikube have
+# neither and want the host's LAN address. Getting it wrong is a worker that
+# logs an unresolvable name on every document, which the error message does now
+# name in full.
+#
+# The `/v1` is load-bearing and was discarded before core 0.5.2: the route is
+# resolved under whatever path this names, so Ollama and LM Studio work and an
+# endpoint with no path is unchanged.
+embedding:
+  endpoint: http://host.docker.internal:11434/v1
+  model: bge-m3
+  dimensions: 1024
+
+# Off, and it is the chart's default. A cross-encoder behind TEI's /rerank is
+# the thing there is no arm64 image for, and Ollama serves no reranking API —
+# reranking changes which permitted results come back and never how many, so
+# nothing about the permission model is waiting on it.
+reranker:
+  enabled: false
+
+jwt:
+  privateKeyExistingSecret: nacre-jwt
+  privateKeyFile: signing.pem
+  publicKeyExistingSecret: nacre-jwt-public
+  publicKeyFile: signing.pub
+  issuer: http://localhost:8080
+
+# No ServiceMonitor: a laptop cluster does not usually run the Prometheus
+# operator, and a ServiceMonitor with no operator is a CRD apply that fails.
+# The token still gates /metrics, because the endpoint is authenticated
+# wherever it is served.
+metrics:
+  existingSecret: nacre-metrics
+  secretKey: token
+  serviceMonitor:
+    enabled: false

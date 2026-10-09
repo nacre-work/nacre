@@ -1,0 +1,34 @@
+apiVersion: v2
+name: nacre
+description: A self-hosted knowledge index with fine-grained access control
+type: application
+
+# Both numbers are the release's, and they move together with every
+# `package.json` in the workspace. The chart used to live in a repository of
+# its own with a version of its own, and `appVersion` — which every image tag
+# below resolves to — drifted three core releases behind what the templates had
+# been written for: the console Deployment gained `NACRE_MCP_UPSTREAM` while
+# this line still named an image that predates it. Here the chart changes in the
+# same diff as the code it deploys, and `scripts/check-chart-version.mjs` holds
+# both lines equal to `packages/core/package.json`, so a release that bumps the
+# manifests and not this file fails on its pull request.
+version: 0.29.2
+appVersion: "0.29.2"
+
+keywords: [rag, permissions, access-control, vector-search, self-hosted, mcp]
+home: https://nacre.work
+sources:
+  - https://github.com/nacre-work/nacre
+
+# Postgres, Qdrant and Redis are **not** subcharts, and that is the one
+# structural decision in this file.
+#
+# All three hold state a customer already has an answer for: a managed Postgres
+# with their backup policy, a Qdrant cluster their platform team runs, an
+# existing Redis. A subchart would ship a default that is easy to `helm install`
+# and wrong for every deployment that matters — and the failure mode is the
+# worst kind, because it works in a demo and loses data in production.
+#
+# So the chart takes endpoints. `values.yaml` says what each needs and the
+# quickstart in the repository has a Compose stack for trying it out.
+dependencies: []

@@ -1,0 +1,48 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{/*
+One PodDisruptionBudget per multi-replica surface. `api` and `mcp` scale to more
+than one and route traffic; the worker does not (it serves nothing and runs
+`Recreate`), so it gets none.
+
+The api's replica count is the autoscaler's floor when the HPA owns it, and the
+static value otherwise — a PDB written against `api.replicas` while an HPA drives
+the count would budget against a number nothing sets.
+*/}}
+{{- $apiReplicas := .Values.api.replicas | int }}
+{{- if .Values.api.autoscaling.enabled }}
+{{- $apiReplicas = .Values.api.autoscaling.minReplicas | int }}
+{{- end }}
+{{- if gt $apiReplicas 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "nacre.fullname" . }}-api
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
+{{- end }}
+{{- if and .Values.mcp.enabled (gt (.Values.mcp.replicas | int) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "nacre.fullname" . }}-mcp
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+spec:
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: mcp
+{{- end }}
+{{- end }}

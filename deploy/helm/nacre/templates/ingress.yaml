@@ -1,0 +1,61 @@
+{{- if .Values.ingress.enabled }}
+{{/*
+One host, two backends.
+
+`/.well-known/*` and the OAuth issuer belong on the API host and never on an
+apex, because static hosting there intercepts the discovery path before the API
+sees it. Both go to the API service, which serves the RFC 9728 document and the
+JWKS.
+
+`/mcp` routes to the MCP transport. It is a distinct path rather than a distinct
+host so that one certificate and one `NACRE_CANONICAL_URL` cover both — the
+canonical URL is baked into every token ever issued, and a second hostname would
+mean a second audience nobody configured.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "nacre.fullname" . }}
+  labels: {{- include "nacre.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ include "nacre.ingressHost" . | quote }}]
+      secretName: {{ required "ingress.tls.enabled needs ingress.tls.secretName" .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ include "nacre.ingressHost" . | quote }}
+      http:
+        paths:
+          {{- if .Values.mcp.enabled }}
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "nacre.fullname" . }}-mcp
+                port: { name: http }
+          {{- end }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                # The console when this chart deploys it, and the API otherwise.
+                #
+                # nginx there serves the bundle and proxies `/v1` and
+                # `/.well-known` to the API, which is what makes the browser's
+                # requests same-origin — and the API sends no CORS headers, so
+                # same-origin is not a convenience, it is the only arrangement
+                # that works. Pointing `/` straight at the API instead would
+                # serve a JSON 404 at the address a person types.
+                {{- if .Values.web.enabled }}
+                name: {{ include "nacre.fullname" . }}-web
+                port: { number: 80 }
+                {{- else }}
+                name: {{ include "nacre.fullname" . }}-api
+                port: { name: http }
+                {{- end }}
+{{- end }}

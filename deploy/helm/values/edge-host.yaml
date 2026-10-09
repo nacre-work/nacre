@@ -1,0 +1,60 @@
+# The one arrangement where `ingress.host` and `canonicalUrl` name different
+# hosts, and the values file that renders it.
+#
+# `ingress.host` follows `canonicalUrl` everywhere else, because the two were a
+# second answer to "what is this installation's address" and every file here
+# wrote them identical by hand. This is what it is overridable *for*: an edge —
+# a CDN, an external load balancer — terminating `nacre.example.com` and
+# forwarding to an internal name this Ingress matches.
+#
+# That deployment is taking something on, and `NOTES.txt` says what: a browser
+# only ever sees the canonical name, because the console proxies `/v1`
+# same-origin against an API that sends no CORS headers, the discovery documents
+# name the canonical host, and since core 0.19.0 a WebAuthn credential is bound
+# to it — a security key enrolled at one name is refused at the other by the
+# browser, before a request is made.
+#
+# It renders here so that branch is *evaluated* rather than only written. Helm
+# evaluates NOTES.txt on `helm template` and does not print it, so a template
+# error inside a branch nothing takes is a branch nothing checks — and this is
+# the only file that takes this one.
+
+canonicalUrl: https://nacre.example.com
+
+postgres:
+  existingSecret: nacre-postgres
+  existingSecretKey: url
+  migrations:
+    existingSecret: nacre-postgres-owner
+    existingSecretKey: url
+
+qdrant:
+  url: http://qdrant.data.svc.cluster.local:6333
+
+redis:
+  existingSecret: nacre-redis
+  existingSecretKey: url
+
+embedding:
+  endpoint: http://embedder.models.svc.cluster.local:80
+  model: bge-m3
+  dimensions: 1024
+
+jwt:
+  privateKeyExistingSecret: nacre-jwt
+  privateKeyFile: signing.pem
+  issuer: https://nacre.example.com
+
+ingress:
+  enabled: true
+  className: nginx
+  # Deliberately not canonicalUrl's host. The edge in front presents that name.
+  host: nacre-origin.internal.example.com
+  # No TLS here: the edge terminates it, and this Ingress is reached over the
+  # private network behind it.
+  tls:
+    enabled: false
+
+metrics:
+  existingSecret: nacre-metrics
+  secretKey: token

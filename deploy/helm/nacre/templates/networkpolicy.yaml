@@ -1,0 +1,343 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/*
+The parser is the one workload that fetches a URL a caller chose, so it is the
+one whose reachability matters as a security property and not only as hygiene:
+anything that can open a connection to it can ask it to fetch an internal
+address on the pipeline's behalf. This policy says the only pods that may is
+this release's api, mcp and worker — the three that actually call it — on 8090.
+
+Selecting by component with `In` keeps the three named in one rule; the name and
+instance labels keep it to this release, so a second Nacre in the same namespace
+does not become an allowed source.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nacre.fullname" . }}-parser
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: parser
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: parser
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "nacre.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [api, mcp, worker]
+      ports:
+        - protocol: TCP
+          port: 8090
+{{- if .Values.embeddingAdapter.enabled }}
+{{/*
+The adapter is the other workload whose reachability is a security property
+rather than hygiene, and for a second reason on top of the parser's: it holds
+vendor API keys and it sends document text out of the installation. Anything
+that can open a connection to it can spend somebody's budget and choose what
+leaves — so the pods that may are this release's api, mcp and worker, which are
+the three that embed. The migration Job is not among them; it embeds nothing.
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nacre.fullname" . }}-embedding-adapter
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: embedding-adapter
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: embedding-adapter
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "nacre.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [api, mcp, worker]
+      ports:
+        - protocol: TCP
+          port: 8091
+{{- end }}
+{{- if .Values.networkPolicy.strict }}
+{{/*
+Default-deny for every pod of the release, then the allowances a working
+deployment needs. Deny is expressed as a policy that selects all release pods
+for both directions and grants nothing; every `allow` below is additive, the way
+NetworkPolicy composes. This is the part that needs `extraEgress`: without the
+datastores named there, api/mcp/worker/migrate can resolve DNS and reach the
+parser and nothing else, which is a deployment that starts and answers 503.
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nacre.fullname" . }}-default-deny
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+{{/*
+DNS for every pod. Without this the default-deny above blackholes name
+resolution, and every URL in the configuration — Postgres, Qdrant, the embedder
+— fails to resolve before it fails to connect, which is the same outage with a
+more confusing error.
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nacre.fullname" . }}-allow-dns
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+{{/*
+Ingress to the two surfaces on their ports. The source is left open because an
+ingress controller's pod and namespace vary by cluster, and a policy that named
+the wrong one would reject the very traffic it is meant to admit — so this
+narrows the reachable *ports* (api and mcp, and nothing else on those pods)
+rather than the source. /metrics rides the same port, so a Prometheus scrape is
+covered without a second rule.
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nacre.fullname" . }}-allow-surfaces
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [api, mcp]
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: {{ .Values.api.port }} }
+        - { protocol: TCP, port: {{ .Values.mcp.port }} }
+{{/*
+Egress for the processes that talk outward: to the parser inside the release,
+and to everything the operator names in extraEgress — Postgres, Qdrant, Redis,
+the embedder, S3, and the SMTP relay where `mail.*` is set. That last one is the
+easiest to leave out, because nothing fails visibly: the API answers 204 to a
+recovery request whatever happened, deliberately, so a relay it cannot reach is
+a link that is never delivered and a log line on a pod nobody is reading.
+The migration Job is included because it connects to Postgres
+before anything else runs; it needs the datastore egress and not the parser, but
+one rule set for the four keeps the policy readable and a Job that can also reach
+the parser is not a risk worth a second selector.
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nacre.fullname" . }}-allow-egress
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [api, mcp, worker, migrate]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "nacre.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: parser
+      ports:
+        - { protocol: TCP, port: 8090 }
+    {{- if .Values.embeddingAdapter.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "nacre.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: embedding-adapter
+      ports:
+        - { protocol: TCP, port: 8091 }
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- if .Values.web.enabled }}
+{{/*
+The console, which this policy set did not know about at all.
+
+`web` landed after these rules were written and nothing asked whether the new
+workload was covered — so under `strict` it was selected by the default-deny,
+granted DNS by the rule that selects every pod, and granted nothing else in
+either direction. An operator got a console the ingress controller could not
+reach, proxying `/v1` to an API it could not reach either, on a deployment where
+every other workload came up. Found by adding the *next* workload and asking the
+question; `scripts/check-chart-components.mjs` asks it now, so the one after that
+cannot arrive the same way.
+
+Ingress leaves the source open for the reason `allow-surfaces` does: an ingress
+controller's pod and namespace vary by cluster and a rule naming the wrong one
+rejects the traffic it exists to admit. Egress is narrow, because here it is
+knowable — nginx proxies to this release's API and reaches nothing else.
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nacre.fullname" . }}-web
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: web
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: 8080 }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "nacre.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [api, mcp]
+      ports:
+        - { protocol: TCP, port: {{ .Values.api.port }} }
+        - { protocol: TCP, port: {{ .Values.mcp.port }} }
+{{- end }}
+{{- if .Values.embeddingAdapter.enabled }}
+{{/*
+The adapter's egress, which is the one rule in this chart that deliberately
+allows the public internet — reaching a hosted vendor is the entire job, and a
+service that cannot is one that answers 502 on every document.
+
+443 only, and **every private range excepted**. That is not tidiness: an
+adapter that can reach the cluster's own network is a credentialed process one
+misconfigured route away from the parser's SSRF surface, and 169.254.169.254 is
+the cloud metadata endpoint. A vendor on a private address is therefore a case
+this policy does not admit, and it is not a gap — an OpenAI-shaped endpoint
+inside the cluster needs no adapter at all, because the worker already speaks
+that protocol and can be pointed straight at it.
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nacre.fullname" . }}-embedding-adapter-egress
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: embedding-adapter
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: embedding-adapter
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 127.0.0.0/8
+      ports:
+        - { protocol: TCP, port: 443 }
+{{- end }}
+{{/*
+The parser's egress, which strict mode simply did not have. The parser is the
+workload that performs the fetch behind ingest-by-URL, and under strict it was
+selected by the default-deny, granted DNS, and granted nothing outbound — so
+every `{url}` ingest failed in the worker, silently, on exactly the deployments
+careful enough to run strict. The `web` defect one rule up, arriving on the
+egress side: a workload the policy set did not fully know about, invisible to
+`check-components.mjs` because an *ingress* rule made the component count as
+named. That check asks the egress direction of every workload now.
+
+The same shape as the adapter's rule above, for the same reason with one more:
+80 as well as 443, because a caller-chosen URL is either, and **every private
+range excepted always** — this pod fetches what callers name, which is the
+SSRF surface its own `allowPrivateUrls` flag defaults closed. Setting that
+flag true on a strict deployment therefore also needs an egress rule of the
+operator's own for the internal source; `networkPolicy.extraEgress` does not
+reach the parser, deliberately, because widening the URL-fetcher's reach into
+the private network must not ride along with widening the API's.
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nacre.fullname" . }}-parser-egress
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: parser
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: parser
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 127.0.0.0/8
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 80 }
+{{- end }}
+{{- end }}

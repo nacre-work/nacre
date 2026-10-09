@@ -1,0 +1,108 @@
+{{- if .Values.mcp.enabled }}
+{{/*
+The MCP transport, as its own Deployment.
+
+Not a second container in the API pod, and not a second port on one process.
+They share the authorization service and nothing else: an agent's connection is
+long-lived where a REST call is not, so the two scale on different signals, and
+a Streamable HTTP session held open for an hour should not pin an API replica
+through a rolling deploy.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nacre.fullname" . }}-mcp
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+spec:
+  replicas: {{ .Values.mcp.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: mcp
+  template:
+    metadata:
+      labels:
+        {{- include "nacre.labels" . | nindent 8 }}
+        app.kubernetes.io/component: mcp
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "nacre.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      volumes:
+        {{- include "nacre.tmpVolume" . | nindent 8 }}
+        {{- include "nacre.jwtVerifyVolume" . | nindent 8 }}
+      containers:
+        - name: mcp
+          image: {{ include "nacre.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "packages/mcp/dist/main.js"]
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mcp.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.mcp.port | quote }}
+            {{- include "nacre.env" . | nindent 12 }}
+            {{- include "nacre.jwtVerifyEnv" . | nindent 12 }}
+          volumeMounts:
+            {{- include "nacre.tmpVolumeMount" . | nindent 12 }}
+            {{- include "nacre.jwtVerifyVolumeMount" . | nindent 12 }}
+          {{/*
+          A TCP connect, not an HTTP GET. This process is not the API — it
+          serves /metrics, /.well-known/oauth-protected-resource and POST /mcp,
+          and 404s everything else, so /v1/health and /v1/ready do not exist
+          here. An httpGet probe against either gets 404, which fails the probe,
+          so every MCP pod would never go Ready and would be liveness-killed on
+          a loop — the whole deployment down, with the check meant to protect it
+          as the cause. /metrics is not a substitute: it answers 404 rather than
+          401 when metrics.existingSecret is set, so an unauthenticated probe
+          would fail exactly the hardened deployments. A TCP connect is what a
+          transport whose job is accepting connections can honestly answer
+          without authenticating — the same check docker-compose.yml uses.
+          */}}
+          livenessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources: {{- toYaml .Values.mcp.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nacre.fullname" . }}-mcp
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.mcp.port }}
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: {{ include "nacre.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: mcp
+{{- end }}
