@@ -49,6 +49,7 @@ const ports = (
     },
     markReindexed: async (_org, documentId) => {
       recorded.marked.push(documentId)
+      return true
     },
     recordPass: async (input) => {
       recorded.passes.push({
@@ -107,6 +108,17 @@ describe('reindexOnce', () => {
     expect(result).toMatchObject({ reindexed: 1, failed: 0 })
     expect(p.recorded.added).toEqual([{ vectorName: 'v_new_1024', points: 2 }])
     expect(p.recorded.marked).toEqual(['doc-1'])
+  })
+
+  it('counts a document whose points moved under the pass as neither done nor failed', async () => {
+    // A re-ingest replaced the points between the claim and the mark, so the
+    // mark refuses. Nothing went wrong — the document is claimed again with its
+    // new points — and reporting it as a failure would walk a healthy reindex
+    // towards the failure bound.
+    const p = ports([target()], { markReindexed: async () => false })
+    const pass = await reindexOnce(p, 10)
+    expect(pass).toMatchObject({ reindexed: 0, failed: 0 })
+    expect(p.recorded.errors).toEqual([])
   })
 
   it('does not mark a document whose vector write failed', async () => {

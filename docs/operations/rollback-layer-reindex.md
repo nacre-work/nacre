@@ -149,11 +149,12 @@ UPDATE documents SET reindexed_vector = NULL
 Both statements, and the second is the one that matters. `reindexed_vector` is
 the marker "this document carries the shadow vector", and the switch is decided
 by which documents lack it. Left over from a cancelled run, it counts as done
-for the next reindex onto the same model — and nothing that rewrites a
-document's points clears it, so for a document re-ingested since, the marker
-claims a vector its points no longer carry. Run the `documents` statement once
-more after ten seconds: a pass already in flight when you cancelled still marks
-the documents it was working on, up to ten of them.
+for the next reindex onto the same model. Since 0.29.4 a re-ingest clears it,
+because it replaces the points the vector was on, and a pass marks a document
+only if its points are still the ones it wrote to — so the leftover is limited
+to documents nobody has touched since. Run the `documents` statement once more
+after ten seconds: a pass already in flight when you cancelled still marks the
+documents it was working on, up to ten of them.
 
 The layer stays on its model, and search did not change for a second. What stays
 behind is the vectors already written into the new slot: nothing reclaims them

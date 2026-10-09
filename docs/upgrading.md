@@ -285,6 +285,24 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.29.4 — a document re-ingested during a reindex is not left behind
+
+Nothing to do. A document re-sent while its layer was being moved onto another
+model could be counted as migrated without the new model's vector: ingest
+replaces a document's points under fresh ids and writes only the live slot, and
+nothing cleared the marker the reindex had already set on it. The switch then
+moved the layer onto a slot that document was absent from, and it stopped
+matching dense search — lexical search still found it — with no error anywhere.
+A re-ingest now clears the marker, and the embedding pass marks a document only
+if its points are still the ones it wrote to.
+
+**If a layer of yours finished a reindex while documents in it were being
+re-sent**, those documents may be missing from the new slot.
+`rebuild-collection --org {slug}` re-indexes every document onto the slots the
+layers use now, and is the remedy: re-sending identical content does not help,
+because an unchanged document is not re-indexed, and `retry` applies only to a
+document that failed.
+
 ### 0.29.3 — the Helm chart is public, and attached to the release
 
 Nothing to do for Compose. **For Helm**, the chart is in this repository at
