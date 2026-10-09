@@ -212,13 +212,21 @@ The MCP server is a **resource server**, not an authorization server.
   tool schemas and no idea that a `404` here is deliberate — it retries,
   rephrases, and eventually reports the server as broken.
 
-  What is in it is what is true of *this server*: that search is filtered inside
-  the index traversal so `top_k` returns k permitted results, that an empty
-  result is an answer rather than an error, that "not permitted" and "not there"
-  are one reply on purpose, that `write` does not imply `read`, and that a
-  delegated connection may have been restricted further by the person who
-  approved it. Not a workflow — "how to onboard a team" spans this product and
-  others, changes on a different clock, and would rot here.
+  It is the **built-in guide**: what is true of *this server*, and nobody
+  running it can edit it. Four parts — the permission model (search is filtered
+  inside the index traversal so `top_k` returns k permitted results, an empty
+  result is an answer, "not permitted" and "not there" are one reply, `write`
+  does not imply `read`, a delegated connection may be narrowed further); how
+  to work (layers by slug, which way into the index for text, a URL and a file,
+  `external_id` as identity, `queued` is not `indexed`); how to read a skill and
+  what one may and may not decide; and what the panels are.
+
+  The mechanics used to live in the default skill, and an organization's skill
+  replaces that one entirely — so the first organization to write its own would
+  have taken them from every agent it has. What is true of the server is here;
+  what is true of an organization is in its skill. `instructions.test.ts` holds
+  every tool in the catalog against the guide and asks that an organization's
+  skill leaves the mechanics in place.
 
   One string in `instructions.ts`, used by both transports, with a parity case
   that asserts it is present as well as identical: two transports agreeing on

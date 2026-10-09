@@ -3161,6 +3161,20 @@ else. The coverage check only ever asked that an implemented case has a marker,
 never that a pending one does not. It asks both now, the ceiling cases are
 T36–T38 with rows of their own, and restoring one old label names it.
 
+**What every agent is told first is the built-in guide, and no skill can
+replace it.** The mechanics — `queued` is not `indexed`, a file goes through
+`request_upload`, the same `external_id` replaces a document, a layer's skill is
+read before writing there — had been put in the default skill, and an
+organization's skill replaces that one entirely: the first organization to
+write "contracts are signed PDFs only" would have taken all of it from every
+agent it has, while nobody writing that thinks to restate how ingest works. So
+the line is who knows the fact. What is true of the server is
+`instructions.ts`, shipped in the release and editable by nobody; what is true
+of an organization is its skill, which follows the guide and decides
+conventions and never how permissions work. `instructions.test.ts` holds every
+tool in the catalog against the guide — dropping one sentence names the tool —
+and writes an organization's own skill to ask that the mechanics survive it.
+
 [docs/mcp-admin.md](./docs/mcp-admin.md) — a separate resource with its own
 token audience, so `admin` can be on its consent screen without reaching REST,
 every write a proposal a person applies in a panel, and notifications to user
