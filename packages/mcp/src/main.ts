@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   // one.
   const redis = new Redis({ url: config.redisUrl })
 
-  const { pool, layers, tools, verification } = buildServices(config, {
+  const { pool, layers, tools, skills, verification } = buildServices(config, {
     principalsCache: { store: new RedisCache(redis), ttlSeconds: config.aclCacheTtl },
     // The same ticket store the API redeems from, over the same Redis. The
     // URL names the API — `NACRE_CANONICAL_URL` — because that is where the
@@ -157,6 +157,7 @@ async function main(): Promise<void> {
       ...verification,
     },
     layers,
+    skills,
     tools,
     serverVersion: packageVersion(),
     // The views reach the API at its canonical origin — the upload one for

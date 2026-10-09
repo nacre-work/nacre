@@ -29,7 +29,7 @@ import {
   type VerifyOptions,
 } from '@nacre.work/api'
 
-import { buildServer, type Layers, type McpMetrics, type ToolRunner } from './factory.js'
+import { buildServer, type Layers, type McpMetrics, type ToolRunner, type SkillSource } from './factory.js'
 import { dispatchCatalog } from './tools.js'
 
 // Re-exported because this module is what the package's entry point and the
@@ -83,6 +83,8 @@ export interface McpOptions {
   readonly verify: VerifyOptions & { readonly serviceKeys: NonNullable<VerifyOptions['serviceKeys']> }
   readonly layers: Layers
   readonly tools: ToolRunner
+  /** The base skill `instructions` carry. Absent, the built-in text alone. */
+  readonly skills?: SkillSource
   /** Where a 401 points the client for discovery, per RFC 9728. */
   readonly resourceMetadataUrl: string
   /** The document that URL resolves to. Built once, in main, and shared with the API. */
@@ -361,6 +363,7 @@ function faces(options: McpOptions): Faces {
       ui: verified.ui,
       layers: options.layers,
       tools: options.tools,
+      ...(options.skills === undefined ? {} : { skills: options.skills }),
       ...(options.serverVersion === undefined ? {} : { serverVersion: options.serverVersion }),
       ...(options.apiOrigin === undefined ? {} : { apiOrigin: options.apiOrigin }),
       ...(options.observe === undefined ? {} : { observe: options.observe }),

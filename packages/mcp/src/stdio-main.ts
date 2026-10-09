@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   // from wherever the bytes are, so it lives in the store the API reads. The
   // other transport shares the same one. Nothing else here needs it.
   const redis = new Redis({ url: config.redisUrl })
-  const { pool, layers, tools, verification } = buildServices(config, {
+  const { pool, layers, tools, skills, verification } = buildServices(config, {
     uploads: {
       store: new RedisUploadTickets(redis),
       baseUrl: config.canonicalUrl,
@@ -85,6 +85,7 @@ async function main(): Promise<void> {
       },
       serviceKey,
       layers,
+      skills,
       tools,
       serverVersion: packageVersion(),
       apiOrigin: new URL(config.canonicalUrl).origin,

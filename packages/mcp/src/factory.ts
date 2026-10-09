@@ -30,9 +30,9 @@ import { readFile } from 'node:fs/promises'
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server'
 import { fromJsonSchema, McpServer, type CallToolResult } from '@modelcontextprotocol/server'
 import type { AuthContext } from '@nacre.work/api'
-import { logger, MetadataError } from '@nacre.work/core'
+import { logger, MetadataError, readFrontmatter } from '@nacre.work/core'
 
-import { INSTRUCTIONS } from './instructions.js'
+import { INSTRUCTIONS, instructionsFor, type InstructionSkill } from './instructions.js'
 import {
   CAPABILITIES,
   callToolError,
@@ -58,6 +58,30 @@ export interface Layers {
     auth: AuthContext,
     page: { readonly limit: number; readonly afterId?: string },
   ): Promise<{ readonly layers: readonly Layer[]; readonly nextCursor: string | null }>
+}
+
+/**
+ * The base skill an agent of this caller is given. docs/skills.md.
+ *
+ * Optional, so a transport built without a database — the surface suites —
+ * serves the built-in instructions alone, which is what every deployment did
+ * before skills existed.
+ */
+export interface SkillSource {
+  base(auth: AuthContext): Promise<InstructionSkill>
+}
+
+/**
+ * A refusal about the caller's own arguments, whose message is safe to send.
+ *
+ * The wrapper below hides every thrown message, because one naming a layer
+ * says the layer exists. These name nothing the caller did not send or could
+ * not already read: a skill the format refuses and why, a version that is not
+ * the current one, a write this tool does not make. Answering "not found" to
+ * any of them leaves an agent retrying a call that can never succeed.
+ */
+export class ToolArgumentError extends Error {
+  override readonly name = 'ToolArgumentError'
 }
 
 export interface ToolRunner {
@@ -105,6 +129,8 @@ export interface ServerBuild {
   readonly requestId: () => string
   readonly layers: Layers
   readonly tools: ToolRunner
+  /** The base skill for `instructions`. Absent, the built-in text alone. */
+  readonly skills?: SkillSource
   /** What `initialize` and `server/discover` report as `serverInfo.version`. */
   readonly serverVersion?: string
   readonly observe?: McpMetrics
@@ -164,19 +190,24 @@ const versionOf = (serverVersion: string | undefined): string => serverVersion ?
  * entries on the installations layers are sold for.
  */
 export async function buildServer(build: ServerBuild): Promise<McpServer> {
-  const page = await build.layers.forCaller(build.auth, { limit: CATALOG_SAMPLE })
+  const [page, instructions] = await Promise.all([
+    build.layers.forCaller(build.auth, { limit: CATALOG_SAMPLE }),
+    instructionsOf(build),
+  ])
   const definitions = catalog(page.layers, { more: page.nextCursor !== null })
 
   const server = new McpServer(
     { name: 'nacre', version: versionOf(build.serverVersion) },
     {
       capabilities: CAPABILITIES,
-      instructions: INSTRUCTIONS,
-      // `tools/list` is per caller and never fresh; `server/discover` is the
-      // same for everybody and good for an hour. results.ts has both arguments.
+      instructions,
+      // Both per caller now. `tools/list` names the caller's layers and is
+      // never fresh; `server/discover` carries `instructions`, which carry the
+      // organization's own skill, so a shared cache would hand one tenant's
+      // text to another. results.ts has the TTLs.
       cacheHints: {
         'tools/list': { ttlMs: TOOLS_TTL_MS, cacheScope: 'private' },
-        'server/discover': { ttlMs: DISCOVER_TTL_MS, cacheScope: 'public' },
+        'server/discover': { ttlMs: DISCOVER_TTL_MS, cacheScope: 'private' },
       },
     },
   )
@@ -236,6 +267,32 @@ export async function buildServer(build: ServerBuild): Promise<McpServer> {
   }
 
   return server
+}
+
+/**
+ * The built-in text and the base skill, or the built-in text alone when the
+ * skill cannot be read.
+ *
+ * Degrading rather than failing, and that is not invariant 3 being relaxed:
+ * the skill is guidance, not a permission input, and a connection whose
+ * agent is told less is still held to every rule. A failure that took the
+ * whole connection down with it would make a database blip into an agent
+ * that cannot search.
+ */
+async function instructionsOf(build: ServerBuild): Promise<string> {
+  if (build.skills === undefined) return INSTRUCTIONS
+  try {
+    const skill = await build.skills.base(build.auth)
+    return instructionsFor(skill, (text) => {
+      const read = readFrontmatter(text)
+      return 'body' in read ? read.body.trim() : text
+    })
+  } catch (error) {
+    logger.warn('the base skill could not be read; instructions carry the built-in text alone', {
+      error: String(error).slice(0, 200),
+    })
+    return INSTRUCTIONS
+  }
 }
 
 /** Which tool opens which view. */
@@ -344,7 +401,7 @@ async function runTool(
       error: String(error),
     })
 
-    if (error instanceof MetadataError) return callToolError(error.message)
+    if (error instanceof MetadataError || error instanceof ToolArgumentError) return callToolError(error.message)
     return callToolError()
   }
 }

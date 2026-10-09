@@ -26,6 +26,9 @@ const EXPECTED: Record<
   upload_file: [true, false, true, false],
   ingest_document: [false, true, true, true],
   delete_document: [false, true, true, false],
+  list_skills: [true, false, true, false],
+  get_skill: [true, false, true, false],
+  update_skill: [false, true, false, false],
 }
 
 describe('tool annotations', () => {

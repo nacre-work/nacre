@@ -6,7 +6,7 @@ import type { JSONRPCMessage, MessageExtraInfo, Transport } from '@modelcontextp
 import { authenticate, findTenantOverride, Problem, type VerifyOptions } from '@nacre.work/api'
 import { logger } from '@nacre.work/core'
 
-import { buildServer, type Layers, type ToolRunner } from './factory.js'
+import { buildServer, type Layers, type ToolRunner, type SkillSource } from './factory.js'
 import { PROTOCOL_VERSION } from './results.js'
 
 /**
@@ -35,6 +35,8 @@ export interface StdioOptions {
   readonly serviceKey: string
   readonly layers: Layers
   readonly tools: ToolRunner
+  /** The base skill `instructions` carry. Absent, the built-in text alone. */
+  readonly skills?: SkillSource
   readonly input?: NodeJS.ReadableStream
   /** What `initialize` and `server/discover` report. See the note in main.ts. */
   readonly serverVersion?: string
@@ -181,6 +183,7 @@ export async function serveStdio(options: StdioOptions): Promise<void> {
         requestId: () => randomUUID(),
         layers: options.layers,
         tools: options.tools,
+        ...(options.skills === undefined ? {} : { skills: options.skills }),
         ...(options.serverVersion === undefined ? {} : { serverVersion: options.serverVersion }),
         ...(options.apiOrigin === undefined ? {} : { apiOrigin: options.apiOrigin }),
       }),
