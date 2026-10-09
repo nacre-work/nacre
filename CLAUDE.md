@@ -3526,6 +3526,15 @@ the `external_id` from the subject — and a search hit carries a `doc_id` and n
 The plain-words and exact-term searches the skill asks for were worth keeping:
 the first ranked `onboarding.md` above `on-call.md` and the second put it first.
 
+**The vector store's client pinned a vulnerable `undici`, and the newest one
+still does — 0.36.1.** `@qdrant/js-client-rest` depends on `undici` at exactly
+7.29.0: two high advisories, one of them a certificate check a dropped
+connection can skip, on the connection that carries every vector. Found by the
+push message naming alerts on the default branch and `pnpm audit` naming the
+package, not by a suite — nothing here could fail on it. The workspace overrides
+the range below 7.29.1, so the images carry 7.30.0; a registry install of the
+core resolves the pin itself, and `docs/upgrading.md` says what to add there.
+
 **Where to connect is on a screen**, which was asked for in those words. The MCP
 endpoint and the REST base lived in `docs/quickstart.md` and in an operator's
 `.env`, so a person handed a login had to ask somebody for an address the server
