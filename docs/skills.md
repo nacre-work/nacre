@@ -253,7 +253,12 @@ marker the console and the panel show.
   `list_skills`: the file tree, `SKILL.md` rendered and as source, the scripts
   marker, and — where the caller may write — loading a folder or a `.zip` in
   Claude's format, checked and written through `update_skill` in the host, so the
-  permission check runs where it always runs.
+  permission check runs where it always runs. Built since 0.33.0. `get_skill`
+  says `writable`, answered the way the console decides it (whether the version
+  history answers this caller), so the panel draws a load only where the server
+  would take one. A `.zip` goes to `update_skill` as `zip_base64` and is read by
+  the server's own bounded reader — a browser has none, and a second reader is
+  a second place for a zip bomb.
 
 ### REST
 

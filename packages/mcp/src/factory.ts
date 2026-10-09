@@ -151,14 +151,14 @@ export interface ServerBuild {
 }
 
 /**
- * The three views, by the name the tool metadata and the resource list use.
+ * The four views, by the name the tool metadata and the resource list use.
  *
  * `upload` is the only one that makes a network request of its own — the
  * bytes to the ticket URL — so it is the only one whose CSP names an origin.
  * The other two reach the server through the host and nothing else, and a
  * CSP admitting nothing is the secure default the extension specifies.
  */
-export const VIEWS = ['upload', 'search', 'layers'] as const
+export const VIEWS = ['upload', 'search', 'layers', 'skill'] as const
 export type View = (typeof VIEWS)[number]
 
 export const viewUri = (view: View): string => `ui://nacre/${view}.html`
@@ -318,12 +318,17 @@ const VIEW_OF: Readonly<Record<string, View | undefined>> = {
   search: 'search',
   list_layers: 'layers',
   upload_file: 'upload',
+  get_skill: 'skill',
+  list_skills: 'skill',
 }
 
 const VIEW_ABOUT: Readonly<Record<View, string>> = {
   upload: 'Pick a file to add to a layer; the bytes go to the index and never through the conversation.',
   search: 'The results of a search, with the layer, the document id and the score of every hit — the permitted set.',
   layers: 'The layers this principal may read, with their document counts.',
+  skill:
+    "A skill as the console shows one: its files as a folder, SKILL.md rendered and as source, who wrote the " +
+    'version and whether it carries scripts — and, where the person may write it, loading a folder or a .zip.',
 }
 
 /**

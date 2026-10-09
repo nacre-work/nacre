@@ -21,6 +21,7 @@ import {
   createPool,
   parseFilters,
   parseMetadata,
+  readSkillZip,
   activeResolver,
   withAuditSinks,
   logger,
@@ -559,16 +560,23 @@ export function buildServices(
                   const layerId = await skills.layerBySlug(auth, which)
                   if (layerId === undefined) return undefined
                   const current = await skills.current(auth, { kind: 'layer', layerId })
-                  return current === undefined
-                    ? undefined
-                    : {
-                        level: 'layer' as const,
-                        name: current.name ?? '',
-                        description: current.description ?? '',
-                        version: current.version,
-                        hasScripts: current.hasScripts,
-                        files: current.files,
-                      }
+                  if (current === undefined) return undefined
+                  // Whether this caller may write it, answered the way the
+                  // console answers it: the history is shown to whoever may
+                  // write the level and to nobody else. The panel offers a
+                  // load only where this says so, rather than drawing a
+                  // control the server would refuse.
+                  const history = await skills.versions(auth, { kind: 'layer', layerId }, { limit: 1, after: undefined })
+                  return {
+                    level: 'layer' as const,
+                    name: current.name ?? '',
+                    description: current.description ?? '',
+                    version: current.version,
+                    hasScripts: current.hasScripts,
+                    files: current.files,
+                    byAgent: current.byAgent,
+                    writable: history !== undefined,
+                  }
                 })()
           if (found === undefined) throw new Error('not found')
           const content = found.files[path]
@@ -583,6 +591,10 @@ export function buildServices(
             description: found.description,
             version: found.version,
             has_scripts: found.hasScripts,
+            ...('byAgent' in found ? { by_agent: found.byAgent } : {}),
+            // A layer's skill only: `update_skill` writes nothing else, so the
+            // base is never writable from here whoever is asking.
+            writable: 'writable' in found ? found.writable : false,
             paths: Object.keys(found.files),
             path,
             content,
@@ -605,10 +617,27 @@ export function buildServices(
           if (typeof basedOn !== 'number' || !Number.isInteger(basedOn) || basedOn < 0) {
             throw new ToolArgumentError('based_on is required: the version you read, or 0 for a layer with no skill')
           }
+          // The folder as files, or as the `.zip` Claude exports — exactly one.
+          // The zip is read here, by the one bounded reader the REST surface
+          // uses, rather than in the skill panel: a browser has no `zlib`, and
+          // a second reader is a second place for a zip bomb to get through.
+          // It reaches this tool from the panel through the host, never
+          // through the model, which is why carrying bytes in an argument is
+          // acceptable here when it is not for a document.
+          const zip = args.zip_base64
+          if ((args.files === undefined) === (zip === undefined)) {
+            throw new ToolArgumentError('send the skill as files or as zip_base64, and exactly one of them')
+          }
+          let files: unknown = args.files
+          if (typeof zip === 'string') {
+            const read = readSkillZip(Buffer.from(zip, 'base64'))
+            if ('error' in read) throw new ToolArgumentError(`not a skill zip: ${read.error}`)
+            files = read.files
+          }
           const layerId = await skills.layerBySlug(auth, which)
           const level: SkillLevel | undefined = layerId === undefined ? undefined : { kind: 'layer', layerId }
           const outcome: SkillWrite =
-            level === undefined ? { kind: 'not_found' } : await skills.write(auth, level, args.files, basedOn, 'mcp')
+            level === undefined ? { kind: 'not_found' } : await skills.write(auth, level, files, basedOn, 'mcp')
 
           if (outcome.kind === 'written' || outcome.kind === 'not_found' || outcome.kind === 'forbidden') {
             const target = { skill: 'layer', layer_id: layerId ?? null, layer: which }

@@ -629,7 +629,7 @@ would persist. Permission: `admin`.
 
 ## MCP Apps
 
-Three views, served as resources under `ui://nacre/` with the extension's
+Four views, served as resources under `ui://nacre/` with the extension's
 media type `text/html;profile=mcp-app`, each a single HTML file carrying its
 own script — a host renders one in a sandboxed iframe whose CSP admits no
 script from anywhere, so nothing can be loaded and everything is inlined at
@@ -640,12 +640,13 @@ build time (`packages/mcp/apps/`, bundled by the package build).
 | `ui://nacre/search.html` | `search` | every hit with its layer, document id and score — the permitted set, filtered inside the index — and a box to re-run a query through the host, against exactly the access the model has |
 | `ui://nacre/layers.html` | `list_layers` | the layers this principal may read, paged through the host |
 | `ui://nacre/upload.html` | `upload_file` | a layer field with the readable layers as suggestions, and a file input; the bytes go to a ticket URL and never through the conversation. A field rather than a list, because `list_layers` answers with what the caller may *read* and an ingest-only account holds `write` on a layer it cannot list |
+| `ui://nacre/skill.html` | `get_skill`, `list_skills` | a skill as the console shows one: its files as a folder, `SKILL.md` rendered and as source, the version, whether an agent wrote it and whether it carries scripts — or the catalog, each row opening its skill through the host. Where `get_skill` says the caller may write it, loading a folder or a `.zip`, shown before it is written and written through `update_skill`. The Markdown is drawn by the console's own module, bundled in, so a skill is never HTML in either place |
 
 A view reaches the server **through the host** (`callServerTool`), so every
 permission check runs where it always runs and the view holds no credential.
 The upload view makes the one request a view makes on its own — the bytes to
 the ticket URL on the API — and its resource's CSP names that origin and
-nothing else; the other two declare no network at all, which the extension
+nothing else; the other three declare no network at all, which the extension
 reads as the secure default. That origin is `NACRE_CANONICAL_URL`'s, and it is
 also why `POST /v1/uploads/{ticket}` admits every origin: a host's sandbox
 origin is not one a deployment can list.

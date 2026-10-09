@@ -557,9 +557,15 @@ export function catalog(
             description: 'Relative path → text. SKILL.md opens with frontmatter carrying name and description.',
             additionalProperties: { type: 'string' },
           },
+          zip_base64: {
+            type: 'string',
+            description:
+              "The folder as a .zip in Claude's skill format, base64 — what the skill panel sends when a person " +
+              'loads one. Send files or this, not both.',
+          },
           based_on: { type: 'integer', minimum: 0, description: 'The version you are replacing; 0 for none.' },
         },
-        required: ['skill', 'files', 'based_on'],
+        required: ['skill', 'based_on'],
         additionalProperties: false,
       },
     },
