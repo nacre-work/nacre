@@ -120,6 +120,19 @@ when('a cursor built from a truncated timestamp', () => {
         )
         accountIds.push(account)
       }
+      // And one on an exact millisecond, which `now()` produces now and then
+      // by itself. Written deliberately so the case above meets it on every
+      // run rather than once in a thousand: a row that loses nothing to a
+      // `Date` must be skipped, not asserted to sort before itself.
+      {
+        const id = randomUUID()
+        await client.query(
+          `INSERT INTO layers (id, org_id, workspace_id, slug, name, provider_id, vector_name, created_at)
+           VALUES ($1,$2,$3,'layer-ms','layer-ms',$4,'v1', date_trunc('milliseconds', now()))`,
+          [id, ORG, WS, PROVIDER],
+        )
+        layerIds.push(id)
+      }
       // Admin on every workspace, so the listing has three pages to walk
       // rather than one row the filter happens to keep.
       for (const id of workspaceIds) {
@@ -164,18 +177,26 @@ when('a cursor built from a truncated timestamp', () => {
       )
       expect(rows.length).toBeGreaterThan(1)
 
-      const truncated = rows.filter((row) => row.text !== row.ts.toISOString())
-      expect(truncated.length).toBeGreaterThan(0)
-
-      for (const row of truncated) {
-        const { rows: cmp } = await client.query<{ less: boolean }>(
-          `SELECT ($1::timestamptz < $2::timestamptz) AS less`,
+      // Whether a row was truncated is a question about two instants, so the
+      // database answers it. Comparing the strings cannot: `::text` and
+      // `toISOString()` are different formats, so every row "differed" and a
+      // row that happened to land on an exact millisecond was then asserted
+      // to sort before itself — the once-in-a-thousand flake the paragraph
+      // above describes, multiplied by the number of rows.
+      let truncated = 0
+      for (const row of rows) {
+        const { rows: cmp } = await client.query<{ less: boolean; same: boolean }>(
+          `SELECT ($1::timestamptz < $2::timestamptz) AS less, ($1::timestamptz = $2::timestamptz) AS same`,
           [row.ts.toISOString(), row.text],
         )
+        const { less, same } = cmp[0] as { less: boolean; same: boolean }
+        if (same) continue
+        truncated++
         // The truncated value sorts *before* the row it came from, which is
         // what makes the row match its own cursor.
-        expect((cmp[0] as { less: boolean }).less).toBe(true)
+        expect(less).toBe(true)
       }
+      expect(truncated).toBeGreaterThan(0)
     } finally {
       client.release()
     }
