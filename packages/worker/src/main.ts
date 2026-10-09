@@ -477,8 +477,8 @@ async function main(): Promise<void> {
     embed: async (providerId: string, texts: readonly string[]) =>
       (await embedderFor(providerId))(texts),
     addVector: vectors.addVector.bind(vectors),
-    markReindexed: (orgId: string, documentId: string, shadow: string) =>
-      markReindexed(pool, orgId, documentId, shadow, APP_ROLE),
+    markReindexed: (orgId: string, documentId: string, shadow: string, pointIds: readonly string[]) =>
+      markReindexed(pool, orgId, documentId, shadow, pointIds, APP_ROLE),
     finishIfDone: (orgId: string, layerId: string, shadow: string) =>
       finishReindexIfDone(pool, orgId, layerId, shadow, APP_ROLE),
     pending: () => pendingReindexes(pool),

@@ -182,6 +182,13 @@ export class PostgresDocumentStore implements DocumentStore {
              -- it back in the queue and index it again on a timer.
              claimed_at   = NULL,
              attempts     = 0,
+             -- The points are about to be replaced, under fresh ids and the
+             -- live vector name only, so whatever a reindex had written onto
+             -- the old ones is gone with them. Cleared here, in the statement
+             -- that rewrites the chunks, so a layer being moved onto another
+             -- model claims this document again instead of counting it as
+             -- migrated and switching onto a slot it is absent from.
+             reindexed_vector = NULL,
              updated_at   = now()
            RETURNING id`,
           [
@@ -1096,22 +1103,39 @@ export async function claimReindexable(
   })
 }
 
-/** Record that a document carries the shadow vector. */
+/**
+ * Record that a document carries the shadow vector, if its points are still the
+ * ones the vector was written onto.
+ *
+ * The comparison is the whole of it. Ingest mints fresh point ids every pass
+ * and writes only the live slot, so a document re-ingested after the embedding
+ * pass claimed it has points that carry no shadow vector — and marking it would
+ * let the switch move the layer onto a slot that document is absent from. The
+ * set of point ids is what identifies "the points this vector went onto";
+ * `content_hash` does not, because a requeue re-indexes identical content
+ * under new ids. Returns whether it marked.
+ */
 export async function markReindexed(
   pool: Pool,
   orgId: string,
   documentId: string,
   shadowVector: string,
+  pointIds: readonly string[],
   role?: string,
-): Promise<void> {
-  await withOrg(
+): Promise<boolean> {
+  return withOrg(
     pool,
     orgId,
     async (client) => {
-      await client.query(
-        'UPDATE documents SET reindexed_vector = $3 WHERE org_id = $1 AND id = $2',
-        [orgId, documentId, shadowVector],
+      const { rowCount } = await client.query(
+        `UPDATE documents d SET reindexed_vector = $3
+          WHERE d.org_id = $1 AND d.id = $2
+            AND (SELECT coalesce(array_agg(c.point_id::text ORDER BY c.point_id::text), '{}')
+                   FROM chunks c WHERE c.org_id = $1 AND c.document_id = d.id)
+              = (SELECT coalesce(array_agg(p ORDER BY p), '{}') FROM unnest($4::text[]) AS p)`,
+        [orgId, documentId, shadowVector, pointIds],
       )
+      return (rowCount ?? 0) > 0
     },
     role === undefined ? {} : { role },
   )

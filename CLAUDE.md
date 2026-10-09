@@ -3233,6 +3233,19 @@ the tree was not.
 
 
 
+**A document re-sent during a reindex could be left off the new model.** Ingest
+replaces a document's points under fresh ids and writes only the live slot, and
+nothing cleared `reindexed_vector` — so a document the embedding pass had
+already marked, then re-sent, counted as migrated with points carrying no shadow
+vector, and the switch moved the layer onto a slot it was absent from. Lexical
+search still found it, which is what made it quiet. Found by checking the
+reindex rollback runbook against the code while translating it, and reproduced
+against a real PostgreSQL before a line was changed. Two halves, each named by
+its own case when removed: the upsert that rewrites the chunks clears the
+marker, and `markReindexed` marks only if the document's point ids are still the
+ones the vector went onto — the set of ids, not `content_hash`, because a
+requeue re-indexes identical content under new ids.
+
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.

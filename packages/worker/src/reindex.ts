@@ -56,8 +56,23 @@ export interface ReindexPorts {
     vectorName: string,
     points: readonly { pointId: string; vector: readonly number[] }[],
   ): Promise<void>
-  /** Record that this document now carries it. */
-  markReindexed(orgId: string, documentId: string, shadowVector: string): Promise<void>
+  /**
+   * Record that this document now carries it — **if its points are still the
+   * ones the vector went onto.**
+   *
+   * Returns false when they are not. Ingest mints fresh point ids on every pass
+   * and writes only the live slot, so a document re-ingested between this
+   * pass's claim and its mark has new points with no shadow vector. Marking it
+   * anyway would count it as migrated, the switch would move the layer onto a
+   * slot it is absent from, and it would match nothing there. Not marked, it is
+   * claimed again with its new points.
+   */
+  markReindexed(
+    orgId: string,
+    documentId: string,
+    shadowVector: string,
+    pointIds: readonly string[],
+  ): Promise<boolean>
   /**
    * Switch `vector_name` if nothing in the layer is outstanding.
    *
@@ -188,7 +203,18 @@ export async function reindexOnce(ports: ReindexPorts, batch: number): Promise<R
       // document counted as reindexed with no vector — and since the switch
       // depends on the count, that is how `vector_name` moves to a model that
       // cannot answer for part of the layer.
-      await ports.markReindexed(target.orgId, target.documentId, target.shadowVector)
+      //
+      // And only onto the points it went onto: a re-ingest that replaced them
+      // meanwhile leaves the document unmarked, to be claimed again with the
+      // points it has now. Not a failure — nothing went wrong, the work simply
+      // moved — so it counts as neither.
+      const marked = await ports.markReindexed(
+        target.orgId,
+        target.documentId,
+        target.shadowVector,
+        target.chunks.map((c) => c.pointId),
+      )
+      if (!marked) continue
       reindexed++
       passFor(target).succeeded++
     } catch (error) {
