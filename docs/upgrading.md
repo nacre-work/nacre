@@ -278,6 +278,15 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.28.1 — a Docker Hub mirror, and the layers view's More button
+
+Nothing to do. The four images are now also pushed to Docker Hub as
+`nacrecontextlayer/<image>` at the same tags by the same build; `ghcr.io`
+stays the canonical address and the one the chart and the Compose files name,
+because Docker Hub rate-limits pulls by account. And the MCP layers view's
+More button is gone once the last page has been read — it stayed on the
+screen and appended the first page again on every press.
+
 ### 0.28.0 — the MCP server on the reference SDK
 
 No schema change and no new configuration, and 0.27.0 runs unchanged against
