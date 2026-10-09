@@ -596,6 +596,12 @@ comparison is what a lint check now refuses outside that one function — a rule
 that has to hold in fifteen handlers, with nothing that knows fifteen, is the
 defect this repository keeps re-deriving.
 
+**The catalog follows, and is not a control.** An MCP client on a delegation is
+listed only the tools whose permission the ceiling holds — `delegationPermits`,
+the same predicate — so a search client is not shown a delete it would be
+refused. Every call is still decided by the two rules above; leaving a tool out
+of `tools/list` only ever removes. docs/mcp.md, "Tools".
+
 **`read` alone is what a fresh connection proposes.** A consent screen whose
 default is everything is a consent screen nobody reads, and a person connecting
 an MCP client means "let it search".

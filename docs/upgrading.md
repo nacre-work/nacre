@@ -278,6 +278,18 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.29.2 — a connected application is shown what it may use
+
+Nothing to do, and nothing in the schema. `tools/list` for a delegated
+connection leaves out every tool whose permission is outside the ceiling the
+person approved: a read-only connection no longer sees `ingest_document`,
+`delete_document`, `request_upload` or `update_skill`, and a write-only one no
+longer sees `search`. Nothing a call answers changes — those calls were refused
+before and are refused now, as an unknown tool rather than as a layer that is
+not there. A service account, or a person's own token, is listed every tool as
+before. A client that cached the old list sees the new one the next time it
+connects.
+
 ### 0.29.1 — the built-in guide
 
 Nothing to do, and nothing in the schema. What an MCP client receives in

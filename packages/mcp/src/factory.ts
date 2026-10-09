@@ -29,7 +29,7 @@ import { readFile } from 'node:fs/promises'
 
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server'
 import { fromJsonSchema, McpServer, type CallToolResult } from '@modelcontextprotocol/server'
-import type { AuthContext } from '@nacre.work/api'
+import { delegationPermits, type AuthContext } from '@nacre.work/api'
 import { logger, MetadataError, readFrontmatter } from '@nacre.work/core'
 
 import { INSTRUCTIONS, instructionsFor, type InstructionSkill } from './instructions.js'
@@ -218,6 +218,22 @@ export async function buildServer(build: ServerBuild): Promise<McpServer> {
     // reach the ticket endpoint. Dropped from the catalog, not refused: a
     // tool a client cannot use is noise in its catalog and a wasted call.
     if (definition.name === 'upload_file' && !views) continue
+    // Nor a tool the connection's ceiling refuses. A person who approved a
+    // read-only connection approved a search client, and a search client
+    // offered `delete_document` is one invited to try it: every call would be
+    // refused, so the tool is noise in the catalog, a wasted call, and a
+    // screen that says the client may do what the person said it may not.
+    //
+    // The delegation's ceiling only, deliberately. It is fixed at consent and
+    // the same for the token's whole life, so this is exact. A principal's
+    // *grants* move between calls while a client lists tools once per
+    // session (`listChanged: false`), so hiding by grants would leave a write
+    // granted after connecting invisible until somebody reconnects. Every
+    // call is still checked; this only ever removes.
+    //
+    // `delegationPermits` is the predicate the request path asks, so the
+    // catalog and the refusal cannot disagree about what the ceiling admits.
+    if (!delegationPermits(build.auth, definition.permission)) continue
 
     const config = {
       title: definition.title,

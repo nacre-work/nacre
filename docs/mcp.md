@@ -353,6 +353,24 @@ permission below and the resolver, on every call.
 `tool-annotations.test.ts` holds this table against the catalog, by reading
 it: a tool missing from a row, or a value that disagrees, fails there.
 
+**A connected application is listed the tools its ceiling admits, and no
+others.** The permission under each tool below is the one a delegation's
+ceiling has to hold for `tools/list` to offer it: a connection approved for
+`read` is a search client and is not shown `ingest_document`,
+`delete_document` or `update_skill`; one approved for `write` alone is not
+shown `search`, because write does not imply read. The predicate is the one the
+request path asks (`delegationPermits`), so the catalog and the refusal cannot
+disagree.
+
+The delegation's ceiling only, and deliberately. It is fixed at consent and the
+same for the token's whole life, so leaving a tool out is exact. A service
+account, or a person's own token, is listed every tool: what they reach moves
+with grants between calls, and a client lists tools once per session
+(`listChanged: false`), so a catalog cut to today's grants would hide a write
+granted after connecting until somebody reconnected. Nothing here is a control
+— every call is checked whatever was listed, and a tool called without being
+offered is refused as an unknown tool. `ceiling-catalog.test.ts` asks the wire.
+
 ### `search`
 
 ## Limits and metrics
