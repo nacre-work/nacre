@@ -1,0 +1,38 @@
+# One database role doing both jobs — a laptop, a kind cluster, or a managed
+# Postgres that hands out exactly one login.
+#
+# Here so CI renders the `reuseApplicationCredential` branch too. Without it
+# that path is a template nothing exercises, which on this chart is the same
+# shape of gap as a variable read by nothing.
+#
+# It is an opt-in and not a fallback: with it unset the chart refuses rather
+# than quietly reaching for the application's credential. What it costs is
+# real — the application connects as a role that can rewrite the schema it is
+# meant to be constrained by, and row-level security applies to the owner only
+# where forced. `docs/config.md` in the core says not to do this in production
+# and means it.
+
+canonicalUrl: https://nacre.test
+
+postgres:
+  existingSecret: nacre-postgres
+  existingSecretKey: url
+  migrations:
+    reuseApplicationCredential: true
+
+qdrant:
+  url: http://qdrant:6333
+
+redis:
+  existingSecret: nacre-redis
+  existingSecretKey: url
+
+embedding:
+  endpoint: http://embedder:80
+  model: bge-m3
+  dimensions: 1024
+
+jwt:
+  existingSecret: nacre-jwt
+  secretKey: NACRE_JWT_SECRET
+  issuer: https://nacre.test

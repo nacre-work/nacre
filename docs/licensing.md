@@ -7,8 +7,8 @@ section 4(d) — keep both when you redistribute.
 
 Apache 2.0 covers the data model, ingest, chunking, embeddings, hybrid search,
 reranking, the MCP server, the REST API, basic RBAC, single-organization
-deployment, email and password authentication, and the Docker Compose
-distribution.
+deployment, email and password authentication, the Docker Compose
+distribution, and the Helm chart in `deploy/helm`.
 
 ## What is not here
 
@@ -17,7 +17,7 @@ license and are not distributed with this one:
 
 multi-tenancy and collection isolation · SSO (OIDC/SAML) and SCIM ·
 document-level ACLs with deny rules · Enterprise-Managed Authorization and
-ID-JAG · SIEM forwarding · global admin · quotas · HA Helm charts.
+ID-JAG · SIEM forwarding · global admin · quotas.
 
 The audit log itself is **not** on that list: writing it, reading it back at
 `GET /v1/audit`, and its JSONL and CSV export are all in this repository (see

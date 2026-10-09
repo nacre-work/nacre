@@ -1,0 +1,78 @@
+{{/*
+The indexing worker.
+
+`Recreate` and not `RollingUpdate`, which is the one non-obvious choice here.
+Nothing routes to it, so there is no availability to preserve during a rollout —
+and a rolling update briefly runs the old and new image at once, which for a
+worker means two versions claiming from one queue. Every claim is
+`FOR UPDATE SKIP LOCKED` so that is *safe*, but it is not something to do by
+accident on a migration that changed what a claim means.
+
+No probes, and that is deliberate rather than missing: the worker serves no
+port. A liveness probe would need an endpoint, an endpoint would need a server,
+and a server in the worker is a surface with its own authentication story for
+the sake of a checkbox. What it does is visible through the API's gauges — see
+`docs/operations/vector-collection-backlog.md`, which also says plainly that a worker
+stuck inside one document shows up in the log and nowhere else.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nacre.fullname" . }}-worker
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "nacre.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "nacre.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Longer than the default 30s. The loop finishes the document it holds and
+      # exits on its own; a SIGKILL at 30 seconds is survivable — the lease
+      # reclaims the row — but it turns every deploy into an abrupt one, and the
+      # product has a shutdown path worth letting run.
+      terminationGracePeriodSeconds: 60
+      # No JWT key, of either kind: the worker processes the queue and never
+      # verifies or signs a token. It calls loadConfig, so it gets the issuer,
+      # audience and lifetimes through nacre.env like everything else, and
+      # nothing more.
+      volumes:
+        {{- include "nacre.tmpVolume" . | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "nacre.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "packages/worker/dist/main.js"]
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            {{- include "nacre.env" . | nindent 12 }}
+          volumeMounts:
+            {{- include "nacre.tmpVolumeMount" . | nindent 12 }}
+          resources: {{- toYaml .Values.worker.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

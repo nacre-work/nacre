@@ -130,7 +130,7 @@ the whole loop driven through it.
 
 What is not built is what a commercial licence covers, and `docs/licensing.md`
 lists it: multi-tenancy, SSO, document-level permissions and deny rules,
-ID-JAG, SIEM export, a global admin, quotas, and HA Helm charts.
+ID-JAG, SIEM export, a global admin, and quotas.
 
 `docs/` is the specification, and it still runs ahead of the code in places —
 start with [docs/authz.md](./docs/authz.md), which everything else depends on.

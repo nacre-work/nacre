@@ -1,0 +1,104 @@
+{{- if .Values.migrations.enabled }}
+{{- include "nacre.validate" . -}}
+{{/*
+Schema migrations, before anything starts.
+
+A Job rather than an initContainer: an initContainer runs once per pod, so three
+API replicas would race three migrations on every rollout. Forward-only
+migrations are idempotent by name, so the race is safe and still pointless —
+and on a chart that also runs a worker and an MCP deployment it would be six.
+
+`hook-weight: -5` puts it ahead of every other hook; `before-hook-creation`
+deletes the previous Job so an upgrade is not blocked by an immutable object
+from the last one.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "nacre.fullname" . }}-migrate
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.migrations.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "nacre.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "nacre.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      volumes:
+        {{- include "nacre.tmpVolume" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "nacre.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The core's migrator, and then the migrator of **every module named
+          # in `modules`** that carries one.
+          #
+          # Without it, `modules:` describes a deployment that cannot start: a
+          # module that owns a table refuses to load without it — deliberately,
+          # because "no rows" and "the migration was never applied" are the same
+          # empty set to every line below that check — so the pods would
+          # CrashLoopBackOff on a table nobody created, on a chart whose own
+          # values file names those modules. `values/full.yaml` did exactly
+          # that and rendered perfectly.
+          #
+          # By the list rather than by a pattern over the image. The loop used to
+          # glob the commercial scope's package names, which put a private
+          # package family's naming into the open chart and applied migrators for
+          # modules the deployment does not load. The list is what the processes
+          # import, so it is exactly the set whose tables have to exist. A named
+          # module with no `dist/migrate.js` owns no table and is said so.
+          #
+          # With `modules` empty this is one `for` over nothing.
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              node packages/core/dist/migrate-main.js
+              IFS=,
+              for name in ${NACRE_MODULES:-}; do
+                name=$(printf '%s' "$name" | tr -d ' ')
+                [ -n "$name" ] || continue
+                m="/app/node_modules/$name/dist/migrate.js"
+                if [ -f "$m" ]; then
+                  echo "applying $m"
+                  node "$m"
+                else
+                  echo "$name carries no migrator"
+                fi
+              done
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          # Only the database URL. Migrations do not need an embedder endpoint
+          # or a JWT issuer, and a Job that demanded the whole configuration is
+          # one an operator satisfies with fake values.
+          #
+          # It also runs as the *owning* role, not `nacre_app`: migrations
+          # create tables and the application must not be able to. That is why
+          # `postgres.migrations` is its own credential and not this one with a
+          # different name.
+          env:
+            {{- include "nacre.migrationsPgEnv" . | nindent 12 }}
+            {{- if .Values.modules }}
+            - name: NACRE_MODULES
+              value: {{ .Values.modules | quote }}
+            {{- end }}
+          volumeMounts:
+            {{- include "nacre.tmpVolumeMount" . | nindent 12 }}
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }
+{{- end }}

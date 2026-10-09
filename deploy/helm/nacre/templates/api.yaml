@@ -1,0 +1,122 @@
+{{- include "nacre.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nacre.fullname" . }}-api
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  {{- if not .Values.api.autoscaling.enabled }}
+  replicas: {{ .Values.api.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        {{- include "nacre.labels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "nacre.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      volumes:
+        {{- include "nacre.tmpVolume" . | nindent 8 }}
+        {{- include "nacre.jwtSigningVolume" . | nindent 8 }}
+      containers:
+        - name: api
+          image: {{ include "nacre.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "packages/api/dist/main.js"]
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.api.port | quote }}
+            {{- include "nacre.env" . | nindent 12 }}
+            {{- include "nacre.jwtSigningEnv" . | nindent 12 }}
+            {{- include "nacre.secondFactorEnv" . | nindent 12 }}
+            {{- include "nacre.mailEnv" . | nindent 12 }}
+          volumeMounts:
+            {{- include "nacre.tmpVolumeMount" . | nindent 12 }}
+            {{- include "nacre.jwtSigningVolumeMount" . | nindent 12 }}
+          # Liveness touches no dependency, deliberately. A liveness probe that
+          # called Postgres would turn one slow database into a cluster-wide
+          # restart loop — the readiness probe below is the one that may.
+          livenessProbe:
+            httpGet: { path: /v1/health, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /v1/ready, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          # Generous, and for a stated reason: the pod has to survive the
+          # migration Job on a first install and a cold connection pool after
+          # it, and a startup probe that gives up first is a rollout that never
+          # converges.
+          startupProbe:
+            httpGet: { path: /v1/health, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          resources: {{- toYaml .Values.api.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nacre.fullname" . }}-api
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.api.port }}
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: {{ include "nacre.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: api
+{{- if .Values.api.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "nacre.fullname" . }}-api
+  labels: {{- include "nacre.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "nacre.fullname" . }}-api
+  minReplicas: {{ .Values.api.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.api.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.api.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

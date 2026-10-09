@@ -19,6 +19,12 @@ That means a release does not always need a version bump. Publishing is decided
 by *what the registry is missing*, so a package added at the current version is
 published on the next merge to `main` without one.
 
+**The Helm chart moves with them.** `deploy/helm/nacre/Chart.yaml` carries the
+same string as `version` and as `appVersion`, because `appVersion` is what every
+image tag the chart does not pin resolves to — so a chart left behind installs a
+release its templates were not written for. `lint:chart-version` fails a pull
+request that moves the manifests and not the chart.
+
 ## What is published
 
 | Package | Registry | |

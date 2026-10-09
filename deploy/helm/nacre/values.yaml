@@ -1,0 +1,648 @@
+# Nacre — default values.
+#
+# Nothing here names a cloud. Ingress class, storage and TLS issuer are the only
+# provider-shaped settings and each is a value with an empty default, so the
+# chart renders on kind, k3s, EKS, GKE and AKS without a branch.
+#
+# What it will NOT do is start with a wrong value. Every endpoint and every
+# secret has an empty default and a template that fails rendering rather than
+# guessing — the same rule `loadConfig` follows in the product: a default that
+# quietly points at localhost is how a production deployment talks to nothing
+# and reports success.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/nacre-work/nacre
+  # Empty means Chart.appVersion. Pinning a digest is better and this takes one.
+  tag: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# ─────────────────────────── what Nacre talks to ───────────────────────────
+#
+# Required, and there is no default. See the note at the top.
+
+postgres:
+  # postgres://nacre_app:...@host:5432/nacre — must NOT be a superuser and
+  # must NOT be the role that owns the tables. Row-level security does not
+  # apply to a superuser at all and applies to the owner only where forced, so
+  # connecting as either turns tenant isolation into decoration.
+  #
+  # Supply it through `existingSecret` in any deployment anyone is paid for.
+  url: ""
+  existingSecret: ""
+  existingSecretKey: NACRE_PG_URL
+  poolMax: 20
+
+  # The migration Job's credential, and it is a *different role* — the one that
+  # owns the tables. The application connects as `nacre_app`, which must not be
+  # able to create them; the Job creates them and nothing else.
+  #
+  # Two values rather than one because there are two roles. Reusing the
+  # application's credential here means running migrations as `nacre_app`,
+  # which either fails on the first CREATE TABLE or, if that role was granted
+  # enough to succeed, means the application can rewrite the schema it is
+  # supposed to be constrained by. Neither is a default worth having, so the
+  # chart refuses to guess and names the value.
+  #
+  # `helm/README.md` has the SQL that creates the two roles.
+  migrations:
+    url: ""
+    existingSecret: ""
+    existingSecretKey: NACRE_PG_URL
+    # For a deployment where one role genuinely does both — a laptop, a kind
+    # cluster, a managed Postgres that hands out exactly one login. It is a
+    # deliberate opt-in and not a fallback: the chart will not quietly reach
+    # for the application credential because this one is unset.
+    reuseApplicationCredential: false
+
+qdrant:
+  url: ""
+  apiKey: ""
+  apiKeyExistingSecret: ""
+  apiKeyExistingSecretKey: NACRE_QDRANT_API_KEY
+  # Shards per collection and copies of each shard, **fixed when a collection is
+  # created**. Qdrant cannot reshard a live collection, so these decide the
+  # shape a deployment lives with; changing either afterwards means building a
+  # new collection and copying every point into it.
+  #
+  # That copy is machinery the product already has — a model migration moves
+  # every point without recomputing embeddings — so it is expensive rather than
+  # impossible: an organization-wide copy, and the disk to hold both
+  # collections at once.
+  #
+  # Left at 1 they are omitted from the request entirely, so a collection
+  # created by this chart is what one created before these existed was. Set them
+  # when the cluster exists and not in anticipation of one:
+  #
+  #   - shards above 1 on a single node buys segments and no parallelism, and a
+  #     rebalance with nowhere to go;
+  #   - a replication factor above the number of nodes cannot be met. Qdrant
+  #     accepts the number and the collection stays under-replicated.
+  #
+  # They apply to every collection the processes **create** — a new
+  # organization's, and the target of a model migration — and to nothing they
+  # read, so raising them affects what is created next and never what is
+  # already there.
+  #
+  # Needs core 0.8.0 or newer; an earlier image does not read them. The
+  # `appVersion` check in CI is what holds that true.
+  shards: 1
+  replicationFactor: 1
+
+redis:
+  url: ""
+  existingSecret: ""
+  existingSecretKey: NACRE_REDIS_URL
+
+# The parser sidecar. One per API replica would be waste; it is its own
+# Deployment and every process shares it.
+parser:
+  enabled: true
+  # When enabled is false, api/mcp/worker point NACRE_PARSER_ENDPOINT here
+  # instead — a parser run elsewhere. Required in that case and refused if empty,
+  # because ingest cannot turn bytes into text without one.
+  externalEndpoint: ""
+  # The parser fetches a URL on ingest-by-URL. Off by default: it blocks private
+  # and link-local addresses (SSRF), and turning this on lets it reach them —
+  # only for a deployment that ingests from an internal source it controls.
+  #
+  # Under `networkPolicy.strict` the parser's egress rule admits the public
+  # internet on 443 and 80 with every private range excepted, matching this
+  # flag's default. Turning the flag on there needs an egress rule of the
+  # operator's own for the internal source — `networkPolicy.extraEgress`
+  # deliberately does not reach the parser.
+  allowPrivateUrls: false
+  image:
+    repository: ghcr.io/nacre-work/nacre-parser
+    tag: ""
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+embedding:
+  endpoint: ""
+  model: bge-m3
+  dimensions: 1024
+
+# The embedding adapter: one protocol in, several hosted vendors out.
+#
+# **Off by default, and that is the feature rather than a packaging default.**
+# Routing a model through this means the text of your documents leaves your
+# installation. Somebody who wants that is not confused about it; somebody who
+# does not must never get it by accident — so there is no vendor default, no
+# endpoint default, and no route nobody wrote.
+#
+# Turning it on deploys a Service and changes nothing else. The worker and both
+# surfaces reach an embedder through `embedding_providers.endpoint` in Postgres,
+# never through this chart, so a document goes to a vendor only once an operator
+# has created a provider row naming
+# `http://{release}-nacre-embedding-adapter:8091` and a model this routes.
+# Deploying a container is not consent, and the two steps are deliberately not
+# one.
+#
+# Needs core 0.11.0 or newer: that is the release that publishes the image.
+# `docker compose --profile hosted` is the same service for a laptop.
+embeddingAdapter:
+  enabled: false
+  replicas: 1
+  image:
+    repository: ghcr.io/nacre-work/nacre-embedding-adapter
+    tag: ""
+
+  # `model=vendor`, comma-separated — `text-embedding-3-small=openai-compatible`.
+  # The model is the routing key because the request already carries one and
+  # `embedding_providers.model` is a string an operator already fills in, so two
+  # organizations can sit on two vendors with no schema anywhere.
+  #
+  # Required when enabled. The container refuses to start without it, and this
+  # chart refuses to render for the same reason it refuses a missing signing
+  # key: a `helm install` error names the value, a CrashLoopBackOff does not.
+  routes: ""
+
+  # Per vendor: whatever it needs to be addressed, and a reference to the
+  # credential. Only the vendors a route actually names are configured on the
+  # container — a key nothing routes is a credential in an environment for no
+  # reason.
+  #
+  # **A credential is `existingSecret` and never an inline value here**, which is
+  # stricter than `qdrant.apiKey` beside it and deliberately so. This one is a
+  # third party's billing credential, `--set` puts it in a shell history, and
+  # `helm get values` prints it back to anybody who can read the release. The
+  # adapter also accepts each key as a file (`…_API_KEY_FILE`) for a platform
+  # that projects secrets that way; the chart uses the env form, which is what
+  # `secretKeyRef` gives.
+  vendors:
+    # Anything speaking OpenAI's embeddings contract — Together, Voyage,
+    # DeepInfra, vLLM, a self-hosted TEI. Named for the protocol rather than for
+    # the company, which is exactly why the endpoint is required and not
+    # defaulted: there is no one place this points at.
+    openaiCompatible:
+      endpoint: ""
+      existingSecret: ""
+      secretKey: api-key
+    cloudflare:
+      account: ""
+      existingSecret: ""
+      secretKey: api-key
+    google:
+      existingSecret: ""
+      secretKey: api-key
+    # OpenAI-shaped on the wire and still its own vendor, because of who asks
+    # for it: Anthropic publishes no embeddings API and points at Voyage, so
+    # that is where "embeddings from Anthropic" lands. Reaching it through
+    # `openai-compatible` works and requires knowing a URL.
+    voyage:
+      existingSecret: ""
+      secretKey: api-key
+
+  # Reranking through a hosted vendor, and the core needs no code for it: this
+  # service answers Text Embeddings Inference's `/rerank`, so a deployment
+  # points `reranker.endpoint` at this Service instead of at a TEI container
+  # and nothing else changes.
+  #
+  # **One reranker per adapter rather than a routing table**, and that asymmetry
+  # with `routes` above is forced rather than chosen: TEI's request carries a
+  # query and its texts and no model name, because a TEI container is one model.
+  # There is no routing key in the request to dispatch on.
+  #
+  # Both or neither. A vendor with no model is a guess about which
+  # cross-encoder; a model with no vendor has nowhere to go; and the chart
+  # refuses either half for the same reason the container does.
+  #
+  # An adapter that only reranks is a supported shape — leave `routes` empty.
+  rerank:
+    # cloudflare, cohere, jina or voyage. OpenAI, Anthropic and Google publish
+    # no reranking API, so none of them can be one.
+    vendor: ""
+    model: ""
+    # Separate from the embedding credentials above even where the vendor is
+    # the same, because the two jobs are independent: an adapter that only
+    # reranks must not have to set an embedding variable.
+    vendors:
+      cloudflare:
+        account: ""
+        existingSecret: ""
+        secretKey: api-key
+      cohere:
+        existingSecret: ""
+        secretKey: api-key
+      jina:
+        existingSecret: ""
+        secretKey: api-key
+      voyage:
+        existingSecret: ""
+        secretKey: api-key
+
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 256Mi }
+
+# The admin UI — nginx serving the built `packages/admin` bundle and proxying
+# /v1 to the API on the same origin.
+#
+# On by default, and that is a change: this chart used to deploy everything
+# except the console you administer it from. The reason recorded here was that a
+# deployment might front it differently — true of the API too, which this chart
+# deploys. The real reason was that nothing published the image, and now
+# something does.
+#
+# Turn it off for a deployment that serves the bundle itself, or one that has
+# decided nobody administers this installation through a browser. With the OAuth
+# consent flow that second choice has a consequence: `/oauth/authorize` sends a
+# browser to a screen in this bundle, so with `enabled: false` and no bundle
+# elsewhere, connecting an application ends in a redirect to nothing. Set
+# `oauth.consentUrl` to wherever you do serve it.
+#
+# **A deployment running commercial modules wants the other front door.** Since
+# core 0.23.0 the console loads one file, `extensions.js`, that the open image
+# ships as a stub registering nothing; `ghcr.io/nacre-work/nacre-enterprise-web`
+# is that image with the commercial screens in place of it — organizations and
+# tenancy, both `platform_admin` only. Point `image.repository` there and tag it
+# `{module-version}-core{core-version}`, the same scheme the API image uses and
+# for the same reason: a console extension declares the contract number it was
+# built against and the host refuses one it does not speak.
+#
+# Naming `modules` on the open front door is **not** refused, unlike naming them
+# on the open API image, and the difference is what happens: that one is a
+# CrashLoopBackOff, while this one renders perfectly with the screens simply
+# absent. `NOTES.txt` says it instead, because nothing else would.
+web:
+  enabled: true
+  replicas: 1
+  image:
+    repository: ghcr.io/nacre-work/nacre-web
+    tag: ""
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 192Mi }
+
+# The OAuth consent screen — where a person picks which agent a client will act
+# as. Since core 0.5.3 an MCP client can discover this installation, register,
+# and complete the authorization code flow instead of being handed a service
+# account key by hand.
+#
+# **This chart does not deploy the admin UI**, and that is why this value exists
+# rather than having a useful default. The core defaults it to `/#/consent` on
+# `canonicalUrl`, which is right when your ingress serves the admin bundle on
+# the API's origin and wrong — a redirect into a 404 — when it does not. Set it
+# to wherever you actually serve `packages/admin`.
+#
+# Left empty the core's default applies. It is visible when it is wrong: the
+# browser lands on a page that is not there, rather than the flow failing
+# somewhere an operator cannot see.
+oauth:
+  consentUrl: ""
+
+# Reranking, which this chart deliberately does not deploy: `endpoint` names a
+# reranker the operator already runs, or the embedding adapter above.
+#
+# **`candidates` has to be a number that reranker will accept, and nothing here
+# can check it.** `HttpReranker` sends the whole candidate set in one call, and
+# Text Embeddings Inference refuses a client batch over
+# `--max-client-batch-size`, whose default is **32** — so a TEI started without
+# that flag answers `413 batch size 50 > maximum allowed batch size 32` to every
+# search with more than 32 candidates. The core shipped exactly that in its own
+# Compose profiles until 0.23.10 and nobody noticed, because reranking fails
+# **open**: the search still answers, in fusion order, with a counter and a log
+# line. An installation that configured a reranker simply never got one.
+#
+# This is a value and not a refusal on purpose. The chart's rule is that it
+# refuses at render time what the container refuses at startup, and the
+# container refuses none of this — the limit belongs to a server the chart has
+# never seen. So: give your TEI `--max-client-batch-size` at least this number,
+# or lower this number to its limit.
+reranker:
+  enabled: false
+  endpoint: ""
+  candidates: 50
+
+# Object storage. Unconfigured is supported and is the default: document bytes
+# live in `documents.source_ref`. All four of endpoint, bucket, access key and
+# secret key, or none — the product refuses a half-configured block at startup.
+#
+# **PDF upload requires this.** Since core 0.4.0 a document can be uploaded as
+# a PDF, and a PDF's bytes have exactly one home: `documents.source_ref` is
+# text and stays text. With `enabled: false` the API refuses a binary upload on
+# the request, naming these variables — so it is a 400 the caller sees rather
+# than a deployment that accepts a file and cannot store it. Text ingest is
+# unaffected either way.
+s3:
+  enabled: false
+  endpoint: ""
+  bucket: ""
+  region: us-east-1
+  forcePathStyle: true
+  existingSecret: ""
+  accessKeySecretKey: NACRE_S3_ACCESS_KEY
+  secretKeySecretKey: NACRE_S3_SECRET_KEY
+  presignTtl: 900
+
+# ─────────────────────────────── identity ───────────────────────────────
+#
+# Exactly one of `secret` and `privateKeyRef`. Setting both is refused at
+# startup — two answers to "what signs a token" with no precedence worth
+# inventing — and the chart refuses it at render time so the failure is a
+# `helm install` error rather than a CrashLoopBackOff.
+jwt:
+  # A shared secret: every process that can check a token can also mint one.
+  existingSecret: ""
+  secretKey: NACRE_JWT_SECRET
+  previousSecretKey: ""
+
+  # Or Ed25519, where the key that verifies is not the key that signs. The
+  # secret is mounted as a file because `NACRE_JWT_PRIVATE_KEY_REF` takes a
+  # file:// URL and nothing else — every platform with a secret store presents
+  # one as a file, and a vault:// scheme would put a network client on the
+  # startup path.
+  privateKeyExistingSecret: ""
+  privateKeyFile: signing.pem
+  previousKeyFile: ""
+
+  # The public half, for the verify-only process (MCP). Set this in Ed25519 mode
+  # and the MCP transport runs on the public key alone — the private key never
+  # reaches it, so reading MCP's environment gets an attacker to "can check
+  # tokens" and no further. Left empty, MCP falls back to the private key and
+  # still verifies; it just does not get the separation. HMAC has no public
+  # half, so this is refused together with `existingSecret`.
+  publicKeyExistingSecret: ""
+  publicKeyFile: signing.pub
+  previousPublicKeyFile: ""
+
+  issuer: ""
+  audience: nacre
+  accessTokenTtl: 900
+  refreshTokenTtl: 2592000
+
+# The OAuth resource identifier, the well-known base, and the link in every
+# config. It goes into every token ever issued, so moving it later breaks every
+# client at once. Refused in production over plaintext or on localhost.
+canonicalUrl: ""
+
+# Commercial modules, comma-separated. Empty is the whole open product.
+#
+# **These need an image that contains them, and `image.repository` above is not
+# one.** The processes import a module by name at startup and the open image
+# carries only the open packages, so naming one here without changing the image
+# is a CrashLoopBackOff whose error mentions neither modules nor licensing. The
+# chart refuses that combination rather than rendering it — see
+# `helm/values/full.yaml` for the shape it wants.
+modules: ""
+
+# Raw env entries appended to api, mcp and worker, for the NACRE_ variables this
+# chart does not model a named value for — the recall gate's threshold
+# (NACRE_REINDEX_MIN_RECALL), the IdP in front of the installation
+# (NACRE_OAUTH_AUTHORIZATION_SERVER), the parser's private-URL switch, and every
+# variable a module named in `modules` reads (NACRE_SSO_*, NACRE_EMA_*,
+# NACRE_AUDIT_SIEM_*, NACRE_TENANCY_REFRESH). A list, so a credential can come
+# from a Secret:
+#   extraEnv:
+#     - name: NACRE_REINDEX_MIN_RECALL
+#       value: "0.8"
+#     - name: NACRE_AUDIT_SIEM_TOKEN
+#       valueFrom: { secretKeyRef: { name: nacre-siem, key: token } }
+extraEnv: []
+
+# ────────────────────────────── the surfaces ──────────────────────────────
+
+api:
+  replicas: 2
+  port: 8080
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 1Gi }
+  # scrypt runs on libuv's four-thread pool, so an API pod is genuinely
+  # CPU-bound during a sign-in burst.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+mcp:
+  enabled: true
+  replicas: 2
+  port: 8081
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 1Gi }
+
+worker:
+  # One is correct for most deployments and more is safe: every claim is
+  # `FOR UPDATE SKIP LOCKED`, and a replica that dies mid-document has its
+  # claim reclaimed by a lease.
+  replicas: 1
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits: { memory: 2Gi }
+
+# Schema migrations, as a pre-install/pre-upgrade Job.
+#
+# A Job and not an initContainer: an initContainer runs once per pod, so three
+# API replicas would race three migrations. Forward-only migrations are
+# idempotent by name, but the race is a lock contention nobody needs to see.
+migrations:
+  enabled: true
+  backoffLimit: 3
+  # Kept after a failure so `kubectl logs` still has something to say. A
+  # succeeded Job is cleaned up by ttlSecondsAfterFinished below.
+  ttlSecondsAfterFinished: 300
+
+ingress:
+  enabled: false
+  # "nginx", "traefik", "alb" — whatever the cluster runs. No default, because
+  # a wrong class produces an Ingress nothing reconciles and no error anywhere.
+  className: ""
+  annotations: {}
+  # Empty follows `canonicalUrl`'s hostname, which is what you want: the two
+  # were a second answer to the same question and every values file here wrote
+  # them identical by hand.
+  #
+  # Set it only where something in front presents the canonical name and
+  # forwards to a different one — a CDN, an external load balancer. Two
+  # different names with nothing between them installs cleanly and then fails in
+  # a browser: the console proxies /v1 same-origin and the API sends no CORS
+  # headers, the discovery documents name the canonical host, and since core
+  # 0.19.0 a WebAuthn credential is bound to it, so a security key enrolled
+  # under one name cannot be used under the other.
+  host: ""
+  # /.well-known/* and the OAuth issuer belong on the API host, never on an
+  # apex where static hosting intercepts the discovery path before the API sees
+  # it. The chart routes both to the API service for that reason.
+  tls:
+    enabled: false
+    secretName: ""
+
+# ─────────────────────────────── operations ───────────────────────────────
+
+logging:
+  level: info
+  format: json
+
+limits:
+  searchPerMin: 60
+  ingestPerHour: 600
+  loginPer15Min: 10
+  loginSourcePer15Min: 60
+  maxDocumentBytes: 52428800
+  # Proxies in front of this process. 0 ignores X-Forwarded-For entirely, which
+  # is right behind a load balancer that sets it and wrong behind two.
+  trustProxy: 0
+
+metrics:
+  # A bearer token on /metrics. Empty leaves it open, which is right when the
+  # port is on an internal network and wrong the moment there is a public
+  # ingress without this path carved out.
+  existingSecret: ""
+  secretKey: NACRE_METRICS_TOKEN
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+retention:
+  auditDays: 400
+  collectionDays: 7
+  gcGrace: 3600
+  indexLease: 900
+  indexMaxAttempts: 5
+
+# ─── A second factor, and password recovery ───
+#
+# Both are absent unless configured, and absent is a supported state rather than
+# a degraded one: the surfaces answer 404, sign-in is unchanged, and nothing
+# stores a TOTP secret in the clear in the meantime.
+#
+# Both are set on the **API only**. The MCP transport verifies tokens and issues
+# none, and the worker signs nothing — a key on either would be a secret in a
+# pod that never reads it.
+
+secondFactor:
+  # The key that seals a TOTP secret: 32 bytes, base64 or hex.
+  #
+  #   kubectl create secret generic nacre-2fa --from-literal=key="$(openssl rand -base64 32)"
+  #
+  # **TOTP only, since core 0.19.0.** WebAuthn is the other kind and it needs no
+  # key at all — what it stores is a public key and a counter, and its relying
+  # party comes from `canonicalUrl` rather than from a value here. So leaving
+  # this empty removes TOTP and leaves a second factor available; it is not the
+  # switch for the feature.
+  #
+  # `existingSecret` and nothing else, deliberately — stricter than
+  # `qdrant.apiKey` beside it, on the same argument as a vendor credential:
+  # `helm get values` prints an inline one back, and this one opens every
+  # enrolled TOTP authenticator in the installation.
+  #
+  # **Back it up where you back up the signing key.** Losing it makes every
+  # enrolled TOTP authenticator useless; the recovery codes issued at enrolment
+  # are what a person has instead. A security key is unaffected — and is the
+  # reason to prefer one.
+  existingSecret: ""
+  secretKey: key
+
+mail:
+  # Password recovery by email, and the security notices beside it. Set the
+  # secret and `from` together or neither — the container refuses one without
+  # the other at startup, so this chart refuses it at render time.
+  #
+  #   kubectl create secret generic nacre-smtp   #     --from-literal=url='smtps://nacre%40example.com:secret@smtp.example.com:465'
+  #
+  # `existingSecret` only, for the reason above: the URL carries the relay
+  # password.
+  existingSecret: ""
+  urlSecretKey: url
+  # The From: address. A relay refuses a sender it does not own.
+  from: ""
+  #
+  # Under networkPolicy.strict the API also needs egress to the relay, which is
+  # an external destination like Postgres and S3 — see networkPolicy.extraEgress
+  # below. Without it the message is never sent and the failure is a log line on
+  # a pod nobody is reading.
+
+acl:
+  cacheTtl: 60
+
+audit:
+  # true stores full query text in the journal. The hash is written either way.
+  queryText: false
+
+env: production
+
+# Applied to every workload. Nacre needs no root, no host paths and no
+# capabilities, so the restricted defaults below are not a hardening pass — they
+# are what it actually requires.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile: { type: RuntimeDefault }
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: ["ALL"] }
+
+# NetworkPolicy. Off by default, and for a real reason rather than caution: a
+# NetworkPolicy does nothing unless the cluster's CNI enforces it (Calico,
+# Cilium, and the like — a bare kind or a default EKS does not), so a policy
+# that silently enforces nothing is worse than none, because it reads as
+# protection. Turn it on only where the CNI enforces.
+#
+# `enabled` alone installs the one policy that is correct without any
+# cluster-specific input: the parser accepts connections **only** from this
+# release's api, mcp and worker pods, on 8090. The parser is the process that
+# fetches a URL a tenant chose — the SSRF surface — and nothing outside the
+# pipeline has any business reaching it.
+#
+# `strict` adds a default-deny for every pod of the release plus the allowances
+# a working deployment needs: DNS, ingress to api and mcp on their ports, and
+# egress from api/mcp/worker to the parser. It **will** break the deployment
+# unless `extraEgress` also names where Postgres, Qdrant, Redis, the embedder
+# and any S3 live — those are outside the cluster or at operator-chosen
+# endpoints, so the chart cannot know their addresses and a default-deny cuts
+# them off. That is why strict is a second opt-in and defaults off: a policy
+# that black-holes the datastores the moment it is applied is not a safe
+# default. extraEgress is appended verbatim to the egress of api, mcp, worker
+# and the migration Job.
+networkPolicy:
+  enabled: false
+  strict: false
+  # Egress rules (NetworkPolicyEgressRule objects) appended verbatim when
+  # strict is on. Name the datastores here, e.g.:
+  #   extraEgress:
+  #     - to:
+  #         - ipBlock: { cidr: 10.0.0.0/8 }
+  #       ports:
+  #         - { protocol: TCP, port: 5432 }   # Postgres
+  #         - { protocol: TCP, port: 6333 }   # Qdrant
+  #         - { protocol: TCP, port: 6379 }   # Redis
+  extraEgress: []
+
+# A PodDisruptionBudget for the surfaces that run more than one replica — `api`
+# and `mcp`. Without it a node drain (an upgrade, a scale-down, a spot
+# reclaim) can evict every replica of a surface at once, so the HA the second
+# replica was for evaporates exactly when the cluster is in motion.
+#
+# `maxUnavailable: 1` rather than `minAvailable`: it evicts one replica at a
+# time whatever the replica count is, and never wedges a drain the way a
+# `minAvailable` equal to the replica count would. The budget is rendered only
+# where a surface has more than one replica — on a single replica it is either a
+# no-op or a drain that can never satisfy it, and neither is worth shipping. The
+# worker gets none deliberately: it serves nothing, its strategy is `Recreate`,
+# and a drain that delays the queue is not an outage.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

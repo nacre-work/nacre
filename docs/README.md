@@ -21,6 +21,8 @@ model, and reworking it after search is written is expensive.
 | [upgrading.md](./upgrading.md) | What an operator does when a release comes out |
 | [releasing.md](./releasing.md) | What ships and from where — and the one step in adding a package that a person has to do by hand |
 | [backup.md](./backup.md) | Backing up and restoring by hand: what to copy, in what order, and what is derived |
+| [operations/](./operations/) | Runbooks: [restoring from a backup](./operations/restore-from-backup.md), [rotating the JWT key](./operations/rotate-jwt-key.md), [rolling back a reindex](./operations/rollback-layer-reindex.md), [a climbing tombstone backlog](./operations/vector-collection-backlog.md) |
+| [../deploy/helm](../deploy/helm/README.md) | The Kubernetes chart: what it deploys, what it refuses, and why Postgres, Qdrant and Redis are not subcharts |
 
 ## Order of work
 

@@ -1,0 +1,78 @@
+Nacre {{ .Chart.AppVersion }} is installed as {{ .Release.Name }}.
+
+  API      {{ include "nacre.fullname" . }}-api:{{ .Values.api.port }}
+{{- if .Values.mcp.enabled }}
+  MCP      {{ include "nacre.fullname" . }}-mcp:{{ .Values.mcp.port }}
+{{- end }}
+  issuer   {{ .Values.canonicalUrl }}
+
+{{ if .Values.jwt.privateKeyExistingSecret -}}
+Tokens are signed with an Ed25519 key. The public half is at
+{{ .Values.canonicalUrl }}/.well-known/jwks.json — the key that verifies is not
+the key that signs, so reading a container's environment does not get an
+attacker from "can check tokens" to "can mint one".
+{{- else -}}
+Tokens are signed with a shared secret. Every process that can check a token can
+also mint one, so reading a container's environment gets an attacker from "can
+check tokens" to "can act as any administrator in any organization". Consider
+jwt.privateKeyExistingSecret — /.well-known/jwks.json 404s on this deployment
+because a shared secret has no publishable half.
+{{- end }}
+
+There is no organization yet. Create one:
+
+  kubectl run nacre-init --rm -it --restart=Never \
+    --image={{ include "nacre.image" . }} \
+    --env=NACRE_PG_URL="$YOUR_PG_URL" \
+    --command -- node packages/api/dist/init.js --slug acme --name "Acme"
+
+It prints an organization id, a workspace id and a password, and the password is
+not printed again. A second run keeps the existing password and says so rather
+than printing one that does not work.
+
+{{ if .Values.embeddingAdapter.enabled -}}
+The embedding adapter is deployed and **nothing points at it yet**. It routes
+{{ .Values.embeddingAdapter.routes }}, and a document reaches a vendor only once
+an embedding provider names it:
+
+  endpoint  http://{{ include "nacre.fullname" . }}-embedding-adapter:8091
+  model     one of the models above
+
+Set that on a provider through the admin UI or POST /v1/embedding-providers.
+Until then this is a running container nothing calls — which is the intended
+shape, because routing a model through it means the text of those documents
+leaves this installation.
+{{- end }}
+{{ if and .Values.modules .Values.web.enabled (eq .Values.web.image.repository "ghcr.io/nacre-work/nacre-web") -}}
+This deployment runs commercial modules and serves the **open** front door. The
+API answers /v1/admin/* and the console has no screen for any of it — since core
+0.23.0 those screens live in one file the enterprise image replaces, so an
+operator administers organizations and tenancy with curl here.
+
+  web.image.repository  ghcr.io/nacre-work/nacre-enterprise-web
+  web.image.tag         {version}-core{{ .Chart.AppVersion }}
+
+Not refused, because it is a real deployment: a customer who serves the console
+themselves, or one who administers through the API, wants exactly this. It is
+said because nothing else would say it — the console renders perfectly with the
+screens simply absent.
+{{ end }}
+{{ if and .Values.ingress.enabled (ne (include "nacre.ingressHost" .) (include "nacre.canonicalHost" .)) -}}
+The ingress serves {{ include "nacre.ingressHost" . }} and the canonical URL
+names {{ include "nacre.canonicalHost" . }}. Something in front has to present
+the second name to a browser: the console proxies /v1 same-origin and the API
+sends no CORS headers, discovery documents name the canonical host, and a
+WebAuthn credential is bound to it — a security key enrolled at
+{{ include "nacre.canonicalHost" . }} cannot be used at
+{{ include "nacre.ingressHost" . }}, and the browser refuses the ceremony rather
+than logging anything. Leave ingress.host empty and it follows canonicalUrl.
+{{ end }}
+{{ if not .Values.ingress.enabled -}}
+Nothing is exposed: ingress.enabled is false. Port-forward to try it:
+
+  kubectl port-forward svc/{{ include "nacre.fullname" . }}-api {{ .Values.api.port }}
+{{- end }}
+{{ if not .Values.metrics.existingSecret -}}
+/metrics has no token. That is right when the port is on an internal network and
+wrong the moment there is a public ingress without this path carved out.
+{{- end }}

@@ -1,0 +1,61 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+{{/*
+Two ServiceMonitors, because there are two registries.
+
+The API exports the per-tenant gauges — document counts and the tombstone
+backlog — and the MCP transport exports its own tool latency and denials under
+`nacre_mcp_*`. They are deliberately not one: two exporters publishing the same
+series would be two answers to one question, and MCP recorded nothing at all
+until it got its own, which made every latency claim true of REST and silent on
+the transport the product is for.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "nacre.fullname" . }}-api
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}{{- toYaml . | nindent 4 }}{{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      {{- if .Values.metrics.existingSecret }}
+      authorization:
+        credentials:
+          name: {{ .Values.metrics.existingSecret }}
+          key: {{ .Values.metrics.secretKey }}
+      {{- end }}
+{{- if .Values.mcp.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "nacre.fullname" . }}-mcp
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}{{- toYaml . | nindent 4 }}{{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: mcp
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      {{- if .Values.metrics.existingSecret }}
+      authorization:
+        credentials:
+          name: {{ .Values.metrics.existingSecret }}
+          key: {{ .Values.metrics.secretKey }}
+      {{- end }}
+{{- end }}
+{{- end }}

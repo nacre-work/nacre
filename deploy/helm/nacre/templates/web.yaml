@@ -1,0 +1,132 @@
+{{- if .Values.web.enabled }}
+{{/*
+The admin UI — nginx serving the built `packages/admin` bundle and proxying
+`/v1` to the API on the same origin.
+
+This chart did not deploy it for a long time, and the reason recorded in the
+README was that a deployment might reasonably front it differently. That is true
+of the API too, which this chart deploys with an ingress that is off by default.
+The actual reason was that **nothing published the image**: `docker/Dockerfile`
+has had a `web` stage since the Compose stack grew a front door, Compose builds
+it locally with `target: web`, and the release workflow built the file with no
+target — so it pushed the node runtime and nothing else. An omission wearing a
+rationale, which is the shape this repository keeps removing.
+
+Since core 0.5.3 it is not optional in practice either: `/oauth/authorize` sends
+a browser to the consent screen in this bundle, so a deployment without it has
+an OAuth flow that ends in a redirect to nothing.
+
+Same-origin is the whole point of serving it this way. The browser's requests to
+`/v1` go to this pod and are proxied, so they are never cross-origin — which
+matters because the API sends no CORS headers, deliberately.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nacre.fullname" . }}-web
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nacre.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        {{- include "nacre.labels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "nacre.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      volumes:
+        {{- include "nacre.tmpVolume" . | nindent 8 }}
+        # nginx writes its pid and its caches under /var, and the shared
+        # securityContext mounts the root filesystem read-only. Without these it
+        # fails at startup rather than at first request, which is at least loud
+        # — but it fails.
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+      containers:
+        - name: web
+          image: {{ printf "%s:%s" .Values.web.image.repository (default .Chart.AppVersion .Values.web.image.tag) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # The image ships a template rather than a config, and these are the
+            # things that differ once you leave Compose. Without them it would
+            # proxy to `api:8080` and `mcp:8081` — Compose service names — and
+            # listen on 80, which a container that does not run as root cannot
+            # bind.
+            - name: NACRE_API_UPSTREAM
+              value: {{ printf "%s-api:%d" (include "nacre.fullname" .) (int .Values.api.port) | quote }}
+            # The ingress routes `/mcp` straight at the transport, ahead of `/`,
+            # so this route is not the one a client normally takes here. It is
+            # set anyway: the image has the route, and leaving it pointing at a
+            # Compose service name in Kubernetes is exactly the defect that made
+            # this config a template in the first place. A deployment fronting
+            # this Service itself — no ingress, or its own — gets a working
+            # `/mcp` rather than a proxy to a name that does not resolve.
+            - name: NACRE_MCP_UPSTREAM
+              value: {{ printf "%s-mcp:%d" (include "nacre.fullname" .) (int .Values.mcp.port) | quote }}
+            - name: NGINX_PORT
+              value: "8080"
+          volumeMounts:
+            {{- include "nacre.tmpVolumeMount" . | nindent 12 }}
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+          # Static files and a proxy: liveness is "does nginx answer", and there
+          # is deliberately no readiness probe that touches the API. A console
+          # that goes unready because the thing it administers is down is a
+          # console nobody can use to find out why.
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          resources: {{- toYaml .Values.web.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nacre.fullname" . }}-web
+  labels:
+    {{- include "nacre.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: {{ include "nacre.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: web
+{{- end }}

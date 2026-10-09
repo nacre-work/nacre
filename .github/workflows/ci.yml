@@ -267,6 +267,17 @@ jobs:
       # broken version is what turns this green, so the path out is the action
       # that should be taken anyway.
       - run: pnpm lint:published
+      # The Helm chart, which lives beside the images it names so that a change
+      # to either lands in one diff. Four questions none of the rendering below
+      # can ask: that `appVersion` is this release (it drifted three releases
+      # while the chart lived elsewhere), that every workload is named by a
+      # NetworkPolicy rule (`web` came up reaching nothing under `strict`), that
+      # the modules refusal still names the default image, and that the chart's
+      # copy of the embedding adapter's vendor tables is the adapter's.
+      - run: pnpm lint:chart-version
+      - run: pnpm lint:chart-components
+      - run: pnpm lint:chart-image
+      - run: pnpm lint:chart-vendors
       - run: pnpm migrate
       - run: pnpm test:unit
 
@@ -481,6 +492,80 @@ jobs:
             echo "::error::public core references enterprise modules"
             exit 1
           fi
+
+  # The chart has to render, and `helm lint` is not what checks that.
+  #
+  # Lint exits 0 on a chart whose templates fail — it reports the failure as
+  # `[INFO] Fail` and then says "0 chart(s) failed". Verified on the chart's own
+  # bare defaults, which cannot render by design. So the gate is `helm template`
+  # against every file in `deploy/helm/values/`, and lint runs only for the
+  # metadata warnings it is actually good for.
+  helm:
+    name: helm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      - name: lint (advisory)
+        run: helm lint deploy/helm/nacre
+
+      # Bare defaults must NOT render: every endpoint and every secret has an
+      # empty default and a template that refuses rather than guessing. A chart
+      # that installed on defaults would install something pointing nowhere.
+      - name: bare defaults are refused
+        run: |
+          set -euo pipefail
+          if helm template t deploy/helm/nacre >/dev/null 2>&1; then
+            echo "::error::the chart rendered with no values — a default is guessing an endpoint"
+            exit 1
+          fi
+          echo "refused, as intended"
+
+      - name: render every values file
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(deploy/helm/values/*.yaml)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no values files to render against; the job would pass having checked nothing"
+            exit 1
+          fi
+          mkdir -p /tmp/rendered
+          for f in "${files[@]}"; do
+            echo "▸ $f"
+            # The .yaml extension is load-bearing: kubeconform silently skips a
+            # file whose extension it does not recognise, reporting
+            # "0 resource found in 0 file" and exiting 0.
+            helm template t deploy/helm/nacre -f "$f" > "/tmp/rendered/$(basename "$f")"
+          done
+
+      # Against the real API schemas, so a field that does not exist is caught
+      # here rather than by `kubectl apply`.
+      - name: the rendered objects are valid Kubernetes
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp
+          for f in /tmp/rendered/*.yaml; do
+            echo "▸ $f"
+            # ServiceMonitor is a CRD, so its schema comes from the community
+            # catalogue rather than the Kubernetes one.
+            out=$(/tmp/kubeconform -strict -summary \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+              "$f")
+            echo "$out"
+            # kubeconform exits 0 over zero resources, so the count is asserted
+            # rather than trusted.
+            case "$out" in
+              *"0 resource found"*)
+                echo "::error::kubeconform saw no resources in $f — it validated nothing"
+                exit 1
+                ;;
+            esac
+          done
 
   # The two images the Helm chart names in its defaults must actually build,
   # **on both architectures the release publishes**. "This image could not be

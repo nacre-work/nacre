@@ -1,0 +1,58 @@
+# A complete, minimal set of values — enough to render every template.
+#
+# Not a profile to deploy. It is what the chart's own check runs against, so a
+# template that stops rendering is caught by CI rather than by whoever installs
+# next. Copy it, change every value, and put the secrets in a secret store.
+
+canonicalUrl: https://nacre.example.com
+
+postgres:
+  # `nacre_app`: not a superuser, not the owner of the tables. Row-level
+  # security does not apply to a superuser at all and applies to the owner only
+  # where forced, so connecting as either turns tenant isolation into
+  # decoration.
+  existingSecret: nacre-postgres
+  existingSecretKey: url
+  # The owning role, and a different Secret — migrations create tables and
+  # `nacre_app` must not be able to. Two Secrets here; `full.yaml` shows the
+  # other shape, one Secret with two keys.
+  migrations:
+    existingSecret: nacre-postgres-owner
+    existingSecretKey: url
+
+qdrant:
+  url: http://qdrant.data.svc.cluster.local:6333
+
+redis:
+  existingSecret: nacre-redis
+  existingSecretKey: url
+
+embedding:
+  endpoint: http://embedder.models.svc.cluster.local:80
+  model: bge-m3
+  dimensions: 1024
+
+jwt:
+  # Ed25519: the API signs with the private key, the MCP transport verifies with
+  # the public one and never holds the private half.
+  privateKeyExistingSecret: nacre-jwt
+  privateKeyFile: signing.pem
+  publicKeyExistingSecret: nacre-jwt-public
+  publicKeyFile: signing.pub
+  issuer: https://nacre.example.com
+
+ingress:
+  enabled: true
+  className: nginx
+  # No `host`: it follows canonicalUrl, which is the recommended shape and what
+  # this file used to write out by hand. `edge-host.yaml` beside it is the one
+  # arrangement that sets it.
+  tls:
+    enabled: true
+    secretName: nacre-tls
+
+metrics:
+  existingSecret: nacre-metrics
+  secretKey: token
+  serviceMonitor:
+    enabled: true

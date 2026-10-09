@@ -56,7 +56,11 @@
     "lint:published": "node scripts/check-published-manifests.mjs",
     "lint:audit-target": "node scripts/check-audit-target.mjs",
     "lint:audit-actions": "node scripts/check-audit-actions.mjs",
-    "lint:platform-admin-target": "node scripts/check-platform-admin-target.mjs"
+    "lint:platform-admin-target": "node scripts/check-platform-admin-target.mjs",
+    "lint:chart-version": "node scripts/check-chart-version.mjs",
+    "lint:chart-components": "node scripts/check-chart-components.mjs",
+    "lint:chart-image": "node scripts/check-chart-image.mjs",
+    "lint:chart-vendors": "node scripts/check-chart-vendors.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

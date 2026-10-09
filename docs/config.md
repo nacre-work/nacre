@@ -681,7 +681,8 @@ They are deliberately absent from `.env.example` and from `docker-compose.yml`,
 which is the one place in this repository where the answer is known rather than
 chosen: that stack runs a single Qdrant container, and both bullets above say
 what a number above `1` does to it. The chart is where they belong, and
-`nacre-infra` carries them as `qdrant.shards` and `qdrant.replicationFactor`.
+[`deploy/helm`](../deploy/helm/README.md) carries them as `qdrant.shards` and
+`qdrant.replicationFactor`.
 
 ### `NACRE_EMBED_BATCH`
 
