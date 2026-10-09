@@ -81,6 +81,7 @@ export const AUDIT_ACTIONS: readonly AuditActionInfo[] = [
   { name: 'issue_grant', documentAccess: false, summary: 'A grant was issued' },
   { name: 'layer.reindex', documentAccess: false, summary: 'A layer was moved onto another embedding model' },
   { name: 'login', documentAccess: false, summary: 'A person signed in' },
+  { name: 'mcp_admin.read', documentAccess: false, summary: 'An administrative MCP tool read the organization' },
   { name: 'oauth.consent', documentAccess: false, summary: 'An application was approved' },
   { name: 'oauth.revoke', documentAccess: false, summary: 'A connected application was forgotten' },
   { name: 'password.change', documentAccess: false, summary: 'A person changed their own password' },

@@ -92,6 +92,8 @@ export interface Consent {
    * looks live and answers nothing has exactly one explanation and this is it.
    */
   readonly approverDisabled: boolean
+  /** Which resource it is for — the administrative MCP, or the API and `/mcp`. */
+  readonly surface: ConsentSurface
   /**
    * The layers a delegation was narrowed to at consent, if any.
    *
@@ -132,10 +134,41 @@ export type MintRequest =
       readonly orgId: string
       readonly subject: { readonly actsAs: 'user'; readonly userId: string }
       readonly consentId: string
+      /**
+       * Which resource the connection is for, read from its row — on the first
+       * exchange and on every renewal, because a renewal has no authorization
+       * request to read it from. `admin` mints a token for `/mcp/admin`'s
+       * audience and nothing else; see docs/mcp-admin.md.
+       */
+      readonly surface: ConsentSurface
     }
 
-/** A consent that has been given and not yet exchanged. */
-export type PendingAuthorization = MintRequest & {
+/**
+ * Which resource a connection is for. `default` reaches the API and `/mcp`, as
+ * every connection always has; `admin` reaches `/mcp/admin` and nothing else.
+ * A delegation only — migration 0038 refuses an administrative agent.
+ */
+export type ConsentSurface = 'default' | 'admin'
+
+/** `T` without its `surface`, distributed over the union so each arm keeps its shape. */
+type WithoutSurface<T> = T extends unknown ? Omit<T, 'surface'> : never
+
+/**
+ * A consent that has been given and not yet exchanged.
+ *
+ * No `surface`: the code points at its connection, and the connection is where
+ * the surface is recorded. A second copy on the code would be a second answer
+ * about which audience a token gets, read on a different path.
+ */
+export type PendingAuthorization = WithoutSurface<MintRequest> & {
+  readonly clientId: string
+  readonly redirectUri: string
+  readonly codeChallenge: string
+  readonly resource?: string
+}
+
+/** A code exchanged: what was pending, and the connection's surface read back from its row. */
+export type RedeemedAuthorization = MintRequest & {
   readonly clientId: string
   readonly redirectUri: string
   readonly codeChallenge: string
@@ -173,6 +206,12 @@ export interface OAuthConsents {
      * restriction anybody meant to write, and the database refuses one.
      */
     permissions?: readonly CeilingValue[],
+    /**
+     * Which resource the connection is for. Absent is `default`. Part of the
+     * connection's identity: the same application connected to both is two
+     * connections, and approving one never overwrites the other.
+     */
+    surface?: ConsentSurface,
   ): Promise<string>
   /**
    * Every connection this caller may see.
@@ -221,7 +260,7 @@ export interface OAuthAuthorizations {
    * — is a window in which the same code is exchanged twice, and an
    * authorization code redeemed twice is the definition of a replay.
    */
-  redeem(code: string): Promise<PendingAuthorization | undefined>
+  redeem(code: string): Promise<RedeemedAuthorization | undefined>
 }
 
 export class PostgresOAuthClients implements OAuthClients {
@@ -299,7 +338,7 @@ export class PostgresOAuthAuthorizations implements OAuthAuthorizations {
     )
   }
 
-  async redeem(code: string): Promise<PendingAuthorization | undefined> {
+  async redeem(code: string): Promise<RedeemedAuthorization | undefined> {
     // Two statements, and the split is the point rather than a compromise.
     //
     // The token endpoint is handed a code and nothing else, so it cannot scope
@@ -342,14 +381,21 @@ export class PostgresOAuthAuthorizations implements OAuthAuthorizations {
           code_challenge: string
           resource: string | null
           consent_id: string | null
+          surface: ConsentSurface | null
         }>(
-          `UPDATE oauth_authorizations
+          // The connection's surface comes with the code, from the row the code
+          // points at — never from the authorization request's `resource`,
+          // which is the client's to send. What a person approved is what the
+          // consent handler wrote into that row.
+          `UPDATE oauth_authorizations a
               SET consumed_at = now()
-            WHERE code_hash = $1
-              AND consumed_at IS NULL
-              AND expires_at > now()
-          RETURNING org_id, acts_as, service_account_id, approved_by, client_id,
-                    redirect_uri, code_challenge, resource, consent_id`,
+            WHERE a.code_hash = $1
+              AND a.consumed_at IS NULL
+              AND a.expires_at > now()
+          RETURNING a.org_id, a.acts_as, a.service_account_id, a.approved_by, a.client_id,
+                    a.redirect_uri, a.code_challenge, a.resource, a.consent_id,
+                    (SELECT c.surface FROM oauth_consents c
+                      WHERE c.id = a.consent_id AND c.org_id = a.org_id) AS surface`,
           [hashCode(code)],
         )
         const row = rows[0]
@@ -368,7 +414,12 @@ export class PostgresOAuthAuthorizations implements OAuthAuthorizations {
           // `consent_id IS NOT NULL` is in 0025's CHECK for the delegated
           // shape, which is what lets this be a cast rather than a branch that
           // has to decide what a delegation with no connection means.
-          return { ...common, subject: { actsAs: 'user', userId: row.approved_by }, consentId: row.consent_id as string }
+          return {
+            ...common,
+            subject: { actsAs: 'user', userId: row.approved_by },
+            consentId: row.consent_id as string,
+            surface: row.surface ?? 'default',
+          }
         }
         return {
           ...common,
@@ -393,6 +444,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
     subject: ConsentSubject,
     layers?: readonly LayerNarrowing[],
     permissions?: readonly CeilingValue[],
+    surface: ConsentSurface = 'default',
   ): Promise<string> {
     return withOrg(
       this.pool,
@@ -420,16 +472,16 @@ export class PostgresOAuthConsents implements OAuthConsents {
               )
             : await client.query<{ id: string }>(
                 `INSERT INTO oauth_consents
-                   (org_id, client_id, service_account_id, approved_by, acts_as, permissions)
-                 VALUES ($1,$2,NULL,$3,'user',$4)
-                 ON CONFLICT (org_id, client_id, approved_by) WHERE acts_as = 'user'
+                   (org_id, client_id, service_account_id, approved_by, acts_as, permissions, surface)
+                 VALUES ($1,$2,NULL,$3,'user',$4,$5)
+                 ON CONFLICT (org_id, client_id, approved_by, surface) WHERE acts_as = 'user'
                  DO UPDATE SET revoked_at = NULL, permissions = EXCLUDED.permissions
                  RETURNING id`,
                 // Replaced on re-approval, never merged. Merging would make a
                 // ceiling that can only ever rise, which is the one direction
                 // a restriction must not move in.
                 [auth.orgId, clientId, subject.userId,
-                 permissions === undefined || permissions.length === 0 ? null : [...permissions]],
+                 permissions === undefined || permissions.length === 0 ? null : [...permissions], surface],
               )
         const id = (rows[0] as { id: string }).id
 
@@ -495,6 +547,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
           approved_by: string
           approved_by_email: string | null
           approver_disabled: boolean
+          surface: ConsentSurface
           layers: { id: string; permissions: CeilingValue[] | null }[] | null
           permissions: CeilingValue[] | null
           created_at: string
@@ -510,7 +563,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
           // administrator who set it up — and a delegation's approver may be a
           // row that no longer exists. Neither is a reason to drop the line.
           `SELECT c.id, c.client_id, oc.client_name, c.acts_as, c.service_account_id,
-                  sa.name AS service_account_name, c.approved_by, c.permissions,
+                  sa.name AS service_account_name, c.approved_by, c.permissions, c.surface,
                   u.email AS approved_by_email,
                   u.disabled_at IS NOT NULL AS approver_disabled,
                   JSON_AGG(JSON_BUILD_OBJECT('id', cl.layer_id, 'permissions', cl.permissions))
@@ -538,6 +591,7 @@ export class PostgresOAuthConsents implements OAuthConsents {
           approvedBy: r.approved_by,
           approvedByEmail: r.approved_by_email,
           approverDisabled: r.approver_disabled,
+          surface: r.surface,
           layers: narrowingOf(r.layers),
           permissions: r.permissions ?? [],
           createdAt: r.created_at,
@@ -644,6 +698,7 @@ export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
           acts_as: 'service_account' | 'user'
           service_account_id: string | null
           approved_by: string
+          surface: ConsentSurface
           suspended: boolean
         }>(
           // The user is joined for the delegated case only, and it is a LEFT
@@ -656,9 +711,15 @@ export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
           `SELECT t.id, t.consent_id, t.family_id, t.used_at,
                   t.expires_at <= now() AS expired,
                   c.revoked_at IS NOT NULL AS revoked,
-                  c.acts_as, c.service_account_id, c.approved_by,
+                  c.acts_as, c.service_account_id, c.approved_by, c.surface,
+                  -- An administrative connection is suspended, not ended, when
+                  -- its person stops being an organization administrator: the
+                  -- same reversible state a disabled person's connections are
+                  -- in, so promoting them again restores it rather than asking
+                  -- for a reconnection. docs/mcp-admin.md.
                   (c.acts_as = 'user'
-                     AND (u.id IS NULL OR u.disabled_at IS NOT NULL OR u.role = 'platform_admin')) AS suspended
+                     AND (u.id IS NULL OR u.disabled_at IS NOT NULL OR u.role = 'platform_admin'
+                          OR (c.surface = 'admin' AND u.role <> 'org_admin'))) AS suspended
              FROM oauth_refresh_tokens t
              JOIN oauth_consents c ON c.id = t.consent_id
              LEFT JOIN users u ON u.id = c.approved_by AND u.org_id = c.org_id
@@ -710,7 +771,7 @@ export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
         ])
         const base = { orgId: found, consentId: row.consent_id, family: row.family_id }
         return row.acts_as === 'user'
-          ? { ...base, subject: { actsAs: 'user', userId: row.approved_by } }
+          ? { ...base, subject: { actsAs: 'user', userId: row.approved_by }, surface: row.surface }
           : { ...base, subject: { actsAs: 'service_account', serviceAccountId: row.service_account_id as string } }
       },
       this.role === undefined ? {} : { role: this.role },
@@ -738,7 +799,10 @@ export class PostgresDelegations implements Delegations {
   async resolve(
     orgId: string,
     id: string,
-  ): Promise<{ userId: string; role: OrgRole; layers?: readonly LayerNarrowing[] } | undefined> {
+  ): Promise<
+    | { userId: string; role: OrgRole; surface: ConsentSurface; layers?: readonly LayerNarrowing[] }
+    | undefined
+  > {
     return withOrg(
       this.pool,
       orgId,
@@ -757,10 +821,12 @@ export class PostgresDelegations implements Delegations {
           role: OrgRole
           layers: { id: string; permissions: CeilingValue[] | null }[] | null
           permissions: CeilingValue[] | null
+          surface: ConsentSurface
         }>(
           `SELECT c.approved_by AS user_id,
                   u.role,
                   c.permissions,
+                  c.surface,
                   JSON_AGG(JSON_BUILD_OBJECT('id', l.layer_id, 'permissions', l.permissions))
                     FILTER (WHERE l.layer_id IS NOT NULL) AS layers
              FROM oauth_consents c
@@ -774,7 +840,7 @@ export class PostgresDelegations implements Delegations {
               AND c.revoked_at IS NULL
               AND u.disabled_at IS NULL
               AND u.role <> 'platform_admin'
-            GROUP BY c.approved_by, u.role, c.permissions`,
+            GROUP BY c.approved_by, u.role, c.permissions, c.surface`,
           [orgId, id],
         )
 
@@ -789,6 +855,10 @@ export class PostgresDelegations implements Delegations {
         return {
           userId: row.user_id,
           role: row.role,
+          // Which resource the connection is for. Authentication compares it
+          // with the resource being verified for, because the audience alone is
+          // one check and a connection that says otherwise is a second.
+          surface: row.surface,
           ...(row.layers === null ? {} : { layers: narrowingOf(row.layers) }),
           // NULL is no ceiling, which is a different state from an empty set —
           // the CHECK on the column refuses the second, so this cannot arrive

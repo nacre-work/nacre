@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { createApi, type AuditEvent } from '../index.js'
+import { createApi, oauthMinter, type AuditEvent } from '../index.js'
 
 /**
  * What a search leaves in the journal.
@@ -117,5 +117,59 @@ describe('the journal entry for a search', () => {
     // "show me which documents your agent read last quarter" is answered from.
     const event = off.audited.find((e) => e.action === 'search')
     expect(event?.target).toMatchObject({ returned_docs: [DOC], layers: ['contracts'] })
+  })
+})
+
+describe('the connection a search came through', () => {
+  // `audit_events.client` was in the schema from 0001 and nothing wrote it, so
+  // a delegated read said who and never through what. The API enters an audit
+  // scope per request and sets the connection after authentication; every
+  // event written inside carries it, through the sink wrapper, without the
+  // handler naming it.
+  const CONNECTION = '44444444-4444-4444-8444-444444444444'
+  const USER = '55555555-5555-4555-8555-555555555555'
+  const audited: AuditEvent[] = []
+  const server = createApi({
+    verify: {
+      key: SECRET,
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      delegations: { resolve: async () => ({ userId: USER, role: 'member' }) },
+    },
+    documents: { read: async () => undefined },
+    search: { search: async () => [] },
+    ingest: { queue: async () => undefined, remove: async () => false },
+    audit: { write: async (event) => void audited.push(event) },
+  })
+  const mint = oauthMinter({ issuer: ISSUER, audience: AUDIENCE, ttlSeconds: 300, signing: SECRET, algorithm: 'HS256' })
+
+  beforeAll(async () => {
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  })
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  })
+
+  const search = async (bearer: string): Promise<void> => {
+    const res = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/search`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ query: QUERY }),
+    })
+    expect(res.status).toBe(200)
+  }
+
+  it('names the connection on a delegated request, and nothing on a person’s own session', async () => {
+    const delegated = (
+      await mint({ orgId: ORG, subject: { actsAs: 'user', userId: USER }, consentId: CONNECTION, surface: 'default' })
+    ).accessToken
+    await search(delegated)
+    expect(audited.at(-1)).toMatchObject({ action: 'search', client: `connection:${CONNECTION}` })
+
+    // And the scope ends with the request: the next one, on a session, does
+    // not inherit the previous request's connection.
+    await search(await token())
+    expect(audited.at(-1)?.action).toBe('search')
+    expect(audited.at(-1)?.client).toBeUndefined()
   })
 })

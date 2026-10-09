@@ -31,6 +31,12 @@ export interface AuthContext {
   readonly delegation?: {
     readonly id: string
     /**
+     * Present, and `admin`, only on a request to the administrative MCP: the
+     * connection is for that resource, and authentication refused it anywhere
+     * else. Absent everywhere a token reaches the API or `/mcp`.
+     */
+    readonly surface?: 'admin'
+    /**
      * The narrowing, and each layer's own ceiling where the person set one.
      *
      * `undefined` means no narrowing — never "narrowed to nothing", which is a
@@ -79,6 +85,8 @@ export interface Delegations {
     | {
         userId: string
         role: OrgRole
+        /** Which resource the connection is for. See `VerifyOptions.surface`. */
+        surface?: 'default' | 'admin'
         /** The narrowing, each layer carrying its own ceiling where one was set. */
         layers?: readonly { readonly id: string; readonly permissions?: readonly CeilingValue[] }[]
         permissions?: readonly CeilingValue[]
@@ -141,6 +149,28 @@ export interface VerifyOptions {
    * accepted as its user. Invariant 3: a check that cannot run denies.
    */
   readonly delegations?: Delegations
+  /**
+   * `admin` on the administrative MCP's verifier, and absent everywhere else.
+   *
+   * docs/mcp-admin.md makes `/mcp/admin` a resource of its own, and the token
+   * audience is the first half of that: the API and `/mcp` compare it exactly,
+   * so a token minted for `${audience}/admin` is refused by both without a
+   * line here. This is the second half, and it is about what the audience
+   * cannot see:
+   *
+   * - **People only.** A service account key carries no audience at all, and
+   *   an identity provider's assertion is verified by a module rather than
+   *   against this one, so on this surface neither is tried — a key that
+   *   worked here would be an agent administering the organization.
+   * - **The connection agrees.** A delegated token names its connection, and
+   *   the connection says which resource it is for. They are compared rather
+   *   than one trusted, in both directions: an administrative connection is
+   *   refused on every other surface too.
+   * - **An organization administrator, now.** The role comes from the row on
+   *   every request, so a person demoted since consent loses this surface on
+   *   their next call rather than when the token expires.
+   */
+  readonly surface?: 'admin'
 }
 
 /**
@@ -343,6 +373,10 @@ type Refusal =
   | 'delegations_unavailable'
   | 'delegation_unresolved'
   | 'delegation_subject_mismatch'
+  | 'delegation_surface_mismatch'
+  | 'admin_surface_agent'
+  | 'admin_surface_not_delegated'
+  | 'admin_surface_not_admin'
 
 /**
  * The reasons an anonymous caller can produce at will, and which are therefore
@@ -402,6 +436,9 @@ export async function authenticate(
   // same 401 with the same wording as every JWT failure below, because
   // "revoked key" and "wrong audience" and "expired" must be one answer.
   if (bearer.startsWith('nacre_sk_')) {
+    // People only on the administrative surface. Refused before the key is
+    // looked up, so this surface never touches the agent key table at all.
+    if (options.surface === 'admin') return refuse('admin_surface_agent', 'The token is not valid.')
     if (options.serviceKeys === undefined) {
       // A `nacre_sk_` key presented to a process wired without the port that
       // resolves one. Every agent key 401s here and the response cannot say so
@@ -432,6 +469,9 @@ export async function authenticate(
     }
   }
   if (claims === undefined) {
+    // Nothing a provider recognises is a connection to the administrative
+    // surface: that takes this installation's own consent, by a person.
+    if (options.surface === 'admin') return refuse('unverifiable', 'The token is not valid.')
     // A credential type this build does not understand — an ID-JAG, an SSO
     // assertion — before the refusal, and only here. A provider cannot shadow a
     // JWT this deployment can verify or a `nacre_sk_` key, because both were
@@ -485,7 +525,14 @@ export async function authenticate(
     role: role as OrgRole,
   }
 
-  if (claims.del === undefined) return base
+  if (claims.del === undefined) {
+    // A token that is not a connection's — a console session, a token `init`
+    // printed — cannot reach the administrative surface. Its audience already
+    // keeps it out; this is the line that still holds if the two audiences
+    // were ever configured to the same string.
+    if (options.surface === 'admin') return refuse('admin_surface_not_delegated', 'The token is not valid.', { org })
+    return base
+  }
 
   // ── a delegated token ──
   //
@@ -538,6 +585,26 @@ export async function authenticate(
     })
   }
 
+  // The connection and the verifier agree about which resource this is, in
+  // both directions. The audience made the same comparison once already; a
+  // connection is the record of what a person approved, and a token whose
+  // connection says otherwise is refused rather than resolved.
+  const administrative = delegation.surface === 'admin'
+  if (administrative !== (options.surface === 'admin')) {
+    return refuse('delegation_surface_mismatch', 'The token is not valid.', {
+      org,
+      delegation: claims.del,
+      connection_surface: delegation.surface ?? 'default',
+    })
+  }
+  // And only for somebody who administers the organization at this moment.
+  // Not a `404` from each tool: a demoted person's client should be told its
+  // token no longer works, which is what restarts the walk — and the consent
+  // screen then refuses them, which is the honest end of it.
+  if (administrative && delegation.role !== 'org_admin') {
+    return refuse('admin_surface_not_admin', 'The token is not valid.', { org, delegation: claims.del })
+  }
+
   return {
     orgId: org,
     principal: { type: 'user', id: delegation.userId },
@@ -547,6 +614,7 @@ export async function authenticate(
     role: delegation.role,
     delegation: {
       id: claims.del,
+      ...(administrative ? { surface: 'admin' as const } : {}),
       ...(delegation.layers === undefined ? {} : { layers: delegation.layers }),
       ...(delegation.permissions === undefined ? {} : { permissions: delegation.permissions }),
     },

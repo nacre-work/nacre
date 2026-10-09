@@ -211,7 +211,9 @@ describe('the contract describes the surface the server presents', () => {
   })
 
   it('serves the unauthenticated documents at the address the contract gives', async () => {
-    // The five this deployment configured. `security: []` says a client may
+    // The seven this deployment configured — the administrative MCP's discovery
+    // document is the seventh, served here because a front door sends
+    // `/.well-known/` to this process. `security: []` says a client may
     // fetch them with no credential; `servers` says where. A 404 here means the
     // contract sends a client somewhere the server does not answer — which is
     // how `/metrics` and both `/.well-known` documents were described: declared
@@ -229,7 +231,7 @@ describe('the contract describes the surface the server presents', () => {
     // deployment. A blanket exclusion is a check that shrinks without saying
     // so; `op.method === 'GET'` already carries the real condition.
     const documents = operations().filter((op) => op.open && op.method === 'GET')
-    expect(documents.length).toBe(6)
+    expect(documents.length).toBe(7)
 
     const missing: string[] = []
     for (const op of documents) {

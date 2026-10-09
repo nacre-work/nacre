@@ -79,3 +79,63 @@ export function protectedResourceMetadata(input: {
     scopes_supported: [],
   }
 }
+
+// ── the administrative MCP ──────────────────────────────────────────────────
+
+/**
+ * Where the administrative MCP is served, beside `/mcp` on the same process.
+ *
+ * A resource of its own — docs/mcp-admin.md — so that `admin` can be on its
+ * consent screen without the token reaching REST.
+ */
+export const ADMIN_MCP_PATH = '/mcp/admin'
+
+/**
+ * Its RFC 9728 document. The RFC inserts the well-known segment between the
+ * origin and the resource's path, so the document for `…/mcp/admin` lives at
+ * `…/.well-known/oauth-protected-resource/mcp/admin` — and a client that is
+ * pointed at the administrative endpoint and falls back to the root document
+ * would be told the *ordinary* resource, ask for an ordinary token, and be
+ * refused here forever. The `401` from `/mcp/admin` names this path, so a
+ * client never has to guess.
+ */
+export const ADMIN_PROTECTED_RESOURCE_PATH = `${PROTECTED_RESOURCE_PATH}${ADMIN_MCP_PATH}`
+
+/**
+ * The audience a token for the administrative MCP carries.
+ *
+ * Derived from the installation's own rather than configured, on the shape the
+ * second-factor challenge already uses: one value an operator sets, and every
+ * audience that must be refused everywhere else derived from it. The API and
+ * `/mcp` compare audiences exactly, so they refuse this one with no code of
+ * their own; `/mcp/admin` accepts this one and nothing else.
+ */
+export const adminAudience = (audience: string): string => `${audience}/admin`
+
+/**
+ * Whether an RFC 8707 resource indicator names the administrative MCP.
+ *
+ * By path rather than by the whole URL, because the MCP origin may be derived
+ * from the request a client made rather than pinned, and the API cannot know
+ * every name it is reached by. That is not a trust decision: the indicator is
+ * the client's to send, and what it buys a client that sends this one is the
+ * administrative consent screen — which only an organization administrator can
+ * approve, and which says what it is.
+ */
+export function namesAdminResource(resource: string | undefined): boolean {
+  if (resource === undefined) return false
+  try {
+    return new URL(resource).pathname.replace(/\/+$/, '') === ADMIN_MCP_PATH
+  } catch {
+    return false
+  }
+}
+
+/** The administrative MCP's RFC 9728 document: the ordinary one, naming its own resource. */
+export function adminResourceMetadata(base: ProtectedResourceMetadata): ProtectedResourceMetadata {
+  return {
+    ...base,
+    resource: `${base.resource}${ADMIN_MCP_PATH}`,
+    resource_documentation: 'https://github.com/nacre-work/nacre/blob/main/docs/mcp-admin.md',
+  }
+}

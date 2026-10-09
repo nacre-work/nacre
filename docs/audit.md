@@ -29,8 +29,8 @@ is truncated at 1024 characters; the hash is not.
   "occurred_at": "2026-08-01T10:22:31.114Z",
   "org_id": "uuid",
   "actor": { "type": "service_account", "id": "uuid", "label": "svc-support-bot" },
-  "surface": "mcp",                       // api | mcp | admin | system
-  "client":  "claude-code/2.1",           // from the client's _meta
+  "surface": "mcp",                       // api | mcp | mcp-admin | admin | system
+  "client":  "connection:uuid",           // the connection a delegated call came through
   "action":  "search",
   "target":  { "layers": ["contracts"], "returned_docs": ["uuid","uuid"], "top_k": 10 },
   "result":  "allow",                     // allow | deny | error
@@ -61,8 +61,18 @@ denial gets an event, including the ones that come out as `404` on the wire.
 
 ## What is written today
 
-Every event carries `surface` (`api` or `mcp`, from the transport that made the
-call) and a `target` naming what it was about. Search records the document ids
+Every event carries `surface` (`api`, `mcp` or `mcp-admin`, from the transport
+that made the call) and a `target` naming what it was about.
+
+**`client` is the connection, since 0.32.0.** The column was in the schema from
+0001, described as the client's self-reported name, and nothing wrote it — so a
+delegated read said *who*, the person, and never *through what*. It holds
+`connection:<id>` for every request made through a connected application, on
+every surface: the id `GET /v1/oauth/consents` and the Connections screen name,
+because that is what can be revoked, where a self-reported name is whatever the
+application registered. A console session and an agent's own key carry none.
+Set once per request after authentication, in a scope every write inside the
+request reads, rather than at each of the fifty-nine places an event is built. Search records the document ids
 and layers it returned, so the question this document opens with — *which
 documents did your agent read last quarter* — has an answer.
 

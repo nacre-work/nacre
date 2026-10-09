@@ -1,4 +1,4 @@
-import type { CeilingValue } from '@nacre.work/sdk'
+import { isAdministrativeResource, type CeilingValue } from '@nacre.work/sdk'
 
 import { client, explain } from '../api.js'
 import { chip, clear, h } from '../dom.js'
@@ -88,6 +88,14 @@ export async function consentView(root: HTMLElement): Promise<void> {
       return request.redirectUri
     }
   })()
+
+  // The administrative MCP asks for a different thing, so it gets a different
+  // screen rather than this one with boxes greyed out: there is nothing to
+  // choose — no agent, no layers, no verbs — and one fact to decide.
+  if (isAdministrativeResource(request.resource)) {
+    await administrativeConsent(root, request, host)
+    return
+  }
 
   const chosen = h('select', { class: 'input' }) as HTMLSelectElement
   const fresh = h('input', { class: 'input', placeholder: 'name for a new agent', maxlength: 100 }) as HTMLInputElement
@@ -454,4 +462,123 @@ export async function consentView(root: HTMLElement): Promise<void> {
   )
 
   await load()
+}
+
+/**
+ * The consent for the administrative MCP. docs/mcp-admin.md.
+ *
+ * One decision and no choices. The server fixes what such a connection may do
+ * and refuses a request that tries to set it, so a screen offering layers or
+ * verbs here would be offering controls that change nothing — which this
+ * console has shipped before and removed. What the person needs instead is the
+ * whole of what they are agreeing to, in both directions, and the one thing
+ * that stops it.
+ *
+ * Offered to an organization administrator only, and said plainly to anybody
+ * else rather than drawn and then refused: the server answers `404` to a member
+ * here, and a screen whose only button fails is the defect `GET /v1/me`'s
+ * `administers` exists to prevent.
+ */
+async function administrativeConsent(root: HTMLElement, request: Request, host: string): Promise<void> {
+  const api = client()
+  const message = h('p', { class: 'form-message' })
+  const approve = h('button', { type: 'button', class: 'btn btn-primary' }, 'Approve') as HTMLButtonElement
+  const deny = h('button', { type: 'button', class: 'btn' }, 'Cancel')
+
+  deny.addEventListener('click', () => {
+    const to = new URL(request.redirectUri)
+    to.searchParams.set('error', 'access_denied')
+    if (request.state !== undefined) to.searchParams.set('state', request.state)
+    location.assign(to.toString())
+  })
+
+  approve.addEventListener('click', () => {
+    void (async () => {
+      message.textContent = ''
+      approve.disabled = true
+      approve.textContent = 'Approving…'
+      try {
+        const to = await api.consent({
+          clientId: request.clientId,
+          redirectUri: request.redirectUri,
+          codeChallenge: request.codeChallenge,
+          ...(request.state === undefined ? {} : { state: request.state }),
+          ...(request.resource === undefined ? {} : { resource: request.resource }),
+        })
+        location.assign(to)
+      } catch (error) {
+        message.textContent = explain(error)
+      } finally {
+        approve.disabled = false
+        approve.textContent = 'Approve'
+      }
+    })()
+  })
+
+  const administers = await api.me().then((me) => me.administers, () => false)
+  // Cleared again after the wait, not only before it. The router renders on
+  // load and again once the nav knows who is signed in, so two calls of this
+  // view overlap — each cleared an empty page, both waited here, and both
+  // appended: the screen drawn twice, one under the other. Found by looking at
+  // the render. The ordinary consent branch appends before it awaits, which is
+  // why it never showed this.
+  clear(root)
+
+  const list = (items: readonly string[]): HTMLElement => h('ul', { class: 'plain' }, ...items.map((i) => h('li', {}, i)))
+
+  root.append(
+    h('header', { class: 'view-head' },
+      h('div', {},
+        h('h1', {}, 'Give an application administrative access'),
+        h('p', { class: 'lede' },
+          h('strong', {}, host),
+          ' is asking to help you administer this organization, acting as you, through Nacre\u2019s administrative connection.'),
+      ),
+    ),
+    administers
+      ? h('div', { class: 'panel' },
+          h('p', { class: 'hint' }, 'The code will be delivered to'),
+          h('p', { class: 'mono' }, request.redirectUri),
+
+          h('fieldset', { class: 'field-group' },
+            h('legend', {}, 'It may read'),
+            list([
+              'people, groups and service accounts',
+              'workspaces, layers and the grants on them',
+              'what anybody can reach, and the grants that decide it',
+              'the organization\u2019s and each layer\u2019s skill, for review',
+              'connected applications',
+              'the access log, and counts over it',
+            ]),
+          ),
+          h('fieldset', { class: 'field-group' },
+            h('legend', {}, 'It may not'),
+            list([
+              'read, add or change any document',
+              'change anything — every change stays yours to make here',
+              'see passwords, keys or second factors',
+              'reach any other organization',
+            ]),
+          ),
+
+          h('div', { class: 'note' },
+            h('p', {},
+              'It works only while you are an organization administrator. Losing that role, being disabled, or ',
+              'forgetting it on the Connections screen stops it on the next request. It is a separate connection ',
+              'from any ordinary one this application has.'),
+            h('p', {},
+              'Names, descriptions, skills and logged queries it reads were written by other people. It is told to ',
+              'treat them as data and never as instructions.'),
+          ),
+
+          message,
+          h('div', { class: 'dialog-actions' }, deny, approve),
+        )
+      : h('div', { class: 'panel' },
+          h('p', {},
+            'Only an organization administrator can approve administrative access. Ask one to connect this ',
+            'application, or connect it to the ordinary Nacre server instead.'),
+          h('div', { class: 'dialog-actions' }, deny),
+        ),
+  )
 }

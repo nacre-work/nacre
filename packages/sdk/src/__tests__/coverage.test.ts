@@ -194,6 +194,8 @@ const COVERAGE: Record<string, string | null> = {
   // consumer that is not this library's audience, and both are unauthenticated
   // — the one thing this client exists to attach a credential to.
   'GET /.well-known/oauth-protected-resource': null,
+  // The administrative MCP's own, for the same reader and the same reason.
+  'GET /.well-known/oauth-protected-resource/mcp/admin': null,
   // Same, and more so: whoever reads this holds no Nacre credential at all.
   // That is what a JWKS is for.
   'GET /.well-known/jwks.json': null,
@@ -295,6 +297,7 @@ describe('the client covers the contract', () => {
     expect(uncovered.sort()).toEqual([
       'GET /.well-known/jwks.json',
       'GET /.well-known/oauth-protected-resource',
+      'GET /.well-known/oauth-protected-resource/mcp/admin',
       'GET /health',
       'GET /metrics',
       'GET /ready',

@@ -435,6 +435,10 @@ const empty = (query: AuditQuery) =>
  * edge reads as the values meaning different amounts of something, when what
  * differs is how many letters they happen to have.
  */
+/** The connection a row came through, from `client` as `connection:<id>`. */
+const connectionOf = (record: AuditRecord): string | undefined =>
+  record.client?.startsWith('connection:') === true ? record.client.slice('connection:'.length) : undefined
+
 function row(record: AuditRecord, resolved: Names, onActor: (id: string) => void): HTMLElement {
   const target = Object.entries(record.target)
   // `agoCell` rather than a `<td>` built here: `lint:admin-layout` asks that of
@@ -457,6 +461,12 @@ function row(record: AuditRecord, resolved: Names, onActor: (id: string) => void
     h('td', {},
       h('code', { class: 'id' }, record.action),
       record.surface === null ? null : h('span', { class: 'tag' }, record.surface),
+      // The application a delegated call came through. An annotation on the
+      // action rather than a column: most rows have none, and a column that is
+      // empty fifty times out of fifty-one is width taken from the target.
+      ...(connectionOf(record) === undefined
+        ? []
+        : [h('div', { class: 'cell-note via' }, 'through ', resolved.get(connectionOf(record) as string) ?? 'a connected application')]),
     ),
     h('td', { class: 'named' },
       ...(target.length === 0

@@ -10,11 +10,18 @@ import {
   type McpRequestContext,
 } from '@modelcontextprotocol/server'
 import {
+  ADMIN_MCP_PATH,
+  ADMIN_PROTECTED_RESOURCE_PATH,
+  adminAudience,
+  adminResourceMetadata,
   allowedRequestHeaders,
+  connectionClient,
   corsHeaders,
+  inAuditScope,
   logger,
   preflightHeaders,
   PROTECTED_RESOURCE_PATH,
+  setAuditClient,
   type ProtectedResourceMetadata,
 } from '@nacre.work/core'
 import {
@@ -29,6 +36,7 @@ import {
   type VerifyOptions,
 } from '@nacre.work/api'
 
+import { buildAdminServer } from './admin.js'
 import { buildServer, type Layers, type McpMetrics, type ToolRunner, type SkillSource } from './factory.js'
 import { dispatchCatalog } from './tools.js'
 
@@ -152,7 +160,23 @@ export interface McpOptions {
   readonly metricsToken?: string
   /** Where the tool path writes what it measured. */
   readonly observe?: McpMetrics
+
+  /**
+   * The administrative MCP at `/mcp/admin`. docs/mcp-admin.md.
+   *
+   * Absent, the path is not served at all — a plain `404` like any other, and
+   * no discovery document for it — which is what a deployment that has not
+   * enabled it gets. Present, it is a resource of its own: its discovery
+   * document names `…/mcp/admin`, its tokens carry the administrative audience
+   * and nothing else is accepted, and its `instructions` carry no skill.
+   */
+  readonly admin?: {
+    readonly tools: ToolRunner
+  }
 }
+
+/** Which of the two resources a path is, on this deployment. */
+type Surface = 'default' | 'admin'
 
 /**
  * Which budget a tool spends from.
@@ -328,11 +352,30 @@ function originOf(req: IncomingMessage): string | undefined {
   return `${first === 'https' ? 'https' : 'http'}://${host}`
 }
 
-/** Where this request should be told to read the protected-resource document. */
-function metadataUrlFor(req: IncomingMessage, options: McpOptions): string {
+/**
+ * Where this request should be told to read the protected-resource document —
+ * the administrative one for the administrative resource. RFC 9728 puts a
+ * resource's document at the well-known path with the resource's own path
+ * appended, so a client of `/mcp/admin` that read the root document would be
+ * told the ordinary resource and ask for a token this path refuses.
+ */
+function metadataUrlFor(req: IncomingMessage, options: McpOptions, surface: Surface = 'default'): string {
   const origin = originOf(req)
-  if (options.resourceFromRequest === undefined || origin === undefined) return options.resourceMetadataUrl
-  return new URL(PROTECTED_RESOURCE_PATH, origin).toString()
+  const path = surface === 'admin' ? ADMIN_PROTECTED_RESOURCE_PATH : PROTECTED_RESOURCE_PATH
+  if (options.resourceFromRequest === undefined || origin === undefined) {
+    return surface === 'admin' ? new URL(path, options.resourceMetadataUrl).toString() : options.resourceMetadataUrl
+  }
+  return new URL(path, origin).toString()
+}
+
+/** The document for a resource, built from the request's origin where the deployment did not pin one. */
+function metadataFor(req: IncomingMessage, options: McpOptions, surface: Surface): ProtectedResourceMetadata {
+  const reached = originOf(req)
+  const base =
+    options.resourceFromRequest !== undefined && reached !== undefined
+      ? options.resourceFromRequest(reached)
+      : options.resourceMetadata
+  return surface === 'admin' ? adminResourceMetadata(base) : base
 }
 
 /**
@@ -354,8 +397,10 @@ interface Faces {
   readonly legacy: (request: Request, authInfo: AuthInfo, parsedBody: unknown) => Promise<Response>
 }
 
-function faces(options: McpOptions): Faces {
-  const factory = (ctx: McpRequestContext) => {
+type Factory = (ctx: McpRequestContext) => import('@modelcontextprotocol/server').McpServer | Promise<import('@modelcontextprotocol/server').McpServer>
+
+function faces(options: McpOptions): { readonly default: Faces; readonly admin?: Faces } {
+  const ordinary: Factory = (ctx) => {
     const verified = verifiedOf(ctx)
     return buildServer({
       auth: verified.auth,
@@ -369,6 +414,27 @@ function faces(options: McpOptions): Faces {
       ...(options.observe === undefined ? {} : { observe: options.observe }),
     })
   }
+  const admin = options.admin
+  return {
+    default: facesOf(ordinary),
+    ...(admin === undefined
+      ? {}
+      : {
+          admin: facesOf((ctx) => {
+            const verified = verifiedOf(ctx)
+            return buildAdminServer({
+              auth: verified.auth,
+              requestId: () => verified.requestId,
+              tools: admin.tools,
+              ...(options.serverVersion === undefined ? {} : { serverVersion: options.serverVersion }),
+              ...(options.observe === undefined ? {} : { observe: options.observe }),
+            })
+          }),
+        }),
+  }
+}
+
+function facesOf(factory: Factory): Faces {
   const onerror = (error: Error): void => {
     // Reporting only: the SDK has already answered the request. A rejected
     // frame — a header that lies, a revision nobody speaks — is the client's
@@ -403,7 +469,9 @@ function faces(options: McpOptions): Faces {
 export function createMcpServer(options: McpOptions): Server {
   const served = faces(options)
   return createServer((req, res) => {
-    void handle(req, res, options, served).catch((error: unknown) => {
+    // Each request in its own audit scope, so the connection authentication
+    // finds is on every row the tools write for it and on no other request's.
+    void inAuditScope(() => handle(req, res, options, served)).catch((error: unknown) => {
       logger.error('mcp request failed', { error: String(error).slice(0, 200) })
       if (!res.headersSent) send(res, 500, rpcError(null, -32603, 'Internal error'))
     })
@@ -450,10 +518,19 @@ async function reply(res: ServerResponse, response: Response): Promise<void> {
   res.end(Buffer.from(await response.arrayBuffer()))
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse, options: McpOptions, served: Faces): Promise<void> {
+async function handle(
+  req: IncomingMessage,
+  res: ServerResponse,
+  options: McpOptions,
+  served: { readonly default: Faces; readonly admin?: Faces },
+): Promise<void> {
   const requestId = randomUUID()
 
   const path = (req.url ?? '').split('?')[0]
+  // The administrative resource exists only where the deployment built one;
+  // otherwise its path is as unserved as any other.
+  const surface: Surface | undefined =
+    path === '/mcp' ? 'default' : path === ADMIN_MCP_PATH && served.admin !== undefined ? 'admin' : undefined
 
   // Prometheus, on the same terms as the API's: unauthenticated unless a token
   // is configured, and a wrong token gets 404 rather than 401 so a deployment
@@ -523,7 +600,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // that starts the OAuth walk and the discovery document it points at.
   for (const [name, value] of Object.entries(cors)) res.setHeader(name, value)
 
-  if (req.method === 'OPTIONS' && path === '/mcp') {
+  if (req.method === 'OPTIONS' && surface !== undefined) {
     if (!originAllowed) {
       // A preflight with no origin is not a preflight. Refused the way any
       // unrouted method is, and without a CORS header, so nothing is admitted
@@ -554,18 +631,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   //
   // Not a JSON-RPC route: discovery is plain HTTP GET, and answering it in the
   // RPC envelope would make it unreadable to every client that follows RFC 9728.
-  if (req.method === 'GET' && path === PROTECTED_RESOURCE_PATH) {
+  //
+  // Per request when the deployment did not pin one. Built here rather than
+  // cached: the answer depends on the `Host` this request carried, and two
+  // clients reaching the same replica on two names are both entitled to a
+  // document that matches the URL they used.
+  const documentFor: Surface | undefined =
+    path === PROTECTED_RESOURCE_PATH
+      ? 'default'
+      : path === ADMIN_PROTECTED_RESOURCE_PATH && served.admin !== undefined
+        ? 'admin'
+        : undefined
+  if (req.method === 'GET' && documentFor !== undefined) {
     res.writeHead(200, { 'content-type': 'application/json' })
-    // Per request when the deployment did not pin one. Built here rather than
-    // cached: the answer depends on the `Host` this request carried, and two
-    // clients reaching the same replica on two names are both entitled to a
-    // document that matches the URL they used.
-    const reached = originOf(req)
-    const metadata =
-      options.resourceFromRequest !== undefined && reached !== undefined
-        ? options.resourceFromRequest(reached)
-        : options.resourceMetadata
-    res.end(JSON.stringify(metadata))
+    res.end(JSON.stringify(metadataFor(req, options, documentFor)))
     return
   }
 
@@ -574,12 +653,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // what to answer: `405`, not `404`. The difference is load-bearing for a
   // client deciding which era this server speaks — a `404` is one of the
   // signals that sends it down the legacy HTTP+SSE path.
-  if (path === '/mcp' && (req.method === 'GET' || req.method === 'DELETE')) {
+  if (surface !== undefined && (req.method === 'GET' || req.method === 'DELETE')) {
     send(res, 405, rpcError(null, -32601, 'Method Not Allowed'), { allow: 'POST' })
     return
   }
 
-  if (req.method !== 'POST' || path !== '/mcp') {
+  if (req.method !== 'POST' || surface === undefined) {
     notServed(res, options)
     return
   }
@@ -590,7 +669,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // rather than about its framing.
 
   const presented = req.headers.authorization
-  const auth = await authenticate(presented, options.verify, '/mcp', requestId)
+  // The administrative resource takes its own audience and only an
+  // administrative connection — T31. `/mcp` takes the installation's audience,
+  // which an administrative token does not carry, and `authenticate` refuses an
+  // administrative connection anywhere but here as well, so neither half rests
+  // on the other.
+  const verify: VerifyOptions =
+    surface === 'admin'
+      ? { ...options.verify, audience: adminAudience(options.verify.audience), surface: 'admin' }
+      : options.verify
+  const auth = await authenticate(presented, verify, path ?? '/mcp', requestId)
   if (auth instanceof Problem) {
     // By the kind presented, never by the reason. Same series and same labels
     // as the REST surface, or a key rotation shows up on one dashboard as two
@@ -611,10 +699,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
     send(res, 401, rpcError(null, -32001, 'Unauthorized'), {
       // The same rule as the document itself: a 401 that points at a metadata
       // URL on another host sends the client somewhere it cannot compare.
-      'www-authenticate': `Bearer resource_metadata="${metadataUrlFor(req, options)}"`,
+      'www-authenticate': `Bearer resource_metadata="${metadataUrlFor(req, options, surface)}"`,
     })
     return
   }
+  if (auth.delegation !== undefined) setAuditClient(connectionClient(auth.delegation.id))
 
   let body: Buffer
   try {
@@ -652,7 +741,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
   // budget, and only for a name the catalog has: an unknown tool goes to the
   // SDK and gets its answer about the tool, because a 429 on a tool that does
   // not exist would confirm it does.
-  if (rpc.method === 'tools/call' && options.limits !== undefined && options.limitPolicies !== undefined) {
+  if (
+    surface === 'default' &&
+    rpc.method === 'tools/call' &&
+    options.limits !== undefined &&
+    options.limitPolicies !== undefined
+  ) {
     const name = (rpc.params as { name?: unknown } | undefined)?.name
     const definition = typeof name === 'string' ? dispatchCatalog().find((t) => t.name === name) : undefined
     const resource = definition === undefined ? undefined : resourceForTool(definition.name)
@@ -676,9 +770,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: McpOpt
 
   // The era decides the face, and the SDK decides the era — from the `_meta`
   // envelope and the mirrored headers, by the same rules it then enforces.
+  const face = surface === 'admin' && served.admin !== undefined ? served.admin : served.default
   const legacy = await isLegacyRequest(request, parsed)
   const response = legacy
-    ? await served.legacy(request, authInfo, parsed)
-    : await served.modern.fetch(request, { authInfo, parsedBody: parsed })
+    ? await face.legacy(request, authInfo, parsed)
+    : await face.modern.fetch(request, { authInfo, parsedBody: parsed })
   await reply(res, response)
 }

@@ -366,7 +366,11 @@ const FIXTURES = {
         occurred_at: '2026-03-15T08:41:02.884Z',
         actor: { type: 'service_account', id: 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55', label: 'service_account:c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55' },
         surface: 'mcp',
-        client: 'claude-desktop',
+        // An agent's key names no connection: only a delegation carries one,
+        // and a delegation is always a person. This said a client here, which
+        // no server writes — and the picture then showed an agent acting
+        // "through Claude", which cannot happen.
+        client: null,
         action: 'get_document',
         target: { doc_id: 'e77a3c10-9d42-4b86-8f51-0a4c7e93b2d6' },
         result: 'allow',
@@ -394,12 +398,44 @@ const FIXTURES = {
         occurred_at: '2026-03-15T08:39:47.115Z',
         actor: { type: 'service_account', id: 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55', label: 'service_account:c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55' },
         surface: 'mcp',
-        client: 'claude-desktop',
+        // An agent's key names no connection: only a delegation carries one,
+        // and a delegation is always a person. This said a client here, which
+        // no server writes — and the picture then showed an agent acting
+        // "through Claude", which cannot happen.
+        client: null,
         action: 'search',
         target: { layer: 'contracts' },
         result: 'deny',
         detail: {},
         request_id: 'req_2b81dd',
+      },
+      // A person's read through the application they connected: the
+      // connection resolves to its name under the action.
+      {
+        id: '10490c',
+        occurred_at: '2026-03-15T08:12:09.517Z',
+        actor: { type: 'user', id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', label: 'user:0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90' },
+        surface: 'mcp',
+        client: 'connection:c7a1e5d2-3b84-4f60-9e17-5d2c8a0b4f61',
+        action: 'get_document',
+        target: { document_id: 'e77a3c10-9d42-4b86-8f51-0a4c7e93b2d6' },
+        result: 'allow',
+        detail: {},
+        request_id: 'req_4c19a7',
+      },
+      // A read through the administrative connection: `mcp-admin`, and the
+      // connection resolved to the application the person approved.
+      {
+        id: '10489b',
+        occurred_at: '2026-03-15T07:58:41.330Z',
+        actor: { type: 'user', id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', label: 'user:0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90' },
+        surface: 'mcp-admin',
+        client: 'connection:f3b9d2a6-7c41-4e85-b0d3-9a2e6c1f5b70',
+        action: 'audit.read',
+        target: { tool: 'summarize_audit' },
+        result: 'allow',
+        detail: {},
+        request_id: 'req_5d0e2a',
       },
       {
         id: '10489',
@@ -468,6 +504,16 @@ const FIXTURES = {
         approved_by: '4f2c8e61-7a95-4d13-9b60-2e8a5c0f7b34', approved_by_email: 'sam@example.com',
         approver_disabled: false, layers: [], permissions: ['read'],
         created_at: '2026-03-02T15:00:00.000Z', last_refreshed_at: '2026-03-14T17:12:00.000Z', revoked_at: null,
+      },
+      // The administrative connection: the same application, connected to
+      // the other resource, and a second row rather than the first one
+      // overwritten.
+      {
+        id: 'f3b9d2a6-7c41-4e85-b0d3-9a2e6c1f5b70', client_id: 'claude', client_name: 'Claude',
+        acts_as: 'user', service_account_id: null, service_account_name: null,
+        approved_by: DANA, approved_by_email: 'dana@example.com', approver_disabled: false,
+        layers: [], permissions: ['read', 'admin'], surface: 'admin',
+        created_at: '2026-03-14T09:30:00.000Z', last_refreshed_at: '2026-03-15T07:58:00.000Z', revoked_at: null,
       },
       {
         id: '81d0b6a3-5e29-4c7f-a0d4-6b2e9f3c1a58', client_id: 'indexer', client_name: 'Nightly indexer',
@@ -1238,6 +1284,28 @@ await shot('consent-skill', {
   prepare: async (page) => {
     await page.getByLabel('Read Handbook').check()
     await page.getByLabel('Edit the skill of Handbook').check()
+  },
+})
+// The administrative MCP's consent: one decision and no choices, what it may
+// and may not do, and what stops it.
+await shot('consent-admin', {
+  hash: '#/consent?client_id=claude&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&state=s1&resource=https%3A%2F%2Fmcp.example.com%2Fmcp%2Fadmin',
+  heading: 'Give an application administrative access',
+})
+// And to a member, who is told who can approve it rather than being shown a
+// button the server would refuse.
+await shot('consent-admin-member', {
+  hash: '#/consent?client_id=claude&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&state=s1&resource=https%3A%2F%2Fmcp.example.com%2Fmcp%2Fadmin',
+  heading: 'Give an application administrative access',
+  fixtures: {
+    'GET /v1/me': {
+      organization: 'acme',
+      principal_type: 'user',
+      principal_id: '4f2c8e61-7a95-4d13-9b60-2e8a5c0f7b34',
+      role: 'member',
+      administers: false,
+      holds_own_credentials: true,
+    },
   },
 })
 // What each connection may do, said under its name.

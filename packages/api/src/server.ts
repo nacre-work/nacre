@@ -37,6 +37,11 @@ import {
   ADMIN_PREFIX,
   adminRoutes,
   withAuditSinks,
+  connectionClient,
+  inAuditScope,
+  setAuditClient,
+  ADMIN_PROTECTED_RESOURCE_PATH,
+  adminResourceMetadata,
   TooBusy,
   type AuditEvent,
   type AuditWriter,
@@ -48,6 +53,7 @@ import {
   readSkillZip,
   writeSkillZip,
   type SkillFiles,
+  namesAdminResource,
 } from '@nacre.work/core'
 
 import {
@@ -659,9 +665,22 @@ export interface GrantRecord extends GrantInput {
   readonly source: string
 }
 
+/**
+ * Narrowing a grant listing to one principal or one scope. Applied in SQL, so
+ * "who holds anything on `contracts`" is one indexed read rather than a walk
+ * through every grant in the organization. A narrowing only ever removes: the
+ * visibility rule below it is unchanged.
+ */
+export interface GrantFilter {
+  readonly principalType?: GrantRecord['principalType']
+  readonly principalId?: string
+  readonly scopeType?: GrantRecord['scopeType']
+  readonly scopeId?: string
+}
+
 export interface Grants {
   /** Grants in the caller's organization. Admin only; the caller is checked above. */
-  list(auth: AuthContext, page?: Page): Promise<PageResult<GrantRecord>>
+  list(auth: AuthContext, page?: Page, filter?: GrantFilter): Promise<PageResult<GrantRecord>>
   /** `undefined` when the caller may not administer the scope, or it does not exist. */
   issue(auth: AuthContext, input: GrantInput): Promise<GrantRecord | undefined>
   /**
@@ -779,6 +798,17 @@ export interface AuditQuery {
   readonly actorId?: string
   readonly action?: string
   readonly result?: 'allow' | 'deny' | 'error'
+  /**
+   * A layer, by id **and** slug, because the log records both: an
+   * administrative write names `layer_id` and an ingest names the `layer` it
+   * was asked for by slug. A filter on one would miss half the layer's rows,
+   * and an empty page under a filter reads as "nothing happened".
+   */
+  readonly layer?: { readonly id: string; readonly slug: string }
+  readonly documentId?: string
+  /** The connection a call came through, as `connection:<id>`. */
+  readonly client?: string
+  readonly surface?: 'api' | 'mcp' | 'mcp-admin' | 'admin' | 'system'
   /**
    * Restrict to administrative actions — everything that is not a substantive
    * access to a document's contents.
@@ -2916,7 +2946,9 @@ export function createApi(options: ApiOptions): Server {
   }
 
   return createServer((req, res) => {
-    void handle(req, res, withSinks).catch(() => {
+    // Each request in its own audit scope, so the connection authentication
+    // finds is on every row this request writes and on no other request's.
+    void inAuditScope(() => handle(req, res, withSinks)).catch(() => {
       // handle() converts everything it can into a Problem. Reaching here means
       // the failure was in the error path itself; say nothing about it.
       if (!res.headersSent) send(res, 500, internal(req.url ?? '/', 'unknown').toJSON(), 'unknown')
@@ -3443,6 +3475,17 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     return
   }
 
+  // The administrative MCP's own document, docs/mcp-admin.md. RFC 9728 puts a
+  // resource's document at the well-known path with the resource's path
+  // appended, and the front door and the chart both route `/.well-known/` here
+  // while `/mcp/admin` goes to the transport — so without this a client behind
+  // either would be pointed by the transport's `401` at a path this process
+  // answered `404` for, and could never begin.
+  if (req.method === 'GET' && instance === ADMIN_PROTECTED_RESOURCE_PATH && options.resourceMetadata !== undefined) {
+    send(res, 200, adminResourceMetadata(options.resourceMetadata) as unknown as Record<string, unknown>, requestId)
+    return
+  }
+
   /**
    * RFC 8414 — where a client finds the two endpoints.
    *
@@ -3884,6 +3927,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
   }
 
   const auth = await authenticate(req.headers.authorization, options.verify, instance, requestId)
+  if (!(auth instanceof Problem) && auth.delegation !== undefined) {
+    setAuditClient(connectionClient(auth.delegation.id))
+  }
   if (auth instanceof Problem) {
     // Counted by what was presented, never by why it failed.
     //
@@ -5858,6 +5904,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
             // address, and everybody else sees only their own connections.
             approved_by_email: c.approvedByEmail,
             approver_disabled: c.approverDisabled,
+            // Which resource it reaches: the administrative MCP, or the API
+            // and `/mcp`. The same application connected to both is two rows.
+            surface: c.surface,
             // Empty means the delegation reaches everything its approver does.
             //
             // Each entry is `{ id, permissions? }`, the shape the consent
@@ -5973,6 +6022,45 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
+      }
+
+      // The administrative MCP, named by the RFC 8707 resource indicator the
+      // client sent and the consent screen carried here. docs/mcp-admin.md: a
+      // resource of its own, whose tokens reach `/mcp/admin` and nothing else,
+      // so `admin` can be approved for it without reaching REST.
+      //
+      // Three rules, each refused before anything is stored. It connects a
+      // person and never an agent — an agent holds grants and never the role
+      // this surface is for. It is approved by an organization administrator
+      // and nobody else, answered as `404` like every endpoint that role gates.
+      // And it takes no narrowing and no ceiling: the surface reads no
+      // documents to narrow, and its ceiling is fixed below rather than chosen,
+      // because the screen asking for it is a single yes.
+      const administrative = namesAdminResource(need('resource'))
+      if (administrative) {
+        if (!delegating) {
+          const problem = badRequest(
+            instance,
+            requestId,
+            'The administrative MCP connects a person. It cannot act as an agent: an agent holds grants, never the role it administers with.',
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        if (!administers(auth)) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        if (consent['layers'] !== undefined || consent['permissions'] !== undefined) {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "The administrative MCP takes no 'layers' and no 'permissions': it reads no documents to narrow, and what it may do is fixed.",
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
       }
 
       // The narrowing, which can only ever remove. Ids rather than slugs: this
@@ -6144,13 +6232,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       const subject: ConsentSubject = delegating
         ? { actsAs: 'user', userId: auth.principal.id }
         : { actsAs: 'service_account', serviceAccountId: serviceAccountId as string }
-      const consentId = await options.oauth.consents.record(
-        auth,
-        clientId,
-        subject,
-        narrowing === undefined ? [] : narrowing,
-        isStringArray(ceiling) && ceiling.every(isCeilingValue) ? ceiling : undefined,
-      )
+      const consentId = administrative
+        ? // `read` and `admin`: what the surface's tools resolve. Not `write` —
+          // it adds and changes no documents, and a ceiling holding it would be
+          // a verb approved for nothing.
+          await options.oauth.consents.record(auth, clientId, subject, [], ['read', 'admin'], 'admin')
+        : await options.oauth.consents.record(
+            auth,
+            clientId,
+            subject,
+            narrowing === undefined ? [] : narrowing,
+            isStringArray(ceiling) && ceiling.every(isCeilingValue) ? ceiling : undefined,
+          )
       const code = generateCode()
       const common = {
         orgId: auth.orgId,

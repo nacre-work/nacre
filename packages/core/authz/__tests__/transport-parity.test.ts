@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { Readable } from 'node:stream'
@@ -382,5 +382,28 @@ describe('baseline · the two MCP transports answer alike', () => {
       expect(text, `${name} builds no McpServer of its own`).not.toMatch(/new McpServer\(/)
     }
     expect(SHARED.length).toBeGreaterThanOrEqual(10)
+
+    // The comment above says "nowhere else under `packages/mcp/src`", and the
+    // assertions only ever read two files. So the claim is asked of every
+    // file now, with the one exemption named and argued: the administrative
+    // MCP builds its own `McpServer`, because it is a different surface —
+    // other tools, other instructions, prompts, a token this one refuses —
+    // served on one transport only, so there is no pair of it to diverge.
+    // What would make it a divergence is STDIO reaching it, which is refused
+    // beside the exemption: STDIO authenticates with a service account key,
+    // and the administrative surface admits none.
+    const EXEMPT: Readonly<Record<string, string>> = {
+      'factory.ts': 'the one builder both transports call',
+      'admin.ts': 'the administrative surface, docs/mcp-admin.md — Streamable HTTP only',
+    }
+    const dir = fileURLToPath(new URL('../../../mcp/src/', import.meta.url))
+    const builders = readdirSync(dir)
+      .filter((f) => f.endsWith('.ts'))
+      .filter((f) => /registerTool\(|new McpServer\(/.test(readFileSync(`${dir}${f}`, 'utf8')))
+      .sort()
+    expect(builders, 'a file builds an McpServer or registers a tool without a written reason').toEqual(
+      Object.keys(EXEMPT).sort(),
+    )
+    expect(stdio, 'STDIO never serves the administrative surface').not.toMatch(/from '\.\/admin(-services)?\.js'/)
   })
 })

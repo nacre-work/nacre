@@ -41,7 +41,6 @@ import {
   PostgresEmbeddingProviders,
   PostgresWorkspaces,
 } from './adapters.js'
-import { SignJWT } from 'jose'
 
 import { Idempotency } from './idempotency.js'
 import { Login } from './login.js'
@@ -61,6 +60,7 @@ import { PostgresSkills } from './skills.js'
 import { PostgresServiceAccounts } from './service-keys.js'
 import { postgresVerification } from './verification.js'
 import { createApi } from './server.js'
+import { oauthMinter } from './oauth-mint.js'
 
 /**
  * The REST API process.
@@ -454,50 +454,17 @@ async function main(): Promise<void> {
       // inventing a second pair of knobs would be two answers to one question.
       refreshTtlSeconds: config.refreshTokenTtl,
       accessTtlSeconds: config.accessTokenTtl,
-      /**
-       * A token for whatever the connection acts as.
-       *
-       * For an **agent**: `principal_type: 'service_account'` and `sub` is the
-       * account — the same claims a service account key resolves to, so
-       * everything downstream treats this exactly as it treats one and there is
-       * no second notion of what an agent is. `role` is `member` because a
-       * service account has no organization-wide role: everything it reaches,
-       * it reaches by grant.
-       *
-       * For a **delegation**: `principal_type: 'user'` and `sub` is the person,
-       * plus `del` naming the connection. The permitted set is deliberately not
-       * in here — a token carrying one would keep answering with the access its
-       * holder had at consent, and every revocation would wait for it to
-       * expire. `role` is carried for shape and is **not** what the request
-       * runs as: `authenticate` takes the role from the connection's row, so a
-       * demotion applies without waiting for the token to expire.
-       */
-      mint: async (approved) => {
-        const ttl = config.accessTokenTtl
-        const now = Math.floor(Date.now() / 1000)
-        const delegated = approved.subject.actsAs === 'user'
-        const accessToken = await new SignJWT({
-          org: approved.orgId,
-          principal_type: delegated ? 'user' : 'service_account',
-          role: 'member',
-          ...(delegated ? { del: approved.consentId } : {}),
-        })
-          .setProtectedHeader({
-            alg: jwt.algorithm,
-            ...(jwt.keyId === undefined ? {} : { kid: jwt.keyId }),
-          })
-          .setSubject(
-            approved.subject.actsAs === 'user'
-              ? approved.subject.userId
-              : approved.subject.serviceAccountId,
-          )
-          .setIssuer(config.jwtIssuer)
-          .setAudience(config.jwtAudience)
-          .setIssuedAt(now)
-          .setExpirationTime(now + ttl)
-          .sign(jwt.signing)
-        return { accessToken, expiresIn: ttl }
-      },
+      // `oauth-mint.ts`, so the audience rule — the administrative MCP's own,
+      // or the installation's — is one function this process and the suite
+      // that tests it both call.
+      mint: oauthMinter({
+        issuer: config.jwtIssuer,
+        audience: config.jwtAudience,
+        ttlSeconds: config.accessTokenTtl,
+        signing: jwt.signing,
+        algorithm: jwt.algorithm,
+        ...(jwt.keyId === undefined ? {} : { keyId: jwt.keyId }),
+      }),
     },
   })
 

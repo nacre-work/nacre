@@ -39,6 +39,7 @@ import {
   classifyIngestFailure,
   withoutHosts,
   DOCUMENT_ACCESS_ACTIONS,
+  auditClient,
 } from '@nacre.work/core'
 import { createHash } from 'node:crypto'
 
@@ -63,6 +64,7 @@ import type {
   Documents,
   GrantInput,
   GrantRecord,
+  GrantFilter,
   Grants,
   Ingest,
   IngestOutcome,
@@ -996,8 +998,8 @@ export class PostgresAudit implements AuditWriter {
           // and the schema were right from the first migration; only the write
           // was not.
           `INSERT INTO audit_events
-             (org_id, actor_type, actor_id, actor_label, action, surface, target, result, detail, request_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)`,
+             (org_id, actor_type, actor_id, actor_label, action, surface, target, result, detail, request_id, client)
+           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11)`,
           [
             event.orgId,
             actorType ?? 'unknown',
@@ -1009,6 +1011,10 @@ export class PostgresAudit implements AuditWriter {
             event.result,
             JSON.stringify(event.detail),
             event.requestId,
+            // From the event, or from the request's scope where a port was
+            // not wrapped by `withAuditSinks`. NULL for anything that did not
+            // come through a connection — a console session, a service key.
+            event.client ?? auditClient() ?? null,
           ],
         )
       },
@@ -2636,7 +2642,7 @@ export class PostgresGrants implements Grants {
    * removed after it, which is a page of grants silently missing from an
    * administrator's view of who can reach what.
    */
-  async list(auth: AuthContext, page?: Page): Promise<PageResult<GrantRecord>> {
+  async list(auth: AuthContext, page?: Page, filter?: GrantFilter): Promise<PageResult<GrantRecord>> {
     return withOrg(
       this.pool,
       auth.orgId,
@@ -2645,9 +2651,22 @@ export class PostgresGrants implements Grants {
         const plan = activeResolver().resolve(context, 'admin')
         if (plan.kind === 'none') return { items: [], nextCursor: null }
 
+        const params: unknown[] = [auth.orgId]
+        const bind = (value: unknown): string => {
+          params.push(value)
+          return `$${params.length}`
+        }
         const after = page?.after
         const seek =
-          after === undefined ? '' : ' AND (created_at, id) > ($2::timestamptz, $3::uuid)'
+          after === undefined
+            ? ''
+            : ` AND (created_at, id) > (${bind(after.createdAt)}::timestamptz, ${bind(after.id)}::uuid)`
+        const narrowed = [
+          filter?.principalType === undefined ? '' : ` AND principal_type = ${bind(filter.principalType)}`,
+          filter?.principalId === undefined ? '' : ` AND principal_id = ${bind(filter.principalId)}::uuid`,
+          filter?.scopeType === undefined ? '' : ` AND scope_type = ${bind(filter.scopeType)}`,
+          filter?.scopeId === undefined ? '' : ` AND scope_id = ${bind(filter.scopeId)}::uuid`,
+        ].join('')
         const cap = page === undefined ? '' : ` LIMIT ${page.limit}`
 
         const { rows } = await client.query<{
@@ -2664,8 +2683,8 @@ export class PostgresGrants implements Grants {
         }>(
           `SELECT id, principal_type, principal_id, scope_type, scope_id, permission, effect, source,
                   created_at, created_at::text AS created_at_text
-             FROM grants WHERE org_id = $1${seek} ORDER BY created_at, id${cap}`,
-          after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
+             FROM grants WHERE org_id = $1${seek}${narrowed} ORDER BY created_at, id${cap}`,
+          params,
         )
 
         const visible = rows
@@ -2893,6 +2912,50 @@ export class PostgresGrants implements Grants {
  * produce a first page that works and a second page that silently returns the
  * beginning of the log.
  */
+/** What `summarize` groups by. Each is a fixed expression; nothing a caller sends reaches the SQL. */
+export type AuditGrouping = 'actor' | 'action' | 'result' | 'surface' | 'connection' | 'layer' | 'document' | 'day' | 'hour'
+
+/** A JSON array in `target`, or an empty one: `jsonb_array_elements_text` raises on anything else. */
+const targetArray = (field: string): string =>
+  `jsonb_array_elements_text(CASE WHEN jsonb_typeof(e.target->'${field}') = 'array' THEN e.target->'${field}' ELSE '[]'::jsonb END)`
+
+/**
+ * The keys one event contributes, as a set-returning subquery over `e`.
+ *
+ * A layer is reported by slug whichever shape recorded it: an id is looked up
+ * in this organization's own layers, so two spellings of one layer are one
+ * bucket rather than two half-counts.
+ */
+const GROUPING_KEYS: Readonly<Record<AuditGrouping, string>> = {
+  actor: 'SELECT e.actor_label',
+  // A template rather than a quoted string: `lint:audit-actions` reads every
+  // quoted `action:` under the writers as an action somebody records, and this
+  // is a grouping, not a record.
+  action: `SELECT e.action`,
+  result: 'SELECT e.result',
+  surface: 'SELECT e.surface',
+  connection: 'SELECT e.client',
+  layer: `SELECT l.slug FROM layers l WHERE l.org_id = e.org_id AND l.id::text = e.target->>'layer_id'
+          UNION SELECT e.target->>'layer' WHERE e.target->>'layer' IS NOT NULL
+          UNION SELECT ${targetArray('layers')}`,
+  document: `SELECT e.target->>'document_id' WHERE e.target->>'document_id' IS NOT NULL
+             UNION SELECT ${targetArray('returned_docs')}`,
+  day: "SELECT to_char(date_trunc('day', e.occurred_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD')",
+  hour: "SELECT to_char(date_trunc('hour', e.occurred_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD\"T\"HH24:00\"Z\"')",
+}
+
+export const AUDIT_GROUPINGS = Object.keys(GROUPING_KEYS) as readonly AuditGrouping[]
+
+export interface AuditBucket {
+  /** The value grouped on; `null` where events carry none, such as a document for a sign-in. */
+  readonly key: string | null
+  readonly events: number
+  readonly denied: number
+  readonly errors: number
+  readonly first: string
+  readonly last: string
+}
+
 export class PostgresAuditReader implements AuditReader {
   constructor(
     private readonly pool: Pool,
@@ -2926,6 +2989,109 @@ export class PostgresAuditReader implements AuditReader {
    */
   private static readonly DOCUMENT_ACCESS = DOCUMENT_ACCESS_ACTIONS
 
+  /**
+   * The predicates every read of the log shares beyond time, actor, action and
+   * result — and the platform administrator's restriction, which is here so
+   * that `summarize` cannot be written without it. A count of document reads
+   * is a record of document access as much as the rows are.
+   */
+  private static narrowing(query: AuditQuery, bind: (value: unknown) => string): string[] {
+    const where: string[] = []
+    // A layer and a document are each recorded in three shapes: an
+    // administrative write names `layer_id`, an ingest the `layer` slug, and a
+    // search the `layers` it reached and the `returned_docs` it answered with.
+    // A filter on one shape would miss the reads, which are the rows an
+    // investigation is usually after.
+    if (query.layer !== undefined) {
+      const slug = bind(query.layer.slug)
+      where.push(
+        `(target->>'layer_id' = ${bind(query.layer.id)} OR target->>'layer' = ${slug} OR target->'layers' ? ${slug})`,
+      )
+    }
+    if (query.documentId !== undefined) {
+      const id = bind(query.documentId)
+      where.push(`(target->>'document_id' = ${id} OR target->'returned_docs' ? ${id})`)
+    }
+    if (query.client !== undefined) where.push(`client = ${bind(query.client)}`)
+    if (query.surface !== undefined) where.push(`surface = ${bind(query.surface)}`)
+    if (query.administrativeOnly === true) {
+      where.push(`action <> ALL(${bind(PostgresAuditReader.DOCUMENT_ACCESS)}::text[])`)
+    }
+    return where
+  }
+
+  /**
+   * Counts, computed in the database. docs/mcp-admin.md's `summarize_audit`:
+   * an agent asked "who read `contracts` most this month" must not page
+   * through a million rows to count them, and a person asking the console the
+   * same thing should not have to export a CSV.
+   *
+   * The window is **required** and bounded. A count over a whole retention
+   * window on every call is the expensive thing `read` was written never to
+   * do, and an unbounded `GROUP BY` is that with extra steps.
+   */
+  async summarize(
+    auth: AuthContext,
+    query: AuditQuery & { readonly from: string; readonly to: string },
+    by: AuditGrouping,
+    limit: number,
+  ): Promise<readonly AuditBucket[]> {
+    return withOrg(
+      this.pool,
+      auth.orgId,
+      async (client) => {
+        const where: string[] = ['org_id = $1']
+        const params: unknown[] = [auth.orgId]
+        const bind = (value: unknown): string => {
+          params.push(value)
+          return `$${params.length}`
+        }
+        where.push(`occurred_at >= ${bind(query.from)}::timestamptz`)
+        where.push(`occurred_at < ${bind(query.to)}::timestamptz`)
+        if (query.actorId !== undefined) where.push(`actor_id = ${bind(query.actorId)}::uuid`)
+        if (query.action !== undefined) where.push(`action = ${bind(query.action)}`)
+        if (query.result !== undefined) where.push(`result = ${bind(query.result)}`)
+        where.push(...PostgresAuditReader.narrowing(query, bind))
+
+        const keys = GROUPING_KEYS[by]
+        const { rows } = await client.query<{
+          key: string | null
+          events: string
+          denied: string
+          errors: string
+          first: string
+          last: string
+        }>(
+          // One row per (event, key). For most groupings an event has exactly
+          // one key; for a layer or a document a search has several, and an
+          // event naming none drops out — "reads by document" is not about a
+          // sign-in. UNION inside the lateral, so one event counts once per
+          // key however many of its shapes name it.
+          `SELECT k.key, count(*) AS events,
+                  count(*) FILTER (WHERE result = 'deny') AS denied,
+                  count(*) FILTER (WHERE result = 'error') AS errors,
+                  min(occurred_at)::text AS first, max(occurred_at)::text AS last
+             FROM audit_events e
+             CROSS JOIN LATERAL (${keys}) AS k(key)
+            WHERE ${where.join(' AND ')}
+            GROUP BY k.key
+            ORDER BY 2 DESC, 1 NULLS LAST
+            LIMIT ${Math.max(1, Math.min(limit, 200))}`,
+          params,
+        )
+        return rows.map((r) => ({
+          key: r.key,
+          events: Number(r.events),
+          denied: Number(r.denied),
+          errors: Number(r.errors),
+          first: new Date(r.first).toISOString(),
+          last: new Date(r.last).toISOString(),
+        }))
+      },
+      this.scopeFor(),
+    )
+  }
+
   async read(auth: AuthContext, query: AuditQuery, page: Page): Promise<PageResult<AuditRecord>> {
     return withOrg(
       this.pool,
@@ -2943,9 +3109,7 @@ export class PostgresAuditReader implements AuditReader {
         if (query.actorId !== undefined) where.push(`actor_id = ${bind(query.actorId)}::uuid`)
         if (query.action !== undefined) where.push(`action = ${bind(query.action)}`)
         if (query.result !== undefined) where.push(`result = ${bind(query.result)}`)
-        if (query.administrativeOnly === true) {
-          where.push(`action <> ALL(${bind(PostgresAuditReader.DOCUMENT_ACCESS)}::text[])`)
-        }
+        where.push(...PostgresAuditReader.narrowing(query, bind))
 
         // Descending, and `<` to match. See the note on the class.
         if (page.after !== undefined) {
