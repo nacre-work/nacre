@@ -325,11 +325,13 @@ permission below and the resolver, on every call.
 
 | tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
 |---|---|---|---|---|
-| `search`, `list_layers`, `get_document`, `ingest_status` | true | false | true | false |
+| `search`, `list_layers`, `get_document`, `ingest_status`, `upload_file` | true | false | true | false |
+| `request_upload` | false — it mints a ticket | false | **false** — every call mints a new one | false |
 | `ingest_document` | false | **true** — an existing `external_id` is replaced | true | **true** — `url` fetches a page |
 | `delete_document` | false | **true** | true | false |
 
-`tool-annotations.test.ts` holds this table against the catalog.
+`tool-annotations.test.ts` holds this table against the catalog, by reading
+it: a tool missing from a row, or a value that disagrees, fails there.
 
 ### `search`
 

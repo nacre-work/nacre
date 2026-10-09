@@ -15,15 +15,24 @@ other is a build failure.
 | | |
 |---|---|
 | `search` | hybrid dense + BM25, permission-filtered inside the index traversal |
-| `list_layers` | the layers this principal can reach |
-| `get_document` | one document by id |
-| `ingest_document` | add or update a document |
+| `list_layers` | the layers this principal can reach, one page per call |
+| `get_document` | one document by id, with a link to the original file where there is one |
+| `ingest_document` | add or update a document from text or a URL |
+| `request_upload` | a single-use ticket to send a file to, so its bytes never pass through the model |
+| `upload_file` | the upload panel, in a client that renders MCP Apps |
+| `ingest_status` | what became of an ingest |
 | `delete_document` | remove one |
 
-Five tools, and the two write ones are why **an MCP client is already a
+Eight tools, and the write ones are why **an MCP client is already a
 connector**: an agent that can reach Confluence, a ticket tracker or a drive
 puts documents in through the same session it searches them out of, with its own
-permissions, and no integration code of ours in between.
+permissions, and no integration code of ours in between. For a source nobody is
+sitting in front of, the [reference connectors](https://github.com/nacre-work/connectors)
+do the same on a schedule.
+
+In a client that renders MCP Apps, `search`, `list_layers` and `upload_file`
+open a panel inside the conversation. The panel holds no credential; it calls
+these same tools through the client.
 
 ## STDIO, locally
 
