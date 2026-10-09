@@ -463,6 +463,18 @@ const SCENARIOS = [
       const scratch = frame.locator('table').first().locator('tbody tr', { hasText: 'scratch' })
       if ((await scratch.locator('.chip-write').count()) !== 1 || (await scratch.locator('.chip-read').count()) !== 0) throw new Error('scratch should show write and not read')
       if ((await frame.locator('.chip-deny').count()) !== 1) throw new Error('the deny grant is not a deny chip')
+    },
+  },
+  {
+    // The same panel after asking about somebody else from it: a second
+    // scenario rather than a press at the end of the first, so the matrix
+    // above — rule 6's one-chip row and the deny — is what gets photographed.
+    view: 'access',
+    name: 'access-someone-else',
+    input: { person: 'dana@example.com' },
+    result: text(ACCESS),
+    calls: { effective_access: (args) => (args.person === 'lee@example.com' ? ACCESS_ADMIN : ACCESS) },
+    check: async (frame) => {
       await frame.locator('input.input').fill('lee@example.com')
       await frame.locator('button', { hasText: 'Show' }).click()
       await frame.locator('td', { hasText: 'Every layer' }).waitFor()

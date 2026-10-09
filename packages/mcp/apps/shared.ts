@@ -105,6 +105,8 @@ export const STYLE = `
 
   /* ─── Tables ─────────────────────────────────────────────────────── */
   .table-wrap { overflow-x: auto; }
+  /* Prose after a table is about the table: a gap, so it does not read as its last row. */
+  .table-wrap + .facts-line { margin-top: 8px; }
   .table { width: 100%; border-collapse: collapse; background: var(--n-surface); border: 1px solid var(--n-border-color); border-radius: var(--n-radius); }
   .table th, .table td { padding: 8px 12px; text-align: left; vertical-align: top; }
   .table thead th { font-family: var(--n-font-mono); font-weight: 400; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--n-text-faint); border-bottom: 1px solid var(--n-rule); background: var(--n-surface-sunk); white-space: nowrap; }
