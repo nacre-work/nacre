@@ -166,6 +166,141 @@ const ACCOUNT = 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55'
 const DOC = 'e77a3c10-9d42-4b86-8f51-0a4c7e93b2d6'
 
 /** Everything the five views ask for, in the shapes the SDK parses. */
+const DANA = '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90'
+const CONTRACTS = '5c2f8a41-0e63-4d29-b7a8-9f14e6b30c72'
+
+/** A version as the server writes one, with its files. */
+const ORG_SKILL = {
+  version: 3,
+  name: 'acme-knowledge',
+  description:
+    'How Acme keeps its knowledge in Nacre — what to look up before answering, what never goes in, ' +
+    'and how a document is named and tagged. Use whenever you search or store anything for Acme.',
+  // Folders two levels deep and a script, because a skill's reference material
+  // lives in subfolders and the file list has to show that shape — and the
+  // scripts marker has to be seen on the base skill, not only on a layer's.
+  has_scripts: true,
+  file_count: 5,
+  principal: `user:${DANA}`,
+  surface: 'rest',
+  connection_id: null,
+  by_agent: false,
+  restored_from: null,
+  created_at: '2026-03-13T14:20:00.000Z',
+  files: {
+    'SKILL.md': [
+      '---',
+      'name: acme-knowledge',
+      'description: How Acme keeps its knowledge in Nacre — what to look up before answering, what never goes in, and how a document is named and tagged. Use whenever you search or store anything for Acme.',
+      '---',
+      '',
+      '# Acme knowledge',
+      '',
+      'Search before you answer anything about Acme\'s policies, customers or systems. If nothing comes back, say so — an empty result is an answer, not an error.',
+      '',
+      '## What goes in',
+      '',
+      '- Decisions, once they are made, with the date and who made them.',
+      '- Runbooks and how-tos somebody will need again.',
+      '- Customer agreements, **only** in `contracts`.',
+      '',
+      '## What never goes in',
+      '',
+      '- Credentials, tokens or keys of any kind.',
+      '- Personal data beyond a name and a work address.',
+      '- Guesses. If it is not checked, it is not a document.',
+      '',
+      '## How a document is written',
+      '',
+      'One subject per document, a title a person would search for, and an `external_id` derived from the subject — `policy/expenses`, not a timestamp. Tags are lower-case: `team:finance`, `kind:policy`.',
+      '',
+      'See [the tag list](reference/tags.md) for the tags each team uses, and `scripts/check-tags.sh` to check a document\'s tags before storing it.',
+      '',
+    ].join('\n'),
+    'reference/teams/finance.md': [
+      '# Finance',
+      '',
+      'Policies are tagged `team:finance` and `kind:policy`. Month-end runbooks are `kind:runbook`.',
+      '',
+    ].join('\n'),
+    'reference/teams/engineering.md': [
+      '# Engineering',
+      '',
+      'Incident write-ups are `kind:postmortem`, one per incident, named by date: `postmortem/2026-03-02`.',
+      '',
+    ].join('\n'),
+    'scripts/check-tags.sh': [
+      '#!/bin/sh',
+      '# Refuses a tag that is not lower-case `key:value`.',
+      'for tag in "$@"; do',
+      '  printf \'%s\\n\' "$tag" | grep -Eq \'^[a-z]+:[a-z0-9/-]+$\' || { echo "bad tag: $tag" >&2; exit 1; }',
+      'done',
+      '',
+    ].join('\n'),
+    'reference/tags.md': [
+      '# Tags',
+      '',
+      '| tag | meaning |',
+      '| --- | --- |',
+      '| `team:<name>` | the team that owns it |',
+      '| `kind:policy` | a rule people are held to |',
+      '| `kind:runbook` | steps to follow when something breaks |',
+      '',
+    ].join('\n'),
+  },
+}
+
+const HANDBOOK_SKILL = {
+  version: 2,
+  name: 'handbook',
+  description:
+    'What the Handbook layer holds — onboarding, equipment and policy pages for every employee — and how a page in it is titled. Read before adding to handbook.',
+  has_scripts: false,
+  file_count: 1,
+  // Through MCP, by a connected application acting for Dana: the marker the
+  // panel exists to show, because a rewrite planted by a document arrives
+  // exactly this way.
+  principal: `user:${DANA}`,
+  surface: 'mcp',
+  connection_id: '1c7e9a42-5b03-4d86-9f21-8e0a6c3b5d17',
+  by_agent: true,
+  restored_from: null,
+  created_at: '2026-03-14T08:10:00.000Z',
+  files: {
+    'SKILL.md': [
+      '---',
+      'name: handbook',
+      'description: What the Handbook layer holds — onboarding, equipment and policy pages for every employee — and how a page in it is titled. Read before adding to handbook.',
+      '---',
+      '',
+      '# Handbook',
+      '',
+      'Pages every employee may read. One page per topic, titled the way a new hire would ask: *Onboarding*, *Equipment*, *Expenses*.',
+      '',
+      '- `external_id` is `handbook/<topic>`.',
+      '- Tag the owning team: `team:people`, `team:it`.',
+      '- Nothing about a single person — that belongs in their HR file, not here.',
+      '',
+    ].join('\n'),
+  },
+}
+
+/** The same version as a history row: everything but the files. */
+const skillMeta = (version) => {
+  const { files, ...meta } = version
+  void files
+  return meta
+}
+
+/** The same version as a catalog entry, which `GET /v1/skills` lists. */
+const skillEntry = (v) => ({
+  name: v.name,
+  description: v.description,
+  version: v.version,
+  has_scripts: v.has_scripts,
+  paths: Object.keys(v.files),
+})
+
 const FIXTURES = {
   // Polled by the header to show whether the API is reachable.
   'GET /v1/health': { status: 'ok' },
@@ -400,6 +535,55 @@ const FIXTURES = {
         text: 'A laptop is issued on the first day and stays with you between teams. Replacements go through the same request form.' },
     ],
   },
+  /*
+   * Skills. What the server sends for each level, in its own field names —
+   * `skillVersionFrom` in the SDK is what reads them, and a fixture in any
+   * other shape would be proving the mapper against a response no server
+   * sends, which is how `document_id` once survived a whole suite.
+   *
+   * The organization's skill is three versions deep, so the selector has a
+   * history to show; the handbook's latest version was written by an agent and
+   * the contracts layer's carries a script, so both markers are in a picture.
+   */
+  'GET /v1/skills/organization': ORG_SKILL,
+  'GET /v1/skills/organization/versions': {
+    items: [
+      skillMeta(ORG_SKILL),
+      { ...skillMeta(ORG_SKILL), version: 2, file_count: 1, has_scripts: false, created_at: '2026-03-02T16:40:00.000Z' },
+      { ...skillMeta(ORG_SKILL), version: 1, file_count: 1, has_scripts: false, created_at: '2026-02-12T10:05:00.000Z' },
+    ],
+    next_cursor: null,
+  },
+  'GET /v1/skills/organization/versions/2': {
+    ...skillMeta(ORG_SKILL),
+    version: 2,
+    file_count: 1,
+    created_at: '2026-03-02T16:40:00.000Z',
+    has_scripts: false,
+    files: { 'SKILL.md': ORG_SKILL.files['SKILL.md'].split('\nSee [the tag list]')[0] + '\n' },
+  },
+  [`GET /v1/skills/layers/${LAYER}`]: HANDBOOK_SKILL,
+  [`GET /v1/skills/layers/${LAYER}/versions`]: {
+    items: [
+      skillMeta(HANDBOOK_SKILL),
+      { ...skillMeta(HANDBOOK_SKILL), version: 1, principal: `user:${DANA}`, surface: 'rest',
+        connection_id: null, by_agent: false, created_at: '2026-02-20T12:00:00.000Z' },
+    ],
+    next_cursor: null,
+  },
+  'GET /v1/skills': {
+    base: { level: 'organization', layer_id: null, layer_slug: null, ...skillEntry(ORG_SKILL) },
+    items: [
+      { level: 'layer', layer_id: LAYER, layer_slug: 'handbook', ...skillEntry(HANDBOOK_SKILL) },
+      { level: 'layer', layer_id: CONTRACTS, layer_slug: 'contracts', name: 'contracts',
+        description: 'Signed customer agreements, one per contract, named by contract number. Read before filing or searching contracts.',
+        version: 1, has_scripts: true, paths: ['SKILL.md', 'scripts/contract-number.sh'] },
+    ],
+    next_cursor: null,
+  },
+  'GET /v1/skills/base': {
+    level: 'organization', layer_id: null, layer_slug: null, ...skillEntry(ORG_SKILL), files: ORG_SKILL.files,
+  },
 }
 
 const server = createServer((req, res) => {
@@ -568,6 +752,17 @@ async function shot(name, { hash = '', signedIn = true, prepare, fixtures = {} }
   const file = join(OUT, `${name}.png`)
   await page.screenshot({ path: file, fullPage: true })
   console.log(`  ${file}`)
+
+  // And again at a phone's width, measured and not photographed. Every rule
+  // above ran at 1280, where there is room, and the defects this console has
+  // had at 390 — a column broken a letter per line, a picker squeezed to
+  // `pick a organ` — were each found by a person rendering it by hand. The
+  // commercial console's pass already measures both widths; this one now does.
+  // No image, because the committed pictures are the desktop ones and a second
+  // set would double what a reviewer is asked to look at for no new question.
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.waitForTimeout(150)
+  for (const rule of RULES) await rule(page, `${name} at 390`, failures)
   await page.close()
 }
 
@@ -876,6 +1071,135 @@ await shot('security-keys-only', {
       recovery_codes_left: 10,
       kinds: ['webauthn'],
     },
+  },
+})
+
+/*
+ * Skills: what an agent is told. The organization's skill with its files, the
+ * layers beside it, and the states a picture of the default view cannot show —
+ * an older version selected, the editor, a layer's skill written by an agent,
+ * a level with nothing in it, and a reader who may not write.
+ */
+await shot('skills', { hash: '#/skills' })
+await shot('skills-source', {
+  hash: '#/skills',
+  prepare: async (page) => {
+    await page.getByRole('tab', { name: 'Source' }).first().click()
+    await page.waitForTimeout(100)
+  },
+})
+// A link to a file the skill carries opens that file here rather than
+// navigating, which is how a skill points at its own reference files.
+await shot('skills-file', {
+  hash: '#/skills',
+  prepare: async (page) => {
+    await page.getByRole('link', { name: 'the tag list' }).click()
+    // The link is far down the page; a full-page picture taken scrolled paints
+    // the sticky masthead at the scroll offset, as the paged layers shot learned.
+    await page.evaluate(() => globalThis.scrollTo(0, 0))
+    await page.waitForTimeout(100)
+  },
+})
+await shot('skills-history', {
+  hash: '#/skills',
+  prepare: async (page) => {
+    await page.getByRole('combobox', { name: 'Version' }).selectOption('2')
+    await page.waitForTimeout(200)
+  },
+})
+await shot('skill-edit', {
+  hash: '#/skills',
+  prepare: async (page) => {
+    await page.getByRole('button', { name: 'Edit', exact: true }).click()
+    await page.waitForTimeout(150)
+  },
+})
+await shot('layer-skill', {
+  hash: '#/layers',
+  prepare: async (page) => {
+    await page.getByRole('row', { name: /handbook/ }).getByRole('button', { name: 'Skill' }).click()
+    await page.waitForTimeout(250)
+  },
+})
+// A level nobody has written: what agents get instead is drawn under it, read
+// only, so "no skill" never reads as "agents are told nothing".
+await shot('skills-empty', {
+  hash: '#/skills',
+  fixtures: {
+    'GET /v1/skills/organization': 404,
+    'GET /v1/skills/organization/versions': { items: [], next_cursor: null },
+    'GET /v1/skills': {
+      base: { level: 'default', layer_id: null, layer_slug: null, name: 'nacre-index',
+        description: 'What belongs in this organization\'s Nacre index and how a document is written there.',
+        version: null, has_scripts: false, paths: ['SKILL.md'] },
+      items: [],
+      next_cursor: null,
+    },
+    'GET /v1/skills/base': {
+      level: 'default', layer_id: null, layer_slug: null, name: 'nacre-index',
+      description: 'What belongs in this organization\'s Nacre index and how a document is written there.',
+      version: null, has_scripts: false, paths: ['SKILL.md'],
+      files: {
+        'SKILL.md': '---\nname: nacre-index\ndescription: What belongs in this organization\'s Nacre index and how a document is written there.\n---\n\n# This organization\'s index\n\nLook here before answering from memory, and say so when nothing comes back.\n',
+      },
+    },
+  },
+})
+// A member reads what their agents are told and is offered nothing to change
+// it: `versions` answers 404 to a caller who may not write, and the panel asks
+// that rather than the role.
+await shot('skills-member', {
+  hash: '#/skills',
+  fixtures: {
+    'GET /v1/me': {
+      organization: 'acme',
+      principal_type: 'user',
+      principal_id: '4f2c8e61-7a95-4d13-9b60-2e8a5c0f7b34',
+      role: 'member',
+      administers: false,
+      holds_own_credentials: true,
+    },
+    'GET /v1/skills/organization/versions': 404,
+    [`GET /v1/skills/layers/${LAYER}/versions`]: 404,
+    'GET /v1/users': 404,
+    'GET /v1/groups': 404,
+    'GET /v1/service-accounts': 404,
+  },
+})
+// The installation's level, which is the one a platform administrator writes
+// and the only one this screen shows them — rule 2 keeps every organization's
+// own skill out of their reach.
+await shot('skills-platform-admin', {
+  hash: '#/skills',
+  fixtures: {
+    'GET /v1/me': {
+      organization: 'acme',
+      principal_type: 'user',
+      principal_id: '9b3e5c71-24af-4d08-8e16-3f7c0a5b2d94',
+      role: 'platform_admin',
+      administers: false,
+      holds_own_credentials: true,
+    },
+    'GET /v1/skills/installation': {
+      ...ORG_SKILL,
+      version: 1,
+      has_scripts: false,
+      name: 'installation-knowledge',
+      description: 'What every organization on this installation keeps in Nacre until it writes its own skill.',
+      file_count: 1,
+      principal: 'user:9b3e5c71-24af-4d08-8e16-3f7c0a5b2d94',
+      files: {
+        'SKILL.md': '---\nname: installation-knowledge\ndescription: What every organization on this installation keeps in Nacre until it writes its own skill.\n---\n\n# Before you answer\n\nSearch first. An empty result is an answer.\n\n## Never store\n\n- Credentials or keys.\n- Personal data beyond a name and a work address.\n',
+      },
+    },
+    'GET /v1/skills/installation/versions': {
+      items: [{ ...skillMeta(ORG_SKILL), version: 1, name: 'installation-knowledge', file_count: 1, has_scripts: false,
+        principal: 'user:9b3e5c71-24af-4d08-8e16-3f7c0a5b2d94' }],
+      next_cursor: null,
+    },
+    'GET /v1/users': 404,
+    'GET /v1/groups': 404,
+    'GET /v1/service-accounts': 404,
   },
 })
 

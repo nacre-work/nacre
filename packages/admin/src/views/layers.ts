@@ -5,6 +5,7 @@ import { clear, h, shortId } from '../dom.js'
 import { listing } from '../listing.js'
 import { picker } from '../pick.js'
 import { migratePanel } from './migrate.js'
+import { layerSkillDialog } from './skill.js'
 
 /**
  * Layers.
@@ -167,6 +168,9 @@ function table(layers: readonly Layer[], root: HTMLElement): HTMLElement {
           // On the layer rather than a screen of its own: there is at most one
           // migration running, and the layer is what an operator navigates by.
           h('button', { class: 'btn btn-quiet', onclick: () => void migratePanel(l) }, 'Model'),
+          // What an agent is told about this layer. The same panel the Skills
+          // screen opens, so the two cannot come to disagree.
+          h('button', { class: 'btn btn-quiet', onclick: () => { layerSkillDialog(l) } }, 'Skill'),
           h('button', { class: 'btn btn-quiet btn-danger', onclick: () => confirmDelete(l, root) }, 'Delete'),
         ),
       ),

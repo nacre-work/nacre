@@ -1,5 +1,5 @@
 /**
- * The four geometry rules the console is held to, as a module two repositories
+ * The geometry rules the console is held to, as a module two repositories
  * import.
  *
  * These lived inside `screenshots.mjs` until the commercial console needed
@@ -373,9 +373,71 @@ export async function controlHeadroom(page, name, failures) {
  * only list: `screenshots.mjs` iterates it, and so does the other repository's
  * pass, so neither has a count of its own to go stale.
  */
+/**
+ * A word in a table cell is on one line.
+ *
+ * A table gives a column the width of its narrowest acceptable content, and
+ * `overflow-wrap: anywhere` — right for an address or a slug, which are content
+ * of unbounded length — makes that width one character. At 390 the layer list
+ * on the Skills screen did exactly that: four columns, and the one holding a
+ * skill's description shrank until every word broke after a letter or two, the
+ * whole row hundreds of pixels tall. At 1280 there was room and nothing broke,
+ * which is the width the committed pass rendered at — so the defect was seen
+ * only because a person rendered it at a phone's width by hand.
+ *
+ * What is asked is whether a **run of letters** of twenty or fewer renders
+ * across more than one line. Letters, because a break at a hyphen, a colon or
+ * an `@` is a break where the value allows one — `support-agent` wrapping at
+ * its hyphen in a narrow column is the correct behaviour for content of
+ * unbounded length, and this file already says so. A word broken between two
+ * letters is a column too narrow for its own language.
+ * The question is the browser's, through a `Range` per word, because which
+ * column shrinks is decided by table layout and nothing in a stylesheet says.
+ */
+export async function wordsWhole(page, name, failures) {
+  const broken = await page.evaluate((longest) => {
+    const found = []
+    const roots = [...document.querySelectorAll('dialog[open]')]
+    if (roots.length === 0) roots.push(...document.querySelectorAll('.main, .signin'))
+
+    for (const cell of roots.flatMap((r) => [...r.querySelectorAll('td, th')])) {
+      if (cell.getClientRects().length === 0) continue
+      const walk = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT)
+      for (let node = walk.nextNode(); node !== null; node = walk.nextNode()) {
+        const text = node.textContent ?? ''
+        for (const match of text.matchAll(/\p{L}+/gu)) {
+          const word = match[0]
+          if (word.length < 2 || word.length > longest) continue
+          const range = document.createRange()
+          range.setStart(node, match.index)
+          range.setEnd(node, match.index + word.length)
+          const lines = new Set([...range.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top)))
+          if (lines.size > 1) {
+            found.push(word)
+            break
+          }
+        }
+        if (found.length >= 3) break
+      }
+      if (found.length >= 3) break
+    }
+    return found
+  }, 20)
+
+  if (broken.length > 0) {
+    failures.push(
+      `${name}: ${broken.map((w) => `"${w}"`).join(', ')} ${broken.length === 1 ? 'is' : 'are'} broken across lines in a table cell. ` +
+        'The column is narrower than a word of its own text — a table gives a column the width of its narrowest ' +
+        'acceptable content, and `overflow-wrap: anywhere` makes that one character. Move the long text under ' +
+        'another cell as a second line, or give the table fewer columns at this width.',
+    )
+  }
+}
+
 export const RULES = [
   controlHeadroom,
   dialogActionsReachable,
   columnValuesAgree,
   columnChipsAgree,
+  wordsWhole,
 ]

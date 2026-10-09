@@ -277,12 +277,34 @@ Code, or upload it as a skill on claude.ai.
 
 ### Console
 
-The organization's skill on its own screen and a layer's on that layer's page,
-both drawn the same way: the file tree, rendered and source views, the version
-selector, download, load from a folder or a `.zip`, and the two markers — written
-by an agent, contains scripts. The installation's skill is on the commercial
-console's Installation screen, because the open console has no
-platform-administrator screens.
+**Skills** is a screen of its own: the organization's skill, and below it every
+layer the caller can reach with its skill, if it has one. A layer's skill also
+opens from the **Skill** button on the Layers screen. Both are the same panel,
+so the two cannot drift apart: the name and description, the two markers
+(written by an agent, contains scripts), the history, the files, and one file
+drawn as rendered Markdown or as the source an agent is actually given.
+
+A level with no skill says what agents get instead and shows it, read-only, so
+"no skill" never reads as "agents are told nothing". The panel asks the server
+whether the caller may write, through `versions`, the same answer that decides
+whether history is shown, rather than inferring it from the role. Where the
+caller may write, there are four actions: edit a file, load a folder, load a
+`.zip`, and clear. An older version can be selected and restored. Nothing writes
+on one press: a loaded folder is listed before it is sent, with any scripts it
+carries named and any hidden or binary files it leaves out said by name.
+
+The skill's Markdown is parsed into a tree and built with `textContent`, never
+`innerHTML`. A layer's skill is written by somebody holding `admin` on the
+layer, or by an agent they connected, and read here by an organization
+administrator. That is a stored script with the most valuable reader, so raw
+HTML in a skill shows as the characters it is. `http(s)` and `mailto` links open
+elsewhere with no referrer. A link to a file the skill carries opens that file
+in the panel. Anything else is text.
+
+A platform administrator sees the **installation's** level on the same screen
+and no organization's (rule 2). It is the skill every organization gets until it
+writes its own, and the open console already admits that role for the access
+log, so a second console screen for it would be a second copy of this panel.
 
 ## Audit
 
@@ -296,21 +318,23 @@ organization holds.
 
 ## Where this lives
 
-All of it in the core, including the installation level's API: a single
-developer needs an organization skill and layer skills, and the installation
-level costs one row and one check. Only the commercial console's screen for the
-installation skill is in `nacre-enterprise`.
+All of it in the core, including the installation level's API and its screen:
+a single developer needs an organization skill and layer skills, and the
+installation level costs one row and one check. On the open console the
+installation level is reachable only by a platform administrator, a role that
+only the commercial `admin-global` module issues.
 
 ## Current state
 
 **Built:** the format and its zip, the default skill, storage and versions
 (migration 0036), the REST surface, the SDK's `skills`, the MCP tools and
-`instructions`, and the authorization cases T26, T27, T28, T33 and T34, against a real
+`instructions`, the console's Skills screen and a layer's skill on the Layers
+screen, and the authorization cases T26, T27, T28, T33 and T34, against a real
 PostgreSQL.
 
 **Not built yet, in this order:** the default skill judged on a live agent —
 a fresh agent on the demo stand with no other guidance, storing and finding
-things correctly; the skill panel; the console screens; and the consent
-screen's per-layer box, which is what T29 and T30 wait for. Until that box
-exists, a connected application writes a layer's skill only where its ceiling
-holds `admin` on that layer — which the ordinary consent screen never sets.
+things correctly; the skill panel as an MCP App; and the consent screen's
+per-layer box, which is what T29 and T30 wait for. Until that box exists, a
+connected application writes a layer's skill only where its ceiling holds
+`admin` on that layer — which the ordinary consent screen never sets.

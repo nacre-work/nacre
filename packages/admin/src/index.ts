@@ -30,6 +30,7 @@ import { resetView } from './views/reset.js'
 import { modelsView } from './views/models.js'
 import { searchView } from './views/search.js'
 import { securityView } from './views/security.js'
+import { skillsView } from './views/skills.js'
 
 /**
  * The community admin UI.
@@ -114,6 +115,16 @@ const administers = (v: Viewer): boolean => v.administers
 const ORGANIZATION_ROUTES: readonly Route[] = [
   { hash: '#/search', label: 'Search', render: (root) => searchView(root), shows: anybody },
   { hash: '#/layers', label: 'Layers', render: (root) => void layersView(root), shows: anybody },
+  // Everybody: a member reads what their agents are told, and the panel asks
+  // the server whether this caller may write each level rather than guessing
+  // from the role. A platform administrator gets the installation's level here
+  // and no organization's — rule 2 — which is why the viewer is passed in.
+  {
+    hash: '#/skills',
+    label: 'Skills',
+    render: (root, viewer) => void skillsView(root, viewer.platformAdmin),
+    shows: anybody,
+  },
   { hash: '#/grants', label: 'Grants', render: (root) => void grantsView(root), shows: administers },
   { hash: '#/people', label: 'People', render: (root) => void peopleView(root), shows: administers },
   {
