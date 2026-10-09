@@ -490,10 +490,12 @@ when('adversarial · a notification reaches only active people of the caller’s
 
     expect((await evaluateAlertRules(pool)).fired).toBe(4)
     const rows = await q<{ subject: string; body: string }>(
-      `SELECT subject, body FROM notifications WHERE org_id = $1 AND source = 'rule' ORDER BY subject`,
+      `SELECT subject, body FROM notifications WHERE org_id = $1 AND source = 'rule'`,
       [ORG],
     )
-    expect(rows.map((r) => r.subject)).toEqual([
+    // Sorted here and not by the database: `ORDER BY` on text follows the
+    // server's collation, which is C on one machine and en_US on CI's image.
+    expect(rows.map((r) => r.subject).sort()).toEqual([
       'a skill version adds scripts',
       'an administrative connection was approved',
       'an agent wrote a skill version',
