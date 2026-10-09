@@ -44,6 +44,10 @@
     {
       "email": "bootstrap@nacre.work",
       "why": "The initial repository scaffolding commit."
+    },
+    {
+      "email": "49699333+dependabot[bot]@users.noreply.github.com",
+      "why": "Dependabot, opening the dependency and security updates enabled in this repository's settings; an owner reviews and merges each one."
     }
   ],
   "signatures": []
