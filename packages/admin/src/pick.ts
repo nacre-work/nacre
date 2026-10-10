@@ -50,13 +50,24 @@ export interface Picker {
  * @param noun what is being chosen, lower case: `workspace`, `layer`, `user`.
  *   It appears in every message, so "pick a workspace…" and "No workspace to
  *   choose" come from one string rather than from four written separately.
+ * @param label the control's accessible name — the words beside it on the
+ *   screen. Defaults to the noun with a capital, which is what every caller
+ *   wrote beside it but one.
  */
-export function picker(noun: string): Picker {
+export function picker(noun: string, label = noun.charAt(0).toUpperCase() + noun.slice(1)): Picker {
   const el = h('div', { class: 'pick' })
   // The three controls one of which is shown at a time. Built once and kept,
   // so `value()` never has to ask what state the picker is in.
-  const select = h('select', { class: 'input' }) as HTMLSelectElement
-  const typed = h('input', { class: 'input mono', placeholder: `${noun} id` }) as HTMLInputElement
+  //
+  // Each names itself. A picker sits in a `div.field` beside a `<span>` rather
+  // than inside a `<label>`, because what it shows changes — a select, a
+  // sentence, a field — and a label holds one control. So nothing named the
+  // select, and a screen reader announced "combo box" in Issue a grant twice,
+  // once for the principal and once for the scope. Found by reading the
+  // dialogs' accessibility tree to write the manual; `controlsNamed` in
+  // scripts/layout-rules.mjs asks it of every control now.
+  const select = h('select', { class: 'input', 'aria-label': label }) as HTMLSelectElement
+  const typed = h('input', { class: 'input mono', placeholder: `${noun} id`, 'aria-label': `${label} id` }) as HTMLInputElement
   let fixed = ''
   let n = -1
 

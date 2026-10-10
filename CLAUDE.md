@@ -3646,6 +3646,33 @@ skill, which is visible exactly when the layer is. `layers-member` is the shot
 that was missing, and it throws on the first refused control rather than
 photographing it; the shipped view named `Rename` the moment it was put back.
 
+**Three more came off the same walk, and each is a rule now rather than an edit
+— 0.38.2.** People's two head buttons sat mid-row because `.view-head > div {
+flex: 1 }` was written for the heading block and also matched the button group,
+which is a `div` too. The Access log shortened an id only when it was the
+*whole* value, so a search's `returned_docs` printed as a wall of full uuids and
+a grant's `scope: layer:<uuid>` carried one — invisible to the screenshot pass
+because its search and grant targets were shapes no server writes, which is the
+fixture-agrees-with-code defect once more. And "No second factor" centred its
+words and left its buttons at the box's edge, since `text-align` does not move
+flex items — in the state every account starts in, which no shot photographed.
+`headActionsAtEdge`, `idsShortened` and `emptyStateCentred` are in
+`layout-rules.mjs`, so the commercial console is held to them too; each was run
+before its fix and named exactly the shots it should, and nothing else.
+
+A fourth came from reading the dialogs' accessibility tree for the manual's
+selectors, since those are the names a screen reader says: `picker` sits in a
+`div.field` beside a `<span>`, so its select had no name and Issue a grant
+announced "combo box" twice, and the two boxes that hold a password or a key
+once had none either. `picker` names its own controls now and `controlsNamed`
+asks every visible control. Its first run also showed that no shot had ever
+opened Issue a grant or a service account's key — a rule only sees the screens
+somebody photographed, so both are shots now.
+
+`idsShortened` then found the same defect on the commercial Backups screen,
+whose "Started by" printed `user:<uuid>`; that is fixed on that side of the
+boundary, which is what putting the rule in the shared file is for.
+
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.

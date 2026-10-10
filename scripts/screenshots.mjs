@@ -427,7 +427,14 @@ const FIXTURES = {
         surface: 'rest',
         client: null,
         action: 'issue_grant',
-        target: { grant_id: '4f8b2d61-95ce-4a07-b3d2-1e6a8c05f7b4', scope: 'layer:handbook' },
+        // The shape the server writes: a principal and a scope as `type:id`.
+        // This said `scope: 'layer:handbook'`, a slug no server sends, so the
+        // picture never held the uuid the screen printed whole.
+        target: {
+          principal: 'service_account:c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55',
+          scope: 'layer:3a6b1e52-8f04-4c9d-a2e7-5d18b0f3c7f1',
+          permission: 'read',
+        },
         result: 'allow',
         detail: {},
         request_id: 'req_7f2c9a',
@@ -468,14 +475,17 @@ const FIXTURES = {
         id: '10490',
         occurred_at: '2026-03-15T08:39:47.115Z',
         actor: { type: 'service_account', id: 'c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55', label: 'service_account:c41d90b6-58a2-4e77-9f30-1b8e6a2d4c55' },
-        surface: 'mcp',
+        surface: 'rest',
         // An agent's key names no connection: only a delegation carries one,
         // and a delegation is always a person. This said a client here, which
         // no server writes — and the picture then showed an agent acting
         // "through Claude", which cannot happen.
         client: null,
-        action: 'search',
-        target: { layer: 'contracts' },
+        // A search is never refused — it answers with what the caller may see —
+        // so this row said a thing no server writes. The refusal an agent's key
+        // meets is an administrative route, recorded as the server records it.
+        action: 'administer_principals',
+        target: { path: '/v1/users', method: 'GET' },
         result: 'deny',
         detail: {},
         request_id: 'req_2b81dd',
@@ -493,6 +503,30 @@ const FIXTURES = {
         result: 'allow',
         detail: {},
         request_id: 'req_4c19a7',
+      },
+      // A search, as the server records one: the documents it answered with,
+      // the layers they came from and the size asked for. Seven documents, so
+      // the list is cut and says how many more — the case a search row is.
+      {
+        id: '10490d',
+        occurred_at: '2026-03-15T08:11:58.204Z',
+        actor: { type: 'user', id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', label: 'user:0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90' },
+        surface: 'mcp',
+        client: 'connection:c7a1e5d2-3b84-4f60-9e17-5d2c8a0b4f61',
+        action: 'search',
+        target: {
+          returned_docs: [
+            'e77a3c10-9d42-4b86-8f51-0a4c7e93b2d6', '1183eb30-6308-485d-9fb7-79ba518b89ea',
+            '8223fbe1-7e25-4c7f-a383-f556e6ae0535', 'a30fe01a-87bc-453f-8914-79a65b6f725b',
+            'f1dbad12-b02f-425b-9325-e45582245ab4', '41735073-f6a9-4664-ab82-8daee96f0858',
+            'c06b45f3-2abc-4ebb-a8e6-f068898c0eca',
+          ],
+          layers: ['handbook', 'engineering'],
+          top_k: 10,
+        },
+        result: 'allow',
+        detail: {},
+        request_id: 'req_4c19a8',
       },
       // A read through the administrative connection: `mcp-admin`, and the
       // connection resolved to the application the person approved.
@@ -1101,6 +1135,33 @@ await shot('new-user-password', {
     await page.waitForTimeout(250)
   },
 })
+// The two dialogs `controlsNamed` found nameless controls in and no shot had
+// opened: Issue a grant, whose principal and scope pickers were announced as
+// "combo box", and the dialog that shows a service account's key once.
+await shot('issue-grant', {
+  hash: '#/grants',
+  prepare: async (page) => {
+    await page.getByRole('button', { name: 'Issue grant' }).click()
+    await page.waitForTimeout(250)
+  },
+})
+await shot('new-account-key', {
+  hash: '#/accounts',
+  fixtures: {
+    'POST /v1/service-accounts': {
+      id: '7e2c4a91-3d58-4b06-a1f7-9c0e5b2d8a36', name: 'reporting', key_prefix: 'nacre_sk_Q4mX8vRt',
+      created_at: '2026-03-15T09:00:00.000Z', last_used_at: null, revoked_at: null,
+      created_by: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90',
+      key: 'nacre_sk_Q4mX8vRtKp2wZy7LbN3cHf9sJd6gTq1aVe5uXo0iMr4E',
+    },
+  },
+  prepare: async (page) => {
+    await page.getByRole('button', { name: 'New account' }).click()
+    await page.locator('dialog[open]').getByRole('textbox', { name: 'Name' }).fill('reporting')
+    await page.locator('dialog[open]').getByRole('button', { name: 'Create' }).click()
+    await page.waitForTimeout(250)
+  },
+})
 await shot('group-members', {
   hash: '#/people',
   prepare: async (page) => {
@@ -1285,6 +1346,17 @@ await shot('security-no-key', {
 // and the note about a secure context belongs here rather than on a pressed
 // control, because a browser served over http has no `navigator.credentials`
 // at all and this pass runs on one.
+// The state every account starts in, and the one the pass had no picture of:
+// nothing enrolled, both kinds offered. Its buttons sat at the left of a box
+// whose words were centred, which `emptyStateCentred` now asks of every
+// empty state.
+await shot('security-none', {
+  hash: '#/security',
+  fixtures: {
+    'GET /v1/me/second-factor': { items: [], recovery_codes_left: 0, kinds: ['totp', 'webauthn'] },
+  },
+})
+
 await shot('security-keys-only', {
   hash: '#/security',
   fixtures: {

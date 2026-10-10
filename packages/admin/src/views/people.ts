@@ -548,7 +548,9 @@ async function membersPanel(group: Group, root: HTMLElement): Promise<void> {
  * takes a deliberate click on a button that says what closing means.
  */
 function showSecret(dialog: HTMLDialogElement, secret: string, title: string, root: HTMLElement): void {
-  const field = h('textarea', { class: 'input mono keyfield', readonly: true, rows: 2, spellcheck: 'false' })
+  // Named after the dialog's own title: a box holding the one copy of a
+  // password was announced as "edit text" and nothing else.
+  const field = h('textarea', { class: 'input mono keyfield', readonly: true, rows: 2, spellcheck: 'false', 'aria-label': title })
   field.value = secret
   const copied = h('span', { class: 'copied' })
 
