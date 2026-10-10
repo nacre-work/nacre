@@ -46,6 +46,7 @@ import {
   expireProposals,
   pruneAuditEvents,
   pruneProposals,
+  pruneUnapprovedClients,
   pruneExpiredTokens,
   QdrantVectorWriter,
   recordCheck,
@@ -254,6 +255,7 @@ async function main(): Promise<void> {
     tokens: (limit: number) => pruneExpiredTokens(pool, limit),
     audit: (days: number, limit: number) => pruneAuditEvents(pool, days, limit),
     proposals: (days: number, limit: number) => pruneProposals(pool, days, limit),
+    clients: (limit: number) => pruneUnapprovedClients(pool, limit),
     onError: (what: string, error: unknown) => {
       // Warn rather than error: nothing is broken by a prune that did not run,
       // and the one failure an operator must act on — a retention below the
@@ -792,7 +794,7 @@ async function main(): Promise<void> {
       if (Date.now() - lastPrune >= PRUNE_EVERY_MS) {
         lastPrune = Date.now()
         const pruned = await pruneOnce(prunePorts, PRUNE_BATCH, config.auditRetentionDays)
-        if (pruned.tokens > 0 || pruned.audit > 0 || pruned.proposals > 0) {
+        if (pruned.tokens > 0 || pruned.audit > 0 || pruned.proposals > 0 || pruned.clients > 0) {
           logger.info('pruned', { ...pruned })
         }
 

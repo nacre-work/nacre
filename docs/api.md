@@ -731,14 +731,19 @@ and the contract carries no path for one — adding it is a change to
 
 ## Limits
 
-Counted per organization, not per token — per-token limits are bypassed by
-issuing more keys.
+Never per token — a per-token limit is bypassed by issuing another key. The
+costly operations are counted per organization; the general limit per
+**principal**, so a second key for the same agent shares its budget, and a
+second agent is something only an administrator can make.
 
-| Resource | Default |
-|---|---|
-| search | 60 requests/min |
-| ingest | 600 documents/hour |
-| document size | 50 MB |
+| Resource | Default | Counted against |
+|---|---|---|
+| every request | 600/min | the caller — a person, an agent, a delegation as its person |
+| every request, together | not counted | the organization — set per organization where a module serves several (`registerRateLimits`) |
+| search | 60 requests/min | the organization |
+| ingest | 600 documents/hour | the organization |
+| client registration | 100/hour | the client address, on `/oauth/register` and metadata document fetches |
+| document size | 50 MB | |
 
 There is no core limit on vectors or documents per organization. The
 `organizations.quotas` column exists in the schema, but nothing on the ingest
@@ -751,10 +756,21 @@ counted response carries `RateLimit-Limit`, `RateLimit-Remaining`,
 `RateLimit-Reset` and `RateLimit-Policy` — not only the refusals, so a client can
 slow down before it is refused rather than after.
 
-Search and ingest are counted; reads of metadata are not. The window is fixed
-rather than sliding, so a client that spends its budget at the end of one window
-and the start of the next can briefly exceed the nominal rate. That is the
-accepted cost of a counter that is one `INCR`.
+Every request is counted against the caller, and search and ingest against the
+organization as well; a request the second refuses is given back to the first,
+so a refusal never costs a caller budget. The general limit is there to stop a
+loop, not to ration use — ten a second, sustained — and it is per caller so that
+one noisy agent cannot take the API away from the people beside it.
+
+The window **slides**: the count is the current window plus the previous one
+weighted by how much of it still overlaps. Until 0.41.0 it was fixed, and a
+client that spent its budget at the end of one window and the start of the next
+could briefly send twice the nominal rate. `Retry-After` on a refusal is the
+time until the next request would fit, not the end of the window, and a refused
+request is not counted, so knocking while waiting does not push the wait out.
+
+A refusal is recorded in the access log as `rate_limited` once per window, not
+once per refusal.
 
 Limiting fails **open**: if the counter is unreachable the request is allowed and
 the degradation is logged. This is the opposite of the rule for permissions
@@ -798,18 +814,20 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 | `GET`/`POST /v1/service-accounts`, `DELETE /v1/service-accounts/{id}` | |
 | `GET /v1/health`, `GET /v1/ready`, `GET /metrics` | |
 | `Idempotency-Key` on unsafe methods | 24 hours, `409` on reuse, service accounts excluded |
-| `429` and the `RateLimit-*` headers | search and ingest, counted per organization; sign-in, counted per address **and** per client |
+| `429` and the `RateLimit-*` headers | every request, counted per caller; search and ingest, per organization as well; sign-in, per address **and** per client; `/oauth/register`, per client |
 | Cursor pagination | layers, grants, service accounts |
 | `POST /v1/auth/login`, `/refresh`, `/logout` | email and password, rotating refresh tokens |
 
-Nothing on this surface is left unimplemented. The line that used to sit here
-named two things and was wrong about both: **OAuth discovery is served** —
+Nothing on this surface is left unimplemented. **OAuth discovery is served** —
 `/.well-known/oauth-protected-resource`, RFC 9728, by this API and by the MCP
-transport from one document built once — and **dynamic client registration is
-not ours to implement**. Registration, under DCR or under CIMD, is a transaction
-between a client and an authorization server, and Nacre is a resource server. A
-deployment that wants it gets it from the identity provider it names in
-`NACRE_OAUTH_AUTHORIZATION_SERVER`. See [mcp.md](./mcp.md).
+transport from one document built once — and so is **the authorization server**
+it names: RFC 8414 metadata, `/oauth/authorize`, `/oauth/token`, registration at
+`/oauth/register` (RFC 7591), and a `client_id` that is the URL of a metadata
+document. This paragraph used to say registration was "not ours to implement"
+because Nacre was a resource server; that stopped being true when the API grew
+the consent flow, and it went on saying so for months. A deployment naming its
+own identity provider in `NACRE_OAUTH_AUTHORIZATION_SERVER` gets registration
+from that provider instead. See [mcp.md](./mcp.md).
 
 ### Uploading a file
 

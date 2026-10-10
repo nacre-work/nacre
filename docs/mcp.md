@@ -13,8 +13,8 @@ The consequences that matter: the protocol is stateless and no `Mcp-Session-Id`
 is ever issued; `Mcp-Method` and `Mcp-Name` are required *of a modern client*
 and are validated here when sent rather than demanded; and DCR is deprecated in
 favour of CIMD — a statement about an **authorization server**, which this
-transport is not. See "Authorization" for which half of this product is one and
-what it supports.
+transport is not. The installation's API is one, and since 0.41.0 it takes a
+client both ways; see "Authorization".
 
 This opening paragraph said `initialize` was "gone" and the headers "required",
 and both readings were taken literally in the code: the headers were demanded
@@ -180,8 +180,9 @@ The MCP server is a **resource server**, not an authorization server.
 - **There is an authorization server now, and it is ours.** A client that gets
   a `401` reads the RFC 9728 document, finds `authorization_servers` naming this
   installation's API, discovers `/oauth/authorize` and `/oauth/token` through
-  RFC 8414, registers itself with RFC 7591, and completes the authorization
-  code flow with PKCE S256. That is the whole connect sequence an MCP client
+  RFC 8414, identifies itself — by the URL of its metadata document where the
+  metadata advertises that, by registering with RFC 7591 where it does not —
+  and completes the authorization code flow with PKCE S256. That is the whole connect sequence an MCP client
   already performs, and until it existed the documented alternative was "create
   a service account by hand, copy its key, paste it into a config file".
 
@@ -256,14 +257,17 @@ The MCP server is a **resource server**, not an authorization server.
   a deployment naming its own provider in `NACRE_OAUTH_AUTHORIZATION_SERVER`
   registers there instead.
 
-  **Of the two, the API implements DCR and not CIMD**, which is a `MAY` taken
-  and a `SHOULD` declined. CIMD makes `client_id` an HTTPS URL the authorization
-  server *fetches*, which puts an outbound request to an attacker-chosen address
-  on an endpoint reachable before anybody has signed in — in a product that runs
-  inside somebody's network next to their documents, and that ships an
-  `airgapped` profile making no outbound connection at all. The reasoning is in
-  [mcp-conformance.md](./mcp-conformance.md); the practical position is that
-  every shipping MCP client speaks DCR.
+  **The API implements both.** DCR at `/oauth/register`, limited per client
+  address and with registrations nobody approved swept after a week; and, since
+  0.41.0, Client ID Metadata Documents — a `client_id` that is an https URL is
+  fetched from it, through the egress guard, and the consent screen names the
+  client by the domain that served it rather than by a name it chose. The MCP
+  SDK prefers a metadata document whenever the authorization server's metadata
+  advertises `client_id_metadata_document_supported` and the client has one,
+  and falls back to registering otherwise. `NACRE_OAUTH_CIMD=false` stops the
+  fetch and the advertisement, which is what a deployment that makes no
+  outbound connection wants; [config.md](./config.md), "Client registration,
+  both ways", has the rules a document is held to.
 - `iss` validation (RFC 9207) on the client side; `resource=` on every token
   request, including refresh.
 
@@ -382,18 +386,22 @@ offered is refused as an unknown tool. `ceiling-catalog.test.ts` asks the wire.
 
 ## Limits and metrics
 
-The rate limits are the API's, shared: `search` spends
-`NACRE_RATE_SEARCH_PER_MIN`, `ingest_document` and `delete_document` spend
+The rate limits are the API's, shared: every request on either surface spends
+the caller's `NACRE_RATE_REQUESTS_PER_MIN`, `search` also spends
+`NACRE_RATE_SEARCH_PER_MIN`, `ingest_document` and `delete_document` also spend
 `NACRE_RATE_INGEST_PER_HOUR`, and the counters are the same keys the REST
 surface increments. Shared rather than per-surface on purpose — separate buckets
-would give a caller twice the documented allowance for holding two clients.
-`list_layers` is unlimited: one indexed query per page, and refusing it breaks
-discovery.
+would give a caller twice the documented allowance for holding two clients. The
+general budget counts `tools/list` and `list_layers` too, since a loop over
+either takes the server away as well as a loop over `search` does; at ten a
+second sustained it stops a loop and nothing a person or a working agent does.
 
 A refusal is JSON-RPC `-32003` over HTTP `429`, with the RFC 9331 `RateLimit-*`
-headers. It is checked **after** the catalog lookup, so a tool the caller may
-not see answers the same way as one that does not exist — a `429` on an unknown
-tool would confirm it exists.
+headers and a `Retry-After` that is the time until the next request fits. A
+request the tool limit refuses is given back to the general one. The tool limits
+are checked **after** the catalog lookup, so a tool the caller may not see
+answers the same way as one that does not exist — a `429` on an unknown tool
+would confirm it exists.
 
 This process serves `/metrics`: `nacre_mcp_tool_duration_seconds{tool}`,
 `nacre_mcp_tool_calls_total{tool,result}`, and `nacre_acl_denials_total{reason}`

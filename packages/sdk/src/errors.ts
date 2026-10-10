@@ -38,8 +38,14 @@ export class NacreError extends Error {
    * from it without parsing prose.
    */
   readonly extensions: Readonly<Record<string, unknown>>
+  /**
+   * Seconds the server asked the caller to wait, from `Retry-After`, where it
+   * sent one — a `429`, and a `503` from a process too busy to hash a password.
+   * `undefined` where it did not, which is not the same as zero.
+   */
+  readonly retryAfter: number | undefined
 
-  constructor(problem: Problem) {
+  constructor(problem: Problem, options: { retryAfter?: number } = {}) {
     super(`${problem.title} (${problem.status}): ${problem.detail}`)
     this.name = 'NacreError'
     this.status = problem.status
@@ -51,6 +57,7 @@ export class NacreError extends Error {
     this.extensions = Object.fromEntries(
       Object.entries(problem).filter(([key]) => !STANDARD_MEMBERS.has(key)),
     )
+    this.retryAfter = options.retryAfter
   }
 
   /**

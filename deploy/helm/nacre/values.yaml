@@ -280,22 +280,28 @@ web:
     requests: { cpu: 50m, memory: 64Mi }
     limits: { memory: 192Mi }
 
-# The OAuth consent screen — where a person picks which agent a client will act
-# as. Since core 0.5.3 an MCP client can discover this installation, register,
-# and complete the authorization code flow instead of being handed a service
+# The OAuth consent screen — where a person approves a client, as themselves
+# or as an agent. An MCP client discovers this installation, identifies itself,
+# and completes the authorization code flow instead of being handed a service
 # account key by hand.
 #
-# **This chart does not deploy the admin UI**, and that is why this value exists
-# rather than having a useful default. The core defaults it to `/#/consent` on
-# `canonicalUrl`, which is right when your ingress serves the admin bundle on
-# the API's origin and wrong — a redirect into a 404 — when it does not. Set it
-# to wherever you actually serve `packages/admin`.
+# `consentUrl` defaults to `/#/consent` on `canonicalUrl`, which is right when
+# the console (`web` below) is served on the API's origin, as this chart's
+# ingress does, and wrong — a redirect into a 404 — when you turn `web` off or
+# serve the console somewhere else. Set it to wherever the console is. Left
+# empty the core's default applies; it is visible when it is wrong, because the
+# browser lands on a page that is not there.
 #
-# Left empty the core's default applies. It is visible when it is wrong: the
-# browser lands on a page that is not there, rather than the flow failing
-# somewhere an operator cannot see.
+# `metadataDocuments` lets a client be identified by the URL of its own
+# metadata document (Client ID Metadata Documents) as well as by registering.
+# The API fetches that URL through its egress guard — public addresses only, no
+# redirects, five seconds and five kilobytes. Set it to `false` where the API
+# must make no outbound request a client chose; registration is unaffected. An
+# intranet client's origin goes in `NACRE_OAUTH_CIMD_ALLOWED_ORIGINS` through
+# `extraEnv`.
 oauth:
   consentUrl: ""
+  metadataDocuments: true
 
 # Reranking, which this chart deliberately does not deploy: `endpoint` names a
 # reranker the operator already runs, or the embedding adapter above.
@@ -483,10 +489,16 @@ logging:
   format: json
 
 limits:
+  # Every authenticated request, per caller, on REST and MCP alike. Ten a
+  # second sustained: it stops a loop, it does not ration use.
+  requestsPerMin: 600
   searchPerMin: 60
   ingestPerHour: 600
   loginPer15Min: 10
   loginSourcePer15Min: 60
+  # Per client address, on /oauth/register and on fetching a client's metadata
+  # document. Unapproved registrations are swept by the worker after a week.
+  clientRegistrationPerHour: 100
   maxDocumentBytes: 52428800
   # Proxies in front of this process. 0 ignores X-Forwarded-For entirely, which
   # is right behind a load balancer that sets it and wrong behind two.

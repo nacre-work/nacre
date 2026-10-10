@@ -87,6 +87,8 @@ NACRE_JWT_AUDIENCE=nacre
 NACRE_ACCESS_TOKEN_TTL=900
 NACRE_REFRESH_TOKEN_TTL=2592000
 NACRE_OAUTH_AUTHORIZATION_SERVER=      # optional; the IdP in front of this installation
+NACRE_OAUTH_CIMD=true                  # fetch a client's metadata document when its client_id is a URL
+NACRE_OAUTH_CIMD_ALLOWED_ORIGINS=      # non-public origins a document may come from; exact, never *
 NACRE_EMA_ENABLED=false                # ID-JAG, commercial module; its trusted issuers are per organization, set in the console
 
 # What this key configures is **TOTP**, and only TOTP. A shared secret has to be
@@ -157,10 +159,12 @@ NACRE_INDEX_LEASE=900                  # any claim older than this is abandoned:
 NACRE_INDEX_MAX_ATTEMPTS=5             # transient failures only; then failed for good
 
 # ─── limits ───
+NACRE_RATE_REQUESTS_PER_MIN=600        # per caller, every request on REST and MCP
 NACRE_RATE_SEARCH_PER_MIN=60
 NACRE_RATE_INGEST_PER_HOUR=600
 NACRE_RATE_LOGIN_PER_15MIN=10          # per email address, not per organization
 NACRE_RATE_LOGIN_SOURCE_PER_15MIN=60   # per client; what bounds a spray across addresses
+NACRE_RATE_CLIENT_REGISTRATION_PER_HOUR=100 # per client: /oauth/register and metadata fetches
 NACRE_TRUST_PROXY=0                    # proxies in front of this process; 0 ignores X-Forwarded-For
 NACRE_MAX_DOCUMENT_BYTES=52428800
 NACRE_METRICS_TOKEN=                   # unset leaves /metrics open; >= 16 chars if set
@@ -292,18 +296,21 @@ a variable this build never reads is one this build cannot say anything useful
 about.
 
 `NACRE_OAUTH_CIMD_ENABLED` and `NACRE_OAUTH_DCR_ENABLED` **were on this list and
-are now gone entirely**, which is a different statement from "not built yet".
-Client registration, under either mechanism, is a transaction between a client
-and an authorization server — which the installation's API became when it grew
-the consent flow. It implements DCR at `/oauth/register`, always on and with
-nothing to switch, and deliberately not CIMD, because every shipping MCP client
-speaks DCR (`docs/mcp.md`). A deployment whose `NACRE_OAUTH_AUTHORIZATION_SERVER`
-names an identity provider instead gets registration from that provider.
+are gone entirely**, which was a different statement from "not built yet": a
+variable for a role the product has declined tells an operator it has a knob it
+will never have, and they set it and believe something.
 
-A variable for a role the product has declined is worse than a missing feature.
-An unimplemented one tells an operator to wait; one like these tells them the
-product has a knob it is never going to have, and they set it and believe
-something.
+What replaced them is the API acting as the authorization server, and since
+0.41.0 it takes a client both ways. **Registration** (RFC 7591) is at
+`/oauth/register`, always on, with nothing to switch. **Client ID Metadata
+Documents** sit beside it: a client whose `client_id` is an https URL is
+fetched from that URL rather than registered, and named on the consent screen
+by the domain that served it. `NACRE_OAUTH_CIMD` is the one switch, because the
+fetch is an outbound request whose address an unauthenticated caller chose —
+through the egress guard, bounded in time and size, cached — and a deployment
+that must make none sets it to `false`; see "Client registration, both ways"
+below. A deployment whose `NACRE_OAUTH_AUTHORIZATION_SERVER` names an identity
+provider gets registration from that provider instead, either way.
 
 ### Logging
 
@@ -410,6 +417,46 @@ Both processes serve the same object, built once. Two builders would drift, and
 a client that read one and authenticated against the other would be
 audience-bound to a string neither agreed on.
 
+### Every caller has a budget
+
+`NACRE_RATE_REQUESTS_PER_MIN` counts **every** authenticated request against the
+principal making it — a person, a service account, or a delegation, which counts
+as its person — on REST and on MCP alike. Until 0.41.0 only search and ingest
+were counted, so a client in a loop over a listing, or over `tools/list`, was
+bounded by nothing, and one misbehaving agent could take the API away from the
+rest of its organization.
+
+It is generous on purpose: 600 a minute is ten a second, sustained, which no
+person and no well-behaved agent approaches, and the point is to stop a loop
+rather than to ration use. Three things keep it from locking anybody out who did
+not earn it:
+
+- **It is per caller, not per organization.** A noisy agent spends its own
+  budget; the people beside it are not refused for what it did.
+- **The window slides.** The count is the current minute plus the previous one
+  weighted by how much of it still overlaps, so there is no boundary at which a
+  burst of twice the limit fits, and no boundary after which a refused caller
+  is suddenly free.
+- **A refusal costs nothing.** A refused request is given back, so a client
+  that keeps knocking while it waits is not pushing its own wait further out,
+  and `Retry-After` is the time until the next request would actually fit — not
+  the end of the window. The SDK honours it.
+
+A refusal is written to the access log once per window as `rate_limited`, not
+once per refusal: the log is per request, and a client hammering a limit would
+otherwise turn the limit into the way the log is flooded.
+
+**There is no limit on an organization's total here, and that is deliberate.**
+With one organization a total would be a ceiling on the whole installation,
+which can only refuse somebody the hardware could have served; the per-caller
+budget already stops the loop it would exist for. An installation serving
+several organizations needs one, so that one tenant cannot take the
+installation away from the others, and it comes with the module that makes an
+installation serve several: `tenancy` sets a default total per organization and
+lets a platform administrator set any organization's limits — its total, its
+per-caller budget, its search and ingest — on the Organizations screen.
+`docs/extensions.md`, `registerRateLimits`, is how.
+
 ### The limits apply to MCP too
 
 `NACRE_RATE_SEARCH_PER_MIN` and `NACRE_RATE_INGEST_PER_HOUR` used to apply to
@@ -419,14 +466,52 @@ authorization service, one of them with a lock.
 
 They share buckets rather than counting per surface, deliberately — separate
 counters would hand a caller twice the documented allowance for holding two
-clients, which is the same hole one level up. `search` spends the search budget;
-`ingest_document` and `delete_document` spend the ingest one. `list_layers` is
-unlimited: it is one indexed query, and refusing it breaks discovery for a
-client that is otherwise behaving.
+clients, which is the same hole one level up. The general budget above is one
+budget across both surfaces for the same reason. `search` also spends the
+search budget; `ingest_document` and `delete_document` the ingest one, and a
+request the second limit refuses is given back to the first.
 
 A refusal is JSON-RPC error `-32003` with HTTP `429` and the RFC 9331
-`RateLimit-*` headers, checked after the catalog lookup so that an unknown tool
-stays indistinguishable from one the caller may not see.
+`RateLimit-*` headers. The tool limits are checked after the catalog lookup so
+that an unknown tool stays indistinguishable from one the caller may not see.
+
+### Client registration, both ways
+
+`/oauth/register` is open — RFC 7591 is for a client nobody has met — and a
+registration permits nothing until a person approves it on the consent screen.
+Until 0.41.0 that was the whole bound, so anybody could grow `oauth_clients` at
+the rate they could post. Two things bound it now:
+
+- `NACRE_RATE_CLIENT_REGISTRATION_PER_HOUR` per client address, counted the
+  way sign-in counts one (`NACRE_TRUST_PROXY` decides what an address is). A
+  refusal is `429` with `{"error": "temporarily_unavailable"}`, RFC 6749's
+  shape, since that is what a registering client reads.
+- The worker deletes a client nobody approved once it has gone **seven days**
+  unseen. Seen means the authorization endpoint was asked for it with a
+  redirect URI it registered, which happens before anybody can consent — so a
+  client registered last week and being approved now is not swept under the
+  person approving it. A client with a consent, revoked or not, is never swept.
+
+A client may instead be identified by **its metadata document**: a `client_id`
+that is an https URL with a path. The authorization endpoint fetches it through
+the same egress guard the embedder and the parser use — addresses judged at
+connect time, so a public name resolving to a private address is refused, no
+redirects followed — in five seconds and five kilobytes at most, and caches it
+for what its `Cache-Control` says, between five minutes and a day. A cache miss
+spends the same budget as a registration. The document must name its own URL as
+`client_id`, list redirect URIs a registration could have, and ask for no client
+authentication; a loopback redirect may use any port, which RFC 8252 requires
+and a static document cannot avoid. A stale document whose refresh fails is a
+refusal, never the old copy, because a client that dropped a redirect URI must
+stop receiving codes there.
+
+`NACRE_OAUTH_CIMD_ALLOWED_ORIGINS` names origins on your own network a document
+may come from — an intranet client — by exact origin, never a suffix, and `*` is
+refused at startup. `NACRE_OAUTH_CIMD=false` turns the fetch off entirely and
+the authorization server metadata stops advertising
+`client_id_metadata_document_supported`; registration is unaffected. **The
+`airgapped` profile should set it**: a deployment that makes no outbound
+connection must not make one because a client named a URL.
 
 ### The login endpoint is limited twice
 
@@ -561,8 +646,8 @@ silently overrule a decision about isolation:
 the tag cache it described. So is `NACRE_ACL_PROPAGATION_SLA`: nothing
 propagates asynchronously any more, so there is no window to bound. Both were
 removed rather than left on a "not implemented" list, on the same rule as
-`NACRE_OAUTH_CIMD_ENABLED` — a variable for a mechanism the product no longer
-has tells an operator it has a knob it will never have.
+`NACRE_OAUTH_DCR_ENABLED` — a variable for a mechanism the product does not
+have tells an operator it has a knob it will never have.
 
 ### What Redis is for
 

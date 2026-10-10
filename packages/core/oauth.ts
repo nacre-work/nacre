@@ -8,24 +8,25 @@
  * same failure as a search parameter read by nothing: the server described a
  * capability and did not have it.
  *
- * ## This is a resource server, not an authorization server
+ * ## The MCP transport is a resource server; the API is the authorization server
  *
- * `docs/mcp.md` says so and the code agrees: tokens are verified locally
- * against a key, and nothing here issues one through an OAuth flow.
- * `/v1/auth/login` is email and password, and a service account key is a random
- * string matched against a hash — neither is an OAuth grant.
+ * `docs/mcp.md` says so and the code agrees: the MCP transport verifies tokens
+ * locally against a key and issues none. `/v1/auth/login` is email and
+ * password, and a service account key is a random string matched against a
+ * hash — neither is an OAuth grant.
  *
  * `authorization_servers` names one, and which one is a deployment's choice:
  * an identity provider if it has configured one, and otherwise this
  * installation's own API, which since the consent flow landed *is* an
- * authorization server.
+ * authorization server — see `authserver.ts`.
  *
  * This field used to be absent by default, on the argument that pointing a
  * client at a token endpoint that did not exist would be the same dead end the
  * missing document was, one redirect further along. That argument was correct
- * and it is not what changed — the endpoint changed. It exists now, and it
- * mints a token bound to a **service account** rather than to the person who
- * approved it, which is the part worth knowing before reading the flow.
+ * and it is not what changed — the endpoint changed. It exists now, and the
+ * token it mints acts as the **person** who approved the connection by default,
+ * or as an agent they chose on the consent screen — a delegation re-resolved on
+ * every request, never a copy of what they could reach at consent.
  *
  * A deployment that wants neither sets `NACRE_OAUTH_AUTHORIZATION_SERVER` to
  * its own provider; the field then names that and nothing here is consulted.

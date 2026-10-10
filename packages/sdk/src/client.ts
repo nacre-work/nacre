@@ -275,7 +275,9 @@ export class NacreClient {
     // A problem document, or something upstream of the API answered — a proxy,
     // a load balancer, a WAF. Saying which matters: the second is not the
     // server refusing, and no request id exists to look up.
-    if (isProblem(parsed)) throw new NacreError(parsed)
+    if (isProblem(parsed)) {
+      throw new NacreError(parsed, retryAfterOf(response.headers.get('retry-after')))
+    }
     throw new NacreTransportError(
       `${options.method} ${options.path} answered ${response.status} without a problem document; ` +
         'something between this client and the API answered instead',
@@ -299,7 +301,15 @@ export class NacreClient {
         if (!options.retryable || !transient || attempt >= this.#retries) throw error
         if (options.signal?.aborted === true) throw error
 
-        await new Promise((r) => setTimeout(r, 250 * 2 ** (attempt - 1)))
+        // The server's own wait where it named one, because retrying a 429
+        // sooner than that is a request it has already said it will refuse —
+        // and is counted against the same budget the caller is out of. A wait
+        // longer than a caller would sit through without being told is not
+        // slept: the error goes back, carrying `retryAfter`, for the caller to
+        // decide.
+        const asked = error instanceof NacreError ? error.retryAfter : undefined
+        if (asked !== undefined && asked * 1000 > MAX_RETRY_WAIT_MS) throw error
+        await new Promise((r) => setTimeout(r, asked !== undefined ? asked * 1000 : 250 * 2 ** (attempt - 1)))
       }
     }
   }
@@ -2524,4 +2534,17 @@ function accountFrom(a: Record<string, unknown>): ServiceAccount {
     lastUsedAt: (a.last_used_at as string | null) ?? null,
     revokedAt: (a.revoked_at as string | null) ?? null,
   }
+}
+
+/** The longest `Retry-After` a retry will sleep through before handing the error back. */
+const MAX_RETRY_WAIT_MS = 10_000
+
+/** `Retry-After` in seconds, either form RFC 9110 allows, or nothing. */
+function retryAfterOf(header: string | null): { retryAfter?: number } {
+  if (header === null) return {}
+  const trimmed = header.trim()
+  if (/^\d+$/.test(trimmed)) return { retryAfter: Number(trimmed) }
+  const at = Date.parse(trimmed)
+  if (Number.isNaN(at)) return {}
+  return { retryAfter: Math.max(0, Math.ceil((at - Date.now()) / 1000)) }
 }

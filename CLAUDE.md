@@ -3781,6 +3781,53 @@ write to that account, since a subject is a way in: an `org_admin` able to set
 one on the installation's administrator could sign in as them with a token from
 a provider they configured.
 
+**A caller could take the API away from everybody else, and registration was
+bounded by nothing — 0.41.0.** Only search and ingest were counted, per
+organization, so a client in a loop over a listing or over `tools/list` was
+limited by nothing at all; and `/oauth/register` wrote a row per post with no
+limit and no sweep, under a migration comment saying "plus the rate limiter"
+about a limiter that never looked at it. Every authenticated request now counts
+against the **principal** on one budget across REST and MCP, generous by design
+— ten a second sustained stops a loop and nothing else — and the window slides,
+so there is no boundary to burst across and none after which a refused caller is
+suddenly free. A refused request is given back, so knocking while waiting does
+not push the wait out, `Retry-After` is the time until the next request fits,
+and the refusal is audited once per window rather than once per request, or the
+limit would become the way the log is flooded. Registration is limited per
+client address, and the worker deletes a client nobody approved after a week
+unseen — "seen" being the authorization endpoint asked for it with a redirect it
+registered, after that check, so only a request that could reach a consent
+screen keeps one alive.
+
+**An organization's total is not counted by the core, and that is the
+decision rather than the gap.** With one organization a total is a ceiling on
+the installation, which can only refuse somebody the hardware could have served,
+and the per-caller budget already stops the loop it would exist for. Several
+organizations on one installation need one each, so the core declares the
+eighth extension point, `registerRateLimits`, and counts `org_requests` only
+where a source names a limit — with the numbers a module sets and the windows
+the installation keeps. Both surfaces admit a request through one
+`admitRequest`, the caller first, and its first test of the order could not fail:
+the give-back makes the counts the same either way round, so what the order
+decides is only which limit the refusal *names*. The case asks that now — a
+looping caller is told it is its own loop even when its organization is full
+too — and swapping the two steps turns it red.
+
+**Client ID Metadata Documents are in, beside registration**, and the reason
+they were declined is the reason they could be built. The decline was an
+outbound fetch to an address an unauthenticated caller chose; `egressFetch`
+answered exactly that for the embedder and the parser in 0.26.0 — addresses
+judged at connect time, no redirects — and nobody went back to the row that
+said no. The fetch goes through it, bounded and cached, spends the registration
+budget, and a stale document whose refresh fails is a refusal rather than the
+old copy, because a client that dropped a redirect URI must stop receiving codes
+there. Three places ask whether a redirect is allowed — authorize and both
+consent decisions — and they ask through one function, since a metadata client
+may use any loopback port and a registration may not. The consent screen names
+such a client by the domain that served its document, and says in words that a
+loopback client is only as good as the program presenting its name, which is
+the one weakness the specification itself names.
+
 **The skills had gone stale, and nothing reads a skill against the tree.**
 `.claude/skills/` is what an agent loads before it touches the model, and five
 of the seven described a product several releases old: `acl_tags` as a cache to

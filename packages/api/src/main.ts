@@ -56,7 +56,7 @@ import {
   PostgresOAuthRefreshTokens,
 } from './oauth-store.js'
 import { rerankerFor } from './rerank.js'
-import { RateLimiter, type LimitPolicy, type Resource } from './limits.js'
+import { limitPoliciesFrom, RateLimiter } from './limits.js'
 import { RedisUploadTickets } from './uploads.js'
 import { PostgresGroups, PostgresUsers } from './principals.js'
 import { PostgresSkills } from './skills.js'
@@ -125,17 +125,9 @@ async function main(): Promise<void> {
   const principalsCache = { store: new RedisCache(redis), ttlSeconds: config.aclCacheTtl }
 
 
-  const limitPolicies: Record<Resource, LimitPolicy> = {
-    search: { limit: config.rateSearchPerMin, windowSeconds: 60 },
-    ingest: { limit: config.rateIngestPerHour, windowSeconds: 3600 },
-    // Per address rather than per organization — there is no organization until
-    // the sign-in succeeds, and what this defends is one account's password.
-    login: { limit: config.rateLoginPer15Min, windowSeconds: 900 },
-    // And per client, which is what the address limit does not do: a spray
-    // across ten thousand addresses never repeats a key. Looser on purpose,
-    // because a whole office behind one NAT is one source here.
-    login_source: { limit: config.rateLoginSourcePer15Min, windowSeconds: 900 },
-  }
+  // One map for both processes, built from the configuration in one place —
+  // see `limitPoliciesFrom` for why it stopped being written out here.
+  const limitPolicies = limitPoliciesFrom(config)
 
   const limits = new RateLimiter({
     redis,
@@ -531,6 +523,10 @@ async function main(): Promise<void> {
       authorizations: new PostgresOAuthAuthorizations(pool, APP_ROLE),
       consents: new PostgresOAuthConsents(pool, APP_ROLE),
       refreshTokens: new PostgresOAuthRefreshTokens(pool, APP_ROLE),
+      // A client identified by its metadata document, fetched through the
+      // egress guard. Off where `NACRE_OAUTH_CIMD` says so — an installation
+      // with no route to the internet — and then not advertised either.
+      ...(config.oauthCimd ? { metadataDocuments: { trustedOrigins: config.oauthCimdAllowedOrigins } } : {}),
       // The same lifetimes a person's own session uses. An application's
       // connection is not a different kind of thing from a browser session —
       // both are "this holder keeps working until somebody ends it" — so

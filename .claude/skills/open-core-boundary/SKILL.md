@@ -63,6 +63,7 @@ registerIngestGate(gate)            // tenancy (max_documents)
 mountAdminRoutes(...routes)         // most modules
 registerSignInGate(gate)            // sign-in-policy
 registerMcpTools('admin', ...tools) // acl-advanced
+registerRateLimits(source)          // tenancy (per-organization limits)
 ```
 
 Plus one seam that is not a registry: the console loads `extensions.js`, which

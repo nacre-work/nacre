@@ -134,7 +134,7 @@ is gone", and a real client dropped its connection over one.
 | RFC 9728 protected-resource metadata served | holds — by this transport and by the API, from one document |
 | RFC 8414 authorization-server metadata served | holds — by the API, which is the authorization server |
 | RFC 7591 dynamic client registration (**MAY**, deprecated) | holds — by the API |
-| Client ID Metadata Documents (**SHOULD**) | deviation — see below |
+| Client ID Metadata Documents (**SHOULD**) | holds — by the API, unless `NACRE_OAUTH_CIMD=false`; see below |
 | Every `401` carries `WWW-Authenticate` naming that document | holds |
 | The `resource` identifier matches the URL the client reached | holds — derived from `Host` unless `NACRE_MCP_CANONICAL_URL` pins it |
 | Tokens validated locally, audience-bound | holds — by this repository's `authenticate`, before the SDK sees a frame |
@@ -145,17 +145,33 @@ token here may be a JWT, a service account key or a delegation, resolved by the
 same `authenticate` the REST surface uses, and a second verifier would be a
 second answer about who a caller is. The SDK is handed the caller it resolved.
 
-### Client ID Metadata Documents: a SHOULD we decline, and why
+### Client ID Metadata Documents: declined, then built on the egress guard
 
 CIMD makes `client_id` an HTTPS URL that the authorization server **fetches**.
 That puts an outbound request, to a URL an unauthenticated caller chose, on the
-authorization endpoint — a server-side request forgery surface reachable before
-anybody has signed in, in a product whose premise is that it runs inside
-somebody's network next to their documents, and one incompatible with the
-`airgapped` profile by construction. DCR costs nothing comparable: the client
-posts its own metadata, we store a row, and that row permits nothing until a
-person approves it on the consent screen. Every shipping MCP client supports
-DCR.
+authorization endpoint, and until 0.41.0 this row was a deviation for that
+reason: a server-side request forgery surface reachable before anybody has
+signed in, in a product that runs inside somebody's network.
+
+What changed is that the product grew the answer for a different door.
+`egressFetch` judges every address a name resolves to **at connect time** and
+refuses anything not globally routable, refuses redirects, and has been holding
+the embedder and the parser to that since 0.26.0. The metadata fetch goes
+through it, bounded to five seconds and five kilobytes, cached for what the
+document's `Cache-Control` says between five minutes and a day, and spending
+the same per-address budget registration does. The document must name its own
+URL as `client_id`, list redirect URIs a registration could have, and ask for no
+client authentication. A loopback redirect may use any port (RFC 8252 §7.3).
+
+Two things stay as they were. DCR is kept, unchanged, beside it: a client that
+has no document registers. And `NACRE_OAUTH_CIMD=false` removes the fetch and
+the advertisement, for a deployment — the `airgapped` profile first — that must
+make no outbound connection because a client named a URL.
+
+The one weakness the specification itself names is impersonation on loopback:
+any program on a machine can present a public client's id with a loopback
+redirect, and the document cannot tell them apart. The consent screen says so
+in those words, beside the domain, where the person is deciding.
 
 ## Tools
 

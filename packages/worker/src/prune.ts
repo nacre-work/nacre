@@ -17,6 +17,10 @@
  * because the log is where their record lives: a proposal kept past the events
  * that describe it would be a second, longer retention nobody configured.
  * Migration 0041.
+ *
+ * OAuth clients nobody approved go after a week unseen — registration is open,
+ * so without this the table grew at whatever rate anybody cared to post.
+ * Migration 0044.
  */
 
 export interface PrunePorts {
@@ -30,13 +34,16 @@ export interface PrunePorts {
   audit(retentionDays: number, limit: number): Promise<number>
   /** Decided proposals past the same horizon, through `prune_admin_proposals`. */
   proposals(retentionDays: number, limit: number): Promise<number>
-  onError(what: 'tokens' | 'audit' | 'proposals', error: unknown): void
+  /** Registered clients with no consent and no authorization, unseen for a week. */
+  clients(limit: number): Promise<number>
+  onError(what: 'tokens' | 'audit' | 'proposals' | 'clients', error: unknown): void
 }
 
 export interface PruneResult {
   readonly tokens: number
   readonly audit: number
   readonly proposals: number
+  readonly clients: number
   readonly failed: number
 }
 
@@ -50,6 +57,7 @@ export async function pruneOnce(
   let tokens = 0
   let audit = 0
   let proposals = 0
+  let clients = 0
   let failed = 0
 
   try {
@@ -73,5 +81,12 @@ export async function pruneOnce(
     ports.onError('proposals', error)
   }
 
-  return { tokens, audit, proposals, failed }
+  try {
+    clients = await ports.clients(batch)
+  } catch (error) {
+    failed++
+    ports.onError('clients', error)
+  }
+
+  return { tokens, audit, proposals, clients, failed }
 }

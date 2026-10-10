@@ -375,6 +375,8 @@ One definition, so a variable cannot reach one surface and not another.
 - name: NACRE_OAUTH_CONSENT_URL
   value: {{ .Values.oauth.consentUrl | quote }}
 {{- end }}
+- name: NACRE_OAUTH_CIMD
+  value: {{ .Values.oauth.metadataDocuments | quote }}
 - name: NACRE_LOG_LEVEL
   value: {{ .Values.logging.level | quote }}
 - name: NACRE_LOG_FORMAT
@@ -502,6 +504,8 @@ audience and lifetimes, because all three call loadConfig, which requires them.
 - name: NACRE_AUDIT_QUERY_TEXT
   value: {{ .Values.audit.queryText | quote }}
 
+- name: NACRE_RATE_REQUESTS_PER_MIN
+  value: {{ .Values.limits.requestsPerMin | quote }}
 - name: NACRE_RATE_SEARCH_PER_MIN
   value: {{ .Values.limits.searchPerMin | quote }}
 - name: NACRE_RATE_INGEST_PER_HOUR
@@ -510,6 +514,8 @@ audience and lifetimes, because all three call loadConfig, which requires them.
   value: {{ .Values.limits.loginPer15Min | quote }}
 - name: NACRE_RATE_LOGIN_SOURCE_PER_15MIN
   value: {{ .Values.limits.loginSourcePer15Min | quote }}
+- name: NACRE_RATE_CLIENT_REGISTRATION_PER_HOUR
+  value: {{ .Values.limits.clientRegistrationPerHour | quote }}
 - name: NACRE_TRUST_PROXY
   value: {{ .Values.limits.trustProxy | quote }}
 - name: NACRE_MAX_DOCUMENT_BYTES

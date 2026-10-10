@@ -1,18 +1,21 @@
 /**
  * The authorization server, and the one decision that makes it ours.
  *
- * A consent screen normally mints a token that acts **as the person who signed
- * in**. That is the wrong answer for this product, and not by a little: an
- * agent here is a principal of its own with its own grants, and "what may this
- * agent read" is a different question from "what may you read". Handing an
- * agent your authority collapses the two and throws away the thing the
- * permission model is for.
+ * A consent screen normally mints a token that acts as the person who signed
+ * in, and here it does that by default: a **delegation**, which reaches exactly
+ * what its person reaches, is re-resolved on every request, and stops the
+ * moment they are disabled. What it also offers, and what most authorization
+ * servers do not, is the other answer — a token bound to a **service account**,
+ * a principal of its own with its own grants — because "what may this agent
+ * read" and "what may you read" are different questions, and the person
+ * approving is the one who knows which they mean. Both are chosen on the
+ * consent screen, by a signed-in person; nothing earlier in the flow carries
+ * any authority. docs/authz.md, "Delegated authority".
  *
- * So the code issued by this flow is exchanged for a token bound to a
- * **service account**, and the consent screen is where a person chooses or
- * creates one. The person authenticates; the agent is authorized. Revoking the
- * agent does not touch the person, and revoking the person does not silently
- * widen the agent.
+ * A client arrives in one of two ways, and both stay: it **registers**
+ * (RFC 7591) and gets a random `client_id`, or its `client_id` **is the URL of
+ * its metadata document** (CIMD), which the authorization endpoint fetches
+ * through the egress guard and caches. Neither carries any authority either.
  *
  * This is also why `authorization_servers` in the RFC 9728 document was
  * previously empty and is now allowed to name us. That earlier position was
@@ -74,9 +77,14 @@ export interface AuthorizationServerMetadata {
   readonly code_challenge_methods_supported: readonly string[]
   readonly token_endpoint_auth_methods_supported: readonly string[]
   readonly scopes_supported: readonly string[]
+  /** Present and true where a client may be identified by its metadata document. */
+  readonly client_id_metadata_document_supported?: boolean
 }
 
-export function authorizationServerMetadata(issuer: string): AuthorizationServerMetadata {
+export function authorizationServerMetadata(
+  issuer: string,
+  options: { readonly clientIdMetadataDocuments?: boolean } = {},
+): AuthorizationServerMetadata {
   const at = issuer.replace(/\/+$/, '')
   return {
     issuer: at,
@@ -86,7 +94,8 @@ export function authorizationServerMetadata(issuer: string): AuthorizationServer
     response_types_supported: ['code'],
     // No implicit, no password, no client_credentials. Each of the three is a
     // way to get a token without the consent screen, and the consent screen is
-    // where the service account is chosen — which is the entire mechanism.
+    // where a signed-in person decides what the token acts as — themselves or
+    // an agent — which is the entire mechanism.
     grant_types_supported: ['authorization_code', 'refresh_token'],
     // S256 only. `plain` is in RFC 7636 and defeats the point of it: the
     // verifier travels in the clear and an attacker who has the code has the
@@ -101,6 +110,11 @@ export function authorizationServerMetadata(issuer: string): AuthorizationServer
     // so a token carries an organization and a principal and never a list of
     // what it may reach.
     scopes_supported: [],
+    // Advertised only where the fetch can happen. A client that sees this
+    // prefers its metadata document to registering, so an installation with no
+    // route to the internet must not say it — that client would be sent to a
+    // fetch this process can never make, where registration would have worked.
+    ...(options.clientIdMetadataDocuments === true ? { client_id_metadata_document_supported: true } : {}),
   }
 }
 
@@ -140,6 +154,50 @@ export function verifierMatches(verifier: string, challenge: string): boolean {
  * code delivered over plain HTTP to a routable address is a code on the wire.
  */
 export function redirectAllowed(uri: string, registered: readonly string[]): boolean {
+  return exactRedirect(uri, registered)
+}
+
+/**
+ * The rule for a client that arrived through its metadata document.
+ *
+ * Exact, as for a registration, with the one relaxation RFC 8252 §7.3 makes a
+ * MUST: a loopback redirect may use any port. A registered client posts the
+ * port it is listening on each time, so exact matching costs it nothing; a
+ * metadata document is one static file for every install of the client, and a
+ * native client picks a free port at run time, so the document cannot name it.
+ * Only the port relaxes — scheme, host and path are compared as written, and
+ * only for `http` on loopback.
+ */
+export function redirectAllowedForMetadataClient(uri: string, registered: readonly string[]): boolean {
+  if (exactRedirect(uri, registered)) return true
+  const requested = loopback(uri)
+  if (requested === undefined) return false
+  return registered.some((candidate) => {
+    const listed = loopback(candidate)
+    return listed !== undefined && listed === requested
+  })
+}
+
+/** `http://127.0.0.1:4711/cb` → `http://127.0.0.1/cb`; anything not http-on-loopback → undefined. */
+function loopback(uri: string): string | undefined {
+  let parsed: URL
+  try {
+    parsed = new URL(uri)
+  } catch {
+    return undefined
+  }
+  if (parsed.protocol !== 'http:') return undefined
+  if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== '[::1]' && parsed.hostname !== 'localhost') return undefined
+  // Only the port relaxes. Credentials and a fragment have no business in a
+  // redirect URI (RFC 6749 §3.1.2), and dropping them here would let one pass
+  // the comparison while the browser still carries it; and the URI must be
+  // canonical, so a `..` segment or an upper-case host cannot be read one way
+  // here and another by the browser that follows it.
+  if (parsed.username !== '' || parsed.password !== '' || uri.includes('#') || parsed.href !== uri) return undefined
+  return `http://${parsed.hostname}${parsed.pathname}${parsed.search}`
+}
+
+function exactRedirect(uri: string, registered: readonly string[]): boolean {
   if (!registered.includes(uri)) return false
   let parsed: URL
   try {

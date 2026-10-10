@@ -25,9 +25,9 @@ import {
   type ProtectedResourceMetadata,
 } from '@nacre.work/core'
 import {
+  admitRequest,
   authenticate,
   findTenantOverride,
-  limitHeaders,
   Problem,
   type AuthContext,
   type LimitPolicy,
@@ -739,30 +739,34 @@ async function handle(
     return
   }
 
-  // Same limiter, same policies, same keys as REST. On the tools that spend a
-  // budget, and only for a name the catalog has: an unknown tool goes to the
-  // SDK and gets its answer about the tool, because a 429 on a tool that does
-  // not exist would confirm it does.
-  if (
-    surface === 'default' &&
-    rpc.method === 'tools/call' &&
-    options.limits !== undefined &&
-    options.limitPolicies !== undefined
-  ) {
-    const name = (rpc.params as { name?: unknown } | undefined)?.name
-    const definition = typeof name === 'string' ? dispatchCatalog().find((t) => t.name === name) : undefined
-    const resource = definition === undefined ? undefined : resourceForTool(definition.name)
-    if (resource !== undefined) {
-      const decision = await options.limits.check(auth.orgId, resource)
-      if (!decision.allowed) {
-        send(
-          res,
-          429,
-          rpcError(id, -32003, `Rate limit exceeded. Try again in ${decision.reset} seconds.`),
-          limitHeaders(decision, options.limitPolicies[resource], resource),
-        )
-        return
-      }
+  // Same limiter, same policies, same keys as REST — so the principal's budget
+  // is one budget, whichever surface spends it, and an agent out of requests on
+  // REST is not fresh on MCP.
+  //
+  // Every request on both surfaces counts against the principal, and against
+  // the organization where a module holds it to a total: a client in a loop over
+  // `tools/list` is as able to take the server away as one over `search`. The
+  // costly tools then count against the organization's operation limits too,
+  // and only for a name the catalog has: an unknown tool goes to the SDK and
+  // gets its answer about the tool, because a 429 on a tool that does not exist
+  // would confirm it does. `admitRequest` is the function REST calls, which
+  // holds the order and gives back whatever a later limit refused.
+  if (options.limits !== undefined && options.limitPolicies !== undefined) {
+    let operation: Resource | undefined
+    if (surface === 'default' && rpc.method === 'tools/call') {
+      const name = (rpc.params as { name?: unknown } | undefined)?.name
+      const definition = typeof name === 'string' ? dispatchCatalog().find((t) => t.name === name) : undefined
+      operation = definition === undefined ? undefined : resourceForTool(definition.name)
+    }
+    const admission = await admitRequest(options.limits, options.limitPolicies, auth, operation)
+    if (!admission.allowed) {
+      send(
+        res,
+        429,
+        rpcError(id, -32003, `Rate limit exceeded. Try again in ${String(admission.decision.reset)} seconds.`),
+        admission.headers,
+      )
+      return
     }
   }
 

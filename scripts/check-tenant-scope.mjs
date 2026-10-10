@@ -157,6 +157,10 @@ const EXEMPT = {
       'WITH doomed AS ( SELECT ctid FROM refresh_tokens WHERE expires_at < now()',
       'installation-wide: expired tokens go whichever organization they belong to, through acrossOrganizations',
     ],
+    [
+      'DELETE FROM oauth_clients c WHERE c.id IN',
+      'installation-wide: a client belongs to no organization, and whether anybody approved it is asked of every organization\'s consents at once, through acrossOrganizations',
+    ],
   ],
   'packages/worker/src/claim.ts': [
     [

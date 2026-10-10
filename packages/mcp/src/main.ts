@@ -17,7 +17,7 @@ import {
   RedisCache,
   Registry,
 } from '@nacre.work/core'
-import { RateLimiter, RedisUploadTickets, type LimitPolicy, type Resource } from '@nacre.work/api'
+import { limitPoliciesFrom, RateLimiter, RedisUploadTickets } from '@nacre.work/api'
 
 import { createMcpServer } from './server.js'
 import { buildServices } from './services.js'
@@ -78,12 +78,7 @@ async function main(): Promise<void> {
   // Shared buckets rather than one per surface, deliberately. Separate counters
   // would hand a caller twice the documented allowance for holding two clients,
   // which is the same hole one level up.
-  const limitPolicies: Record<Resource, LimitPolicy> = {
-    search: { limit: config.rateSearchPerMin, windowSeconds: 60 },
-    ingest: { limit: config.rateIngestPerHour, windowSeconds: 3600 },
-    login: { limit: config.rateLoginPer15Min, windowSeconds: 900 },
-    login_source: { limit: config.rateLoginSourcePer15Min, windowSeconds: 900 },
-  }
+  const limitPolicies = limitPoliciesFrom(config)
   const limits = new RateLimiter({
     redis,
     policies: limitPolicies,
