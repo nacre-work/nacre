@@ -962,6 +962,53 @@ await shot('layers-empty', {
 
 await shot('layers', { hash: '#/layers' })
 /*
+ * What a member who reads two layers sees: the skill, and nothing else. Every
+ * row used to offer Rename, Model and Delete to everybody, and the server
+ * answered each with the `404` an unreachable object gets. Asserted here as
+ * well as photographed, because a picture of the right screen is only checked
+ * by somebody looking at it.
+ */
+await shot('layers-member', {
+  hash: '#/layers',
+  fixtures: {
+    'GET /v1/me': {
+      organization: 'acme',
+      principal_type: 'user',
+      principal_id: '4f2c8e61-7a95-4d13-9b60-2e8a5c0f7b34',
+      role: 'member',
+      administers: false,
+      holds_own_credentials: true,
+    },
+    'GET /v1/workspaces': {
+      items: [{ id: WORKSPACE, slug: 'default', name: 'Default', layer_count: 2, permissions: ['read'] }],
+      next_cursor: null,
+    },
+    'GET /v1/layers': {
+      items: [
+        { id: LAYER, slug: 'handbook', name: 'Handbook', workspace_id: WORKSPACE, description: 'Policies and how-tos',
+          document_count: 128, failed_count: 0, permissions: ['read'] },
+        { id: CONTRACTS, slug: 'contracts', name: 'Contracts', workspace_id: WORKSPACE,
+          description: 'Signed agreements', document_count: 34, failed_count: 0, permissions: ['read'] },
+      ],
+      next_cursor: null,
+    },
+    'GET /v1/users': 404,
+    'GET /v1/groups': 404,
+    'GET /v1/service-accounts': 404,
+  },
+  prepare: async (page) => {
+    for (const name of ['Rename', 'Model', 'Delete']) {
+      const offered = await page.getByRole('button', { name, exact: true }).count()
+      if (offered > 0) {
+        throw new Error(`layers-member: a member who only reads was offered "${name}" ${String(offered)} time(s)`)
+      }
+    }
+    if ((await page.getByRole('button', { name: 'Skill', exact: true }).count()) !== 2) {
+      throw new Error('layers-member: each layer should still offer its skill')
+    }
+  },
+})
+/*
  * A list longer than a page, which is the state the search box and the pager
  * exist for and the one no default fixture has. Generated rather than written
  * out: what is under test is the pager — `1–50 of 120`, Previous disabled on

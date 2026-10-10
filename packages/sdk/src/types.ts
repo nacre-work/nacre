@@ -149,6 +149,13 @@ export interface Layer {
   readonly slug: string
   readonly name: string
   readonly description: string
+  /**
+   * The workspace it is in. In the contract since the first layer, and dropped
+   * here until a screen needed it: renaming or deleting a layer takes `admin`
+   * on its *workspace*, which `permissions` below cannot answer, so the Layers
+   * screen offered both to people the server then refused.
+   */
+  readonly workspaceId: string
   readonly documentCount: number
   /**
    * Live documents in the layer that indexing failed on.

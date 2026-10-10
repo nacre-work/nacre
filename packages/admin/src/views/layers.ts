@@ -35,7 +35,7 @@ export async function layersView(root: HTMLElement): Promise<void> {
   root.append(body)
 
   try {
-    const layers = await client().layers.list()
+    const [layers, administered] = await Promise.all([client().layers.list(), administeredWorkspaces()])
     clear(body)
     body.append(layers.length === 0
       ? empty(root)
@@ -43,7 +43,7 @@ export async function layersView(root: HTMLElement): Promise<void> {
           rows: layers,
           fields: (l) => [l.slug, l.name, l.description],
           label: 'Search layers by slug, name or description',
-          render: (shown) => table(shown, root),
+          render: (shown) => table(shown, root, administered),
         }))
   } catch (error) {
     clear(body)
@@ -117,7 +117,25 @@ function newLayerButton(root: HTMLElement): HTMLButtonElement {
   return button
 }
 
-function table(layers: readonly Layer[], root: HTMLElement): HTMLElement {
+/**
+ * The workspaces this caller administers, which is what renaming and deleting a
+ * layer require — `admin` on the *workspace*, so an ingest-only service account
+ * holding `write` into a layer cannot remove it.
+ *
+ * A failure is the empty set, the direction `newLayerButton` takes for the same
+ * question: an action left off is one nobody presses, and one offered on a
+ * guess is the `404` this exists to stop drawing.
+ */
+async function administeredWorkspaces(): Promise<ReadonlySet<string>> {
+  try {
+    const workspaces = await client().workspaces.list()
+    return new Set(workspaces.filter((w) => w.permissions.includes('admin')).map((w) => w.id))
+  } catch {
+    return new Set()
+  }
+}
+
+function table(layers: readonly Layer[], root: HTMLElement, administered: ReadonlySet<string>): HTMLElement {
   return h('table', { class: 'table' },
     h('thead', {},
       h('tr', {},
@@ -162,16 +180,29 @@ function table(layers: readonly Layer[], root: HTMLElement): HTMLElement {
             : null,
         ),
         h('td', {}, shortId(l.id)),
+        // Only the actions this caller may take. Every one was drawn for
+        // everybody, so a member who reads a layer was offered Rename, Model
+        // and Delete and got the `404` an unreachable object answers — found
+        // by looking at a member's screen while writing the manual. Each is
+        // the server's own rule: renaming and deleting take `admin` on the
+        // workspace, a reindex takes `admin` on the layer, and the skill panel
+        // opens for any reader and decides for itself whether it is writable.
         h('td', { class: 'right' },
-          h('button', { class: 'btn btn-quiet', onclick: () => void rename(l, root) }, 'Rename'),
+          administered.has(l.workspaceId)
+            ? h('button', { class: 'btn btn-quiet', onclick: () => void rename(l, root) }, 'Rename')
+            : null,
           // The embedding model, and the recall gate in front of changing it.
           // On the layer rather than a screen of its own: there is at most one
           // migration running, and the layer is what an operator navigates by.
-          h('button', { class: 'btn btn-quiet', onclick: () => void migratePanel(l) }, 'Model'),
+          l.permissions.includes('admin')
+            ? h('button', { class: 'btn btn-quiet', onclick: () => void migratePanel(l) }, 'Model')
+            : null,
           // What an agent is told about this layer. The same panel the Skills
           // screen opens, so the two cannot come to disagree.
           h('button', { class: 'btn btn-quiet', onclick: () => { layerSkillDialog(l) } }, 'Skill'),
-          h('button', { class: 'btn btn-quiet btn-danger', onclick: () => confirmDelete(l, root) }, 'Delete'),
+          administered.has(l.workspaceId)
+            ? h('button', { class: 'btn btn-quiet btn-danger', onclick: () => confirmDelete(l, root) }, 'Delete')
+            : null,
         ),
       ),
     )),
