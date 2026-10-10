@@ -163,6 +163,7 @@ const COVERAGE: Record<string, string | null> = {
   'GET /groups': 'groups.list',
   'POST /groups': 'groups.create',
   'DELETE /groups/{id}': 'groups.remove',
+  'PATCH /groups/{id}': 'groups.link',
   'GET /groups/{id}/members': 'groups.members',
   'POST /groups/{id}/members': 'groups.addMember',
   'DELETE /groups/{id}/members/{type}/{memberId}': 'groups.removeMember',

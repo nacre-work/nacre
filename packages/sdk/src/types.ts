@@ -285,6 +285,12 @@ export interface User {
    * rotated. It is fixed at creation and cannot be changed afterwards.
    */
   readonly shared: boolean
+  /**
+   * The identity provider subject this person is linked to — what SSO matches
+   * an assertion's `sub` against, and SCIM matches members by. `null` until
+   * linked; an older server that does not send it reads as `null` too.
+   */
+  readonly externalId: string | null
 }
 
 export interface CreatedUser extends User {
@@ -302,6 +308,8 @@ export interface Group {
   readonly createdAt: string
   /** Direct members. A nested group counts as one, not as its members. */
   readonly memberCount: number
+  /** A directory's id for this group — what SCIM addresses it by. `null` until linked. */
+  readonly externalId: string | null
 }
 
 export interface GroupMember {

@@ -132,6 +132,60 @@ when('users and groups, against the database', () => {
     expect(JSON.stringify(created.user)).not.toContain(created.password)
   })
 
+  /**
+   * The subject an identity provider signs in as, and a directory's id for a
+   * group. Both unique per organization — a subject that matched two people
+   * would sign in as either, and a group id matching two groups would have
+   * SCIM write membership into whichever it found — and a collision is an
+   * answer rather than a raised constraint, because it is something the
+   * caller typed.
+   */
+  it('links subjects and directory ids, refusing a collision rather than raising it', async () => {
+    const tag = Math.random().toString(36).slice(2, 8)
+    const first = await users.create(admin, `sso-a-${tag}@example.test`, 'member', false, `okta|${tag}`)
+    expect(first !== undefined && first !== 'subject-taken' && first.user.externalId).toBe(`okta|${tag}`)
+    expect(await users.create(admin, `sso-b-${tag}@example.test`, 'member', false, `okta|${tag}`)).toBe('subject-taken')
+
+    const second = (await users.create(admin, `sso-c-${tag}@example.test`, 'member'))!
+    expect(second.user.externalId).toBeNull()
+    expect(await users.update(admin, second.user.id, { externalId: `okta|${tag}` })).toBe('subject-taken')
+    expect(await users.update(admin, second.user.id, { externalId: `okta|${tag}-c` })).toBe('updated')
+    const listed = (await users.list(admin)).items.find((u) => u.id === second.user.id)
+    expect(listed?.externalId).toBe(`okta|${tag}-c`)
+    // A role change leaves the subject alone; only naming it changes it.
+    expect(await users.update(admin, second.user.id, { role: 'member' })).toBe('updated')
+    expect((await users.list(admin)).items.find((u) => u.id === second.user.id)?.externalId).toBe(`okta|${tag}-c`)
+    expect(await users.update(admin, second.user.id, { externalId: null })).toBe('updated')
+    expect((await users.list(admin)).items.find((u) => u.id === second.user.id)?.externalId).toBeNull()
+
+    const g1 = await groups.create(admin, `dir-a-${tag}`, `grp-${tag}`)
+    expect(g1 !== undefined && g1 !== 'subject-taken' && g1.externalId).toBe(`grp-${tag}`)
+    expect(await groups.create(admin, `dir-b-${tag}`, `grp-${tag}`)).toBe('subject-taken')
+    const g2 = (await groups.create(admin, `dir-c-${tag}`))!
+    const g3 = (await groups.create(admin, `dir-d-${tag}`))!
+    // Any number may be unlinked: the constraint is partial (0043).
+    expect(g2.externalId).toBeNull()
+    expect(g3.externalId).toBeNull()
+    expect(await groups.setExternalId(admin, g2.id, `grp-${tag}`)).toBe('subject-taken')
+    expect(await groups.setExternalId(admin, g2.id, `grp-${tag}-2`)).toBe('updated')
+    expect(await groups.setExternalId(admin, g2.id, null)).toBe('updated')
+    expect(await groups.setExternalId(admin, '99999999-9999-4999-8999-0000000000ff', 'x')).toBe('no-group')
+  })
+
+  it('will not link a subject to a platform administrator', async () => {
+    const root = (await users.create(admin, `root-${Math.random().toString(36).slice(2, 8)}@example.test`, 'member'))!
+    const c = await pool.connect()
+    try {
+      await c.query(`UPDATE users SET role = 'platform_admin' WHERE id = $1`, [root.user.id])
+    } finally {
+      c.release()
+    }
+    // An org_admin's identity provider signing in as the installation's
+    // administrator: `onTargetUser` refuses it, as it refuses the other four
+    // ways of acting on that account.
+    expect(await users.update(admin, root.user.id, { externalId: 'okta|root' })).toBe('platform-admin')
+  })
+
   it('a duplicate address is undefined rather than a raised constraint', async () => {
     await users.create(admin, 'dup@example.test', 'member')
     // Not an exception, because a raised constraint inside `withOrg`'s

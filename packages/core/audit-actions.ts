@@ -67,6 +67,7 @@ export const AUDIT_ACTIONS: readonly AuditActionInfo[] = [
   { name: 'audit.read', documentAccess: false, summary: 'The access log was read' },
   { name: 'create_alert_rule', documentAccess: false, summary: 'An alert rule was created' },
   { name: 'create_group', documentAccess: false, summary: 'A group was created' },
+  { name: 'update_group', documentAccess: false, summary: 'A group was linked to a directory id, or unlinked' },
   { name: 'create_layer', documentAccess: false, summary: 'A layer was created' },
   { name: 'create_service_account', documentAccess: false, summary: 'A service account was created' },
   { name: 'create_user', documentAccess: false, summary: 'A user was created' },
@@ -109,7 +110,7 @@ export const AUDIT_ACTIONS: readonly AuditActionInfo[] = [
   { name: 'tenant_override_attempt', documentAccess: false, summary: 'A request tried to name another organization' },
   { name: 'update_layer', documentAccess: false, summary: 'A layer was renamed' },
   { name: 'update_metadata', documentAccess: false, summary: "A document's tags were changed" },
-  { name: 'update_user', documentAccess: false, summary: 'A user was changed — role, or enabled again' },
+  { name: 'update_user', documentAccess: false, summary: 'A user was changed — role, enabled again, or linked to an identity provider subject' },
 ]
 
 /**

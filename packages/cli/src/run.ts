@@ -21,16 +21,22 @@ export const HELP = `nacre — the command line client for a Nacre installation
 Administering an organization, all of it org_admin:
 
   nacre users                               everyone, with role and state
-  nacre users create <email> [--admin] [--shared]
+  nacre users create <email> [--admin] [--shared] [--external-id <subject>]
                                            the password is generated, shown once;
                                            --shared for a credential several
                                            people hold, which has no second
                                            factor and no password change
   nacre users password <id>                 issue a new one, shown once
   nacre users role <id> <member|org_admin>
+  nacre users link <id> <subject>           the subject an identity provider
+                                            signs this person in as
+  nacre users unlink <id>
   nacre users disable <id>                  the row is kept; the log names it
   nacre groups                              teams a grant can name
-  nacre groups create <name>
+  nacre groups create <name> [--external-id <id>]
+  nacre groups link <id> <directory-id>     the id a directory sync addresses
+                                            this group by
+  nacre groups unlink <id>
   nacre groups members <id>
   nacre groups add|remove <id> <user:id|group:id>
   nacre groups delete <id>                  takes its grants with it

@@ -366,8 +366,8 @@ describe('administering an organization', () => {
     ({
       users: {
         list: async () => [
-          { id: 'u1', email: 'ada@example', role: 'org_admin', createdAt: '', disabledAt: null, hasPassword: true },
-          { id: 'u2', email: 'bo@example', role: 'member', createdAt: '', disabledAt: null, hasPassword: false },
+          { id: 'u1', email: 'ada@example', role: 'org_admin', createdAt: '', disabledAt: null, hasPassword: true, externalId: null },
+          { id: 'u2', email: 'bo@example', role: 'member', createdAt: '', disabledAt: null, hasPassword: false, externalId: 'okta|bo' },
         ],
         create: async (email: string, role: string) => ({
           id: 'u3', email, role, createdAt: '', disabledAt: null, hasPassword: true, password: 'six-word-secret-1',
@@ -377,8 +377,9 @@ describe('administering an organization', () => {
         resetPassword: async (id: string) => (id === 'u2' ? 'a-new-one-2' : undefined),
       },
       groups: {
-        list: async () => [{ id: 'g1', name: 'platform', createdAt: '', memberCount: 2 }],
-        create: async (name: string) => ({ id: 'g2', name, createdAt: '', memberCount: 0 }),
+        list: async () => [{ id: 'g1', name: 'platform', createdAt: '', memberCount: 2, externalId: 'scim-platform' }],
+        create: async (name: string) => ({ id: 'g2', name, createdAt: '', memberCount: 0, externalId: null }),
+        link: async (id: string) => id === 'g1',
         remove: async () => true,
         members: async (id: string) =>
           id === 'g1' ? [{ type: 'user', id: 'u1', label: 'ada@example' }] : undefined,
@@ -432,6 +433,60 @@ describe('administering an organization', () => {
     // Invariant 4 reaching the CLI: absent and invisible are one answer, and
     // this client must not invent a more helpful one than the server gave.
     expect(result.output).toContain('same answer')
+  })
+
+  it('sends --external-id with a new account, and refuses one given no value', async () => {
+    const sent: unknown[] = []
+    const client = admin({
+      users: {
+        create: async (email: string, role: string, options: unknown) => {
+          sent.push(options)
+          return { id: 'u3', email, role, createdAt: '', disabledAt: null, hasPassword: true, externalId: 'okta|cy', password: 'p' }
+        },
+      },
+    })
+
+    const linked = await run(['users', 'create', 'cy@example', '--external-id', 'okta|cy'], { env, clientFor: () => client })
+    expect(linked.code).toBe(0)
+    expect(sent).toEqual([{ shared: false, externalId: 'okta|cy' }])
+
+    // Bare, the parser records a flag; creating the account unlinked would
+    // leave somebody wondering why their identity provider cannot sign in.
+    const bare = await run(['users', 'create', 'cy@example', '--external-id'], { env, clientFor: () => client })
+    expect(bare.code).toBe(2)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('links a person to a subject and unlinks them with null, through the one update', async () => {
+    const changes: unknown[] = []
+    const client = admin({
+      users: {
+        update: async (id: string, change: unknown) => {
+          changes.push([id, change])
+          return id === 'u2'
+        },
+      },
+    })
+
+    expect((await run(['users', 'link', 'u2', 'okta|bo'], { env, clientFor: () => client })).code).toBe(0)
+    expect((await run(['users', 'unlink', 'u2'], { env, clientFor: () => client })).code).toBe(0)
+    expect(changes).toEqual([
+      ['u2', { externalId: 'okta|bo' }],
+      ['u2', { externalId: null }],
+    ])
+
+    expect((await run(['users', 'link', 'u2'], { env, clientFor: () => client })).code).toBe(2)
+    expect((await run(['users', 'link', 'nobody', 'x'], { env, clientFor: () => client })).code).toBe(1)
+  })
+
+  it('links a group to a directory id, and says which accounts and groups are linked', async () => {
+    expect((await run(['groups', 'link', 'g1', 'scim-platform'], { env, clientFor: () => admin() })).code).toBe(0)
+    expect((await run(['groups', 'unlink', 'gone'], { env, clientFor: () => admin() })).code).toBe(1)
+
+    const people = await run(['users'], { env, clientFor: () => admin() })
+    expect(people.output).toContain('subject okta|bo')
+    const teams = await run(['groups'], { env, clientFor: () => admin() })
+    expect(teams.output).toContain('directory scim-platform')
   })
 
   it('tells an empty group from a group that is not there', async () => {

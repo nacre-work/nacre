@@ -42,6 +42,22 @@ function refused(what: string, id: string): Error {
   )
 }
 
+/**
+ * `--external-id`, which has to carry a value.
+ *
+ * Given bare, the parser records it as a flag, and quietly creating the account
+ * unlinked would leave somebody wondering why their identity provider cannot
+ * sign in as it — so a bare one is refused rather than dropped.
+ */
+function externalIdOption(context: Context): string | undefined {
+  if (!context.parsed.options.has('external-id')) return undefined
+  const value = option(context.parsed, 'external-id')
+  if (value === undefined || value.trim() === '') {
+    throw new UsageError('--external-id takes the subject, as the identity provider or directory sends it')
+  }
+  return value
+}
+
 export async function users(context: Context): Promise<string> {
   const client = requireClient(context)
   const [, verb, argument] = context.parsed.positional
@@ -50,6 +66,7 @@ export async function users(context: Context): Promise<string> {
   if (verb === 'disable') return disableUser(context, client, argument)
   if (verb === 'password') return resetPassword(context, client, argument)
   if (verb === 'role') return setRole(context, client, argument)
+  if (verb === 'link' || verb === 'unlink') return linkUser(context, client, verb, argument)
   if (verb !== undefined) throw new UsageError(`Unknown: nacre users ${verb}`)
 
   const list = await client.users.list()
@@ -65,14 +82,19 @@ export async function users(context: Context): Promise<string> {
         // and an administrator looking at this list is usually asking exactly
         // that: why can this person not sign in.
         const sso = user.hasPassword ? '' : '  sso-only'
-        return `${user.email.padEnd(width)}  ${user.role.padEnd(9)}  ${user.id}${state}${sso}`
+        // The subject is the other half of that question: an account with no
+        // subject is one no identity provider can sign in as.
+        const subject = user.externalId === null ? '' : `  subject ${user.externalId}`
+        return `${user.email.padEnd(width)}  ${user.role.padEnd(9)}  ${user.id}${state}${sso}${subject}`
       })
       .join('\n')
   })
 }
 
 async function createUser(context: Context, client: NacreClient, email?: string): Promise<string> {
-  if (email === undefined) throw new UsageError('nacre users create <email> [--admin] [--shared]')
+  if (email === undefined) {
+    throw new UsageError('nacre users create <email> [--admin] [--shared] [--external-id <subject>]')
+  }
 
   // Deliberately no `--password`. The endpoint generates one and refuses to
   // accept one, on two arguments: an argument ends up in a shell history, and a
@@ -84,13 +106,17 @@ async function createUser(context: Context, client: NacreClient, email?: string)
     )
   }
 
+  const externalId = externalIdOption(context)
   const created = await client.users.create(
     email,
     context.parsed.options.has('admin') ? 'org_admin' : 'member',
     // A credential meant to be published. The demo seed is the caller this
     // exists for, and it is a flag rather than a default because every other
     // account this command makes belongs to somebody.
-    { shared: context.parsed.options.has('shared') },
+    {
+      shared: context.parsed.options.has('shared'),
+      ...(externalId === undefined ? {} : { externalId }),
+    },
   )
 
   return render(context, created, () =>
@@ -135,6 +161,37 @@ async function setRole(context: Context, client: NacreClient, id?: string): Prom
   return render(context, { id, role }, () => `${id} is now ${role}.`)
 }
 
+/**
+ * Tie an account to the subject an identity provider signs it in as, or untie it.
+ *
+ * Until this existed the subject could be written only with SQL, so an
+ * installation that bought SSO could not use it without `psql`. A subject
+ * already on another account in this organization is the server's `409`, and it
+ * arrives as that rather than as "no such user": one needs the other account
+ * unlinked first, the other needs a different id.
+ */
+async function linkUser(
+  context: Context,
+  client: NacreClient,
+  verb: 'link' | 'unlink',
+  id?: string,
+): Promise<string> {
+  const subject = context.parsed.positional[3]
+  if (id === undefined || (verb === 'link' && subject === undefined)) {
+    throw new UsageError(verb === 'link' ? 'nacre users link <id> <subject>' : 'nacre users unlink <id>')
+  }
+
+  const externalId = verb === 'link' ? (subject as string) : null
+  const done = await client.users.update(id, { externalId })
+  if (!done) throw refused('user', id)
+
+  return render(context, { id, external_id: externalId }, () =>
+    externalId === null
+      ? `${id} is no longer linked. No identity provider can sign in as it until it is linked again.`
+      : `${id} signs in through an identity provider whose subject is ${JSON.stringify(externalId)}.`,
+  )
+}
+
 export async function groups(context: Context): Promise<string> {
   const client = requireClient(context)
   const [, verb, argument] = context.parsed.positional
@@ -143,6 +200,7 @@ export async function groups(context: Context): Promise<string> {
   if (verb === 'delete') return deleteGroup(context, client, argument)
   if (verb === 'members') return listMembers(context, client, argument)
   if (verb === 'add' || verb === 'remove') return changeMembership(context, client, verb, argument)
+  if (verb === 'link' || verb === 'unlink') return linkGroup(context, client, verb, argument)
   if (verb !== undefined) throw new UsageError(`Unknown: nacre groups ${verb}`)
 
   const list = await client.groups.list()
@@ -152,15 +210,47 @@ export async function groups(context: Context): Promise<string> {
 
     const width = Math.max(...list.map((group) => group.name.length))
     return list
-      .map((group) => `${group.name.padEnd(width)}  ${group.memberCount} members  ${group.id}`)
+      .map((group) => {
+        const directory = group.externalId === null ? '' : `  directory ${group.externalId}`
+        return `${group.name.padEnd(width)}  ${group.memberCount} members  ${group.id}${directory}`
+      })
       .join('\n')
   })
 }
 
 async function createGroup(context: Context, client: NacreClient, name?: string): Promise<string> {
-  if (name === undefined) throw new UsageError('nacre groups create <name>')
-  const created = await client.groups.create(name)
+  if (name === undefined) throw new UsageError('nacre groups create <name> [--external-id <id>]')
+  const externalId = externalIdOption(context)
+  const created = await client.groups.create(name, externalId === undefined ? {} : { externalId })
   return render(context, created, () => `Created group ${created.name}\nid: ${created.id}`)
+}
+
+/**
+ * Tie a group to the id a directory addresses it by, which is what SCIM's
+ * `PATCH /v1/admin/scim/Groups/{id}` names. An id already on another group is
+ * a `409`: membership synced into whichever group a lookup happened to find is
+ * the grants of one team handed to another.
+ */
+async function linkGroup(
+  context: Context,
+  client: NacreClient,
+  verb: 'link' | 'unlink',
+  id?: string,
+): Promise<string> {
+  const directoryId = context.parsed.positional[3]
+  if (id === undefined || (verb === 'link' && directoryId === undefined)) {
+    throw new UsageError(verb === 'link' ? 'nacre groups link <id> <directory-id>' : 'nacre groups unlink <id>')
+  }
+
+  const externalId = verb === 'link' ? (directoryId as string) : null
+  const done = await client.groups.link(id, externalId)
+  if (!done) throw refused('group', id)
+
+  return render(context, { id, external_id: externalId }, () =>
+    externalId === null
+      ? `Group ${id} is no longer linked. A directory sync no longer reaches it.`
+      : `Group ${id} is what a directory sync addressing ${JSON.stringify(externalId)} writes into.`,
+  )
 }
 
 async function deleteGroup(context: Context, client: NacreClient, id?: string): Promise<string> {

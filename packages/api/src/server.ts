@@ -1284,11 +1284,51 @@ function userJson(u: UserView): Record<string, unknown> {
     // and it decides whether the person on the other end can hold a second
     // factor at all.
     shared: u.shared,
+    // The identity provider's subject this person is linked to, or null. Shown
+    // because it is what decides whether an IdP can sign in as them, and an
+    // administrator who linked one has no other way to check it.
+    external_id: u.externalId,
   }
 }
 
 function groupJson(g: GroupView): Record<string, unknown> {
-  return { id: g.id, name: g.name, created_at: g.createdAt, member_count: g.memberCount }
+  return {
+    id: g.id,
+    name: g.name,
+    created_at: g.createdAt,
+    member_count: g.memberCount,
+    external_id: g.externalId,
+  }
+}
+
+/**
+ * An identity provider's id for a person or a group, as a request body gave it.
+ *
+ * Kept exactly as sent — never trimmed or case-folded — because the IdP
+ * compares it byte for byte, and a subject that differs by a space is a
+ * different person. Bounded, and refused with control characters, because it is
+ * written into the audit log and drawn on a screen. `null` only where clearing
+ * is meaningful.
+ */
+function readExternalId(value: unknown, allowNull: boolean): string | null | { readonly refusal: string } {
+  if (value === null && allowNull) return null
+  if (typeof value !== 'string' || value.length === 0 || value.length > 255 || value.trim().length === 0) {
+    return { refusal: `'external_id' must be ${allowNull ? 'null or ' : ''}a non-empty string of at most 255 characters.` }
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/u.test(value)) return { refusal: "'external_id' must not contain control characters." }
+  return value
+}
+
+function subjectTakenProblem(instance: string, requestId: string, what: 'user' | 'group'): Problem {
+  return new Problem({
+    type: 'https://nacre.work/errors/conflict',
+    title: 'Conflict',
+    status: 409,
+    detail: `That external id is already linked to another ${what} in this organization.`,
+    instance,
+    requestId,
+  })
 }
 
 function memberJson(m: GroupMember): Record<string, unknown> {
@@ -6706,7 +6746,34 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           send(res, problem.status, problem.toJSON(), requestId)
           return
         }
-        const created = await options.users.create(auth, email, role, fields.shared === true)
+        const externalId = fields.external_id === undefined ? undefined : readExternalId(fields.external_id, false)
+        if (externalId !== undefined && externalId !== null && typeof externalId === 'object') {
+          const problem = badRequest(instance, requestId, externalId.refusal)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        const created = await options.users.create(
+          auth,
+          email,
+          role,
+          fields.shared === true,
+          externalId ?? undefined,
+        )
+
+        if (created === 'subject-taken') {
+          await options.audit.write({
+            orgId: auth.orgId,
+            actor: `${auth.principal.type}:${auth.principal.id}`,
+            action: 'create_user',
+            result: 'deny',
+            target: { email },
+            detail: { reason: 'external id taken', external_id: externalId },
+            requestId,
+          })
+          const problem = subjectTakenProblem(instance, requestId, 'user')
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
 
         if (created === undefined) {
           await options.audit.write({
@@ -6739,7 +6806,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           // The role, never the password — this row is readable by anyone with
           // the audit log, and the password is not recoverable from anywhere
           // else by design.
-          detail: { role },
+          detail: { role, ...(externalId ? { external_id: externalId } : {}) },
           requestId,
         })
 
@@ -6811,8 +6878,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         const fields = (body ?? {}) as Record<string, unknown>
         const wantsRole = 'role' in fields
         const wantsDisabled = 'disabled' in fields
-        if (!wantsRole && !wantsDisabled) {
-          const problem = badRequest(instance, requestId, "Give at least one of 'role' or 'disabled'.")
+        const wantsExternalId = 'external_id' in fields
+        if (!wantsRole && !wantsDisabled && !wantsExternalId) {
+          const problem = badRequest(
+            instance,
+            requestId,
+            "Give at least one of 'role', 'disabled' or 'external_id'.",
+          )
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        const externalId = wantsExternalId ? readExternalId(fields.external_id, true) : undefined
+        if (externalId !== undefined && externalId !== null && typeof externalId === 'object') {
+          const problem = badRequest(instance, requestId, externalId.refusal)
           send(res, problem.status, problem.toJSON(), requestId)
           return
         }
@@ -6840,6 +6918,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         const changed = await options.users.update(auth, id, {
           ...(wantsRole ? { role: fields.role as 'member' | 'org_admin' } : {}),
           ...(wantsDisabled ? { disabled: fields.disabled as boolean } : {}),
+          ...(wantsExternalId ? { externalId: externalId as string | null } : {}),
         })
 
         await options.audit.write({
@@ -6851,6 +6930,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           detail: {
             ...(wantsRole ? { role: fields.role } : {}),
             ...(wantsDisabled ? { disabled: fields.disabled } : {}),
+            ...(wantsExternalId ? { external_id: externalId } : {}),
             ...(changed === 'updated' ? {} : { reason: changed }),
           },
           requestId,
@@ -6858,6 +6938,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
         if (changed === 'platform-admin') {
           const problem = notAdministeredHere(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+
+        if (changed === 'subject-taken') {
+          const problem = subjectTakenProblem(instance, requestId, 'user')
           send(res, problem.status, problem.toJSON(), requestId)
           return
         }
@@ -6954,7 +7040,29 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           return
         }
 
-        const created = await options.groups.create(auth, name.trim())
+        const rawExternal = ((body ?? {}) as Record<string, unknown>).external_id
+        const externalId = rawExternal === undefined ? undefined : readExternalId(rawExternal, false)
+        if (externalId !== undefined && externalId !== null && typeof externalId === 'object') {
+          const problem = badRequest(instance, requestId, externalId.refusal)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        const created = await options.groups.create(auth, name.trim(), externalId ?? undefined)
+
+        if (created === 'subject-taken') {
+          await options.audit.write({
+            orgId: auth.orgId,
+            actor: `${auth.principal.type}:${auth.principal.id}`,
+            action: 'create_group',
+            result: 'deny',
+            target: { name: name.trim() },
+            detail: { reason: 'external id taken', external_id: externalId },
+            requestId,
+          })
+          const problem = subjectTakenProblem(instance, requestId, 'group')
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
 
         if (created === undefined) {
           await options.audit.write({
@@ -6984,7 +7092,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           action: 'create_group',
           result: 'allow',
           target: { group_id: created.id, name: created.name },
-          detail: {},
+          detail: created.externalId === null ? {} : { external_id: created.externalId },
           requestId,
         })
 
@@ -6994,6 +7102,49 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     }
 
     const groupMatch = pathMatch(/^\/v1\/groups\/([^/]+)$/, instance)
+
+    // Linking a group to a directory's id is the one change a group takes. Its
+    // name is what grants are issued by and what a person reads, and renaming
+    // it is not something anybody has asked this surface for.
+    if (req.method === 'PATCH' && groupMatch && options.groups !== undefined) {
+      const id = groupMatch[1] as string
+      const fields = (body ?? {}) as Record<string, unknown>
+      if (!('external_id' in fields)) {
+        const problem = badRequest(instance, requestId, "Give 'external_id' — a directory's id for this group, or null.")
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      const externalId = readExternalId(fields.external_id, true)
+      if (externalId !== null && typeof externalId === 'object') {
+        const problem = badRequest(instance, requestId, externalId.refusal)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      const changed = await options.groups.setExternalId(auth, id, externalId)
+
+      await options.audit.write({
+        orgId: auth.orgId,
+        actor: `${auth.principal.type}:${auth.principal.id}`,
+        action: 'update_group',
+        result: changed === 'updated' ? 'allow' : 'deny',
+        target: { group_id: id },
+        detail: { external_id: externalId, ...(changed === 'updated' ? {} : { reason: changed }) },
+        requestId,
+      })
+
+      if (changed === 'no-group') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      if (changed === 'subject-taken') {
+        const problem = subjectTakenProblem(instance, requestId, 'group')
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      send(res, 204, null, requestId)
+      return
+    }
     if (req.method === 'DELETE' && groupMatch && options.groups !== undefined) {
       const id = groupMatch[1] as string
       const removed = await options.groups.remove(auth, id)

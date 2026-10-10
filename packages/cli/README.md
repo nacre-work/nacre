@@ -42,9 +42,11 @@ anything else invisible.
 | `users create <email>` | `--admin` for `org_admin`. The password is **generated** and shown once |
 | `users password <id>` | issue a new one, shown once |
 | `users role <id> <member\|org_admin>` | |
+| `users link <id> <subject>` / `users unlink <id>` | the subject an identity provider signs this person in as; `users create --external-id` sets it at creation |
 | `users disable <id>` | the row is kept — the access log names that id |
 | `groups` | teams a grant can name |
 | `groups create <name>` / `groups delete <id>` | deleting takes the group's grants with it |
+| `groups link <id> <directory-id>` / `groups unlink <id>` | the id a directory sync (SCIM) addresses the group by; `groups create --external-id` sets it at creation |
 | `groups members <id>` | |
 | `groups add\|remove <id> <user:id\|group:id>` | |
 | `service-accounts` | keys, with prefix and last use |

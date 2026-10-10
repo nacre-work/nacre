@@ -285,6 +285,50 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.40.0 — linking people and groups to an identity provider without SQL
+
+**Nothing to do, unless you linked groups by hand — then read the migration
+note.** `users.external_id` is the subject an identity provider signs a person
+in as, and `groups.external_id` is the id a directory sync addresses a group by.
+The commercial SSO module reads both, and until this release nothing in the
+product could write either: an installation that bought SSO opened `psql` before
+anybody could sign in through it.
+
+- **REST.** `POST /v1/users` and `PATCH /v1/users/{id}` take `external_id`
+  (`null` on the `PATCH` unlinks), `POST /v1/groups` takes it, and
+  `PATCH /v1/groups/{id}` is new and sets or clears it. Both `User` and `Group`
+  now carry `external_id`, `null` when unlinked — an additive change.
+- **CLI.** `nacre users link <id> <subject>` and `nacre users unlink <id>`,
+  `nacre groups link <id> <directory-id>` and `nacre groups unlink <id>`, and
+  `--external-id` on both `create` commands.
+- **Console.** The **People** screen's **Edit** dialog carries the subject, a
+  group has a **Link** action, and a linked account or group is tagged
+  `linked`.
+
+A subject already on another account in the organization, or a directory id
+already on another group, is a `409` that says which kind of id it was. A
+platform administrator's subject is not changed through this surface — the same
+`403` every other write to that account answers. Setting or clearing a user's
+subject is recorded as `update_user` with `external_id` in the detail; a group's
+is the new action `update_group`.
+
+**Migration `0043` can refuse.** It adds a unique index on
+`groups (org_id, external_id)` for linked groups: SCIM finds a group by that id
+and replaces its people, so two groups linked to one id would have had a sync
+land in whichever a lookup found first — and with it, that group's grants. If
+somebody linked two groups to one id by hand, the migration fails naming
+`groups_org_id_external_id_key`. Find them as the role that owns the schema:
+
+```sql
+SELECT org_id, external_id, array_agg(name) AS groups
+  FROM groups WHERE external_id IS NOT NULL
+ GROUP BY org_id, external_id HAVING count(*) > 1;
+```
+
+Unlink all but the one the directory means (`UPDATE groups SET external_id =
+NULL WHERE id = …`), then run the migrator again. Nothing was applied by the
+failed run.
+
 ### 0.39.1 — an MCP transport that kept every request, and a search that read the organization
 
 **Upgrade the MCP transport promptly; the migration takes a short write lock.**

@@ -3757,6 +3757,30 @@ output was thrown away and the pass's own line read `clean` — so the red was a
 number nobody could act on. It prints the failed pass's tail now, and ten local
 passes found nothing to print.
 
+**A person could be linked to an identity provider only with SQL — 0.40.0.**
+`users.external_id` is the subject the commercial SSO module signs somebody in
+by, and `groups.external_id` is what its SCIM sync addresses a group by. Both
+columns have been in the schema since 0001 and nothing in the product wrote
+either: no field on any endpoint, no flag, no box. The enterprise suite was green
+throughout because its fixtures wrote the columns with `INSERT`, which is the
+fixture-agrees-with-code shape arriving across the boundary — the module's half
+was right, and the half a customer needed to reach it did not exist. Found by
+driving SSO and SCIM end to end against a real identity provider stand-in with
+nothing but the console and the API, which stopped at the first sign-in.
+
+`POST`/`PATCH /v1/users` and `POST /v1/groups` take `external_id` now, and
+`PATCH /v1/groups/{id}` exists for it alone; the CLI and the People screen carry
+it. One id names one row per organization — `users` has had that constraint
+since 0001, `groups` gets it from 0043, because a SCIM push finds a group by the
+id and replaces its people, so two groups sharing one would hand one team's
+grants to whichever a lookup found first. A second claim is a `409` naming the
+kind of id, and the unique violation is read by constraint name rather than
+assumed, because the email constraint on `users` raises the same SQLSTATE. A
+platform administrator's subject goes through `onTargetUser` like every other
+write to that account, since a subject is a way in: an `org_admin` able to set
+one on the installation's administrator could sign in as them with a token from
+a provider they configured.
+
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.
