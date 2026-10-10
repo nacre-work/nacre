@@ -300,10 +300,16 @@ its manual:
   slugs reads `handbook, engineering`. The export still carries every id whole.
 - The **Security** screen's "No second factor" box centred its words and put
   its buttons at the left.
+- Four controls had **no accessible name**, so a screen reader announced only
+  the kind of control: the principal and scope pickers in **Issue a grant**, the
+  member picker on a group, and the boxes showing a new password or a new
+  service account key once. Each is named by the words beside it now.
 
 `scripts/layout-rules.mjs` gains a rule for each — head actions at the edge,
-ids shortened in a table, an empty state's actions centred — and a console
-built on the extension seam is held to them from the version that ships them.
+ids shortened in a table, an empty state's actions centred, every control
+named — and a console built on the extension seam is held to them from the
+version that ships them. `picker` takes an optional second argument, the
+control's name, which defaults to its noun with a capital.
 
 ### 0.38.1 — the Layers screen by permission
 

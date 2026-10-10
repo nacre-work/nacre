@@ -287,7 +287,7 @@ function startSection(
   // The last field on any screen that asked a person to type a uuid, and it
   // could not stop until `embedding_providers` had an API: there was nothing to
   // list, because there was nothing to create either. `psql` was the route.
-  const provider = picker('model')
+  const provider = picker('model', 'Provider')
   void provider.fill(async () =>
     (await client().embeddingProviders.list()).map((p) => ({
       id: p.id,

@@ -175,7 +175,7 @@ function showKey(dialog: HTMLDialogElement, key: string, name: string, root: HTM
   // A textarea, not an input. The key is 50-odd characters and an input scrolls
   // it out of sight — which is fine until the clipboard is refused, and then the
   // person is looking at half of the one thing they cannot ask for again.
-  const field = h('textarea', { class: 'input mono keyfield', readonly: true, rows: 2, spellcheck: 'false' })
+  const field = h('textarea', { class: 'input mono keyfield', readonly: true, rows: 2, spellcheck: 'false', 'aria-label': `Key for ${name}` })
   field.value = key
   const copied = h('span', { class: 'copied' })
   // Where the key goes, said at the one moment somebody is holding it. Filled

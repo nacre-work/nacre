@@ -3660,6 +3660,19 @@ flex items — in the state every account starts in, which no shot photographed.
 `layout-rules.mjs`, so the commercial console is held to them too; each was run
 before its fix and named exactly the shots it should, and nothing else.
 
+A fourth came from reading the dialogs' accessibility tree for the manual's
+selectors, since those are the names a screen reader says: `picker` sits in a
+`div.field` beside a `<span>`, so its select had no name and Issue a grant
+announced "combo box" twice, and the two boxes that hold a password or a key
+once had none either. `picker` names its own controls now and `controlsNamed`
+asks every visible control. Its first run also showed that no shot had ever
+opened Issue a grant or a service account's key — a rule only sees the screens
+somebody photographed, so both are shots now.
+
+`idsShortened` then found the same defect on the commercial Backups screen,
+whose "Started by" printed `user:<uuid>`; that is fixed on that side of the
+boundary, which is what putting the rule in the shared file is for.
+
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.

@@ -43,7 +43,7 @@
  * caught — the same note `screenshots.mjs` carries, and the reason this file
  * needs its own copy is that it is now a file.
  */
-/* global document, NodeFilter, getComputedStyle */
+/* global document, NodeFilter, getComputedStyle, CSS */
 
 /**
  * A dialog whose action you cannot reach is a dialog you cannot finish.
@@ -576,6 +576,62 @@ export async function emptyStateCentred(page, name, failures) {
   }
 }
 
+/**
+ * Every form control has a name a screen reader can say.
+ *
+ * Issue a grant had two selects named by nothing: `picker` sits in a
+ * `div.field` beside a `<span>`, because what it shows changes and a `<label>`
+ * holds one control, so the principal and the scope were each announced as
+ * "combo box". Found by reading the dialogs' accessibility tree to write the
+ * manual — the names a manual's selectors use are the names assistive
+ * technology reads, and two of them were missing.
+ *
+ * The browser's own computation is not reachable from `page.evaluate`, so this
+ * asks the sources it draws on, in its order: a wrapping or `for` label,
+ * `aria-labelledby`, `aria-label`, `title`, and — for a text field, where the
+ * accessibility mapping falls back to it — the placeholder. Anything else is a
+ * control with no name, which is the case worth refusing.
+ */
+export async function controlsNamed(page, name, failures) {
+  const unnamed = await page.evaluate(() => {
+    const found = []
+    const roots = [...document.querySelectorAll('dialog[open]')]
+    if (roots.length === 0) roots.push(...document.querySelectorAll('.main, .signin'))
+    const text = (el) => (el?.textContent ?? '').trim()
+    for (const control of roots.flatMap((r) => [...r.querySelectorAll('input, select, textarea')])) {
+      if (control.getClientRects().length === 0) continue
+      const type = (control.getAttribute('type') ?? '').toLowerCase()
+      if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type)) continue
+      const wrapping = control.closest('label')
+      const forLabel = control.id === '' ? null : document.querySelector(`label[for="${CSS.escape(control.id)}"]`)
+      const labelledBy = (control.getAttribute('aria-labelledby') ?? '').split(/\s+/).filter(Boolean)
+        .map((id) => text(document.getElementById(id))).join(' ')
+      const named =
+        (wrapping !== null && text(wrapping) !== '') ||
+        (forLabel !== null && text(forLabel) !== '') ||
+        labelledBy.trim() !== '' ||
+        (control.getAttribute('aria-label') ?? '').trim() !== '' ||
+        (control.getAttribute('title') ?? '').trim() !== '' ||
+        (control.tagName !== 'SELECT' && (control.getAttribute('placeholder') ?? '').trim() !== '')
+      if (!named) {
+        const field = control.closest('.field')
+        const beside = field === null ? '' : text(field.querySelector('span'))
+        found.push(`${control.tagName.toLowerCase()}${beside === '' ? '' : ` beside "${beside}"`}`)
+      }
+      if (found.length >= 4) break
+    }
+    return found
+  })
+
+  if (unnamed.length > 0) {
+    failures.push(
+      `${name}: ${unnamed.join(', ')} ${unnamed.length === 1 ? 'has' : 'have'} no accessible name — a screen reader ` +
+        'announces the kind of control and nothing else. Put it in a `<label>`, or give it an `aria-label` with ' +
+        'the words beside it, the way `picker` names its own select.',
+    )
+  }
+}
+
 export const RULES = [
   controlHeadroom,
   dialogActionsReachable,
@@ -585,4 +641,5 @@ export const RULES = [
   headActionsAtEdge,
   idsShortened,
   emptyStateCentred,
+  controlsNamed,
 ]

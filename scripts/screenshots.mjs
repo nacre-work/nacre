@@ -1135,6 +1135,33 @@ await shot('new-user-password', {
     await page.waitForTimeout(250)
   },
 })
+// The two dialogs `controlsNamed` found nameless controls in and no shot had
+// opened: Issue a grant, whose principal and scope pickers were announced as
+// "combo box", and the dialog that shows a service account's key once.
+await shot('issue-grant', {
+  hash: '#/grants',
+  prepare: async (page) => {
+    await page.getByRole('button', { name: 'Issue grant' }).click()
+    await page.waitForTimeout(250)
+  },
+})
+await shot('new-account-key', {
+  hash: '#/accounts',
+  fixtures: {
+    'POST /v1/service-accounts': {
+      id: '7e2c4a91-3d58-4b06-a1f7-9c0e5b2d8a36', name: 'reporting', key_prefix: 'nacre_sk_Q4mX8vRt',
+      created_at: '2026-03-15T09:00:00.000Z', last_used_at: null, revoked_at: null,
+      created_by: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90',
+      key: 'nacre_sk_Q4mX8vRtKp2wZy7LbN3cHf9sJd6gTq1aVe5uXo0iMr4E',
+    },
+  },
+  prepare: async (page) => {
+    await page.getByRole('button', { name: 'New account' }).click()
+    await page.locator('dialog[open]').getByRole('textbox', { name: 'Name' }).fill('reporting')
+    await page.locator('dialog[open]').getByRole('button', { name: 'Create' }).click()
+    await page.waitForTimeout(250)
+  },
+})
 await shot('group-members', {
   hash: '#/people',
   prepare: async (page) => {
