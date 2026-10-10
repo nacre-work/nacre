@@ -765,7 +765,7 @@ components:
           description: This document, at the release the server was built from.
         version:
           type: string
-          examples: ['0.39.0']
+          examples: ['0.39.1']
     Self:
       type: object
       required: [organization, principal_type, principal_id, role, administers, holds_own_credentials]

@@ -3703,6 +3703,49 @@ about the thing every search depends on. `rebuild-live.test.ts` builds the state
 a restore leaves against a real PostgreSQL and Qdrant; dropping the replace
 branch, or the requeue, each names its case.
 
+**The MCP transport kept every request it served, and every search read the
+whole organization — 0.39.1.** Neither is visible to a suite, because both are
+about what happens on the ten-thousandth request; both were found by putting the
+running stack under load with k6 and reading what each container was doing.
+
+The transport grew by about 80 KB a request and never gave it back. Streamable
+HTTP builds a server per request, `catalog()` writes each tool's schema as a
+fresh literal, and `fromJsonSchema` compiles its argument with Ajv on a
+validator the SDK holds at module level — and Ajv keeps every schema it ever
+compiled. A heap snapshot diff said so in one line: ten `SchemaEnv` per request,
+one per tool. Capped at 200 MB the transport died with `JavaScript heap out of
+memory` after some 3,600 searches, dropping three thousand in flight; it also
+spent most of a search's CPU on code generation, so MCP ran a search at four
+times REST's cost. `schemas.ts` compiles a schema once per process, keyed by
+content because the schemas are static, and the same 200 MB transport then
+served 14,300 searches flat, at twice the throughput. `schemas.test.ts` counts
+real compiles across twenty-five builds for different callers, and refuses a
+second file calling `fromJsonSchema` — both restorations measured red.
+
+And every search's last step — joining the hits back to their rows by
+`chunks.point_id` — had no index on that column since 0001. The planner walked
+layers, then every document, then each document's chunks, to keep ten: 36 ms a
+search on 27,000 chunks and linear in the corpus, with Postgres the bottleneck
+at 152% CPU. Migration 0042 adds the index and the same load went from 65 to
+125 searches a second. `hydrate-index-live.test.ts` explains the query text the
+search path runs, exported as `HYDRATE_SQL` so the test holds no copy, against a
+real PostgreSQL with enough rows that a walk is what a planner without the index
+picks.
+
+Its first run went red with the index present, and the reason is the part worth
+keeping: it looked for the index name on the node whose relation is `chunks`,
+and when a planner chooses a bitmap scan the index is named on the `Bitmap Index
+Scan` beneath — which carries no relation — while the `Bitmap Heap Scan` that
+does carries no index. A projection narrow enough to miss the answer, written in
+a check against exactly that shape. It asks every node now, measured both ways:
+a plan forced to bitmap passes, and the index dropped fails.
+
+The same pass found the nightly flake hunt discarding the evidence. The run of
+2026-10-09 failed one pass without naming a case and printed nothing of it — the
+output was thrown away and the pass's own line read `clean` — so the red was a
+number nobody could act on. It prints the failed pass's tail now, and ten local
+passes found nothing to print.
+
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.

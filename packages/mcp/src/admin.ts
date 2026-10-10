@@ -15,7 +15,7 @@
  */
 
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server'
-import { fromJsonSchema, McpServer, type CallToolResult, type GetPromptResult } from '@modelcontextprotocol/server'
+import { McpServer, type CallToolResult, type GetPromptResult } from '@modelcontextprotocol/server'
 import type { AuthContext } from '@nacre.work/api'
 import { logger, McpToolRefusal, MetadataError } from '@nacre.work/core'
 
@@ -24,6 +24,7 @@ import type { AdminRunner } from './admin-services.js'
 import { AdminResult } from './admin-tools.js'
 import { ToolArgumentError, viewHtml, type AdminView, type McpMetrics } from './factory.js'
 import { callToolError, callToolResult, DISCOVER_TTL_MS, TOOLS_TTL_MS } from './results.js'
+import { compiledSchema } from './schemas.js'
 
 export interface AdminServerBuild {
   readonly auth: AuthContext
@@ -224,7 +225,7 @@ export function buildAdminServer(build: AdminServerBuild): McpServer {
     const config = {
       title: definition.title,
       description: definition.description,
-      inputSchema: fromJsonSchema(definition.inputSchema),
+      inputSchema: compiledSchema(definition.inputSchema),
       annotations: definition.annotations,
     }
     const callback = async (args: unknown): Promise<CallToolResult> => run(build, definition.name, args as Record<string, unknown>)
@@ -285,7 +286,7 @@ export function buildAdminServer(build: AdminServerBuild): McpServer {
       {
         title: prompt.title,
         description: prompt.description,
-        argsSchema: fromJsonSchema({ type: 'object', properties, required, additionalProperties: false }),
+        argsSchema: compiledSchema({ type: 'object', properties, required, additionalProperties: false }),
       },
       (args: unknown): GetPromptResult => ({
         description: prompt.description,

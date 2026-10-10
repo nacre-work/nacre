@@ -28,7 +28,7 @@
 import { readFile } from 'node:fs/promises'
 
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server'
-import { fromJsonSchema, McpServer, type CallToolResult } from '@modelcontextprotocol/server'
+import { McpServer, type CallToolResult } from '@modelcontextprotocol/server'
 import { ceilingOffers, type AuthContext } from '@nacre.work/api'
 import { logger, MetadataError, readFrontmatter } from '@nacre.work/core'
 
@@ -41,6 +41,7 @@ import {
   TOOLS_TTL_MS,
   type ToolResult,
 } from './results.js'
+import { compiledSchema } from './schemas.js'
 import { CATALOG_SAMPLE, catalog, type Layer, type ToolDefinition } from './tools.js'
 
 export interface Layers {
@@ -252,7 +253,7 @@ export async function buildServer(build: ServerBuild): Promise<McpServer> {
       // validates arguments against before the callback runs. A schema
       // written once and served verbatim is what keeps `mcp-surface.test.ts`'s
       // "no tool schema accepts an organization" a statement about the wire.
-      inputSchema: fromJsonSchema(definition.inputSchema),
+      inputSchema: compiledSchema(definition.inputSchema),
       annotations: definition.annotations,
     }
     const callback = async (args: unknown): Promise<CallToolResult> =>

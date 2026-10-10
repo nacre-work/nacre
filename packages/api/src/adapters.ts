@@ -92,6 +92,21 @@ import { administers, delegatedLayers, delegationPermits, withinDelegation, type
 import { permissionsOf } from './skill-ceiling.js'
 
 /**
+ * The join from the points a search returned to their rows. Exported so the
+ * live test explains *this* text against a real Postgres: it has to start from
+ * `chunks_org_point_idx` (migration 0042), because without it the planner walks
+ * every document of the organization to find ten chunks.
+ */
+export const HYDRATE_SQL = `SELECT c.point_id AS chunk_id, c.document_id AS doc_id, l.slug AS layer, d.title, c.text
+     FROM chunks c
+     JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id
+     JOIN layers    l ON l.id = d.layer_id    AND l.org_id = d.org_id
+    WHERE c.org_id = $1
+      AND c.point_id = ANY($2::uuid[])
+      AND d.deleted_at IS NULL
+      AND l.deleted_at IS NULL`
+
+/**
  * The adapters that put the permission model on the request path.
  *
  * `NacreSearchService` is the one to read. Every step between a token and a
@@ -935,14 +950,7 @@ export class NacreSearchService implements SearchService {
           // different values. Joining on the wrong one matches nothing and
           // returns an empty result set, which looks exactly like a permission
           // working correctly.
-          `SELECT c.point_id AS chunk_id, c.document_id AS doc_id, l.slug AS layer, d.title, c.text
-             FROM chunks c
-             JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id
-             JOIN layers    l ON l.id = d.layer_id    AND l.org_id = d.org_id
-            WHERE c.org_id = $1
-              AND c.point_id = ANY($2::uuid[])
-              AND d.deleted_at IS NULL
-              AND l.deleted_at IS NULL`,
+          HYDRATE_SQL,
           [orgId, chunkIds],
         )
         return rows

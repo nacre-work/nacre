@@ -1,0 +1,24 @@
+-- 0042 — the chunk a search hit names can be found without reading the organization.
+--
+-- Every search ends by joining the points the index returned to their rows:
+-- `chunks.point_id = ANY(...)`, a handful of ids. `point_id` has had no index
+-- since 0001, so the planner could not start from the ids at all. It walked
+-- the other way: every layer of the organization, every document in each, and
+-- each document's chunks through `(document_id, ordinal)`, discarding all but
+-- the ten it was asked for. Measured on 6,698 documents and 26,771 chunks: 36 ms
+-- of a search that took 230, and Postgres at 152% CPU serving 65 searches a
+-- second where it had served 140 at 46% before the corpus grew. The cost is
+-- linear in the organization's size, which is the one direction this product
+-- is sold in. Nothing failed — a lookup that falls back to a walk does not fail
+-- a test, it gets slow at a customer's volume — and it was found by loading a
+-- stack and reading `pg_stat_activity`.
+--
+-- `(org_id, point_id)` because the query names both, and so does the policy.
+-- Not `CONCURRENTLY`: this runner applies a file inside a transaction, where
+-- that is refused. So the build holds a lock that blocks writes to `chunks` —
+-- indexing waits, searches do not — for roughly a second per million rows.
+-- `IF NOT EXISTS` is for the installation where that is too long: build it
+-- `CONCURRENTLY` by hand under this name first, and this file is a no-op.
+-- docs/upgrading.md says both for 0.39.1.
+
+CREATE INDEX IF NOT EXISTS chunks_org_point_idx ON chunks (org_id, point_id);
