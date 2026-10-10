@@ -765,7 +765,7 @@ components:
           description: This document, at the release the server was built from.
         version:
           type: string
-          examples: ['0.40.0']
+          examples: ['0.41.0']
     Self:
       type: object
       required: [organization, principal_type, principal_id, role, administers, holds_own_credentials]
@@ -2514,7 +2514,10 @@ paths:
         The unauthenticated half of the flow — `/oauth/register`,
         `/oauth/authorize`, `/oauth/token` — is not in this contract: those are
         RFC 6749, RFC 7591 and RFC 8414, and `/.well-known/oauth-authorization-server`
-        is where a client discovers them.
+        is where a client discovers them. A `client_id` may also be the https
+        URL of the client's metadata document, which the authorization endpoint
+        fetches (`client_id_metadata_document_supported`), and is then the
+        `client_id` this request carries.
       tags: [auth]
       requestBody:
         required: true

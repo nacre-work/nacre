@@ -33,6 +33,7 @@ import {
   generateClientId,
   generateCode,
   redirectAllowed,
+  redirectAllowedForMetadataClient,
   verifierMatches,
   ADMIN_PREFIX,
   adminRoutes,
@@ -70,7 +71,14 @@ import { badRequest, internal, notAdministeredHere, notFound, Problem, tooBusy }
 import { passwordChangedMessage, secondFactorMessage } from './messages.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { TICKET_SHAPE, TICKET_TTL_SECONDS, uploadDescriptor, type UploadTicketStore } from './uploads.js'
-import { limitHeaders, type LimitDecision, type LimitPolicy, type RateLimiter, type Resource } from './limits.js'
+import {
+  limitHeaders,
+  principalSubject,
+  type LimitDecision,
+  type LimitPolicy,
+  type RateLimiter,
+  type Resource,
+} from './limits.js'
 import type { Login, SecondFactorProof, SessionOutcome, Tokens, WebAuthnProof } from './login.js'
 import { MIN_PASSWORD_LENGTH, type PasswordRecovery } from './recovery.js'
 import type { Mailer } from '@nacre.work/core'
@@ -87,7 +95,9 @@ import type {
   OAuthClients,
   OAuthConsents,
   OAuthRefreshTokens,
+  RegisteredClient,
 } from './oauth-store.js'
+import { fetchClientMetadata, isMetadataClientId, type GuardedFetch } from './client-metadata.js'
 import { looksLikeEmail, type GroupMember, type Groups, type GroupView, type Users, type UserView } from './principals.js'
 import { clientSource } from './source.js'
 import {
@@ -949,6 +959,18 @@ export interface OAuthServer {
   readonly authorizations: OAuthAuthorizations
   readonly consents: OAuthConsents
   readonly refreshTokens: OAuthRefreshTokens
+  /**
+   * Client ID Metadata Documents, present where a client may be identified by
+   * the URL of its own metadata document (`NACRE_OAUTH_CIMD`). Absent, such a
+   * `client_id` is refused and the authorization server metadata does not
+   * advertise it; registration works either way.
+   */
+  readonly metadataDocuments?: {
+    /** Origins fetched although not public — an intranet client. Exact, never a suffix. */
+    readonly trustedOrigins: readonly string[]
+    /** The guarded fetch, replaced only in a case. */
+    readonly fetch?: GuardedFetch
+  }
   /** How long an OAuth refresh token lives. The connection's real lifetime. */
   readonly refreshTtlSeconds: number
   /**
@@ -1949,11 +1971,109 @@ function decorate(
 }
 
 /**
+ * Which redirect rule applies to this client.
+ *
+ * A registration is matched exactly; a client that arrived through its
+ * metadata document may also use any port on loopback, which RFC 8252 requires
+ * and a static document cannot avoid. One function, because the authorize
+ * endpoint and both consent decisions must ask the same question of the same
+ * client — the second and third are where a code and a refusal are actually
+ * delivered.
+ */
+function clientRedirectAllowed(client: RegisteredClient, uri: string): boolean {
+  return client.source === 'metadata'
+    ? redirectAllowedForMetadataClient(uri, client.redirectUris)
+    : redirectAllowed(uri, client.redirectUris)
+}
+
+/**
+ * Spend one of this client's `client_registration` budget, or answer 429.
+ *
+ * Keyed by where the request came from, since nobody has signed in. Without a
+ * limiter configured — a test, a deployment with no Redis — everything is
+ * admitted, which is the limiter's own failing-open rule one step earlier.
+ */
+async function admitClientRegistration(
+  req: IncomingMessage,
+  res: ServerResponse,
+  requestId: string,
+  options: ApiOptions,
+): Promise<boolean> {
+  if (options.limits === undefined || options.limitPolicies === undefined) return true
+  const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 }) ?? 'unknown'
+  const decision = await options.limits.check(`src:${source}`, 'client_registration')
+  if (decision.allowed) return true
+  send(
+    res,
+    429,
+    {
+      error: 'temporarily_unavailable',
+      error_description: `Too many client registrations from this address. Try again in ${String(decision.reset)} seconds.`,
+    },
+    requestId,
+    limitHeaders(decision, options.limitPolicies.client_registration, 'client_registration'),
+  )
+  return false
+}
+
+/**
+ * The client a metadata document describes, from the cache or fetched — or an
+ * answer already sent, and `undefined`.
+ *
+ * A fresh cached row is used as it is. A missing or stale one is fetched
+ * through the egress guard, spending the caller's `client_registration` budget
+ * like a registration does, and a failed fetch of a stale one is a refusal
+ * rather than a fallback to the old document: a client that has dropped a
+ * redirect URI must stop being able to receive codes there, and serving the
+ * stale copy is how it would not. Every refusal is `invalid_client` with the
+ * reason — never a redirect, since the redirect URI has not been checked.
+ */
+async function resolveMetadataClient(
+  req: IncomingMessage,
+  res: ServerResponse,
+  clientId: string,
+  requestId: string,
+  options: ApiOptions,
+): Promise<RegisteredClient | undefined> {
+  const oauth = options.oauth
+  if (oauth === undefined) return undefined
+  const documents = oauth.metadataDocuments
+  if (documents === undefined) {
+    send(
+      res,
+      400,
+      {
+        error: 'invalid_client',
+        error_description:
+          'This installation does not fetch client metadata documents. Register the client (RFC 7591) at the registration_endpoint instead.',
+      },
+      requestId,
+    )
+    return undefined
+  }
+  const cached = await oauth.clients.find(clientId)
+  if (cached !== undefined && cached.source === 'metadata' && (cached.refreshAfter?.getTime() ?? 0) > Date.now()) {
+    return cached
+  }
+  if (!(await admitClientRegistration(req, res, requestId, options))) return undefined
+  const fetched = await fetchClientMetadata(clientId, {
+    trustedOrigins: documents.trustedOrigins,
+    redirectAllowed,
+    ...(documents.fetch === undefined ? {} : { fetch: documents.fetch }),
+  })
+  if ('refusal' in fetched) {
+    send(res, 400, { error: 'invalid_client', error_description: `${fetched.refusal}.` }, requestId)
+    return undefined
+  }
+  return oauth.clients.cacheMetadata(clientId, fetched.client.clientName, fetched.client.redirectUris, fetched.ttlSeconds)
+}
+
+/**
  * Which limit a request counts against, or none.
  *
  * Search and ingest are the two the contract names, and they are the two that
- * cost real money — an embedding call each. Reads of metadata are cheap and are
- * not counted; adding them later means adding a policy, not restructuring this.
+ * cost real money — an embedding call each. Everything else counts against
+ * the caller's general `requests` budget only, which is checked before this.
  */
 function resourceFor(method: string, instance: string): Resource | undefined {
   if (method === 'POST' && instance === '/v1/search') return 'search'
@@ -3609,7 +3729,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     send(
       res,
       200,
-      authorizationServerMetadata(options.oauth.issuer) as unknown as Record<string, unknown>,
+      authorizationServerMetadata(options.oauth.issuer, {
+        clientIdMetadataDocuments: options.oauth.metadataDocuments !== undefined,
+      }) as unknown as Record<string, unknown>,
       requestId,
     )
     return
@@ -3693,27 +3815,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     return
   }
 
-  // A path this server does not route is `404`, and it says so **before**
-  // asking for a credential.
-  //
-  // Everything unauthenticated is already handled above — `/metrics`, the two
-  // `/.well-known` documents, health, readiness, sign-in. So anything left that
-  // is not under `/v1/` is not part of this API at all, and answering `401`
-  // for it claims a path exists and is merely gated.
-  //
-  // That is not a hypothetical reading. A client pointed at this port looking
-  // for an MCP endpoint probed `/.well-known/oauth-authorization-server`,
-  // `/.well-known/openid-configuration` and `/register`, got `401 "A bearer
-  // token is required"` from each, and concluded the deployment had OAuth
-  // discovery behind a middleware that needed lifting. There is no such
-  // middleware and there are no such routes: this is a resource server and
-  // declines the authorization-server role — see docs/mcp.md. An afternoon
-  // went into un-gating endpoints that do not exist.
-  //
-  // Unknown paths *under* `/v1/` still answer `401`, and that is the line
-  // rather than an omission: they are inside the authenticated surface, where
-  // presenting a credential is the price of being told anything. Nothing is
-  // concealed by it — every route this API serves is in docs/openapi.yaml.
   // ─────────────────────── the authorization server ───────────────────────
   //
   // Three endpoints, and one decision running through all of them: the token
@@ -3743,6 +3844,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
+      // Open, and bounded per client: a registration is a row anybody can
+      // write, and before this limit and the worker's sweep of unapproved
+      // clients there was nothing stopping somebody writing them forever.
+      if (!(await admitClientRegistration(req, res, requestId, options))) return
       // Read here rather than by the shared parse below: this endpoint sits
       // ahead of the authenticated surface, which is where that happens.
       let posted: unknown
@@ -3798,17 +3903,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       const q = url.searchParams
       const clientId = q.get('client_id') ?? ''
       const redirectUri = q.get('redirect_uri') ?? ''
-      const client = clientId === '' ? undefined : await oauth.clients.find(clientId)
 
       // These two are the only errors that must **not** redirect. RFC 6749 is
       // explicit and the reason is worth stating: an unvalidated redirect URI
       // is exactly what an attacker supplies, so bouncing an error to it would
       // make this endpoint an open redirector.
+      let client: RegisteredClient | undefined
+      if (isMetadataClientId(clientId)) {
+        const resolved = await resolveMetadataClient(req, res, clientId, requestId, options)
+        if (resolved === undefined) return
+        client = resolved
+      } else {
+        client = clientId === '' ? undefined : await oauth.clients.find(clientId)
+      }
       if (client === undefined) {
         send(res, 400, { error: 'invalid_client', error_description: 'Unknown client_id.' }, requestId)
         return
       }
-      if (!redirectAllowed(redirectUri, client.redirectUris)) {
+      if (!clientRedirectAllowed(client, redirectUri)) {
         send(
           res,
           400,
@@ -3817,6 +3929,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         )
         return
       }
+      // So a client registered a week ago and being approved now is not swept
+      // as unapproved under the person approving it. After the redirect check,
+      // so only a request that could actually reach a consent screen keeps a
+      // client alive. Best effort: a missed touch costs nothing until the
+      // sweep, which a registration survives for days.
+      await oauth.clients.touch(client.clientId).catch(() => undefined)
 
       const challenge = q.get('code_challenge') ?? ''
       const method = q.get('code_challenge_method') ?? ''
@@ -4026,6 +4144,27 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     }
   }
 
+  // A path this server does not route is `404`, and it says so **before**
+  // asking for a credential.
+  //
+  // Everything unauthenticated is handled above — `/metrics`, the
+  // `/.well-known` documents, health, readiness, sign-in, and the three
+  // endpoints of the authorization server. So anything left that is not under
+  // `/v1/` is not part of this API at all, and answering `401` for it would
+  // claim a path exists and is merely gated.
+  //
+  // That is not a hypothetical reading. Before this API became an
+  // authorization server, a client probing it for OAuth discovery got `401 "A
+  // bearer token is required"` from `/.well-known/oauth-authorization-server`
+  // and from `/register`, and concluded there was discovery behind a
+  // middleware that needed lifting; an afternoon went into un-gating endpoints
+  // that did not exist. They exist now and are served above, and a path that
+  // is neither one of them nor under `/v1/` is still `404`.
+  //
+  // Unknown paths *under* `/v1/` still answer `401`, and that is the line
+  // rather than an omission: they are inside the authenticated surface, where
+  // presenting a credential is the price of being told anything. Nothing is
+  // concealed by it — every route this API serves is in docs/openapi.yaml.
   if (!instance.startsWith('/v1/')) {
     const problem = notFound(instance, requestId)
     send(res, problem.status, problem.toJSON(), requestId)
@@ -4211,36 +4350,62 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
   // Rate limiting, after the token is verified and before any work is done.
   //
-  // After verification because the limit is per organization and the
-  // organization comes from the token — there is nothing to count against
-  // until it has been read. Before the handler because the point is to refuse
-  // before spending an embedding call.
+  // After verification because both limits are counted against something the
+  // token says — the principal for every request, the organization for the
+  // costly ones — and there is nothing to count until it has been read. Before
+  // the handler because the point is to refuse before spending an embedding
+  // call, or a database query a loop asks for a thousand times a second.
+  //
+  // The principal's limit first, then the operation's. A request the second
+  // refuses is given back to the first, so whichever limit says no, a refusal
+  // costs the caller nothing.
   //
   // The headers go on the successful response too. A client that only learns
   // its budget by being refused has to be refused to learn it.
   let rateHeaders: Record<string, string> = {}
-  const resource = resourceFor(req.method ?? 'GET', instance)
-  if (resource !== undefined && options.limits !== undefined && options.limitPolicies !== undefined) {
-    const decision = await options.limits.check(auth.orgId, resource)
-    rateHeaders = limitHeaders(decision, options.limitPolicies[resource], resource)
+  if (options.limits !== undefined && options.limitPolicies !== undefined) {
+    const limits = options.limits
+    const policies = options.limitPolicies
+    const subject = principalSubject(auth)
+    const general = await limits.check(subject, 'requests')
+    rateHeaders = limitHeaders(general, policies.requests, 'requests')
+    let refused: { decision: LimitDecision; resource: Resource } | undefined =
+      general.allowed ? undefined : { decision: general, resource: 'requests' }
 
-    if (!decision.allowed) {
-      await options.audit.write({
-        orgId: auth.orgId,
-        actor: `${auth.principal.type}:${auth.principal.id}`,
-        action: 'rate_limited',
-        result: 'deny',
-        target: { resource },
-        detail: { limit: decision.limit },
-        requestId,
-      })
+    const resource = resourceFor(req.method ?? 'GET', instance)
+    if (refused === undefined && resource !== undefined) {
+      const decision = await limits.check(auth.orgId, resource)
+      rateHeaders = limitHeaders(decision, policies[resource], resource)
+      if (!decision.allowed) {
+        refused = { decision, resource }
+        await limits.release(subject, 'requests')
+      }
+    }
+
+    if (refused !== undefined) {
+      // Recorded once per window, not once per refusal: the access log is
+      // written per request, and a client hammering a limit would otherwise
+      // turn the limit into the way the log is flooded.
+      if (refused.decision.firstRefusal) {
+        await options.audit.write({
+          orgId: auth.orgId,
+          actor: `${auth.principal.type}:${auth.principal.id}`,
+          action: 'rate_limited',
+          result: 'deny',
+          target: { resource: refused.resource },
+          detail: { limit: refused.decision.limit },
+          requestId,
+        })
+      }
+      const window = policies[refused.resource].windowSeconds
       const problem = new Problem({
         type: 'https://nacre.work/errors/rate-limited',
         title: 'Too many requests',
         status: 429,
-        detail: `The ${resource} limit for this organization is ${decision.limit} per ${
-          options.limitPolicies[resource].windowSeconds
-        } seconds. Try again in ${decision.reset} seconds.`,
+        detail:
+          refused.resource === 'requests'
+            ? `This account has used its ${String(refused.decision.limit)} requests per ${String(window)} seconds. Try again in ${String(refused.decision.reset)} seconds.`
+            : `The ${refused.resource} limit for this organization is ${String(refused.decision.limit)} per ${String(window)} seconds. Try again in ${String(refused.decision.reset)} seconds.`,
         instance,
         requestId,
       })
@@ -6235,7 +6400,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // nothing is recorded: declining stores no connection and mints no code.
       if (consent['decision'] === 'deny') {
         const client = await options.oauth.clients.find(clientId)
-        if (client === undefined || !redirectAllowed(redirectUri, client.redirectUris)) {
+        if (client === undefined || !clientRedirectAllowed(client, redirectUri)) {
           const problem = badRequest(instance, requestId, 'Unknown client, or a redirect_uri it did not register.')
           send(res, problem.status, problem.toJSON(), requestId)
           return
@@ -6378,7 +6543,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // again — the authorize endpoint's check protected the redirect, and this
       // one protects the code.
       const client = await options.oauth.clients.find(clientId)
-      if (client === undefined || !redirectAllowed(redirectUri, client.redirectUris)) {
+      if (client === undefined || !clientRedirectAllowed(client, redirectUri)) {
         const problem = badRequest(instance, requestId, 'Unknown client, or a redirect_uri it did not register.')
         send(res, problem.status, problem.toJSON(), requestId)
         return

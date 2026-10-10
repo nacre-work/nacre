@@ -2,7 +2,7 @@ import { Redis } from '@nacre.work/core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { Idempotency, isConflict, isReplay } from '../idempotency.js'
-import { limitHeaders, RateLimiter } from '../limits.js'
+import { limitHeaders, limitPoliciesFrom, RateLimiter, secondsUntilRoom } from '../limits.js'
 
 /**
  * Rate limiting and Idempotency-Key, against a real Redis.
@@ -47,15 +47,18 @@ when('rate limiting', () => {
     redis.close()
   })
 
-  const limiter = (limit: number) =>
+  const limiter = (limit: number, now?: () => number) =>
     new RateLimiter({
       redis,
       policies: {
+        requests: { limit, windowSeconds: 60 },
         search: { limit, windowSeconds: 60 },
         ingest: { limit, windowSeconds: 3600 },
         login: { limit, windowSeconds: 900 },
         login_source: { limit, windowSeconds: 900 },
+        client_registration: { limit, windowSeconds: 3600 },
       },
+      ...(now === undefined ? {} : { now }),
     })
 
   /** A fresh organization per test, since the window key carries the id. */
@@ -74,9 +77,10 @@ when('rate limiting', () => {
     const refused = await rl.check(id, 'search')
     expect(refused.allowed).toBe(false)
     expect(refused.remaining).toBe(0)
-    // Something to wait for, rather than a bare refusal.
+    // Something to wait for, rather than a bare refusal — and up to two
+    // windows of it, because a full current window has to roll and then slide.
     expect(refused.reset).toBeGreaterThan(0)
-    expect(refused.reset).toBeLessThanOrEqual(60)
+    expect(refused.reset).toBeLessThanOrEqual(120)
   })
 
   it('counts per organization, which is the whole point', async () => {
@@ -120,12 +124,14 @@ when('rate limiting', () => {
     const degraded: unknown[] = []
     const rl = new RateLimiter({
       redis: broken,
-      policies: {
-        search: { limit: 1, windowSeconds: 60 },
-        ingest: { limit: 1, windowSeconds: 3600 },
-        login: { limit: 1, windowSeconds: 900 },
-        login_source: { limit: 1, windowSeconds: 900 },
-      },
+      policies: limitPoliciesFrom({
+        rateRequestsPerMin: 1,
+        rateSearchPerMin: 1,
+        rateIngestPerHour: 1,
+        rateLoginPer15Min: 1,
+        rateLoginSourcePer15Min: 1,
+        rateClientRegistrationPerHour: 1,
+      }),
       onDegraded: (_r, e) => degraded.push(e),
     })
 
@@ -140,10 +146,104 @@ when('rate limiting', () => {
     broken.close()
   })
 
+  // A clock the cases can stand anywhere in a window. Windows are aligned to
+  // the epoch, so a multiple of the window length is the start of one.
+  const at = (ms: number) => () => ms
+  const W = 60_000
+  const START = 1_000 * W
+
+  it('gives a refused request back, so hammering does not push recovery further away', async () => {
+    const id = org()
+    const rl = limiter(3, at(START + 10_000))
+    for (let i = 0; i < 3; i++) expect((await rl.check(id, 'search')).allowed).toBe(true)
+    // Fifty refusals in a row, as a loop that ignores Retry-After would send.
+    for (let i = 0; i < 50; i++) expect((await rl.check(id, 'search')).allowed).toBe(false)
+
+    // Counted as three, not fifty-three: this window's key holds what was
+    // allowed. Read straight from Redis, because "remaining" alone would not
+    // tell a refusal that was counted from one that was not.
+    const stored = await redis.command('GET', `nacre:rl:search:${id}:${String(START)}`)
+    expect(Number(stored)).toBe(3)
+
+    // And in the next window, half of the way in, the previous three weigh 1.5
+    // — so one more fits. A fixed window that counted refusals would have
+    // started this window behind by fifty.
+    const later = limiter(3, at(START + W + W / 2))
+    expect((await later.check(id, 'search')).allowed).toBe(true)
+  })
+
+  it('slides: the previous window weighs by how much of it still overlaps', async () => {
+    const id = org()
+    const early = limiter(10, at(START + 59_000))
+    for (let i = 0; i < 10; i++) expect((await early.check(id, 'search')).allowed).toBe(true)
+
+    // One second into the next window the previous ten still weigh 59/60 of
+    // ten, so nothing fits: the boundary burst a fixed window allows — a full
+    // budget at :59 and another at :00 — is exactly what this refuses. Six
+    // seconds in they weigh nine, and one does.
+    expect((await limiter(10, at(START + W + 1_000)).check(id, 'search')).allowed).toBe(false)
+    expect((await limiter(10, at(START + W + 6_000)).check(id, 'search')).allowed).toBe(true)
+    expect((await limiter(10, at(START + W + 6_000)).check(id, 'search')).allowed).toBe(false)
+
+    // Three quarters in, they weigh two and a half; with the one already
+    // allowed, room for six more.
+    const late = limiter(10, at(START + W + 45_000))
+    let allowed = 0
+    for (let i = 0; i < 10; i++) if ((await late.check(id, 'search')).allowed) allowed++
+    expect(allowed).toBe(6)
+  })
+
+  it('says how long until the next request fits, rather than until the minute ends', async () => {
+    const id = org()
+    const first = limiter(10, at(START + 30_000))
+    for (let i = 0; i < 10; i++) await first.check(id, 'search')
+    const refused = await first.check(id, 'search')
+    expect(refused.allowed).toBe(false)
+    // This window alone is full, so it has to roll and then slide a tenth of
+    // the way for one to fit: 30 s to the roll plus 6 s.
+    expect(refused.reset).toBe(36)
+    // And that is the moment it does fit, which is the claim being made.
+    expect((await limiter(10, at(START + 30_000 + 36_000)).check(id, 'search')).allowed).toBe(true)
+  })
+
+  it('computes the wait from both windows', () => {
+    // Only the previous window in the way: ten of them, none this window,
+    // limit five, ten seconds in — room for one when the tail has fallen to
+    // four, which is 60% of the way through the window.
+    expect(secondsUntilRoom(5, W, 10_000, 10, 0)).toBe(26)
+    // This window alone is over: roll, then slide.
+    expect(secondsUntilRoom(10, W, 30_000, 0, 10)).toBe(36)
+    // Never zero — a Retry-After of 0 invites the same request at once.
+    expect(secondsUntilRoom(10, W, 59_999, 0, 9)).toBe(1)
+  })
+
+  it('records a refusal once per window, which is what keeps the access log from being the flood', async () => {
+    const id = org()
+    const rl = limiter(1, at(START + 5_000))
+    await rl.check(id, 'requests')
+    const refusals = await Promise.all(Array.from({ length: 20 }, () => rl.check(id, 'requests')))
+    expect(refusals.every((d) => !d.allowed)).toBe(true)
+    expect(refusals.filter((d) => d.firstRefusal)).toHaveLength(1)
+    // A later window starts a new record.
+    const next = limiter(1, at(START + 2 * W + 5_000))
+    await next.check(id, 'requests')
+    expect((await next.check(id, 'requests')).firstRefusal).toBe(true)
+  })
+
+  it('gives back a request a later limit refused', async () => {
+    const id = org()
+    const rl = limiter(2, at(START + 1_000))
+    expect((await rl.check(id, 'requests')).allowed).toBe(true)
+    await rl.release(id, 'requests')
+    expect((await rl.check(id, 'requests')).allowed).toBe(true)
+    expect((await rl.check(id, 'requests')).allowed).toBe(true)
+    expect((await rl.check(id, 'requests')).allowed).toBe(false)
+  })
+
   it('reports RFC 9331 headers, and Retry-After only on a refusal', () => {
     const policy = { limit: 60, windowSeconds: 60 }
     const allowed = limitHeaders(
-      { allowed: true, limit: 60, remaining: 59, reset: 42, degraded: false },
+      { allowed: true, limit: 60, remaining: 59, reset: 42, degraded: false, firstRefusal: false },
       policy,
       'search',
     )
@@ -153,7 +253,7 @@ when('rate limiting', () => {
     expect(allowed['retry-after']).toBeUndefined()
 
     const refused = limitHeaders(
-      { allowed: false, limit: 60, remaining: 0, reset: 42, degraded: false },
+      { allowed: false, limit: 60, remaining: 0, reset: 42, degraded: false, firstRefusal: true },
       policy,
       'search',
     )

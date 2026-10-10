@@ -881,6 +881,44 @@ export async function pruneProposals(pool: Pool, retentionDays: number, limit: n
   })
 }
 
+/** How long a client nobody approved is kept after it was last seen. */
+export const UNAPPROVED_CLIENT_DAYS = 7
+
+/**
+ * OAuth clients nobody approved and nobody has used for a week. 0044.
+ *
+ * Registration is open — RFC 7591 is for a client nobody has met — and a row
+ * permits nothing until a person approves it, so the table could be grown by
+ * anybody at the rate they could post. This is what bounds it, with the limit
+ * on `POST /oauth/register`: a client with a consent or an authorization is
+ * never a candidate, whatever its age, because those cascade from it.
+ *
+ * The age is checked twice and the second time is the one that matters. The
+ * authorization endpoint touches `last_seen_at` before anybody can consent, so
+ * a client being approved right now is not old; the outer predicate is
+ * re-evaluated on the row the DELETE locks, so a touch that commits while this
+ * statement waits takes the row out of it rather than being overtaken.
+ */
+export async function pruneUnapprovedClients(pool: Pool, limit: number): Promise<number> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rowCount } = await client.query(
+      `DELETE FROM oauth_clients c
+        WHERE c.id IN (
+                SELECT o.id
+                  FROM oauth_clients o
+                 WHERE coalesce(o.last_seen_at, o.created_at) < now() - make_interval(days => $2)
+                   AND NOT EXISTS (SELECT 1 FROM oauth_consents k WHERE k.client_id = o.client_id)
+                   AND NOT EXISTS (SELECT 1 FROM oauth_authorizations a WHERE a.client_id = o.client_id)
+                 ORDER BY coalesce(o.last_seen_at, o.created_at)
+                 LIMIT $1
+              )
+          AND coalesce(c.last_seen_at, c.created_at) < now() - make_interval(days => $2)`,
+      [limit, UNAPPROVED_CLIENT_DAYS],
+    )
+    return rowCount ?? 0
+  })
+}
+
 /**
  * Proposals on the administrative MCP that nobody applied in time.
  *

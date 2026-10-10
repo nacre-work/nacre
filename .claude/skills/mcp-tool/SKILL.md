@@ -79,8 +79,12 @@ find code that trusts the token's presence for data access, that is a bug
 regardless of how the token was obtained.
 
 Client registration is not this transport's: the installation's API is the
-authorization server and implements DCR at `/oauth/register`, deliberately not
-CIMD. `NACRE_OAUTH_CIMD_ENABLED` and `NACRE_OAUTH_DCR_ENABLED` were removed.
+authorization server and takes a client both ways — DCR at `/oauth/register`,
+limited per address and swept when nobody approves it, and Client ID Metadata
+Documents, fetched through `egressFetch` (`packages/api/src/client-metadata.ts`)
+unless `NACRE_OAUTH_CIMD=false`. A metadata client's redirect is compared by
+`redirectAllowedForMetadataClient`, and every place that asks — authorize and
+both consent decisions — asks through `clientRedirectAllowed` in the server.
 
 ## The administrative surface
 

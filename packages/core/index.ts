@@ -35,6 +35,7 @@ export {
   generateCode,
   hashCode,
   redirectAllowed,
+  redirectAllowedForMetadataClient,
   verifierMatches,
 } from './authserver.js'
 export type { AuthorizationServerMetadata } from './authserver.js'

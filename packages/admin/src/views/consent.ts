@@ -40,6 +40,70 @@ interface Request {
   readonly resource: string | undefined
 }
 
+/**
+ * Who is asking, as a host a person can read.
+ *
+ * A client whose id is the URL of its metadata document is named by that
+ * document's host: the authorization endpoint fetched it from there before
+ * sending anybody here, so the domain is something the server checked rather
+ * than something the client said. A registered client has only a name it
+ * chose, so it is named by where the code goes.
+ */
+export function hostOf(request: Pick<Request, 'clientId' | 'redirectUri'>): string {
+  for (const candidate of [isDocumentId(request.clientId) ? request.clientId : undefined, request.redirectUri]) {
+    if (candidate === undefined) continue
+    try {
+      return new URL(candidate).host
+    } catch {
+      // Fall through to the next, and finally to the string itself.
+    }
+  }
+  return request.redirectUri
+}
+
+function isDocumentId(clientId: string): boolean {
+  return clientId.startsWith('https://')
+}
+
+/** Whether the code goes to a program on this computer rather than to a site. */
+function isLoopback(uri: string): boolean {
+  try {
+    const { protocol, hostname } = new URL(uri)
+    return protocol === 'http:' && (hostname === '127.0.0.1' || hostname === '[::1]' || hostname === 'localhost')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * What the person should know about where the request came from: the document
+ * that identified the client, and — when that client is a program on this
+ * computer — that the name is only as good as the program presenting it.
+ *
+ * The second is the one weakness metadata documents have and registration does
+ * not hide any better: any program on a machine can present a public client's
+ * id with a loopback redirect, and the document cannot tell them apart. So the
+ * screen says so where the decision is made, rather than implying the domain
+ * vouches for the program.
+ */
+function provenance(request: Request, host: string): HTMLElement[] {
+  if (!isDocumentId(request.clientId)) return []
+  const shown: HTMLElement[] = [
+    h('p', { class: 'hint' }, 'Identified by the document at'),
+    h('p', { class: 'mono' }, request.clientId),
+  ]
+  if (isLoopback(request.redirectUri)) {
+    shown.push(
+      h('div', { class: 'note' },
+        h('p', {},
+          'The code goes to a program on this computer, not to ', h('strong', {}, host),
+          '. Any program can present that name, so approve only a connection you started yourself just now.'),
+      ),
+    )
+  }
+  return shown
+}
+
 /** What the authorize endpoint put in the fragment, or nothing usable. */
 export function readRequest(hash: string): Request | undefined {
   const raw = hash.startsWith('#') ? hash.slice(1) : hash
@@ -105,13 +169,7 @@ export async function consentView(root: HTMLElement): Promise<void> {
   // reassuring costs nothing — and the URI is the thing that actually decides
   // where the code goes. Shown together and with the URI in monospace, because
   // it is the field worth reading.
-  const host = ((): string => {
-    try {
-      return new URL(request.redirectUri).host
-    } catch {
-      return request.redirectUri
-    }
-  })()
+  const host = hostOf(request)
 
   // The administrative MCP asks for a different thing, so it gets a different
   // screen rather than this one with boxes greyed out: there is nothing to
@@ -450,6 +508,7 @@ export async function consentView(root: HTMLElement): Promise<void> {
       // where the code actually goes, so it is the one shown.
       h('p', { class: 'hint' }, 'The code will be delivered to'),
       h('p', { class: 'mono' }, request.redirectUri),
+      ...provenance(request, host),
 
       h('label', { class: 'choice' }, asSelf,
         h('span', {},
@@ -550,6 +609,7 @@ async function administrativeConsent(root: HTMLElement, request: Request, host: 
       ? h('div', { class: 'panel' },
           h('p', { class: 'hint' }, 'The code will be delivered to'),
           h('p', { class: 'mono' }, request.redirectUri),
+          ...provenance(request, host),
 
           h('fieldset', { class: 'field-group' },
             h('legend', {}, 'It may read'),

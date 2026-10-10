@@ -54,8 +54,14 @@ enumeration. A PR adding `?offset=` should be rejected on both grounds.
 
 ## Limits
 
-Counted **per organization**, not per token. Per-token limits are bypassed by
-issuing another key. `429` carries `Retry-After` and `RateLimit-*` (RFC 9331).
+Never per token — per-token limits are bypassed by issuing another key. Every
+authenticated request counts against the **principal** (`requests`, shared with
+MCP); the costly operations — search, ingest, an upload ticket — count against
+the **organization** as well, through `resourceFor` in `server.ts`. A request
+the second limit refuses is given back to the first. `429` carries
+`Retry-After` and `RateLimit-*` (RFC 9331), and a refusal is audited once per
+window. A new expensive route gets a line in `resourceFor`, not a limiter of its
+own.
 
 ## Always
 

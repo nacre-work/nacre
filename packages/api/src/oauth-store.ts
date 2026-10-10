@@ -21,6 +21,14 @@ export interface RegisteredClient {
   readonly clientId: string
   readonly clientName: string
   readonly redirectUris: readonly string[]
+  /**
+   * How the client arrived: `registered` through `POST /oauth/register`, or
+   * `metadata` — its `client_id` is the URL of a document this server fetched.
+   * Absent on a row read before migration 0044, which is a registration.
+   */
+  readonly source?: 'registered' | 'metadata'
+  /** When a metadata client's cached document is fetched again. */
+  readonly refreshAfter?: Date
 }
 
 /**
@@ -179,6 +187,15 @@ export type RedeemedAuthorization = MintRequest & {
 export interface OAuthClients {
   register(name: string, redirectUris: readonly string[], clientId: string): Promise<RegisteredClient>
   find(clientId: string): Promise<RegisteredClient | undefined>
+  /**
+   * Cache a metadata document a client is identified by, for `ttlSeconds`.
+   *
+   * Never over a registered client: those ids are random and cannot collide
+   * with a URL, and the statement refuses to make one into the other anyway.
+   */
+  cacheMetadata(clientId: string, name: string, redirectUris: readonly string[], ttlSeconds: number): Promise<RegisteredClient>
+  /** Note that a client was asked about, so an unapproved one is not swept under a person approving it. */
+  touch(clientId: string): Promise<void>
 }
 
 export interface OAuthConsents {
@@ -290,14 +307,74 @@ export class PostgresOAuthClients implements OAuthClients {
 
   async find(clientId: string): Promise<RegisteredClient | undefined> {
     return whileAuthenticating(this.pool, async (client) => {
-      const { rows } = await client.query<{ client_id: string; client_name: string; redirect_uris: string[] }>(
-        'SELECT client_id, client_name, redirect_uris FROM oauth_clients WHERE client_id = $1',
+      const { rows } = await client.query<ClientRow>(
+        `SELECT client_id, client_name, redirect_uris, source, refresh_after
+           FROM oauth_clients WHERE client_id = $1`,
         [clientId],
       )
       const row = rows[0]
-      if (row === undefined) return undefined
-      return { clientId: row.client_id, clientName: row.client_name, redirectUris: row.redirect_uris }
+      return row === undefined ? undefined : clientFrom(row)
     }, this.role === undefined ? {} : { role: this.role })
+  }
+
+  async cacheMetadata(
+    clientId: string,
+    name: string,
+    redirectUris: readonly string[],
+    ttlSeconds: number,
+  ): Promise<RegisteredClient> {
+    // `whileAuthenticating` for the reason `register` gives: nobody has signed
+    // in yet. The conflict arm is conditioned on the row already being a
+    // metadata client, so a document can refresh its own cache and never
+    // overwrite a registration — an id that is a URL was never issued by
+    // `register`, which mints random ones, and the WHERE says so anyway.
+    return whileAuthenticating(this.pool, async (client) => {
+      const { rows } = await client.query<ClientRow>(
+        `INSERT INTO oauth_clients (client_id, client_name, redirect_uris, source, refresh_after, last_seen_at)
+         VALUES ($1, $2, $3, 'metadata', now() + make_interval(secs => $4), now())
+         ON CONFLICT (client_id) DO UPDATE
+            SET client_name = EXCLUDED.client_name,
+                redirect_uris = EXCLUDED.redirect_uris,
+                refresh_after = EXCLUDED.refresh_after,
+                last_seen_at = EXCLUDED.last_seen_at
+          WHERE oauth_clients.source = 'metadata'
+         RETURNING client_id, client_name, redirect_uris, source, refresh_after`,
+        [clientId, name, [...redirectUris], ttlSeconds],
+      )
+      const row = rows[0]
+      if (row === undefined) throw new Error('a registered client cannot be replaced by a metadata document')
+      return clientFrom(row)
+    }, this.role === undefined ? {} : { role: this.role })
+  }
+
+  async touch(clientId: string): Promise<void> {
+    // At most once an hour per client, so an authorization endpoint answering
+    // a loop is not a write per request.
+    await whileAuthenticating(this.pool, async (client) => {
+      await client.query(
+        `UPDATE oauth_clients SET last_seen_at = now()
+          WHERE client_id = $1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '1 hour')`,
+        [clientId],
+      )
+    }, this.role === undefined ? {} : { role: this.role })
+  }
+}
+
+interface ClientRow {
+  readonly client_id: string
+  readonly client_name: string
+  readonly redirect_uris: string[]
+  readonly source: 'registered' | 'metadata'
+  readonly refresh_after: Date | null
+}
+
+function clientFrom(row: ClientRow): RegisteredClient {
+  return {
+    clientId: row.client_id,
+    clientName: row.client_name,
+    redirectUris: row.redirect_uris,
+    source: row.source,
+    ...(row.refresh_after === null ? {} : { refreshAfter: row.refresh_after }),
   }
 }
 

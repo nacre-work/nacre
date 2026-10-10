@@ -103,6 +103,25 @@ export interface Config {
    * true the egress guard bounds it.
    */
   readonly embedTenantProviders: boolean
+  /**
+   * Whether `/oauth/authorize` accepts a client identified by the URL of its
+   * own metadata document (CIMD), from `NACRE_OAUTH_CIMD`. Default **true**.
+   *
+   * The document is fetched through the same egress guard as a tenant's
+   * embedder — public addresses only, judged at connect time, no redirects —
+   * with a size and a time bound, and cached. An installation with no route to
+   * the internet sets it **false**, or a client that prefers CIMD would be sent
+   * to fetch a document this process can never reach; registration (DCR) works
+   * either way and is never switched off.
+   */
+  readonly oauthCimd: boolean
+  /**
+   * Origins a client metadata document may be fetched from although they are
+   * not public, from `NACRE_OAUTH_CIMD_ALLOWED_ORIGINS` — an organization's own
+   * MCP client served on its intranet. Exact origins, never a suffix; empty by
+   * default, the state in which only public addresses are fetched.
+   */
+  readonly oauthCimdAllowedOrigins: readonly string[]
   readonly mcpAllowedOrigins: readonly string[]
   /**
    * Browser origins the REST API answers, from `NACRE_API_ALLOWED_ORIGINS`.
@@ -236,10 +255,14 @@ export interface Config {
    */
   readonly indexMaxAttempts: number
 
+  /** Every authenticated request, REST and MCP alike, per principal per minute. */
+  readonly rateRequestsPerMin: number
   readonly rateSearchPerMin: number
   readonly rateIngestPerHour: number
   readonly rateLoginPer15Min: number
   readonly rateLoginSourcePer15Min: number
+  /** Client registrations and metadata fetches, per client per hour. */
+  readonly rateClientRegistrationPerHour: number
   readonly trustProxy: number
   readonly metricsToken: string | undefined
   readonly maxDocumentBytes: number
@@ -1119,6 +1142,8 @@ export function loadConfig(env: Env = process.env): Config {
       `${r.url('NACRE_CANONICAL_URL').replace(/\/+$/, '')}/#/consent`,
     embedAllowedHosts: r.originList('NACRE_EMBED_ALLOWED_HOSTS'),
     embedTenantProviders: r.boolean('NACRE_EMBED_TENANT_PROVIDERS', true),
+    oauthCimd: r.boolean('NACRE_OAUTH_CIMD', true),
+    oauthCimdAllowedOrigins: r.originList('NACRE_OAUTH_CIMD_ALLOWED_ORIGINS'),
     mcpAllowedOrigins: r.originList('NACRE_MCP_ALLOWED_ORIGINS'),
     apiAllowedOrigins: r.originList('NACRE_API_ALLOWED_ORIGINS'),
     oauthAuthorizationServer: r.url('NACRE_OAUTH_AUTHORIZATION_SERVER', { required: false }),
@@ -1188,6 +1213,13 @@ export function loadConfig(env: Env = process.env): Config {
     indexLease: r.number('NACRE_INDEX_LEASE', 900, { min: 60, max: 86_400 }),
     indexMaxAttempts: r.number('NACRE_INDEX_MAX_ATTEMPTS', 5, { min: 1, max: 100 }),
 
+    // Every request, per principal: a person, or a service account — never a
+    // token, so connecting another application does not buy another budget.
+    // Ten a second sustained is far above anybody working and far below a loop
+    // that has lost its exit condition; the window slides and a refusal costs
+    // nothing, so a burst is answered with a wait of seconds rather than a
+    // minute's lockout.
+    rateRequestsPerMin: r.number('NACRE_RATE_REQUESTS_PER_MIN', 600, { min: 10, max: 100_000 }),
     rateSearchPerMin: r.number('NACRE_RATE_SEARCH_PER_MIN', 60, { min: 1 }),
     rateIngestPerHour: r.number('NACRE_RATE_INGEST_PER_HOUR', 600, { min: 1 }),
     // Ten attempts per quarter hour, counted per email address. Low enough that
@@ -1201,6 +1233,14 @@ export function loadConfig(env: Env = process.env): Config {
     // job of this limit is to stop a directory being ground down, not to make
     // shared egress unusable.
     rateLoginSourcePer15Min: r.number('NACRE_RATE_LOGIN_SOURCE_PER_15MIN', 60, {
+      min: 1,
+      max: 10_000,
+    }),
+    // What anybody may make this server do before signing in, per client: a
+    // registration is a row, and a metadata document is an outbound fetch. A
+    // hundred an hour is a whole office connecting its clients at once and
+    // nothing like a table being filled.
+    rateClientRegistrationPerHour: r.number('NACRE_RATE_CLIENT_REGISTRATION_PER_HOUR', 100, {
       min: 1,
       max: 10_000,
     }),

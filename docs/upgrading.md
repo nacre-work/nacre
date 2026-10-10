@@ -286,6 +286,57 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.41.0 — a budget per caller, registration bounded, and clients identified by their metadata document
+
+**Nothing to do on most installations; read the first item if anything you run
+sends more than ten requests a second as one principal.**
+
+- **Every authenticated request now counts against the caller.**
+  `NACRE_RATE_REQUESTS_PER_MIN`, 600 by default, on REST and MCP as one budget,
+  per principal — a person, a service account, or a delegation counted as its
+  person. Until now only search and ingest were counted, so a client in a loop
+  over a listing or `tools/list` was bounded by nothing. A bulk job that runs as
+  one service account above that rate will start seeing `429`s with a
+  `Retry-After`; raise the variable (the chart's `limits.requestsPerMin`) rather
+  than spreading the job across accounts.
+- **The window slides.** Search, ingest, sign-in and the new limits all count
+  the current window plus the overlapping part of the previous one, where they
+  used to reset on a fixed boundary. The nominal rates are unchanged; what goes
+  away is the burst of twice the limit across a boundary. A refused request is
+  no longer counted, and `Retry-After` is the time until the next request fits —
+  which can be longer than the rest of the current window, up to two windows.
+- **`rate_limited` is written once per window, not once per refusal.** A
+  client hammering a limit used to write an access-log row per request.
+- **`/oauth/register` is limited per client address**:
+  `NACRE_RATE_CLIENT_REGISTRATION_PER_HOUR`, 100 by default, counted the way
+  sign-in counts one, so `NACRE_TRUST_PROXY` matters here too. A refusal is
+  `429` with `{"error": "temporarily_unavailable"}`.
+- **Registrations nobody approved are deleted** by the worker after seven days
+  unseen. A client with a consent — revoked or not — is never deleted, and one
+  being approved is not, because reaching the consent screen marks it seen.
+  Nothing in the console changes: an unapproved client was never on a screen.
+- **A client may be identified by the URL of its metadata document**, beside
+  registering. The authorization server metadata now advertises
+  `client_id_metadata_document_supported`, and an MCP client that has a
+  document will use it instead of registering. The API fetches the document
+  through the egress guard — public addresses only, no redirects, five seconds,
+  five kilobytes, cached between five minutes and a day. **On `airgapped`, or
+  anywhere the API must make no outbound request a client chose, set
+  `NACRE_OAUTH_CIMD=false`** (the chart's `oauth.metadataDocuments`);
+  registration is unaffected. An intranet client's document needs its origin in
+  `NACRE_OAUTH_CIMD_ALLOWED_ORIGINS`. The consent screen names such a client by
+  the domain that served its document, and says so when the code goes to a
+  program on the same computer.
+- **The SDK honours `Retry-After`** on a retried `429` or `503`, up to ten
+  seconds, and hands a longer wait back as `NacreError.retryAfter` rather than
+  sleeping through it.
+
+**Migration `0044`** adds three columns to `oauth_clients`, an index on it, and
+indexes on `client_id` in `oauth_consents` and `oauth_authorizations`, which
+neither had. All three tables are small; the index builds take a brief lock on
+each. It grants `nacre_app` the columns the metadata cache rewrites and
+`nacre_worker` `DELETE` on `oauth_clients`, for the sweep.
+
 ### 0.40.0 — linking people and groups to an identity provider without SQL
 
 **Nothing to do, unless you linked groups by hand — then read the migration

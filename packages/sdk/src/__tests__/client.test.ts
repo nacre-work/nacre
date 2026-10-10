@@ -367,6 +367,33 @@ describe('NacreClient', () => {
     expect(calls).toHaveLength(2)
   })
 
+  it('waits as long as Retry-After asks before retrying', async () => {
+    // Retrying a 429 sooner than the server said is a request it has already
+    // said it will refuse, counted against the budget the caller is out of.
+    const limited = () => {
+      const r = problem(429, 'Too many requests', 'Try again in 1 seconds.')
+      return new Response(r.body, { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '1' } })
+    }
+    const { fetchImpl, calls } = stub(limited, json(200, { items: [] }))
+    const started = Date.now()
+    await client(fetchImpl, 2).layers.list()
+    expect(calls).toHaveLength(2)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(950)
+  })
+
+  it('hands back a wait too long to sit through, with retryAfter on the error', async () => {
+    const limited = () => {
+      const r = problem(429, 'Too many requests', 'Try again in 120 seconds.')
+      return new Response(r.body, { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '120' } })
+    }
+    const { fetchImpl, calls } = stub(limited)
+    const error = await client(fetchImpl, 3).layers.list().catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(NacreError)
+    expect((error as NacreError).retryAfter).toBe(120)
+    // Not slept, and not retried: the caller decides what to do with two minutes.
+    expect(calls).toHaveLength(1)
+  })
+
   it('never retries a delete or a grant', async () => {
     const { fetchImpl, calls } = stub(problem(503, 'Unavailable'))
 
