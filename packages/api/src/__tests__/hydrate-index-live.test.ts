@@ -8,7 +8,7 @@ import { HYDRATE_SQL } from '../adapters.js'
 
 /**
  * Every search ends by joining the ten points the index returned to their rows,
- * and that join has to start from those ten ids.
+ * and that join has to start from those ten ids — whatever the statistics say.
  *
  * `chunks.point_id` had no index from 0001 until 0042, so the planner walked the
  * other way — every layer of the organization, every document in each, every
@@ -74,6 +74,10 @@ when('the search hydration join', () => {
         WHERE d.org_id = $1`,
       [ORG, CHUNKS_EACH],
     )
+    // `layers` is deliberately left unanalyzed. That is the state a table of a
+    // few rows stays in — autoanalyze waits for fifty changed rows — and it is
+    // the state in which a flat join let the planner start from `layers` and
+    // walk every document, index or no index. CI found it on a fresh database.
     await pool.query('ANALYZE chunks')
     await pool.query('ANALYZE documents')
   })

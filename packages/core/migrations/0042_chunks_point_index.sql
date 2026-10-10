@@ -14,6 +14,9 @@
 -- stack and reading `pg_stat_activity`.
 --
 -- `(org_id, point_id)` because the query names both, and so does the policy.
+-- The index is half of it: the search path's query (HYDRATE_SQL) also starts
+-- from the ids in a MATERIALIZED CTE, because a planner misled by a small,
+-- never-analyzed `layers` table chose the walk with this index present.
 -- Not `CONCURRENTLY`: this runner applies a file inside a transaction, where
 -- that is refused. So the build holds a lock that blocks writes to `chunks` —
 -- indexing waits, searches do not — for roughly a second per million rows.

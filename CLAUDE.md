@@ -3729,16 +3729,27 @@ search on 27,000 chunks and linear in the corpus, with Postgres the bottleneck
 at 152% CPU. Migration 0042 adds the index and the same load went from 65 to
 125 searches a second. `hydrate-index-live.test.ts` explains the query text the
 search path runs, exported as `HYDRATE_SQL` so the test holds no copy, against a
-real PostgreSQL with enough rows that a walk is what a planner without the index
-picks.
+real PostgreSQL with enough rows that a walk is a plan worth refusing.
 
-Its first run went red with the index present, and the reason is the part worth
-keeping: it looked for the index name on the node whose relation is `chunks`,
-and when a planner chooses a bitmap scan the index is named on the `Bitmap Index
-Scan` beneath — which carries no relation — while the `Bitmap Heap Scan` that
-does carries no index. A projection narrow enough to miss the answer, written in
-a check against exactly that shape. It asks every node now, measured both ways:
-a plan forced to bitmap passes, and the index dropped fails.
+**And the index was not enough, which CI said and a fresh database proved.**
+The case's first run went red with the index present, and so did the pull
+request's: the planner started from `layers`, hashed every document of the
+organization and probed each one's chunks — choosing the walk over an index it
+had. The reason is statistics, not the index. `layers` had never been analyzed,
+which is the ordinary state of a table of a few rows, because autoanalyze waits
+for fifty changed rows; a never-analyzed table misleads the estimate of every
+join it is in, and the planner reckoned the walk would touch seven documents. So
+on a real installation with a handful of layers, the index alone could leave
+every search walking the organization.
+
+The query says where to start now: the chunks are looked up first, by id, in a
+`MATERIALIZED` CTE the planner may not reorder, and only those rows are joined to
+their documents and layers by key. The test leaves `layers` unanalyzed on
+purpose, because that is the state that failed. Measured on fresh databases:
+the flat join failed three runs of three, the CTE passed five of five, and
+dropping the index fails it. Its first version also missed a bitmap plan — the
+index is named on the `Bitmap Index Scan`, which carries no relation — so it asks
+every node.
 
 The same pass found the nightly flake hunt discarding the evidence. The run of
 2026-10-09 failed one pass without naming a case and printed nothing of it — the

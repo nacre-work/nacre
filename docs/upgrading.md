@@ -303,8 +303,10 @@ restarting `mcp` on a schedule, or raised its memory limit, you no longer need t
 Every search ended by looking its hits up in `chunks` by `point_id`, which had no
 index, so Postgres walked every document of the organization to find ten chunks —
 cost growing with the corpus, at 36 ms a search on 27,000 chunks. Migration
-`0042` adds `chunks_org_point_idx`, and on that corpus searches went from 65 to
-125 a second with Postgres at a third of the CPU. It is not built
+`0042` adds `chunks_org_point_idx`, and the query now looks the chunks up first
+and joins outward, so a small, never-analyzed `layers` table cannot lead the
+planner back to the walk. On that corpus searches went from 65 to 125 a second
+with Postgres at a third of the CPU. It is not built
 `CONCURRENTLY`, because the migrator applies each file in a transaction: writes
 to `chunks` — the worker indexing — wait for the build, roughly a second per
 million rows, while searches go on. Where that is too long, build it first
