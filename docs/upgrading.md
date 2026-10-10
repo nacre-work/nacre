@@ -285,6 +285,58 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.38.0 — a security release
+
+**One migration, and three things to check if they describe you.** Migration
+`0041` adds `prune_admin_proposals` and an index; the migrator applies it as
+usual and nothing is rewritten. Everything else is a fix that needs nothing
+from you, except where one of these is true:
+
+- **You embed the console in a frame.** The front door now sends
+  `X-Frame-Options: DENY` and `frame-ancestors 'none'` on the console, because
+  the console's own policy is a `<meta>` tag and a browser ignores
+  `frame-ancestors` there. Any site could otherwise frame it over its own page,
+  the consent screen's Approve included. A portal that iframed the console
+  stops showing it; open it in its own tab instead.
+- **Your parser reaches another container by name.** In Compose the parser is
+  on a network of its own, shared with the worker and nothing else, so it no
+  longer reaches Postgres, Qdrant or Redis. A deployment that set
+  `NACRE_PARSER_ALLOW_PRIVATE_URLS=true` to index a wiki running as another
+  container on the default network must add that container to the `parsing`
+  network in its own override. The embedding adapter likewise takes only the 22
+  variables it reads, rather than all of `.env`.
+- **A client retries a credential call with the same `Idempotency-Key`.** A
+  response carrying a once-shown value — a generated password, a service account
+  key, the codes of a second factor, a session — is no longer stored in the
+  idempotency cache, where it sat in plaintext for 24 hours. A retry with the
+  same key therefore runs the call again rather than replaying it. A repeated
+  `POST /v1/users` answers `409` for the address it already created.
+
+What changed underneath, for an operator reading the log afterwards:
+
+- **A delegation narrowed to some layers administers nothing outside them**, and
+  no longer counts as the organization's administrator at all. Renaming,
+  deleting or reindexing a layer, its grants and its reference queries all check
+  the narrowing, as reads always did. T42–T44.
+- **A document deleted, or re-sent, while it is being indexed stays deleted or
+  stays the new version.** A worker pass is fenced on its own claim, writes its
+  points while holding the document's row, and a delete takes that row first.
+  The old order could return a deleted document until the collector ran.
+- **An upload ticket asks its authority again on redemption**, so a connection
+  or a service account revoked after minting uploads nothing (`404`).
+- **Decided proposals are pruned** at `NACRE_AUDIT_RETENTION_DAYS`, like the
+  access log that records them, and a connection may hold at most 25 waiting. A
+  skill proposal shows every file's text, and one over 40,000 characters is
+  refused. Write a larger skill on the Skills screen or in the skill panel.
+- **Consent's Cancel goes through the server**, which checks the client's
+  registered redirect, so a hand-written consent link cannot redirect elsewhere.
+- **Recovery links and WebAuthn sign-in are limited per client**, like
+  password sign-in, and a recovery link that never existed costs no scrypt.
+- **`/metrics` reports the reindex and retired-collection gauges** on a
+  deployment connecting as `nacre_app`, where they were silently absent.
+- **The parser bounds a fetch at 60 seconds overall** and parses eight
+  documents at once; a ninth waits, then gets `503`, which the worker retries.
+
 ### 0.37.1 — the Connections screen by role
 
 **Nothing to do.** "Connect a client" on the Connections screen now shows a
