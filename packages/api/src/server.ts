@@ -2506,6 +2506,34 @@ async function handleAuth(
     send(res, problem.status, problem.toJSON(), requestId)
   }
 
+  /**
+   * The per-client bucket every unauthenticated credential route spends from,
+   * answered here once. True when it refused, with the `429` already sent.
+   *
+   * It was written out by hand on the second-factor route and on no other, so
+   * the WebAuthn sign-in and the recovery link's redemption took any number of
+   * requests from one client — and the redemption ran a full scrypt for each,
+   * which fills the gate every sign-in shares and answers `503` to all of them.
+   * One function so the next such route is a call, not a copy.
+   */
+  const limitedBySource = async (): Promise<boolean> => {
+    if (options.limits === undefined || options.limitPolicies?.login_source === undefined) return false
+    const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 })
+    if (source === undefined) return false
+    const decision = await options.limits.check(`src:${source}`, 'login_source')
+    if (decision.allowed) return false
+    const problem = new Problem({
+      type: 'https://nacre.work/errors/rate-limited',
+      title: 'Too many requests',
+      status: 429,
+      detail: `Too many sign-in attempts. Try again in ${decision.reset} seconds.`,
+      instance,
+      requestId,
+    })
+    send(res, problem.status, problem.toJSON(), requestId)
+    return true
+  }
+
   if (instance === '/v1/auth/login') {
     const { email, password, organization } = (body ?? {}) as {
       email?: unknown
@@ -2726,6 +2754,7 @@ async function handleAuth(
       return
     }
 
+    if (await limitedBySource()) return
     const outcome = await options.recovery.redeem(token, password)
     if (outcome === 'too-short') {
       // The one thing this endpoint does say, because it is about what the
@@ -2775,6 +2804,7 @@ async function handleAuth(
       send(res, problem.status, problem.toJSON(), requestId)
       return
     }
+    if (await limitedBySource()) return
     const begun = await options.login.beginSecondFactorWebAuthn(challenge)
     if (begun === undefined) {
       // One refusal for a challenge that is not ours, one that has expired, and
@@ -2804,24 +2834,7 @@ async function handleAuth(
       return
     }
 
-    if (options.limits !== undefined && options.limitPolicies?.login !== undefined) {
-      const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 })
-      if (source !== undefined && options.limitPolicies.login_source !== undefined) {
-        const decision = await options.limits.check(`src:${source}`, 'login_source')
-        if (!decision.allowed) {
-          const problem = new Problem({
-            type: 'https://nacre.work/errors/rate-limited',
-            title: 'Too many requests',
-            status: 429,
-            detail: `Too many sign-in attempts. Try again in ${decision.reset} seconds.`,
-            instance,
-            requestId,
-          })
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-      }
-    }
+    if (await limitedBySource()) return
 
     const outcome = await options.login.completeSecondFactor(challenge, proof)
     if (outcome === undefined) {

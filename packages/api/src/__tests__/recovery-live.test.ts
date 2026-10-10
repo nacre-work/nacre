@@ -117,6 +117,21 @@ when('password recovery', () => {
     expect(sent[1]?.subject).toMatch(/was changed/u)
   })
 
+  it('refuses a link that never existed without spending a scrypt on it', async () => {
+    // Redemption hashed the new password before it asked whether the link was
+    // live, so anybody with no credential could spend a full scrypt per
+    // request — and the gate every sign-in shares answered `TooBusy` to all of
+    // them. Measured where it bites: with the gate full, a forged link is
+    // refused rather than queued behind the work that filled it.
+    const filling: Promise<unknown>[] = []
+    for (let i = 0; i < 256; i += 1) filling.push(hashPassword(`filler password ${String(i)}`).catch((e: unknown) => e))
+    try {
+      expect(await recovery.redeem(`${orgId}.not-a-real-secret`, 'a password that is long enough')).toBe('refused')
+    } finally {
+      await Promise.all(filling)
+    }
+  }, 120_000)
+
   it('refuses a link that has expired', async () => {
     await recovery.request('dana@recover.test')
     const token = linkIn(sent.at(-1)!)
