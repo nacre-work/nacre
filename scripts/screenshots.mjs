@@ -1376,6 +1376,48 @@ await shot('connect-examples', {
     await page.waitForTimeout(100)
   },
 })
+// And to a member, who connects an agent and nothing else: the MCP endpoint
+// and how a client takes it. No administrative MCP, which the server does not
+// send them, and no REST half, whose every request wants a service account key
+// a member cannot mint.
+await shot('connect-member', {
+  hash: '#/connections',
+  fixtures: {
+    'GET /v1/me': {
+      organization: 'acme',
+      principal_type: 'user',
+      principal_id: '4f2c8e61-7a95-4d13-9b60-2e8a5c0f7b34',
+      role: 'member',
+      administers: false,
+      holds_own_credentials: true,
+    },
+    'GET /v1/endpoints': {
+      api: 'https://nacre.example.com/v1',
+      mcp: 'https://nacre.example.com/mcp',
+      contract: 'https://github.com/nacre-work/nacre/blob/v0.34.0/docs/openapi.yaml',
+      version: '0.34.0',
+    },
+    // A member is listed their own connections and nobody else's — the
+    // server decides that, and a fixture listing the organization's would be
+    // a picture of a screen no member is shown.
+    'GET /v1/oauth/consents': {
+      items: [
+        {
+          id: 'e2f84c17-9a63-4d05-b1e8-7c3a5f0d2b96', client_id: 'cursor', client_name: 'Cursor',
+          acts_as: 'user', service_account_id: null, service_account_name: null,
+          approved_by: '4f2c8e61-7a95-4d13-9b60-2e8a5c0f7b34', approved_by_email: 'sam@example.com',
+          approver_disabled: false, layers: [], permissions: ['read'],
+          created_at: '2026-03-02T15:00:00.000Z', last_refreshed_at: '2026-03-14T17:12:00.000Z', revoked_at: null,
+        },
+      ],
+      access_token_ttl_seconds: 900,
+    },
+  },
+  prepare: async (page) => {
+    await page.getByText('Examples', { exact: true }).click()
+    await page.waitForTimeout(100)
+  },
+})
 // What an agent on the administrative MCP proposed, waiting for the person —
 // where a client that renders no panel leaves it.
 await shot('proposals', {

@@ -107,6 +107,13 @@ function mayLine(c: Connection, names: ReadonlyMap<string, string>): string | un
 
 export async function connectionsView(root: HTMLElement): Promise<void> {
   clear(root)
+  // Read once for the screen and asked twice: who "you" is in the list, and
+  // whether the panel above it offers the administrative half. Tolerated when
+  // it fails: an older API answers 404 here, and a list that names every
+  // approver by address is a worse screen than one that says "you" for one of
+  // them, not a broken one — and a panel offering only the MCP endpoint is the
+  // one every caller may use.
+  const self = client().me().catch(() => undefined)
   const body = h('div', {})
   const message = h('p', { class: 'form-message' })
 
@@ -126,21 +133,12 @@ export async function connectionsView(root: HTMLElement): Promise<void> {
     ),
     // Where to connect sits above what is connected: it is the question a
     // person arriving here with nothing connected yet came to ask.
-    connectPanel(),
+    connectPanel(self.then((m) => m?.administers ?? false)),
     message,
     h('div', { class: 'panel' }, body),
   )
 
-  // Read once for the screen rather than per row, and tolerated when it fails:
-  // an older API answers 404 here, and a list that names every approver by
-  // address is a worse screen than one that says "you" for one of them, not a
-  // broken one.
-  let me: string | undefined
-  try {
-    me = (await client().me()).principalId
-  } catch {
-    me = undefined
-  }
+  const me = (await self)?.principalId
   // Names for the layers a narrowing points at, from what this reader can see.
   // Tolerated when it fails for the same reason: ids would be a worse line,
   // not a broken screen.

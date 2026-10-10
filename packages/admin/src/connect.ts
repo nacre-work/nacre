@@ -47,9 +47,8 @@ function example(title: string, text: string, answer?: string): HTMLElement {
 /** The REST base without `/v1`, which is what the SDK and the `nacre` command take. */
 const origin = (api: string): string => api.replace(/\/v1\/?$/, '')
 
-export function examples(e: Endpoints, layer: string): HTMLElement[] {
-  const auth = '  -H "Authorization: Bearer $NACRE_TOKEN"'
-  const json = '  -H "Content-Type: application/json"'
+/** What any MCP client takes: the address, on a command line or in a configuration file. */
+export function mcpExamples(e: Endpoints): HTMLElement[] {
   return [
     example(
       'Add Nacre to Claude Code',
@@ -60,6 +59,14 @@ export function examples(e: Endpoints, layer: string): HTMLElement[] {
       'Or in a client’s configuration file',
       JSON.stringify({ mcpServers: { nacre: { type: 'http', url: e.mcp } } }, null, 2),
     ),
+  ]
+}
+
+/** Requests against the REST API, which need a service account key — an administrator's to mint. */
+export function apiExamples(e: Endpoints, layer: string): HTMLElement[] {
+  const auth = '  -H "Authorization: Bearer $NACRE_TOKEN"'
+  const json = '  -H "Content-Type: application/json"'
+  return [
     example(
       'Search',
       [`curl -s ${e.api}/search \\`, `${auth} \\`, `${json} \\`, `  -d '{"query": "on-call rotation", "top_k": 5}'`].join('\n'),
@@ -94,8 +101,17 @@ export function examples(e: Endpoints, layer: string): HTMLElement[] {
  * Whether to offer the administrative MCP is the server's answer too: it sends
  * `mcp_admin` only to somebody who administers the organization, because that
  * connection's consent screen refuses everybody else.
+ *
+ * The REST API is shown to the same people and for a related reason. A member
+ * connects an agent, and the MCP endpoint is all that takes: the client sends
+ * them here to sign in. Everything the REST half says needs a token in a
+ * header, and the one a script keeps is a service account key, which only an
+ * administrator can mint — so for a member that half was an address and five
+ * requests they had nothing to run with. The address is not a secret and the
+ * server goes on telling anybody who asks; `administers` is `GET /v1/me`'s,
+ * the predicate every gated handler calls, not a role read in a browser.
  */
-export function connectPanel(): HTMLElement {
+export function connectPanel(administers: Promise<boolean>): HTMLElement {
   const panel = h('section', { class: 'panel connect', hidden: '' })
   void (async () => {
     let e: Endpoints
@@ -104,32 +120,42 @@ export function connectPanel(): HTMLElement {
     } catch {
       return
     }
+    const admin = await administers
     let layer = 'handbook'
-    try {
-      layer = (await client().layers.list())[0]?.slug ?? layer
-    } catch {
-      // The example keeps a layer name of its own; it is an example.
+    if (admin) {
+      try {
+        layer = (await client().layers.list())[0]?.slug ?? layer
+      } catch {
+        // The example keeps a layer name of its own; it is an example.
+      }
     }
     const facts = h('dl', { class: 'facts' },
       ...address('MCP', e.mcp,
         'For agents. Add it to an MCP client as a remote server over HTTP — the client sends you here to sign in and choose what it may do.'),
-      ...(e.mcpAdmin !== undefined
+      ...(admin && e.mcpAdmin !== undefined
         ? address('Admin MCP', e.mcpAdmin,
           'Administering this organization from an agent. It reads how things are set up, and a change it proposes waits for you to apply it.')
         : []),
-      ...address('REST API', e.api,
-        'For applications and scripts. A token goes in the Authorization header: a service account key, or a session.'),
+      ...(admin
+        ? address('REST API', e.api,
+          'For applications and scripts. A token goes in the Authorization header: a service account key, or a session.')
+        : []),
     )
     panel.append(
       h('h2', {}, 'Connect a client'),
       facts,
       h('details', { class: 'examples' },
-        h('summary', {}, 'Example requests'),
-        ...examples(e, layer),
-        h('p', { class: 'hint' },
-          'Every operation, with its fields and its answers: ',
-          h('a', { href: e.contract, target: '_blank', rel: 'noopener noreferrer' }, `the API contract for ${e.version}`),
-          '.'),
+        h('summary', {}, admin ? 'Example requests' : 'Examples'),
+        ...mcpExamples(e),
+        ...(admin
+          ? [
+            ...apiExamples(e, layer),
+            h('p', { class: 'hint' },
+              'Every operation, with its fields and its answers: ',
+              h('a', { href: e.contract, target: '_blank', rel: 'noopener noreferrer' }, `the API contract for ${e.version}`),
+              '.'),
+          ]
+          : []),
       ),
     )
     panel.hidden = false
