@@ -1413,6 +1413,10 @@ export class NacreIngest implements Ingest {
              -- the response says queued and the document waits out a delay
              -- computed for a run the caller has just replaced.
              retry_after  = CASE WHEN ${REQUEUE} THEN NULL ELSE documents.retry_after END,
+             -- And the lease. A pass still working on the version this replaces
+             -- is fenced on it, so clearing it is what stops that pass writing
+             -- the old content over the new. See ClaimLost in the worker.
+             claimed_at   = CASE WHEN ${REQUEUE} THEN NULL ELSE documents.claimed_at END,
              deleted_at   = NULL,
              updated_at   = now()
            RETURNING id, content_hash, status`,
@@ -1469,9 +1473,15 @@ export class NacreIngest implements Ingest {
         )
         if (plan.kind === 'none') return false
 
+        // FOR UPDATE: the worker writes a document's points while holding this
+        // row's lock, so taking it here first means a pass in flight finishes
+        // before the points are flagged, and the flag then covers what it
+        // wrote — rather than this flagging the old points while the new ones
+        // arrive unflagged and stay searchable until the collector runs.
         const { rows } = await client.query<{ layer_id: string }>(
           `SELECT layer_id FROM documents
-            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
+            FOR UPDATE`,
           [auth.orgId, documentId],
         )
         const layerId = rows[0]?.layer_id
@@ -1988,6 +1998,16 @@ export class PostgresLayers implements Layers {
         // not a loop: a layer holds an unbounded number of documents, and a
         // per-document round trip would put that count on the request and
         // leave a half-invisible layer if it failed partway.
+        //
+        // The rows locked first, as the document delete locks its one: a pass
+        // writing one of these documents' points holds that row, so this waits
+        // for it and the flag then covers what it wrote. Without the lock a
+        // pass in flight lands its points after the flag, unflagged.
+        await client.query(
+          `SELECT id FROM documents WHERE org_id = $1 AND layer_id = $2 AND deleted_at IS NULL
+            ORDER BY id FOR UPDATE`,
+          [auth.orgId, layerId],
+        )
         await this.vectors.tombstoneLayer(collection, layerId)
 
         // Every document row, so the collector has its queue — it claims on

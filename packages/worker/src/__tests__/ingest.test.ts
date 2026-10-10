@@ -73,7 +73,7 @@ function ports(
     },
     documents: {
       find: async (org, layer, external) => stored.get(`${org}/${layer}/${external}`),
-      upsert: async (input) => {
+      upsert: async (input, write) => {
         const key = `${input.orgId}/${input.layerId}/${input.externalId}`
         const doc: StoredDocument = {
           id: stored.get(key)?.id ?? `doc-${++counter}`,
@@ -82,6 +82,7 @@ function ports(
           indexed: true,
         }
         stored.set(key, doc)
+        await write?.(doc)
         return doc
       },
     },
@@ -138,12 +139,11 @@ describe('ingest', () => {
           chunkCount: 0,
           indexed: false,
         }),
-        upsert: async (input) => ({
-          id: 'doc-1',
-          contentHash: input.contentHash,
-          chunkCount: input.chunks.length,
-          indexed: true,
-        }),
+        upsert: async (input, write) => {
+          const doc = { id: 'doc-1', contentHash: input.contentHash, chunkCount: input.chunks.length, indexed: true }
+          await write?.(doc)
+          return doc
+        },
       },
     })
 
@@ -195,9 +195,9 @@ describe('ingest', () => {
       ...p,
       documents: {
         find: p.documents.find.bind(p.documents),
-        upsert: async (i) => {
+        upsert: async (i, w) => {
           order.push('postgres')
-          return p.documents.upsert(i)
+          return p.documents.upsert(i, w)
         },
       },
       vectors: {

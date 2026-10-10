@@ -55,7 +55,7 @@ import {
 } from './adapters.js'
 import { DEFAULT_CHUNK_CONFIG } from './chunk.js'
 import { evaluateAlertRules, expireNotifications, sendNotifications } from './notify.js'
-import { ingest } from './ingest.js'
+import { ClaimLost, ingest } from './ingest.js'
 import { collectOnce } from './collect.js'
 import { pruneOnce } from './prune.js'
 import { reapOnce } from './reap.js'
@@ -905,6 +905,7 @@ async function main(): Promise<void> {
           // 800 characters is 149 tokens of English and 1094 of Korean, and
           // the endpoint refuses above 512.
           chunkConfig: { ...DEFAULT_CHUNK_CONFIG, maxTokens: config.embedMaxTokens },
+          claim: claim.claimedAt,
           ...source,
         },
         {
@@ -923,6 +924,17 @@ async function main(): Promise<void> {
           chunks: result.chunkCount,
           unchanged: result.unchanged })
     } catch (error) {
+      if (error instanceof ClaimLost) {
+        // Not this pass's any more — reclaimed, re-sent or deleted while it
+        // worked — and not a failure of the document either. Recording one
+        // would mark failed a document somebody else is now indexing, or one
+        // that has been deleted.
+        logger.info('claim lost; another pass or a delete owns this document now', {
+          document_id: claim.documentId,
+        })
+        await backgroundOnce()
+        continue
+      }
       // Reported after the decision rather than before it, so the log says
       // which of the two happened. "indexing failed" on a document that is
       // about to be retried reads as a lost document and sends an operator

@@ -35,6 +35,12 @@ export interface Claim {
    * rather than at a fixed interval.
    */
   readonly attempts: number
+  /**
+   * The lease, exactly as the database holds it — `claimed_at` as text, so it
+   * survives the round trip at the column's microseconds. Every write the pass
+   * makes afterwards is fenced on it: see `ClaimLost`.
+   */
+  readonly claimedAt: string
 }
 
 export async function claimNext(pool: ReturnType<typeof createPool>): Promise<Claim | undefined> {
@@ -107,10 +113,11 @@ export async function claimNext(pool: ReturnType<typeof createPool>): Promise<Cl
     // claimed_at starts the lease. Without it a worker that stops existing
     // between here and the finish leaves this row in `parsing`, and nothing
     // claims `parsing` — see reap.ts.
-    await client.query(
+    const { rows: leased } = await client.query<{ claimed_at: string }>(
       `UPDATE documents
           SET status = 'parsing', claimed_at = now(), attempts = attempts + 1, updated_at = now()
-        WHERE id = $1`,
+        WHERE id = $1
+        RETURNING claimed_at::text AS claimed_at`,
       [row.id],
     )
 
@@ -126,6 +133,7 @@ export async function claimNext(pool: ReturnType<typeof createPool>): Promise<Cl
       sourceRef: row.source_ref,
       sourceType: row.source_type,
       contentType: row.content_type,
+      claimedAt: (leased[0] as { claimed_at: string }).claimed_at,
       // `+ 1`, because the SELECT above reads the row *before* the UPDATE
       // increments it. Without this the field is one behind its own
       // documentation, and both readers are wrong in the same direction: the
