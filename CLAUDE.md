@@ -3562,6 +3562,18 @@ The Connections screen shows the three addresses with copy controls and example
 requests that run as written, and the dialog that shows a new service account
 key once says where to send it.
 
+**What that panel shows depends on who is looking — 0.37.1.** A member is shown
+the MCP endpoint and how a client takes it; the administrative MCP and the REST
+half are an administrator's. The REST half was the mistake: five requests and a
+contract link, every one of them needing a `nacre_sk_` key a member cannot mint,
+so a member arriving to connect an agent read an address they could not use
+under one they could. The deciding fact is `GET /v1/me`'s `administers`, the
+predicate the gated handlers call, read once for the screen; the server goes on
+telling anybody the REST base, because the address is not a secret and a member
+signed in to the `nacre` command uses it. The administrator's picture is byte
+for byte what it was, and `connect-member` is the member's — listing only their
+own connections, since that is what the server sends a member.
+
 Rendering it found a defect in the geometry rule rather than in the screen: the
 contents of a closed `<details>` keep their boxes in Chromium, which hides them
 with `content-visibility`, so the headroom rule measured collapsed examples six

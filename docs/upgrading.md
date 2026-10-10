@@ -285,6 +285,18 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.37.1 — the Connections screen by role
+
+**Nothing to do.** "Connect a client" on the Connections screen now shows a
+member the MCP endpoint and how a client takes it, and nothing else. The
+administrative MCP and the REST API, with its example requests and the link to
+the contract, are shown to somebody who administers the organization. A
+member's agent needs only the MCP endpoint — the client sends them here to sign
+in — while every REST example needs a service account key, which only an
+administrator can mint. `GET /v1/endpoints` is unchanged and still answers
+anybody who asks with the REST base; this is what the screen draws, not what
+the server tells.
+
 ### 0.37.0 — the grants panel, and a module's read can open it
 
 **No migration and nothing to configure.** `list_grants` on the administrative
@@ -299,6 +311,7 @@ new and is unaffected.
 
 `list_grants`'s answer to the model is unchanged; the panel's data is in the
 result's `_meta`.
+
 ### 0.36.1 — `undici` 7.30.0 under the vector store client
 
 **No migration and nothing to configure: pull the images.** `@qdrant/js-client-rest`
