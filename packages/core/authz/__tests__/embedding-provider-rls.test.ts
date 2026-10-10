@@ -133,6 +133,45 @@ when('embedding_providers · the installation default is read-only to a tenant',
     for (const p of seen) expect(Object.keys(p)).not.toContain('endpoint')
   })
 
+  it("embedding_providers · listing names its organization itself, so an owner connection lists no other tenant's", async () => {
+    // The listing relied on the policy alone. A deployment whose connection
+    // owns the tables — the public stand connects as a superuser — is bound
+    // by no policy, and any member of one organization was then listed every
+    // other organization's providers by name and model. The statement says
+    // `org_id` in its own words now; the policy is the second line.
+    await seed()
+    const OTHER = '33333333-3333-3333-3333-3333333333e9'
+    const THEIRS = '00000000-0000-0000-0000-0000000000e9'
+    const c = await pool.connect()
+    try {
+      await c.query(
+        `INSERT INTO organizations (id, slug, name, vector_collection) VALUES ($1,'org-e-other','E2','org_e_other') ON CONFLICT (id) DO NOTHING`,
+        [OTHER],
+      )
+      await c.query(
+        `INSERT INTO embedding_providers (id, org_id, name, endpoint, model, dimensions)
+         VALUES ($1, $2, 'someone-elses', 'https://embed.example.test', 'their-model', 8) ON CONFLICT (id) DO NOTHING`,
+        [THEIRS, OTHER],
+      )
+    } finally {
+      c.release()
+    }
+    try {
+      // No role: the statement runs as whoever the pool connects as.
+      const asOwner = new PostgresEmbeddingProviders(pool)
+      const seen = await asOwner.list(asMember)
+      expect(seen.some((p) => p.id === GLOBAL), 'the installation default went missing').toBe(true)
+      expect(seen.some((p) => p.id === THEIRS), "another organization's provider was listed").toBe(false)
+    } finally {
+      const d = await pool.connect()
+      try {
+        await d.query('DELETE FROM organizations WHERE id = $1', [OTHER])
+      } finally {
+        d.release()
+      }
+    }
+  })
+
   it('embedding_providers · a member cannot create one, and an org_admin can', async () => {
     await seed()
     const providers = new PostgresEmbeddingProviders(pool, 'nacre_app')

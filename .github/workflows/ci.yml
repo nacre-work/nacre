@@ -236,6 +236,11 @@ jobs:
       - run: pnpm lint:test-plan-range
       - run: pnpm lint:test-clock
       - run: pnpm lint:definer-path
+      # Row-level security binds nacre_app and nothing that owns the tables, so
+      # every statement over a tenant table names its organization in a WHERE
+      # or an ON. The provider listing leaked across tenants by relying on the
+      # policy alone.
+      - run: pnpm lint:tenant-scope
       - run: pnpm lint:embed-egress
       # Every caller of a model endpoint an operator configured reports a
       # refusal through one function. A bare status is the wrong answer on 401

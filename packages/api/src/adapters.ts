@@ -2244,6 +2244,10 @@ export class PostgresEmbeddingProviders implements EmbeddingProviders {
         // The installation default last. It is the one every layer starts on,
         // so it is the least interesting entry in a list somebody opened to
         // find the model they added.
+        //
+        // The organization is named here as well as in the policy: a
+        // connection that owns the tables is bound by no policy, and this
+        // listing then named every tenant's providers to any member of one.
         const { rows } = await client.query<{
           id: string
           name: string
@@ -2253,7 +2257,9 @@ export class PostgresEmbeddingProviders implements EmbeddingProviders {
         }>(
           `SELECT id, name, model, dimensions, org_id
              FROM embedding_providers
+            WHERE org_id IS NULL OR org_id = $1
             ORDER BY org_id IS NULL, name`,
+          [auth.orgId],
         )
         return rows.map((r) => ({
           id: r.id,
