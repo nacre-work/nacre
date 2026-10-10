@@ -285,6 +285,26 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.38.2 — three console fixes, each now a rule
+
+**Nothing to do.** Three things on the console, found by walking it to write
+its manual:
+
+- The **People** screen's **New group** and **New user** sat in the middle of
+  the row instead of at its right edge, where every other screen puts its
+  actions.
+- The **Access log** printed every id it could not see as a whole value: a
+  search's returned documents as a run of full uuids, and a grant's
+  `scope: layer:<uuid>`. Every id there is shortened now, wherever in a value it
+  occurs, a list stops after five with how many more there are, and a list of
+  slugs reads `handbook, engineering`. The export still carries every id whole.
+- The **Security** screen's "No second factor" box centred its words and put
+  its buttons at the left.
+
+`scripts/layout-rules.mjs` gains a rule for each — head actions at the edge,
+ids shortened in a table, an empty state's actions centred — and a console
+built on the extension seam is held to them from the version that ships them.
+
 ### 0.38.1 — the Layers screen by permission
 
 **Nothing to do.** The Layers screen offered **Rename**, **Model** and

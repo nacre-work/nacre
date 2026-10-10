@@ -396,7 +396,7 @@ const empty = (query: AuditQuery) =>
  * The target is rendered as its own fields rather than as JSON, because the
  * question a reader has is "which document" or "which layer" and a brace does
  * not help them. A uuid is shortened the way every other id on these screens
- * is; anything else is printed whole.
+ * is, wherever in a value it occurs — see `targetValue`.
  *
  * ## The actor is named, and `actor.label` is deliberately not what names it
  *
@@ -435,6 +435,50 @@ const empty = (query: AuditQuery) =>
  * edge reads as the values meaning different amounts of something, when what
  * differs is how many letters they happen to have.
  */
+const UUID_IN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gu
+
+/** How many items of a list a row shows before saying how many more there are. */
+const LISTED = 5
+
+/**
+ * One field of a target, as nodes.
+ *
+ * Every uuid is shortened **wherever it occurs**, not only where it is the
+ * whole value. This shortened a value that was exactly a uuid and printed
+ * anything else with `String()` — and the two targets this screen shows most
+ * are neither: a search names `returned_docs`, an array, and a grant names
+ * `scope: layer:<uuid>` and `principal: group:<uuid>`. So a search row was a
+ * wall of whole uuids joined by bare commas, and an array of slugs read
+ * `handbook,engineering`. Found by looking at a running stand while writing the
+ * manual; the screenshot fixture could not show it, because its search and
+ * grant targets were shapes no server writes.
+ *
+ * A list stops after `LISTED` items and says how many it left out. The whole
+ * list is in the export, which is where a reader who needs every id goes, and
+ * the document filter above already answers "which searches returned this".
+ */
+function targetValue(value: unknown): (string | HTMLElement)[] {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return ['none']
+    const shown = value.slice(0, LISTED).flatMap((item, i) => [...(i === 0 ? [] : [', ']), ...targetValue(item)])
+    return value.length > LISTED ? [...shown, ` and ${value.length - LISTED} more`] : shown
+  }
+  if (typeof value === 'string') {
+    const parts: (string | HTMLElement)[] = []
+    let last = 0
+    for (const match of value.matchAll(UUID_IN)) {
+      const at = match.index ?? 0
+      if (at > last) parts.push(value.slice(last, at))
+      parts.push(shortId(match[0]))
+      last = at + match[0].length
+    }
+    if (last < value.length) parts.push(value.slice(last))
+    return parts
+  }
+  if (value !== null && typeof value === 'object') return [JSON.stringify(value)]
+  return [String(value)]
+}
+
 /** The connection a row came through, from `client` as `connection:<id>`. */
 const connectionOf = (record: AuditRecord): string | undefined =>
   record.client?.startsWith('connection:') === true ? record.client.slice('connection:'.length) : undefined
@@ -471,10 +515,7 @@ function row(record: AuditRecord, resolved: Names, onActor: (id: string) => void
     h('td', { class: 'named' },
       ...(target.length === 0
         ? [h('span', { class: 'muted' }, '—')]
-        : target.map(([key, value]) => h('div', { class: 'muted' },
-            `${key}: `,
-            typeof value === 'string' && /^[0-9a-f-]{36}$/u.test(value) ? shortId(value) : String(value),
-          ))),
+        : target.map(([key, value]) => h('div', { class: 'muted' }, `${key}: `, ...targetValue(value)))),
     ),
     h('td', {}, h('span', { class: `chip chip-${FILL[record.result]}` }, record.result)),
   )

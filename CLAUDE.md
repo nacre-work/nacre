@@ -3646,6 +3646,20 @@ skill, which is visible exactly when the layer is. `layers-member` is the shot
 that was missing, and it throws on the first refused control rather than
 photographing it; the shipped view named `Rename` the moment it was put back.
 
+**Three more came off the same walk, and each is a rule now rather than an edit
+— 0.38.2.** People's two head buttons sat mid-row because `.view-head > div {
+flex: 1 }` was written for the heading block and also matched the button group,
+which is a `div` too. The Access log shortened an id only when it was the
+*whole* value, so a search's `returned_docs` printed as a wall of full uuids and
+a grant's `scope: layer:<uuid>` carried one — invisible to the screenshot pass
+because its search and grant targets were shapes no server writes, which is the
+fixture-agrees-with-code defect once more. And "No second factor" centred its
+words and left its buttons at the box's edge, since `text-align` does not move
+flex items — in the state every account starts in, which no shot photographed.
+`headActionsAtEdge`, `idsShortened` and `emptyStateCentred` are in
+`layout-rules.mjs`, so the commercial console is held to them too; each was run
+before its fix and named exactly the shots it should, and nothing else.
+
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.

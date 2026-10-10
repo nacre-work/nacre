@@ -443,10 +443,146 @@ export async function wordsWhole(page, name, failures) {
   }
 }
 
+/**
+ * A screen's own actions end at the right edge of its head, on every screen.
+ *
+ * Every view opens with a `.view-head`: the heading and its lede, then the
+ * screen's actions. One button or two, they belong at the edge, because that is
+ * where every other screen put its one — a reader learns where New is on the
+ * first screen and looks there on the next. People's two buttons sat in the
+ * middle of the row, at the start of its right half, and the reason was a
+ * selector rather than a decision: `.view-head > div { flex: 1 }` was written
+ * for the heading block and matched the button group too, since that is also a
+ * `div`, so the two shared the row in halves. Every other head held a bare
+ * button, which the selector does not match, so People was the one screen it
+ * reached. Found by looking at the screen while writing the manual.
+ *
+ * Asked of what the head *draws*, not of its last child's box: a group that
+ * grows to fill the row reaches the edge by itself while the buttons inside it
+ * sit wherever they start, which is exactly the defect. So it measures the
+ * right edge of the last child's own children where it has some.
+ *
+ * Only where the head is a row. On a phone it stacks, and a stacked head has no
+ * edge for its actions to sit at.
+ */
+export async function headActionsAtEdge(page, name, failures) {
+  const off = await page.evaluate(() => {
+    const found = []
+    for (const head of document.querySelectorAll('.view-head')) {
+      if (head.getClientRects().length === 0) continue
+      const style = getComputedStyle(head)
+      if (style.display !== 'flex' || style.flexDirection !== 'row') continue
+      const kids = [...head.children].filter((k) => k.getClientRects().length > 0)
+      if (kids.length < 2) continue
+      const last = kids[kids.length - 1]
+      const drawn = last.children.length > 0 ? [...last.children].filter((c) => c.getClientRects().length > 0) : [last]
+      if (drawn.length === 0) continue
+      const right = Math.max(...drawn.map((c) => c.getBoundingClientRect().right))
+      const edge = head.getBoundingClientRect().right - (parseFloat(style.paddingRight) || 0)
+      const gap = Math.round(edge - right)
+      if (gap > 1) found.push({ label: (last.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 40), gap })
+    }
+    return found
+  })
+
+  for (const { label, gap } of off) {
+    failures.push(
+      `${name}: the head's actions ("${label}") end ${gap}px short of its right edge. Every screen puts its ` +
+        'actions at the edge of its head. A group of buttons is a `div`, so a rule that grows the heading block ' +
+        'by matching `div` grows the group too and the two share the row in halves — grow the first child only.',
+    )
+  }
+}
+
+/**
+ * An id in a table is shortened, on every screen and wherever in a cell it is.
+ *
+ * Every id these screens show is `shortId`'s head and tail with the whole value
+ * in its title, and the Access log broke that in the cell where it mattered
+ * most: it shortened a target that was *exactly* a uuid and printed anything
+ * else whole, so a search's `returned_docs` was a wall of ten whole uuids and a
+ * grant's `scope: layer:<uuid>` carried one. Nothing measured it because the
+ * fixture's targets were shapes no server writes. Not geometry, strictly — but
+ * it is a question about what a table draws, it applies to the commercial
+ * screens exactly as much, and this is the file both consoles read.
+ *
+ * Text only: a whole id in a `title` is what makes the short one useful.
+ */
+export async function idsShortened(page, name, failures) {
+  const whole = await page.evaluate(() => {
+    const found = []
+    const roots = [...document.querySelectorAll('dialog[open]')]
+    if (roots.length === 0) roots.push(...document.querySelectorAll('.main, .signin'))
+    const uuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/u
+    for (const cell of roots.flatMap((r) => [...r.querySelectorAll('td')])) {
+      if (cell.getClientRects().length === 0) continue
+      const match = uuid.exec(cell.textContent ?? '')
+      if (match !== null) found.push(match[0])
+      if (found.length >= 3) break
+    }
+    return found
+  })
+
+  if (whole.length > 0) {
+    failures.push(
+      `${name}: ${whole.length === 1 ? 'an id is' : 'ids are'} printed whole in a table cell (${whole.join(', ')}). ` +
+        'Every id on these screens is `shortId` — head and tail, the whole value in its title — including one ' +
+        'inside a longer value such as `layer:<uuid>` or a list.',
+    )
+  }
+}
+
+/**
+ * An empty state's actions are centred like its words.
+ *
+ * `.empty` centres its text, and a bare button is inline, so it is centred
+ * with it — which is why the Layers screen's empty state looked right. The
+ * Security screen's "No second factor" put its buttons in a `.row`, a flex
+ * container, and `text-align` does not move flex items: the heading and the
+ * sentence sat in the middle of the box and Add a security key at its left
+ * edge. Found while writing the manual, on the state every account starts in —
+ * and the screenshot pass had no picture of that state at all, only of
+ * accounts that had already enrolled.
+ *
+ * Asked of the controls as a group, so two buttons side by side are centred as
+ * a pair rather than each being asked to sit in the middle.
+ */
+export async function emptyStateCentred(page, name, failures) {
+  const off = await page.evaluate(() => {
+    const found = []
+    for (const box of document.querySelectorAll('.empty')) {
+      if (box.getClientRects().length === 0) continue
+      const style = getComputedStyle(box)
+      if (style.textAlign !== 'center') continue
+      const controls = [...box.querySelectorAll('button, a.btn')].filter((c) => c.getClientRects().length > 0)
+      if (controls.length === 0) continue
+      const rects = controls.map((c) => c.getBoundingClientRect())
+      const outer = box.getBoundingClientRect()
+      const left = Math.min(...rects.map((r) => r.left)) - (outer.left + (parseFloat(style.paddingLeft) || 0))
+      const right = outer.right - (parseFloat(style.paddingRight) || 0) - Math.max(...rects.map((r) => r.right))
+      if (Math.abs(left - right) > 2) {
+        found.push({ label: (controls[0].textContent ?? '').trim().slice(0, 40), left: Math.round(left), right: Math.round(right) })
+      }
+    }
+    return found
+  })
+
+  for (const { label, left, right } of off) {
+    failures.push(
+      `${name}: an empty state's actions ("${label}") are not centred — ${left}px from its left, ${right}px from its ` +
+        'right, under text that is. `text-align` centres an inline button and does not move flex items, so a ' +
+        "`.row` inside `.empty` needs `justify-content: center`.",
+    )
+  }
+}
+
 export const RULES = [
   controlHeadroom,
   dialogActionsReachable,
   columnValuesAgree,
   columnChipsAgree,
   wordsWhole,
+  headActionsAtEdge,
+  idsShortened,
+  emptyStateCentred,
 ]
