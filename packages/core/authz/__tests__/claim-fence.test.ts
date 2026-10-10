@@ -54,7 +54,7 @@ class Index {
 let pool: Pool
 let n = 0
 
-when('I5 · a document deleted or re-sent while it is being indexed', () => {
+when('I5 · the delete path, while a document is being indexed or re-sent', () => {
   beforeAll(async () => {
     pool = createPool({ connectionString: url as string })
     const c = await pool.connect()
