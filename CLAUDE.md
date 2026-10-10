@@ -3682,6 +3682,27 @@ throws on the first one it finds, and named two when the shipped view was put
 back. Two screens with one rule between them and nothing that knew there were
 two, which this file has a paragraph about.
 
+**A restore that kept the vector store left a collection that silently
+disagreed with the database — 0.39.0.** Found by restoring a backup on a
+running stack, which nobody had done: the archive came back into Postgres, and
+a document it held was absent from every search. Two disagreements, both quiet.
+A document deleted after the archive was taken returns as a live row while its
+points stay flagged `deleted: true`, so the pre-filter never admits them. A
+document added afterwards leaves points whose chunk rows the restore removed,
+and hydration drops a hit with no row — correctly, and invisibly: a place in
+`top_k` handed to nobody, for as long as the point exists.
+
+`rebuild-collection` was the remedy and refused it, by design: it is a create,
+and over a live collection it deletes every vector. That refusal is right for a
+collection that is merely lost and wrong for one that survived a restore, so
+`--replace` says which, and is never a default. The rebuild moved into the
+library as `rebuildOrganizationIndex` because a restore on a running
+installation is a second caller — the commercial backup surface — and two
+answers about what an organization's collection is made of would be two answers
+about the thing every search depends on. `rebuild-live.test.ts` builds the state
+a restore leaves against a real PostgreSQL and Qdrant; dropping the replace
+branch, or the requeue, each names its case.
+
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.

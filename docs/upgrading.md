@@ -285,6 +285,21 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.39.0 — rebuilding a collection that survived a restore
+
+**Nothing to do unless you restore.** `rebuild-collection` takes `--replace` now,
+for a database restored onto a vector store that kept running: the collection
+exists and no longer matches Postgres — a restored document flagged deleted in
+the index is never found, and a newer one's points take places in `top_k` that
+nothing fills. Without the flag, a collection that exists is still refused. See
+[operations/restore-from-backup.md](./operations/restore-from-backup.md), step 4.
+
+The rebuild is a library function now, `rebuildOrganizationIndex` in
+`@nacre.work/core`, and the command is its command line: a restore that brings
+Postgres back on a running installation is a second caller, and two answers about
+what an organization's collection is made of would be two answers about the thing
+every search depends on.
+
 ### 0.38.3 — Search offers Delete only where you may delete
 
 **Nothing to do.** Every search result carried a **Delete** button, so a member
