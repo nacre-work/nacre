@@ -47,7 +47,10 @@ export function searchView(root: HTMLElement): void {
       results.append(h('p', { class: 'muted' }, 'Searching…'))
 
       try {
-        const hits = await client().search(query, { topK: Number(topK.value) || 10 })
+        const [hits, writable] = await Promise.all([
+          client().search(query, { topK: Number(topK.value) || 10 }),
+          writableLayers(),
+        ])
         clear(results)
         results.append(
           h('p', { class: 'count' },
@@ -67,7 +70,7 @@ export function searchView(root: HTMLElement): void {
               : h('span', { class: 'muted' },
                   ' The filter runs inside the index traversal, so this is the count, not what survived a trim.'),
           ),
-          ...hits.map((hit) => card(hit, root)),
+          ...hits.map((hit) => card(hit, root, writable.has(hit.layer))),
         )
       } catch (error) {
         clear(results)
@@ -82,7 +85,27 @@ export function searchView(root: HTMLElement): void {
   )
 }
 
-function card(hit: SearchHit, root: HTMLElement): HTMLElement {
+/**
+ * The layers this caller may write, by slug — what deleting a document takes,
+ * since a delete goes through the same check as ingesting into the layer.
+ *
+ * Every hit carried a Delete, so a member who only reads was offered one on
+ * every result and got the `404` an unreachable object answers. Found by
+ * searching as a member while writing the manual, the Layers screen's 0.38.1
+ * defect one screen over. A failure is the empty set: an action left off is
+ * one nobody presses, and one offered on a guess is the refusal this exists to
+ * stop drawing.
+ */
+async function writableLayers(): Promise<ReadonlySet<string>> {
+  try {
+    const layers = await client().layers.list()
+    return new Set(layers.filter((l) => l.permissions.includes('write')).map((l) => l.slug))
+  } catch {
+    return new Set()
+  }
+}
+
+function card(hit: SearchHit, root: HTMLElement, mayDelete: boolean): HTMLElement {
   return h('article', { class: 'hit' },
     h('div', { class: 'hit-head' },
       h('div', {},
@@ -93,10 +116,12 @@ function card(hit: SearchHit, root: HTMLElement): HTMLElement {
           h('span', { class: 'score tabular', title: 'Similarity score from the index' }, hit.score.toFixed(3)),
         ),
       ),
-      h('button', {
-        class: 'btn btn-quiet btn-danger',
-        onclick: () => confirmDelete(hit, root),
-      }, 'Delete'),
+      mayDelete
+        ? h('button', {
+            class: 'btn btn-quiet btn-danger',
+            onclick: () => confirmDelete(hit, root),
+          }, 'Delete')
+        : null,
     ),
     h('p', { class: 'hit-text' }, hit.text),
   )

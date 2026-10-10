@@ -285,6 +285,15 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.38.3 — Search offers Delete only where you may delete
+
+**Nothing to do.** Every search result carried a **Delete** button, so a member
+who only reads was offered one on every hit and refused by each. Deleting a
+document needs `write` on its layer — the same check as adding one — and the
+Search screen now asks which layers the caller may write and offers **Delete**
+only there. The server's answer is unchanged; this is the screen stopping
+offering what it refuses, the Layers screen's 0.38.1 fix one screen over.
+
 ### 0.38.2 — three console fixes, each now a rule
 
 **Nothing to do.** Three things on the console, found by walking it to write

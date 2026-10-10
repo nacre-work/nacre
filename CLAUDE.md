@@ -3673,6 +3673,15 @@ somebody photographed, so both are shots now.
 whose "Started by" printed `user:<uuid>`; that is fixed on that side of the
 boundary, which is what putting the rule in the shared file is for.
 
+**And Search drew a Delete on every hit — 0.38.3.** Found by searching as a
+member for the manual, the morning after the Layers screen was fixed for the
+same thing: a reader offered a destructive action the server refuses. Deleting
+a document is `write` on its layer, so the view asks `GET /v1/layers` which
+layers the caller may write and draws the button there only; `search-member`
+throws on the first one it finds, and named two when the shipped view was put
+back. Two screens with one rule between them and nothing that knew there were
+two, which this file has a paragraph about.
+
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.
