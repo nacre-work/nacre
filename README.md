@@ -86,8 +86,8 @@ layer, grant someone `read`, ingest a document, poll the job to `indexed`,
 search and get the chunk back — and search as someone without the grant and get
 nothing while the vectors are still sitting in the index. Both surfaces work,
 REST and MCP over Streamable HTTP and STDIO alike. Revoking a grant removes the
-document from results, and the recomputation that refreshes the index tags runs
-in the worker with a metric on how far behind it is.
+document from results on the next request: the permitted set is computed from
+the grants on every search, so there is no cache in the index to fall behind.
 
 Search is rate limited per organization, unsafe methods take an
 `Idempotency-Key`, collections page by cursor, and reranking runs on the search

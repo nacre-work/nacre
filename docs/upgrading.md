@@ -24,6 +24,7 @@ What comes out of one release:
 | `@nacre.work/core`, `@nacre.work/api`, `@nacre.work/mcp`, `@nacre.work/sdk`, `@nacre.work/cli` | npm, at the same version |
 | `ghcr.io/nacre-work/nacre:{version}` and `:latest` | api, mcp, worker and the migrator — one image, four entry points |
 | `ghcr.io/nacre-work/nacre-parser:{version}` and `:latest` | the Python sidecar |
+| `ghcr.io/nacre-work/nacre-web:{version}` and `:latest` | the front door: the console behind nginx, which also routes `/v1`, `/oauth`, `/.well-known` and `/mcp` |
 | `ghcr.io/nacre-work/nacre-embedding-adapter:{version}` and `:latest` | the hosted-embeddings sidecar, `hosted` profile only |
 
 Each is mirrored to Docker Hub as `nacrecontextlayer/<image>` at the same tags
