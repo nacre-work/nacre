@@ -34,7 +34,7 @@ is truncated at 1024 characters; the hash is not.
   "action":  "search",
   "target":  { "layers": ["contracts"], "returned_docs": ["uuid","uuid"], "top_k": 10 },
   "result":  "allow",                     // allow | deny | error
-  "detail":  { "query_hash": "sha256:…", "latency_ms": 128, "acl_version": 42 },
+  "detail":  { "query_hash": "sha256:…", "latency_ms": 128 },
   "request_id": "01JQ8…"
 }
 ```

@@ -2,8 +2,11 @@
 
 ## Environment variables
 
-Secrets are passed as references into a secret store wherever that is possible.
-Plaintext values are acceptable in the development profile and nowhere else.
+Each secret has one form. The private signing key is a file reference
+(`NACRE_JWT_PRIVATE_KEY_REF=file:///…`) because it must not be in the
+environment at all; the others are values, which a platform with a secret store
+fills from it — `NACRE_2FA_KEY=$(cat /run/secrets/…)` — rather than this product
+carrying a second spelling of each.
 
 ```ini
 # ─── base ───
@@ -84,8 +87,7 @@ NACRE_JWT_AUDIENCE=nacre
 NACRE_ACCESS_TOKEN_TTL=900
 NACRE_REFRESH_TOKEN_TTL=2592000
 NACRE_OAUTH_AUTHORIZATION_SERVER=      # optional; the IdP in front of this installation
-NACRE_EMA_ENABLED=false                # ID-JAG, commercial module
-NACRE_EMA_TRUSTED_ISSUERS=
+NACRE_EMA_ENABLED=false                # ID-JAG, commercial module; its trusted issuers are per organization, set in the console
 
 # What this key configures is **TOTP**, and only TOTP. A shared secret has to be
 # kept, so it has to be sealed; a WebAuthn credential leaves a public key here
@@ -114,18 +116,7 @@ NACRE_EMA_TRUSTED_ISSUERS=
 #
 # Losing it locks every enrolled person out of their authenticator, which is
 # what recovery codes are for — they are minted at enrolment for exactly this.
-#
-# Two ways to give it, and setting both is refused. As a **value**, base64 or hex
-# and exactly 32 bytes — an arbitrary string is refused rather than stretched, or
-# every sealed secret would be worth whatever somebody typed:
-#
-#   openssl rand -base64 32
-#
-# Or as a **file**, which is the better one where a platform offers it: an
-# environment variable is readable through `docker inspect` and
-# `/proc/<pid>/environ`, and a file can be mounted read-only from a secret store.
-# That is a recommendation, not a rule — `NACRE_JWT_SECRET` beside it is a plain
-# value too.
+
 # Sending mail. All or nothing: a relay with no sender address parses and then
 # fails on the first message, which is a log line rather than a refusal you would
 # notice. Unset, password recovery is **absent** — the routes are not mounted,
@@ -291,7 +282,7 @@ this build:
 | Variable | What it would do |
 |---|---|
 | `NACRE_EMA_*` | ID-JAG is a commercial module; read by that module, not by this code |
-| `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM export is a commercial module; read by that module, not by this code |
+| `NACRE_AUDIT_SIEM_WEBHOOK` | SIEM forwarding is a commercial module; read by that module, not by this code. The access log and its JSONL/CSV export are this build's |
 
 **"These parse" was wrong about both, and is now corrected.** `loadConfig` has
 no field for either, so a malformed value is not caught at startup — it is not
@@ -303,10 +294,11 @@ about.
 `NACRE_OAUTH_CIMD_ENABLED` and `NACRE_OAUTH_DCR_ENABLED` **were on this list and
 are now gone entirely**, which is a different statement from "not built yet".
 Client registration, under either mechanism, is a transaction between a client
-and an authorization server, and the section above is unambiguous that Nacre is
-not one. There is no registration endpoint here to switch on and no client
-record to create; a deployment that wants either gets it from the identity
-provider it names in `NACRE_OAUTH_AUTHORIZATION_SERVER`.
+and an authorization server — which the installation's API became when it grew
+the consent flow. It implements DCR at `/oauth/register`, always on and with
+nothing to switch, and deliberately not CIMD, because every shipping MCP client
+speaks DCR (`docs/mcp.md`). A deployment whose `NACRE_OAUTH_AUTHORIZATION_SERVER`
+names an identity provider instead gets registration from that provider.
 
 A variable for a role the product has declined is worse than a missing feature.
 An unimplemented one tells an operator to wait; one like these tells them the
@@ -1736,14 +1728,14 @@ number that climbs when a background job has stopped working, and unlike the
 lag gauge it corresponds to something a query can observe: a tombstoned
 document's vectors are still on disk until it drains.
 
-The value is the age of the oldest document whose `acl_version` is behind its
-organization's `groups_version`. Deleted documents are excluded — invariant I5
-already keeps them out of every answer, and counting them would mean an unpurged
-tombstone pages someone forever about a propagation problem that does not exist.
+The value is the number of deleted documents whose vectors are not yet purged,
+per organization (the `org` label). It is not a correctness signal — invariant
+I5 keeps a tombstoned document out of every answer whatever this reads — but a
+count that only climbs means the collector has stopped.
 
-OpenTelemetry tracing runs end to end: `request_id` from HTTP is tied to
-`trace_id` and lands in the audit log, so an auditor's question and a latency
-investigation resolve against the same identifier.
+There is no tracing yet. `request_id` is what ties a request together: it is in
+every problem body and on the audit event the request wrote, so an auditor's
+question and an error a client reported resolve against the same identifier.
 
 ## Backups
 

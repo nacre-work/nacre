@@ -15,9 +15,13 @@ distribution, and the Helm chart in `deploy/helm`.
 The commercial modules live in a separate private repository under a separate
 license and are not distributed with this one:
 
-multi-tenancy and collection isolation · SSO (OIDC/SAML) and SCIM ·
-document-level ACLs with deny rules · Enterprise-Managed Authorization and
-ID-JAG · SIEM forwarding · global admin · quotas.
+tenancy — suspension, offboarding and quotas · SSO over OIDC, with SCIM group
+membership sync · issuing document-level grants and deny rules ·
+Enterprise-Managed Authorization and ID-JAG · SIEM forwarding · global admin —
+creating organizations, the default embedding model, platform administrators ·
+an encrypted backup of the whole installation · an organization requiring a
+second factor · filtered administration for directories too large to page
+through.
 
 The audit log itself is **not** on that list: writing it, reading it back at
 `GET /v1/audit`, and its JSONL and CSV export are all in this repository (see

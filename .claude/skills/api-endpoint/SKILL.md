@@ -21,7 +21,7 @@ The 403/404 split is the whole point and the easiest thing to get wrong:
 
 The rest: `400` schema, `401` missing or expired token, `409` version conflict,
 `413` over `NACRE_MAX_DOCUMENT_BYTES`, `422` unparseable, `429` rate limited,
-`503` indexing unavailable.
+`503` indexing unavailable or a password operation shed under load.
 
 ## Error bodies — RFC 9457
 
@@ -44,8 +44,13 @@ enumeration. A PR adding `?offset=` should be rejected on both grounds.
 
 - `POST /v1/documents` is idempotent on `(layer, external_id)` plus
   `content_hash`. A repeat with identical content returns `200` and the existing
-  `document_id` without creating a version.
-- Every other unsafe method accepts `Idempotency-Key`, cached 24 hours.
+  `document_id` without creating a version. A `url` source is the exception:
+  re-sending one re-fetches.
+- Every other unsafe method accepts `Idempotency-Key`, cached 24 hours —
+  except `POST /v1/search`, and except any response carrying a field in
+  `CREDENTIAL_FIELDS` (`idempotency.ts`), which is never cached whatever route
+  produced it. A new shown-once value goes under one of those names or into the
+  set; `idempotency-secrets.test.ts` holds the contract against it.
 
 ## Limits
 

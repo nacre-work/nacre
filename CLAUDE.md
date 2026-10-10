@@ -3781,6 +3781,21 @@ write to that account, since a subject is a way in: an `org_admin` able to set
 one on the installation's administrator could sign in as them with a token from
 a provider they configured.
 
+**The skills had gone stale, and nothing reads a skill against the tree.**
+`.claude/skills/` is what an agent loads before it touches the model, and five
+of the seven described a product several releases old: `acl_tags` as a cache to
+keep in step (removed in 0016), `tools/list` cached per user for five minutes,
+client registration behind two variables that were deleted, a server with no
+`initialize`, four extension points of seven, and a commercial list carrying
+collection isolation and the audit log's export, both of which are core. The
+same pass found the tombstone gauge documented as the propagation gauge it
+replaced, an OpenTelemetry trace nothing emits, a second paragraph offering
+`NACRE_2FA_KEY` as a file after the first said there is none, and
+`docs/config.md` saying there is no registration endpoint beside the API's
+`/oauth/register`. A skill is a document with the most trusting reader there
+is, so correcting the code is not done until `grep` has been through
+`.claude/skills` too.
+
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.
