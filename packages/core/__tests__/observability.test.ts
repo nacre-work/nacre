@@ -193,6 +193,44 @@ when('observability · the database gauges', () => {
     ).toBeUndefined()
   })
 
+  it('the cross-tenant gauges read under the role a deployment connects as', async () => {
+    // The two gauges read across organizations — a reindex's progress and
+    // the collections a finished migration still holds — ran on a bare
+    // connection. Development connects as a superuser, which no policy binds,
+    // so both read fine here and raised in a deployment connecting as
+    // nacre_app: `layers` and `retired_collections` are FORCEd and
+    // `app.current_org` is unset outside `withOrg`. This pool does what that
+    // deployment's login does.
+    const asApp = createPool({ connectionString: url as string })
+    asApp.on('connect', (client) => {
+      void client.query('SET ROLE nacre_app')
+    })
+    const c = await pool.connect()
+    try {
+      await c.query(`UPDATE layers SET reindex_state = '{"status":"complete","shadow_vector":"v2"}'::jsonb WHERE id = $1`, [ids.layer])
+      await c.query(`INSERT INTO retired_collections (org_id, name) VALUES ($1, 'org_obs_old') ON CONFLICT DO NOTHING`, [ORG])
+    } finally {
+      c.release()
+    }
+    try {
+      const registry = new Registry()
+      registry.collect(collectDatabaseGauges(asApp, createMetrics(registry), 'nacre_app'))
+      const text = await registry.render()
+      expect(gauge(text, 'nacre_reindex_progress_ratio', '{layer="obs",org="obs"}')).toBe(1)
+      expect(gauge(text, 'nacre_collections_retired_total', '{org="obs"}')).toBe(1)
+      expect(gauge(text, 'nacre_documents_total', '{org="obs",status="indexed"}')).toBeGreaterThan(0)
+    } finally {
+      await asApp.end()
+      const d = await pool.connect()
+      try {
+        await d.query(`UPDATE layers SET reindex_state = NULL WHERE id = $1`, [ids.layer])
+        await d.query(`DELETE FROM retired_collections WHERE org_id = $1`, [ORG])
+      } finally {
+        d.release()
+      }
+    }
+  })
+
   it('a scrape leaves no gauge behind when its rows go away', async () => {
     await scrape()
     const before = gauge(await scrape(), 'nacre_documents_total', '{org="obs",status="indexed"}')
