@@ -55,6 +55,8 @@ import ipaddress
 import json
 import os
 import socket
+import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -63,6 +65,22 @@ from urllib.parse import urlsplit
 MAX_BYTES = 50 * 1024 * 1024
 FETCH_TIMEOUT_SECONDS = 30
 MAX_REDIRECTS = 5
+
+# The whole fetch, not one read. `FETCH_TIMEOUT_SECONDS` bounds each socket
+# operation, so a server sending a byte every twenty-nine seconds kept a fetch —
+# and the thread and buffer under it — open for as long as it liked. The page is
+# read in chunks against this deadline; past it, the fetch is refused.
+FETCH_DEADLINE_SECONDS = 60
+
+# How many documents are parsed at once. Every request holds a thread and up to
+# MAX_BYTES of body, and `ThreadingHTTPServer` takes as many as arrive — so the
+# bound on this process's memory was however many requests somebody sent. Past
+# it a request waits up to SLOT_WAIT_SECONDS and is then answered `503`, which
+# the worker reads as `unavailable` and retries later rather than failing the
+# document.
+PARSE_SLOTS = 8
+SLOT_WAIT_SECONDS = 30
+_SLOTS = threading.BoundedSemaphore(PARSE_SLOTS)
 
 # Off by default. A deployment that genuinely indexes an internal wiki sets it,
 # and does so knowing that any tenant who can call POST /v1/documents can then
@@ -236,8 +254,26 @@ def fetch(url: str) -> bytes:
     # default, which reads the environment's proxy variables: this service holds
     # no credentials and must not start borrowing the environment's, and a proxy
     # would be the one host the guard never sees.
+    deadline = time.monotonic() + FETCH_DEADLINE_SECONDS
     with _opener().open(url, timeout=FETCH_TIMEOUT_SECONDS) as response:
-        return response.read(MAX_BYTES + 1)
+        chunks: list[bytes] = []
+        size = 0
+        while size <= MAX_BYTES:
+            if time.monotonic() > deadline:
+                raise ParseError(
+                    f"the page took longer than {FETCH_DEADLINE_SECONDS} seconds to arrive and was not fetched",
+                )
+            # `read1`, not `read`: `read(n)` waits for n bytes or the end, so a
+            # server dripping a byte at a time held one call open as long as it
+            # liked and the deadline was never consulted. `read1` returns what
+            # one receive delivered, and each one is bounded by the socket
+            # timeout, so this ends within the deadline plus one of those.
+            chunk = response.read1(min(64 * 1024, MAX_BYTES + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        return b"".join(chunks)
 
 
 def _decode(raw: bytes) -> str:
@@ -476,6 +512,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/parse":
             self._reply(404, {"error": "not found"})
             return
+        # Before the body is read, so a request waiting for a slot holds a
+        # socket and nothing of the document.
+        if not _SLOTS.acquire(timeout=SLOT_WAIT_SECONDS):
+            self._reply(503, {"error": "the parser is busy; try again"})
+            return
+        try:
+            self._parse()
+        finally:
+            _SLOTS.release()
+
+    def _parse(self) -> None:
 
         length = int(self.headers.get("content-length") or 0)
         if length > MAX_BYTES:
