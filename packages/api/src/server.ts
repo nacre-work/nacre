@@ -6186,6 +6186,28 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         return
       }
 
+      // Cancel. RFC 6749 sends a refusal back to the client as an error on its
+      // redirect URI, and the console used to build that address itself, from
+      // the fragment — which anybody can write. `#/consent?redirect_uri=…`
+      // turned this console into an open redirect: a link on the installation's
+      // own origin that, pressed, went wherever its author chose. The address is
+      // checked against the registration here exactly as Approve's is, and
+      // nothing is recorded: declining stores no connection and mints no code.
+      if (consent['decision'] === 'deny') {
+        const client = await options.oauth.clients.find(clientId)
+        if (client === undefined || !redirectAllowed(redirectUri, client.redirectUris)) {
+          const problem = badRequest(instance, requestId, 'Unknown client, or a redirect_uri it did not register.')
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        const to = new URL(redirectUri)
+        to.searchParams.set('error', 'access_denied')
+        const state = need('state')
+        if (state !== undefined) to.searchParams.set('state', state)
+        send(res, 200, { redirect_to: to.toString() }, requestId)
+        return
+      }
+
       // Naming an agent is what makes this the agent flow; naming nobody is a
       // delegation. Not a mode flag beside the field, because two ways to say
       // one thing is two ways for them to disagree — and this endpoint used to

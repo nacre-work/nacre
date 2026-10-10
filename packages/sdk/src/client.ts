@@ -1397,6 +1397,33 @@ export class NacreClient {
   }
 
   /**
+   * Decline an application's request: the address to send the browser to,
+   * which is the client's registered redirect URI carrying
+   * `error=access_denied` and its `state`. The server checks the address
+   * against the registration, as it does for an approval, so a consent link
+   * somebody wrote by hand cannot make Cancel go anywhere else.
+   */
+  declineConsent = async (input: {
+    clientId: string
+    redirectUri: string
+    codeChallenge: string
+    state?: string
+  }): Promise<string> => {
+    const body = (await this.#request({
+      method: 'POST',
+      path: '/v1/oauth/consent',
+      body: {
+        decision: 'deny',
+        client_id: input.clientId,
+        redirect_uri: input.redirectUri,
+        code_challenge: input.codeChallenge,
+        ...(input.state === undefined ? {} : { state: input.state }),
+      },
+    })) as { redirect_to?: unknown }
+    return String(body.redirect_to)
+  }
+
+  /**
    * Applications connected to this organization, and ending one.
    *
    * "Forget this application" is what a person actually wants when they are

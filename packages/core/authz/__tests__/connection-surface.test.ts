@@ -204,6 +204,39 @@ when('delegation · who may make a connection, and for which resource', () => {
     expect(((await approved.json()) as { redirect_to: string }).redirect_to).toContain('code=')
   })
 
+  it('Cancel sends the browser only to an address the client registered, and stores nothing', async () => {
+    // The console built Cancel's redirect from the fragment, which is whatever
+    // the link said: `#/consent?redirect_uri=https://anywhere` made the
+    // installation's own origin an open redirect. The server answers it now,
+    // against the registration, the way Approve's address is answered.
+    const clientId = await register('a client somebody cancels')
+    const person = await session(PERSON)
+    const before = (await consents.list(as(PERSON))).length
+
+    const declined = await approve(person, {
+      decision: 'deny',
+      client_id: clientId,
+      redirect_uri: REDIRECT,
+      code_challenge: challenge(),
+      state: 'xyz',
+    })
+    expect(declined.status).toBe(200)
+    const to = new URL(((await declined.json()) as { redirect_to: string }).redirect_to)
+    expect(`${to.origin}${to.pathname}`).toBe(new URL(REDIRECT).toString().replace(/\?.*$/, ''))
+    expect(to.searchParams.get('error')).toBe('access_denied')
+    expect(to.searchParams.get('state')).toBe('xyz')
+    expect(to.searchParams.has('code'), 'a declined request was handed a code').toBe(false)
+
+    const elsewhere = await approve(person, {
+      decision: 'deny',
+      client_id: clientId,
+      redirect_uri: 'https://somewhere-else.example/landing',
+      code_challenge: challenge(),
+    })
+    expect(elsewhere.status, 'Cancel answered an address the client never registered').toBe(400)
+    expect((await consents.list(as(PERSON))).length, 'declining stored a connection').toBe(before)
+  })
+
   it('an administrative connection is approved only by an organization administrator, for a person, unnarrowed', async () => {
     const clientId = await register('an administrative client')
     const request = {
