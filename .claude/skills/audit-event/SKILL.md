@@ -35,19 +35,20 @@ retained for 400 days by default and exported to a SIEM.
 {
   "org_id": "uuid",
   "actor": { "type": "service_account", "id": "uuid", "label": "svc-support-bot" },
-  "surface": "mcp",              // api | mcp | admin | system
-  "client":  "claude-code/2.1",  // from the client's _meta
+  "surface": "mcp",              // api | mcp | mcp-admin | admin | system
+  "client":  "connection:uuid",  // the connection a delegated call came through
   "action":  "search",
   "target":  { "layers": ["contracts"], "returned_docs": ["uuid"], "top_k": 10 },
   "result":  "allow",            // allow | deny | error
-  "detail":  { "query_hash": "sha256:…", "latency_ms": 128, "acl_version": 42 },
+  "detail":  { "query_hash": "sha256:…", "latency_ms": 128 },
   "request_id": "01JQ8…"
 }
 ```
 
-`request_id` is mandatory and matches the field in the HTTP error body and the
-OpenTelemetry trace. That correspondence is the whole investigative story; an
-event without it is close to useless.
+`request_id` is mandatory and matches the field in the HTTP error body. That
+correspondence is the whole investigative story; an event without it is close
+to useless. (There is no OpenTelemetry trace to match yet — nothing in the code
+emits one.)
 
 ## Ordering
 
@@ -67,7 +68,10 @@ filters the audit log needs the same care as one that filters documents.
 
 The table is append-only: `UPDATE` and `DELETE` are revoked from the application
 role at the database level. If a change seems to need mutating an event, it
-needs a new event instead.
+needs a new event instead. Retention is not an exception to that: it goes
+through `prune_audit_events`, a `SECURITY DEFINER` function that takes a number
+of days (30 at least) and never a predicate, so it can expire a window and never
+erase a chosen event.
 
 ## A new action reaches `/v1/audit`
 

@@ -302,10 +302,12 @@ Where the line falls: **EMA authorizes the connection. Permission on a specific
 document is computed by the Nacre authorization service on every call.** Holding
 a valid token grants access to no document by itself.
 
-`/.well-known/*` and the OAuth issuer belong on `api.nacre.work`, not on the
-apex — static hosting on the apex intercepts the discovery path before the API
-sees it. The domain is baked into the issuer URL of every token ever issued, so
-moving it later breaks every client's configuration at once.
+`/.well-known/*` and the OAuth issuer belong on the host the API answers on —
+the `web` front door and the chart's ingress both send that path to the API —
+and never on a static host in front of it, which intercepts the discovery path
+before the API sees it. `NACRE_CANONICAL_URL` is baked into the issuer of every
+token ever issued, so moving it later breaks every client's configuration at
+once.
 
 ## Local mode
 

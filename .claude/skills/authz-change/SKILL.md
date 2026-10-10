@@ -41,12 +41,18 @@ Answer all three explicitly in the PR description — the template asks:
   wins"; that is a different model and it grants access the spec denies.
 - **`platform_admin` reads no documents** (rule 2). Administering a tenant is
   not access to its data.
-- **`acl_tags` is a cache.** The `grants` table is the source of truth. Until a
-  recomputation finishes, the layer filter and the tag filter both apply — do
-  not "simplify" that to one.
-- **Tag hashes are truncated to 8 bytes** and collide by design. That is only
-  safe because the query is also bounded by allowed `layer_id`. Removing the
-  layer bound makes the truncation a leak.
+- **The vector payload carries no permission cache.** There is no `acl_tags`:
+  migration 0016 removed it — `buildFilter` never emitted the clause, and the
+  per-layer tags could not express a document-scoped grant. The permitted
+  set is computed from `grants` on every request and the bound is `layer_id`
+  (plus document-scoped allows and a `must_not` for denied documents). Do not
+  reintroduce a cached tag set — it delays grants and does nothing for
+  revocations. `docs/authz.md`, "The vector payload carries no permission
+  cache".
+- **The effective-principals cache is safe only through its key.** It carries
+  `organizations.groups_version`, which triggers bump on every write to
+  `groups`, `group_members` and `grants`, so a revoked grant composes a
+  different key on the next request. The TTL bounds memory, not staleness.
 
 ## Tests
 
@@ -54,9 +60,11 @@ The T1-T44 suite in `docs/authz.md` section "Test plan" is the gate. Tests come
 **before** the code they cover — written afterwards they get written to match
 what was built rather than what was specified.
 
-- Name tests so `-t "baseline"`, `-t "saturation"`, and `-t "adversarial"`
-  select the three groups. The workflow selects with `-t`; `--grep` is not a
-  vitest flag.
+- Name tests so the groups `acl-invariants.yml` selects find them —
+  `baseline`, `saturation`, `adversarial`, `delegation`, `truth table` and the
+  rest it lists. Each step runs `pnpm test:acl:group "<name>"`, which is `-t`
+  plus a refusal when the selector matched nothing; `--grep` is not a vitest
+  flag.
 - Saturation tests (T9, T10) are the ones that catch a post-filter. A
   post-filtering implementation passes every baseline test and fails these.
 - The property-based test compares `resolve()` against `reference.ts`. Never

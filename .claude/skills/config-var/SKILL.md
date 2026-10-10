@@ -9,16 +9,21 @@ Contract: `docs/config.md`.
 
 ## Rules
 
-1. **Prefix `NACRE_`.** No exceptions, including in the parser sidecar.
+1. **Prefix `NACRE_`**, in the Python sidecars as much as in TypeScript. The
+   one unprefixed name is `PORT`, the listen port each process reads; do not
+   add a second.
 2. **Validate the whole configuration at startup and exit if anything required
    is missing or contradictory.** Not on first use — at boot.
 3. **No silent defaults for secrets or URLs.** A default that quietly points at
    localhost is how a production deployment talks to nothing and reports
    success. Defaults are fine for tunables (`NACRE_ACL_CACHE_TTL=60`); they are
    not fine for anything naming a host or carrying a credential.
-4. **Secrets are references into a secret store** where the platform allows it —
-   `NACRE_JWT_PRIVATE_KEY_REF=file:///run/secrets/…`, not the key itself.
-   Plaintext values are for the development profile and nowhere else.
+4. **One form per secret, never two.** `NACRE_JWT_PRIVATE_KEY_REF=file:///…`
+   is a reference only, because a private signing key must not be in the
+   environment at all; `NACRE_2FA_KEY` is a value only — its `_REF` twin was
+   deleted before it shipped, since an operator who wants a file writes
+   `NACRE_2FA_KEY=$(cat /run/secrets/…)`. Do not add a second spelling for the
+   same secret.
 
 ## Every new variable touches four places
 
@@ -49,9 +54,14 @@ travel to the next file.
 
 | Profile | Contains | For |
 |---|---|---|
-| `minimal` | api, mcp, worker, migrate job, parser, postgres, qdrant, redis | pilot, laptop, no GPU |
+| `minimal` | api, mcp, worker, web, migrate job, parser, postgres, qdrant, redis | pilot, laptop, no GPU |
 | `full` | plus minio, embedder, reranker | typical deployment |
 | `airgapped` | everything local, zero outbound traffic | closed network |
+| `hosted` | adds the embedding adapter (never in `airgapped`) | a vendor's embedding API |
+| `demo` | minimal, plus a small embedder and a one-shot seed | seeing it work |
+
+Profiles are **additive** — `--profile full --profile hosted` is the ordinary
+case — and `lint:compose` pins what each one contains.
 
 **`minimal` must stay runnable on a laptop without a GPU**, and `airgapped` must
 make no outbound connection at all — that includes telemetry, update checks, and
@@ -79,4 +89,7 @@ background sweep, check that this gauge still measures what its name claims.
 
 - `/v1/health` — liveness, touching **no** dependency. A health check that calls
   Postgres turns one slow database into a cascading restart loop.
-- `/v1/ready` — readiness: postgres, qdrant, s3, embedder.
+- `/v1/ready` — readiness: postgres, qdrant, redis, and **schema** (`false`
+  while the database is behind the image); `s3` only where object storage is
+  configured. Never the embedder — somebody else's uptime must not stall a
+  rollout.

@@ -26,9 +26,19 @@ password authentication · Docker Compose · the Helm chart.
 
 ## Commercial, separate repository
 
-Multi-tenancy and collection isolation · SSO (OIDC/SAML) and SCIM ·
-document-level ACLs with deny rules · EMA and ID-JAG · the audit log, its export
-and SIEM forwarding · the global admin · quotas · closed-network delivery.
+Nine modules: `tenancy` (suspension, offboarding, quotas) · `sso` (OIDC sign-in
+per organization and SCIM group-membership sync; not SAML, which goes through a
+broker) · `acl-advanced` (*issuing* document-level grants and deny rules) · `ema`
+(EMA and ID-JAG) · `audit` (SIEM forwarding) · `admin-global` (creating
+organizations, the default embedding model, platform administrators) · `backup`
+(one encrypted artifact for the whole installation, and restoring it) ·
+`sign-in-policy` (an organization requiring a second factor) · `directory`
+(filtered administration for installations too large to page through).
+
+What sits beside those and is **core**: one vector collection per organization,
+*evaluating* document grants and deny rules (`resolve` and `buildFilter`), and
+the access log with `GET /v1/audit` and its JSONL/CSV export. The `airgapped`
+Compose profile is core too.
 
 ## The mechanical rule
 
@@ -46,16 +56,23 @@ Commercial modules plug into points **declared by the core**, in
 `packages/core/extensions.ts`. The contract is [docs/extensions.md](../../../docs/extensions.md).
 
 ```ts
-registerAuthProvider(provider)     // sso
-registerAuthzResolver(resolver)    // acl-advanced, tenancy
-registerAuditSink(sink)            // audit
-mountAdminRoutes(...routes)        // admin-global
+registerAuthProvider(provider)      // sso, ema
+registerAuthzResolver(resolver)     // tenancy
+registerAuditSink(sink)             // audit
+registerIngestGate(gate)            // tenancy (max_documents)
+mountAdminRoutes(...routes)         // most modules
+registerSignInGate(gate)            // sign-in-policy
+registerMcpTools('admin', ...tools) // acl-advanced
 ```
 
-Adding a fifth is a core change and belongs here. Its *implementation* may not.
-Design the point so the core is complete and correct with nothing plugged in —
-if the core only works once a commercial module registers, the boundary has
-already leaked, whatever the import graph says.
+Plus one seam that is not a registry: the console loads `extensions.js`, which
+the open `web` image ships registering nothing and `nacre-enterprise-web`
+replaces (see "The console's extension file" in `docs/extensions.md`).
+
+Adding another point is a core change and belongs here. Its *implementation*
+may not. Design the point so the core is complete and correct with nothing
+plugged in — if the core only works once a commercial module registers, the
+boundary has already leaked, whatever the import graph says.
 
 Two rules the registry enforces rather than documents, and both are about a
 module that looks loaded and is not:
@@ -70,6 +87,7 @@ module that looks loaded and is not:
 
 `registerAuthzResolver` replaces permission evaluation. A commercial resolver
 still obeys every invariant in `docs/authz.md` — it does not get to relax rule 6
-or return `403` where the core returns `404`. The enterprise suite runs the same
-T1-T44 tests with multi-tenancy and deny rules enabled, precisely because it
-takes different code paths to the same guarantees.
+or return `403` where the core returns `404`. The private repository does not
+re-run T1–T44: its `acl-invariants` job gates *issuance* — who may issue a
+grant or deny, and on what — and ends at `buildFilter`, asserting that a deny it
+wrote arrives as a `must_not`.

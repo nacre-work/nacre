@@ -1,6 +1,6 @@
 # Extension points
 
-Normative. Six points a module outside this repository plugs into, the loader
+Normative. Seven points a module outside this repository plugs into, the loader
 that gets it in, one seam in the console that is not a registry at all, and what
 the core refuses.
 
@@ -455,7 +455,7 @@ panel with a form to give or deny access to a document.
 
 ## The console's extension file
 
-The six points above are for the API process. This one is for the browser, and
+The seven points above are for the API process. This one is for the browser, and
 it is deliberately not a registry: the console is a static bundle in a different
 image, so nothing a module registers in the API process can reach it.
 

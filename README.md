@@ -151,9 +151,11 @@ Details in [docs/authz.md](./docs/authz.md).
 
 Apache 2.0 — all of it. Everything above is in this repository and stays there.
 
-Multi-tenancy, SSO/SCIM, document-level deny rules, EMA, SIEM export, global
-admin and backup are commercial modules. They live in a separate private
-repository under a separate license and are not distributed with this one — see
+Tenancy (suspension, offboarding, quotas), SSO over OIDC with SCIM group sync,
+issuing document-level grants and deny rules, EMA, SIEM forwarding, global
+admin, backup, a required second factor and filtered directory administration
+are commercial modules. They live in a separate private repository under a
+separate license and are not distributed with this one — see
 [docs/licensing.md](./docs/licensing.md) for the line between the two and the
 one question that decides it.
 

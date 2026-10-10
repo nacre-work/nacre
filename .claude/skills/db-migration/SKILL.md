@@ -9,8 +9,9 @@ Migrations live in `packages/core/migrations`, numbered and **forward-only**.
 Never edit a migration that has been applied anywhere; add another.
 
 The schema is the source of truth for tenants, permissions, metadata, and audit.
-Vectors are in Qdrant and originals in S3 — if a change would put content that
-needs a transaction into either of those, it belongs here instead.
+Vectors are in Qdrant, and originals in object storage where a deployment
+configured one (otherwise in `documents.source_ref`) — if a change would put
+content that needs a transaction into either of those, it belongs here instead.
 
 ## Every table carrying tenant data
 
@@ -54,7 +55,9 @@ needs a transaction into either of those, it belongs here instead.
 
 `deleted_at` is set immediately; physical removal is a background job. Anything
 reading documents filters `deleted_at IS NULL`, and the vector payload gets
-`deleted: true` in the same queue transaction.
+`deleted: true` **before** the row is written — index first, then the row,
+because the reverse leaves the document searchable with nothing left to repair
+it. Qdrant is not in the transaction, so the order is the guarantee.
 
 Depending on GC timing is how invariant 5 gets broken. There is a real window
 between the delete and the sweep, and the query must be correct inside it.
@@ -67,9 +70,16 @@ to `audit_events` must not quietly restore write privileges.
 
 ## The background worker role
 
-Worker jobs run under a separate role with `BYPASSRLS` and are required to name
-`org_id` explicitly in every query. That role is the one place the second line
-of defense is off, so changes touching it get the most review.
+Work that spans tenants — the worker's queue and sweeps, the `/metrics` gauges —
+runs inside `acrossOrganizations`, under `nacre_worker`, which has `BYPASSRLS`,
+and every query in it names `org_id` explicitly. That role is the one place the
+second line of defense is off at run time, so changes touching it get the most
+review. The only other path outside `withOrg` is `whileAuthenticating`, for
+resolving a credential.
+
+The owning role that runs migrations needs `BYPASSRLS` too: every tenant table
+is `FORCE`d, so a migration that reads one fails on a plain owner, and the
+migrator refuses up front rather than half-applying.
 
 ## Checklist
 
