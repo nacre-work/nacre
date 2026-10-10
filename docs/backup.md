@@ -86,7 +86,8 @@ pg_restore --dbname="$NACRE_PG_URL_OWNER" --clean --if-exists nacre.dump
 aws s3 sync ./objects "s3://$NACRE_S3_BUCKET" --endpoint-url "$NACRE_S3_ENDPOINT"
 
 # 4. Qdrant, per organization. Recreates the collection and requeues every
-#    live document; the worker does the embedding.
+#    live document; the worker does the embedding. Add --replace when Qdrant
+#    survived the restore: its collection exists and no longer matches.
 node packages/api/dist/rebuild-collection.js --org acme
 ```
 

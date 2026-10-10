@@ -244,6 +244,24 @@ docker compose run --rm api node packages/api/dist/rebuild-collection.js --org <
 # in Kubernetes: kubectl exec into any api pod with the same node invocation
 ```
 
+**If the vector store survived — you restored Postgres onto an installation whose
+Qdrant kept running — pass `--replace`.** The collection is there and no longer
+matches the database it now sits beside, and both ways it disagrees are silent.
+A document deleted after the backup was taken comes back in Postgres while its
+points stay flagged deleted, so no search ever finds it; a document added after
+the backup leaves points whose chunk rows the restore removed, which search drops
+when it hydrates hits — each one a place in `top_k` handed to nobody, so a search
+for ten results quietly returns fewer. Measured on a running stack, not reasoned:
+after such a restore, a document the archive held was absent from every search.
+
+```bash
+docker compose run --rm api node packages/api/dist/rebuild-collection.js --org <slug> --replace
+```
+
+`--replace` drops the collection and creates it again from Postgres. It is never
+the default, because over a collection that is merely *lost* there is nothing to
+replace, and over one that is fine it deletes every vector for nothing.
+
 It does exactly what this runbook used to describe as a manual procedure, and in
 the same order:
 
@@ -258,8 +276,8 @@ the same order:
   **quietly changes recall**), the payload indexes from `PAYLOAD_INDEXES`, and
   indexes on the metadata keys found in `documents.metadata`;
 - it **refuses** if the collection still exists — a rebuild is a create, and
-  over a live collection it would delete that collection's vectors; drop a
-  broken but existing one by hand first;
+  over a live collection it would delete that collection's vectors — unless
+  `--replace` says so (below);
 - it sets every live document to `status = 'pending'`, resetting `claimed_at`,
   `attempts`, `error` and `reindexed_vector`. The last reset is about
   correctness, not about the queue: the marker is left over from an interrupted

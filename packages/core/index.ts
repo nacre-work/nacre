@@ -239,6 +239,8 @@ export { collectDatabaseGauges } from './observability.js'
 export { Redis, RedisError } from './redis.js'
 export type { RedisOptions } from './redis.js'
 export { reindexProgress, toStateJson, toCheckJson, fromStateJson } from './reindex.js'
+export { readRebuildSchema, rebuildOrganizationIndex, requeueForRebuild } from './rebuild.js'
+export type { RebuildResult, RebuildSchema } from './rebuild.js'
 export type { ReindexState, ReindexCheck } from './reindex.js'
 export {
   generatePassword,

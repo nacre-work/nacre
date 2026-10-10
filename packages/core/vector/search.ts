@@ -287,9 +287,10 @@ export class VectorStore {
    * the process happens to be configured with. So both come from the caller,
    * which read them from the database.
    *
-   * It **refuses a collection that already exists** rather than replacing it: the
-   * whole point is one that is not there, and a rebuild over a live collection
-   * would delete every vector it holds. Recreating the schema is all this does —
+   * It **refuses a collection that already exists** unless `replace` says so: a
+   * rebuild over a live collection deletes every vector it holds, which is right
+   * after a restore of the database onto a vector store that survived it and
+   * wrong as a reflex. Recreating the schema is all this does —
    * the points are the worker's to re-embed once the documents are requeued,
    * because a vector is the one thing Postgres does not keep. The payload indexes
    * are the two sets `copyWithNewVector` carries across, for the same reason it
@@ -303,6 +304,7 @@ export class VectorStore {
     collection: string,
     slots: readonly { name: string; size: number }[],
     metadataKeys: readonly string[],
+    options: { readonly replace?: boolean } = {},
   ): Promise<void> {
     if (slots.length === 0) {
       throw new Error(
@@ -312,10 +314,19 @@ export class VectorStore {
 
     const present = await this.#client.getCollections()
     if (present.collections.some((c) => c.name === collection)) {
-      throw new Error(
-        `${collection} already exists. Rebuild is for a lost collection and will not replace a live ` +
-          'one, because that would delete every vector it holds. Drop it first if that is what you mean.',
-      )
+      if (options.replace !== true) {
+        throw new Error(
+          `${collection} already exists. Rebuild is for a lost collection and will not replace a live ` +
+            'one without being told to, because that deletes every vector it holds. After a restore of ' +
+            'the database onto a vector store that survived it, that is what you mean: pass --replace.',
+        )
+      }
+      // Asked for: the database is the truth and this collection disagrees with
+      // it. Dropped rather than emptied, because a point's payload is not the
+      // only thing that can be stale — the slots and their sizes are read from
+      // Postgres below, and a collection created under another model's
+      // dimensions cannot be corrected in place.
+      await this.dropCollection(collection)
     }
 
     const vectors: Record<string, unknown> = {}
