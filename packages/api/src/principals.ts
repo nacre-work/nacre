@@ -60,7 +60,20 @@ export interface UserView {
    * exactly the kind of thing a screen must be able to say.
    */
   readonly shared: boolean
+  /**
+   * The subject an identity provider names this person by — the `sub` the SSO
+   * and EMA modules match an assertion against, and SCIM matches members by.
+   *
+   * Set by an administrator and never by a sign-in: a principal is created
+   * here and linked here, so whoever runs the customer's directory cannot mint
+   * one. `null` until linked, and an account linked to nothing is simply not
+   * one an identity provider can sign in as.
+   */
+  readonly externalId: string | null
 }
+
+/** Why a write naming a subject did not happen. */
+export type SubjectTaken = 'subject-taken'
 
 export interface Users {
   list(auth: AuthContext, page?: Page): Promise<PageResult<UserView>>
@@ -85,6 +98,18 @@ export interface Users {
     shared?: boolean,
   ): Promise<{ user: UserView; password: string } | undefined>
   /**
+   * The same, linked to an identity provider's subject at birth — and so able
+   * to be refused for a subject already linked to somebody else, which an
+   * account created without one cannot be. Two signatures so the type says so.
+   */
+  create(
+    auth: AuthContext,
+    email: string,
+    role: 'org_admin' | 'member',
+    shared: boolean | undefined,
+    externalId: string | undefined,
+  ): Promise<{ user: UserView; password: string } | undefined | SubjectTaken>
+  /**
    * Change the role, the disabled state, or both.
    *
    * One call rather than a `disable` beside a `setRole`, because the guard
@@ -102,8 +127,8 @@ export interface Users {
   update(
     auth: AuthContext,
     id: string,
-    change: { role?: 'org_admin' | 'member'; disabled?: boolean },
-  ): Promise<'updated' | 'last-admin' | 'platform-admin' | 'no-user'>
+    change: { role?: 'org_admin' | 'member'; disabled?: boolean; externalId?: string | null },
+  ): Promise<'updated' | 'last-admin' | 'platform-admin' | 'no-user' | SubjectTaken>
   /**
    * The new password, shown once.
    *
@@ -136,6 +161,12 @@ export interface GroupView {
   readonly createdAt: string
   /** Direct members only. A nested group counts as one, not as its members. */
   readonly memberCount: number
+  /**
+   * What a directory calls this group — the id SCIM addresses it by. Set by an
+   * administrator here; a directory naming a group nobody linked is describing
+   * one this installation has no grants for.
+   */
+  readonly externalId: string | null
 }
 
 export type GroupMember =
@@ -146,6 +177,10 @@ export interface Groups {
   list(auth: AuthContext, page?: Page): Promise<PageResult<GroupView>>
   /** `undefined` when the name is already in use in this organization. */
   create(auth: AuthContext, name: string): Promise<GroupView | undefined>
+  /** The same, linked to a directory's id; refused when another group has it. */
+  create(auth: AuthContext, name: string, externalId: string | undefined): Promise<GroupView | undefined | SubjectTaken>
+  /** Link the group to a directory's id, or unlink it with `null`. */
+  setExternalId(auth: AuthContext, id: string, externalId: string | null): Promise<'updated' | 'no-group' | SubjectTaken>
   /** False when there is no such group here. */
   remove(auth: AuthContext, id: string): Promise<boolean>
   /** `undefined` when there is no such group here — distinct from an empty one. */
@@ -173,6 +208,22 @@ export interface Groups {
 }
 
 const UUID = /^[0-9a-f-]{36}$/i
+
+/**
+ * A write that met another row's external id. Caught here, after `withOrg` has
+ * rolled the transaction back, because inside it a raised unique violation
+ * aborts every statement after it. Only that constraint: any other `23505`
+ * is somebody else's answer and is raised.
+ */
+async function subjectTaken<T>(write: () => Promise<T>): Promise<T | SubjectTaken> {
+  try {
+    return await write()
+  } catch (error) {
+    const pg = error as { code?: string; constraint?: string }
+    if (pg.code === '23505' && /external_id/u.test(pg.constraint ?? '')) return 'subject-taken'
+    throw error
+  }
+}
 
 // One rule, in the core, because `provisionOrganization` writes the first
 // `users` row of every organization and has to apply the same one. Re-exported
@@ -208,9 +259,10 @@ export class PostgresUsers implements Users {
           disabled_at: Date | null
           has_password: boolean
           shared: boolean
+          external_id: string | null
         }>(
           `SELECT id, email, role, created_at, created_at::text AS created_at_text,
-                  disabled_at, (password_hash IS NOT NULL) AS has_password, shared
+                  disabled_at, (password_hash IS NOT NULL) AS has_password, shared, external_id
              FROM users WHERE org_id = $1${seek} ORDER BY created_at, id${cap}`,
           after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
         )
@@ -227,6 +279,7 @@ export class PostgresUsers implements Users {
           disabledAt: r.disabled_at?.toISOString() ?? null,
           hasPassword: r.has_password,
           shared: r.shared,
+          externalId: r.external_id,
         }))
 
         return pageOf(users, page, (u, i) => ({
@@ -238,12 +291,26 @@ export class PostgresUsers implements Users {
     )
   }
 
+  create(
+    auth: AuthContext,
+    email: string,
+    role: 'org_admin' | 'member',
+    shared?: boolean,
+  ): Promise<{ user: UserView; password: string } | undefined>
+  create(
+    auth: AuthContext,
+    email: string,
+    role: 'org_admin' | 'member',
+    shared: boolean | undefined,
+    externalId: string | undefined,
+  ): Promise<{ user: UserView; password: string } | undefined | SubjectTaken>
   async create(
     auth: AuthContext,
     email: string,
     role: 'org_admin' | 'member',
     shared?: boolean,
-  ): Promise<{ user: UserView; password: string } | undefined> {
+    externalId?: string,
+  ): Promise<{ user: UserView; password: string } | undefined | SubjectTaken> {
     const password = generatePassword()
     // Outside the transaction on purpose: scrypt at OWASP's minimum takes long
     // enough that holding a database connection across it is a connection spent
@@ -251,20 +318,22 @@ export class PostgresUsers implements Users {
     // the same reason.
     const passwordHash = await hashPassword(password)
 
-    return withOrg(
+    return subjectTaken(() => withOrg(
       this.pool,
       auth.orgId,
       async (client) => {
         // DO NOTHING rather than catching a unique violation: inside the
         // transaction `withOrg` opens, a raised constraint error aborts
         // everything after it, so recovering would need a savepoint. The empty
-        // result says the same thing without one.
+        // result says the same thing without one. A subject already linked to
+        // somebody else is the other unique key, and it is caught outside the
+        // transaction by `subjectTaken`, after the rollback.
         const { rows } = await client.query<{ id: string; created_at: Date }>(
-          `INSERT INTO users (org_id, email, role, password_hash, shared)
-           VALUES ($1,$2,$3,$4,$5)
+          `INSERT INTO users (org_id, email, role, password_hash, shared, external_id)
+           VALUES ($1,$2,$3,$4,$5,$6)
            ON CONFLICT (org_id, email) DO NOTHING
            RETURNING id, created_at`,
-          [auth.orgId, email, role, passwordHash, shared === true],
+          [auth.orgId, email, role, passwordHash, shared === true, externalId ?? null],
         )
 
         const row = rows[0]
@@ -280,11 +349,12 @@ export class PostgresUsers implements Users {
             disabledAt: null,
             hasPassword: true,
             shared: shared === true,
+            externalId: externalId ?? null,
           },
         }
       },
       this.scope,
-    )
+    ))
   }
 
   /**
@@ -349,9 +419,9 @@ export class PostgresUsers implements Users {
   async update(
     auth: AuthContext,
     id: string,
-    change: { role?: 'org_admin' | 'member'; disabled?: boolean },
-  ): Promise<'updated' | 'last-admin' | 'platform-admin' | 'no-user'> {
-    return this.onTargetUser(
+    change: { role?: 'org_admin' | 'member'; disabled?: boolean; externalId?: string | null },
+  ): Promise<'updated' | 'last-admin' | 'platform-admin' | 'no-user' | SubjectTaken> {
+    return subjectTaken(() => this.onTargetUser(
       auth,
       id,
       async (client, current): Promise<'updated' | 'last-admin' | 'no-user'> => {
@@ -377,19 +447,27 @@ export class PostgresUsers implements Users {
         // on every unrelated PATCH: "disabled since Tuesday" is the answer an
         // operator is looking for, and re-stamping it on a role change would
         // quietly move it.
+        //
+        // The subject goes through here and nowhere else, because linking one is
+        // an act on somebody's account: it lets an identity provider sign in as
+        // them. `onTargetUser` is what refuses that for a platform
+        // administrator — an org_admin linking their own IdP's subject to the
+        // account that administers the installation would be that IdP signing
+        // in as it.
         const { rowCount } = await client.query(
           `UPDATE users
               SET role = $3,
                   disabled_at = CASE
                     WHEN $4::boolean THEN COALESCE(disabled_at, now())
                     ELSE NULL
-                  END
+                  END,
+                  external_id = CASE WHEN $5::boolean THEN $6 ELSE external_id END
             WHERE org_id = $1 AND id = $2`,
-          [auth.orgId, id, role, disabled],
+          [auth.orgId, id, role, disabled, change.externalId !== undefined, change.externalId ?? null],
         )
         return (rowCount ?? 0) > 0 ? 'updated' : 'no-user'
       },
-    )
+    ))
   }
 
   async resetPassword(
@@ -458,8 +536,9 @@ export class PostgresGroups implements Groups {
           created_at: Date
           created_at_text: string
           member_count: string
+          external_id: string | null
         }>(
-          `SELECT g.id, g.name, g.created_at, g.created_at::text AS created_at_text,
+          `SELECT g.id, g.name, g.created_at, g.created_at::text AS created_at_text, g.external_id,
                   (SELECT count(*) FROM group_members m
                     WHERE m.org_id = g.org_id AND m.group_id = g.id) AS member_count
              FROM groups g WHERE g.org_id = $1${seek} ORDER BY g.created_at, g.id${cap}`,
@@ -474,6 +553,7 @@ export class PostgresGroups implements Groups {
           // silently losing precision. Parsed here rather than left to JSON,
           // where it would have serialized as a quoted number.
           memberCount: Number(r.member_count),
+          externalId: r.external_id,
         }))
 
         return pageOf(groups, page, (g, i) => ({
@@ -485,24 +565,56 @@ export class PostgresGroups implements Groups {
     )
   }
 
-  async create(auth: AuthContext, name: string): Promise<GroupView | undefined> {
-    return withOrg(
-      this.pool,
-      auth.orgId,
-      async (client) => {
-        const { rows } = await client.query<{ id: string; created_at: Date }>(
-          `INSERT INTO groups (org_id, name) VALUES ($1,$2)
-           ON CONFLICT (org_id, name) DO NOTHING
-           RETURNING id, created_at`,
-          [auth.orgId, name],
-        )
+  create(auth: AuthContext, name: string): Promise<GroupView | undefined>
+  create(auth: AuthContext, name: string, externalId: string | undefined): Promise<GroupView | undefined | SubjectTaken>
+  async create(auth: AuthContext, name: string, externalId?: string): Promise<GroupView | undefined | SubjectTaken> {
+    return subjectTaken(() =>
+      withOrg(
+        this.pool,
+        auth.orgId,
+        async (client) => {
+          const { rows } = await client.query<{ id: string; created_at: Date }>(
+            `INSERT INTO groups (org_id, name, external_id) VALUES ($1,$2,$3)
+             ON CONFLICT (org_id, name) DO NOTHING
+             RETURNING id, created_at`,
+            [auth.orgId, name, externalId ?? null],
+          )
 
-        const row = rows[0]
-        if (row === undefined) return undefined
+          const row = rows[0]
+          if (row === undefined) return undefined
 
-        return { id: row.id, name, createdAt: row.created_at.toISOString(), memberCount: 0 }
-      },
-      this.scope,
+          return {
+            id: row.id,
+            name,
+            createdAt: row.created_at.toISOString(),
+            memberCount: 0,
+            externalId: externalId ?? null,
+          }
+        },
+        this.scope,
+      ),
+    )
+  }
+
+  async setExternalId(
+    auth: AuthContext,
+    id: string,
+    externalId: string | null,
+  ): Promise<'updated' | 'no-group' | SubjectTaken> {
+    if (!UUID.test(id)) return 'no-group'
+    return subjectTaken(() =>
+      withOrg(
+        this.pool,
+        auth.orgId,
+        async (client) => {
+          const { rowCount } = await client.query(
+            'UPDATE groups SET external_id = $3 WHERE org_id = $1 AND id = $2',
+            [auth.orgId, id, externalId],
+          )
+          return (rowCount ?? 0) > 0 ? ('updated' as const) : ('no-group' as const)
+        },
+        this.scope,
+      ),
     )
   }
 

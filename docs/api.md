@@ -28,6 +28,7 @@ GET    /v1/users         POST /v1/users         PATCH /v1/users/{id}
 DELETE /v1/users/{id}                             tombstone: disabled, row kept
 POST   /v1/users/{id}/password                    a new one, shown once
 GET    /v1/groups        POST /v1/groups        DELETE /v1/groups/{id}
+PATCH  /v1/groups/{id}                            link to a directory's id
 GET    /v1/groups/{id}/members     POST /v1/groups/{id}/members
 DELETE /v1/groups/{id}/members/{type}/{memberId}
 GET    /v1/service-accounts  POST  /v1/service-accounts  DELETE /v1/service-accounts/{id}
@@ -663,6 +664,17 @@ Removing one takes the type in the path — `/members/{type}/{memberId}` —
 because the edge is keyed by which member column it uses, so a bare uuid does
 not identify one.
 
+**`external_id` links a principal to somebody else's directory.** On a user it
+is the subject an identity provider signs that person in as; on a group it is
+the id a directory sync addresses the group by. Both are read by the commercial
+SSO module and by nothing in the core, and both are written here — on
+`POST /v1/users`, `PATCH /v1/users/{id}` and `POST /v1/groups`, and by
+`PATCH /v1/groups/{id}`, which takes nothing else. `null` unlinks. One id names
+one user and one group per organization, so a second claim is a `409` rather
+than a sync or a sign-in landing on whichever row a lookup found first. A
+platform administrator's subject is refused like every other write to that
+account (`403`).
+
 ### Issuing a grant names two things, and both are checked
 
 `POST /v1/grants` refuses a `principal_id` or a `scope_id` that is not in this
@@ -778,9 +790,10 @@ Implemented and driven by hand against a real PostgreSQL and a real Qdrant:
 | `GET`/`PUT /v1/layers/{id}/reference-queries` | the query set the gate scores against; `admin`, replaced whole |
 | `GET /v1/audit` | newest first, cursor-paged, JSON/JSONL/CSV by content negotiation |
 | `GET`/`POST /v1/grants`, `DELETE /v1/grants/{id}` | |
-| `GET`/`POST /v1/users`, `PATCH`/`DELETE /v1/users/{id}` | `org_admin`; password generated and shown once; disable keeps the row |
+| `GET`/`POST /v1/users`, `PATCH`/`DELETE /v1/users/{id}` | `org_admin`; password generated and shown once; disable keeps the row; `external_id` links an identity provider's subject |
 | `POST /v1/users/{id}/password` | a new one, shown once |
 | `GET`/`POST /v1/groups`, `DELETE /v1/groups/{id}` | delete takes the grants naming the group with it |
+| `PATCH /v1/groups/{id}` | `external_id` only — the directory id a sync addresses the group by |
 | `GET`/`POST /v1/groups/{id}/members`, `DELETE .../{type}/{memberId}` | direct membership; a nested group is one member |
 | `GET`/`POST /v1/service-accounts`, `DELETE /v1/service-accounts/{id}` | |
 | `GET /v1/health`, `GET /v1/ready`, `GET /metrics` | |

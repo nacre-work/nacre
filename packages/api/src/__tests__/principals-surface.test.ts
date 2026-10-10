@@ -4,7 +4,7 @@ import type { Server } from 'node:http'
 import { SignJWT } from 'jose'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { createApi, type AuditEvent, type Groups, type Users } from '../index.js'
+import { createApi, type AuditEvent, type AuthContext, type Groups, type Users } from '../index.js'
 
 /**
  * `/v1/users` and `/v1/groups` — the principals a grant is issued to.
@@ -28,6 +28,8 @@ const LAST_ADMIN = 'cccccccc-0000-4000-8000-000000000002'
 const PLATFORM_ADMIN = 'cccccccc-0000-4000-8000-000000000003'
 const GROUP = 'bbbbbbbb-0000-4000-8000-000000000001'
 const ABSENT = 'bbbbbbbb-0000-4000-8000-0000000000ff'
+/** An identity provider subject somebody else is already linked to. */
+const TAKEN_SUBJECT = 'okta|someone-else'
 
 const audited: AuditEvent[] = []
 
@@ -43,13 +45,18 @@ const users: Users = {
         disabledAt: null,
         hasPassword: true,
         shared: false,
+        externalId: 'okta|dana',
       },
     ],
   }),
-  create: async (_a, email, role) =>
+  // Cast: one function standing in for both overloads, which an arrow cannot
+  // declare. The second is the only one that can answer `subject-taken`.
+  create: (async (_a: AuthContext, email: string, role: 'org_admin' | 'member', _shared?: boolean, externalId?: string) =>
     email === 'taken@example.test'
       ? undefined
-      : {
+      : externalId === TAKEN_SUBJECT
+        ? 'subject-taken'
+        : {
           password: 'reef-lustre-tide-keel-prism-shoal-42',
           user: {
             id: USER,
@@ -59,10 +66,13 @@ const users: Users = {
             disabledAt: null,
             hasPassword: true,
             shared: false,
+            externalId: externalId ?? null,
           },
-        },
-  update: async (_a, id) =>
-    id === PLATFORM_ADMIN
+        }) as Users['create'],
+  update: async (_a, id, change) =>
+    change.externalId === TAKEN_SUBJECT
+      ? 'subject-taken'
+      : id === PLATFORM_ADMIN
       ? 'platform-admin'
       : id === LAST_ADMIN
         ? 'last-admin'
@@ -83,12 +93,16 @@ const users: Users = {
 const groups: Groups = {
   list: async () => ({
     nextCursor: null,
-    items: [{ id: GROUP, name: 'legal', createdAt: '2026-01-01T00:00:00.000Z', memberCount: 2 }],
+    items: [{ id: GROUP, name: 'legal', createdAt: '2026-01-01T00:00:00.000Z', memberCount: 2, externalId: null }],
   }),
-  create: async (_a, name) =>
+  create: (async (_a: AuthContext, name: string, externalId?: string) =>
     name === 'legal'
       ? undefined
-      : { id: GROUP, name, createdAt: '2026-01-01T00:00:00.000Z', memberCount: 0 },
+      : externalId === TAKEN_SUBJECT
+        ? 'subject-taken'
+        : { id: GROUP, name, createdAt: '2026-01-01T00:00:00.000Z', memberCount: 0, externalId: externalId ?? null }) as Groups['create'],
+  setExternalId: async (_a, id, externalId) =>
+    id !== GROUP ? 'no-group' : externalId === TAKEN_SUBJECT ? 'subject-taken' : 'updated',
   remove: async (_a, id) => id === GROUP,
   members: async (_a, id) =>
     id !== GROUP
@@ -200,6 +214,110 @@ describe('users and groups', () => {
     // anyone holding the audit log, and the password is not recoverable from
     // anywhere else by design — putting it here would undo that.
     expect(JSON.stringify(event?.detail)).not.toContain('reef-lustre')
+  })
+
+  /**
+   * The identity provider's subject. SSO matches an assertion's `sub` against
+   * it and SCIM matches members by it, and until 0.40.0 nothing but SQL could
+   * set it — so the SSO module could not be configured from this surface.
+   */
+  it('links a user to an identity provider subject, at creation and afterwards', async () => {
+    const listed = await fetch(`${base}/v1/users`, { headers: await admin() })
+    expect(((await listed.json()) as { items: { external_id: unknown }[] }).items[0]?.external_id).toBe('okta|dana')
+
+    const created = await fetch(`${base}/v1/users`, {
+      method: 'POST',
+      headers: await admin(),
+      body: JSON.stringify({ email: 'eve@example.test', external_id: 'okta|eve' }),
+    })
+    expect(created.status).toBe(201)
+    expect(((await created.json()) as { external_id: unknown }).external_id).toBe('okta|eve')
+    expect(last()?.detail).toMatchObject({ external_id: 'okta|eve' })
+
+    const linked = await fetch(`${base}/v1/users/${USER}`, {
+      method: 'PATCH',
+      headers: await admin(),
+      body: JSON.stringify({ external_id: 'okta|dana-2' }),
+    })
+    expect(linked.status).toBe(204)
+    expect(last()).toMatchObject({ action: 'update_user', result: 'allow', detail: { external_id: 'okta|dana-2' } })
+
+    const cleared = await fetch(`${base}/v1/users/${USER}`, {
+      method: 'PATCH',
+      headers: await admin(),
+      body: JSON.stringify({ external_id: null }),
+    })
+    expect(cleared.status).toBe(204)
+  })
+
+  it('refuses a subject that is taken, malformed, or on a platform administrator', async () => {
+    const taken = await fetch(`${base}/v1/users/${USER}`, {
+      method: 'PATCH',
+      headers: await admin(),
+      body: JSON.stringify({ external_id: TAKEN_SUBJECT }),
+    })
+    expect(taken.status).toBe(409)
+    const takenAtBirth = await fetch(`${base}/v1/users`, {
+      method: 'POST',
+      headers: await admin(),
+      body: JSON.stringify({ email: 'fay@example.test', external_id: TAKEN_SUBJECT }),
+    })
+    expect(takenAtBirth.status).toBe(409)
+    expect(last()).toMatchObject({ action: 'create_user', result: 'deny' })
+
+    for (const bad of ['', '   ', 'a'.repeat(256), 'tab\there', 42]) {
+      const res = await fetch(`${base}/v1/users/${USER}`, {
+        method: 'PATCH',
+        headers: await admin(),
+        body: JSON.stringify({ external_id: bad }),
+      })
+      expect(res.status, JSON.stringify(bad)).toBe(400)
+    }
+    const nullAtBirth = await fetch(`${base}/v1/users`, {
+      method: 'POST',
+      headers: await admin(),
+      body: JSON.stringify({ email: 'gus@example.test', external_id: null }),
+    })
+    expect(nullAtBirth.status).toBe(400)
+
+    // Linking a subject is letting an identity provider sign in as this person.
+    // An org_admin's own IdP signing in as the installation's administrator is
+    // the escalation `onTargetUser` exists to refuse.
+    const platform = await fetch(`${base}/v1/users/${PLATFORM_ADMIN}`, {
+      method: 'PATCH',
+      headers: await admin(),
+      body: JSON.stringify({ external_id: 'okta|root' }),
+    })
+    expect(platform.status).toBe(403)
+  })
+
+  it("links a group to a directory's id, which SCIM addresses it by", async () => {
+    const created = await fetch(`${base}/v1/groups`, {
+      method: 'POST',
+      headers: await admin(),
+      body: JSON.stringify({ name: 'radiology', external_id: 'okta-group-7' }),
+    })
+    expect(created.status).toBe(201)
+    expect(((await created.json()) as { external_id: unknown }).external_id).toBe('okta-group-7')
+
+    const patch = (id: string, external_id: unknown) =>
+      admin().then((headers) =>
+        fetch(`${base}/v1/groups/${id}`, { method: 'PATCH', headers, body: JSON.stringify({ external_id }) }),
+      )
+    expect((await patch(GROUP, 'okta-group-8')).status).toBe(204)
+    expect(last()).toMatchObject({ action: 'update_group', result: 'allow', target: { group_id: GROUP } })
+    expect((await patch(GROUP, null)).status).toBe(204)
+    expect((await patch(GROUP, TAKEN_SUBJECT)).status).toBe(409)
+    expect((await patch(ABSENT, 'okta-group-9')).status).toBe(404)
+    expect(last()).toMatchObject({ action: 'update_group', result: 'deny' })
+    expect((await patch(GROUP, '')).status).toBe(400)
+
+    const asMember = await fetch(`${base}/v1/groups/${GROUP}`, {
+      method: 'PATCH',
+      headers: await member(),
+      body: JSON.stringify({ external_id: 'x' }),
+    })
+    expect(asMember.status).toBe(404)
   })
 
   it('refuses to mint a platform_admin from inside an organization', async () => {

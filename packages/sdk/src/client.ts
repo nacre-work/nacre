@@ -1615,27 +1615,36 @@ export class NacreClient {
     create: async (
       email: string,
       role: 'member' | 'org_admin' = 'member',
-      options: { shared?: boolean } = {},
+      options: { shared?: boolean; externalId?: string } = {},
     ): Promise<CreatedUser> => {
       const body = (await this.#request({
         method: 'POST',
         path: '/v1/users',
-        body: { email, role, ...(options.shared === true ? { shared: true } : {}) },
+        body: {
+          email,
+          role,
+          ...(options.shared === true ? { shared: true } : {}),
+          ...(options.externalId === undefined ? {} : { external_id: options.externalId }),
+        },
       })) as Record<string, unknown>
 
       return { ...userFrom(body), password: String(body.password) }
     },
 
-    /** Change the role, the disabled state, or both. False when there is no such user. */
+    /**
+     * Change the role, the disabled state, the identity provider subject, or
+     * any of them. `externalId: null` unlinks. False when there is no such user.
+     */
     update: async (
       id: string,
-      change: { role?: 'member' | 'org_admin'; disabled?: boolean },
+      change: { role?: 'member' | 'org_admin'; disabled?: boolean; externalId?: string | null },
     ): Promise<boolean> => {
+      const { externalId, ...rest } = change
       try {
         await this.#request({
           method: 'PATCH',
           path: `/v1/users/${encodeURIComponent(id)}`,
-          body: change,
+          body: { ...rest, ...(externalId === undefined ? {} : { external_id: externalId }) },
         })
         return true
       } catch (error) {
@@ -1679,13 +1688,31 @@ export class NacreClient {
   readonly groups = {
     list: async (): Promise<readonly Group[]> => this.#listAll('/v1/groups', groupFrom),
 
-    create: async (name: string): Promise<Group> => {
+    create: async (name: string, options: { externalId?: string } = {}): Promise<Group> => {
       const body = (await this.#request({
         method: 'POST',
         path: '/v1/groups',
-        body: { name },
+        body: { name, ...(options.externalId === undefined ? {} : { external_id: options.externalId }) },
       })) as Record<string, unknown>
       return groupFrom(body)
+    },
+
+    /**
+     * Link a group to a directory's id — what SCIM addresses it by — or unlink
+     * it with `null`. False when there is no such group.
+     */
+    link: async (id: string, externalId: string | null): Promise<boolean> => {
+      try {
+        await this.#request({
+          method: 'PATCH',
+          path: `/v1/groups/${encodeURIComponent(id)}`,
+          body: { external_id: externalId },
+        })
+        return true
+      } catch (error) {
+        if (error instanceof NacreError && error.isNotFound) return false
+        throw error
+      }
     },
 
     remove: async (id: string): Promise<boolean> => {
@@ -2466,6 +2493,7 @@ function userFrom(u: Record<string, unknown>): User {
     disabledAt: (u.disabled_at as string | null) ?? null,
     hasPassword: u.has_password === true,
     shared: u.shared === true,
+    externalId: typeof u.external_id === 'string' ? u.external_id : null,
   }
 }
 
@@ -2475,6 +2503,7 @@ function groupFrom(g: Record<string, unknown>): Group {
     name: String(g.name ?? ''),
     createdAt: String(g.created_at ?? ''),
     memberCount: Number(g.member_count ?? 0),
+    externalId: typeof g.external_id === 'string' ? g.external_id : null,
   }
 }
 

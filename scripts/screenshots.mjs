@@ -666,18 +666,22 @@ const FIXTURES = {
   'GET /v1/users': {
     items: [
       { id: '0b5d9a72-1e46-4c38-8a05-3f7c2e6b1d90', email: 'dana@example.com', role: 'org_admin',
-        created_at: '2026-01-12T08:30:00.000Z', disabled_at: null, has_password: true },
+        created_at: '2026-01-12T08:30:00.000Z', disabled_at: null, has_password: true, external_id: null },
       { id: '4f2c8e61-7a95-4d13-9b60-2e8a5c0f7b34', email: 'sam@example.com', role: 'member',
-        created_at: '2026-02-03T14:05:00.000Z', disabled_at: null, has_password: true },
+        created_at: '2026-02-03T14:05:00.000Z', disabled_at: null, has_password: true,
+        // Linked to an identity provider's subject, so the `linked` tag is in
+        // the picture — the server sends `external_id` on every row, and a
+        // fixture where it is always null is a tag nothing measures.
+        external_id: '00u8f2sam4Kq0x7' },
       { id: '9d7b3f04-6c28-4a51-8e93-1b5f0a2c6d78', email: 'alex@example.com', role: 'member',
         created_at: '2026-02-20T10:11:00.000Z', disabled_at: '2026-03-08T09:00:00.000Z',
-        has_password: true },
+        has_password: true, external_id: null },
       // A credential several people hold, so the `shared` tag is in the picture
       // rather than being a thing only the code knows about. It is the one row
       // here whose person cannot enrol a second factor.
       { id: '2a6e1c58-3b90-4f27-a4d1-7c8b0e5f9a43', email: 'kiosk@example.com', role: 'member',
         created_at: '2026-03-01T09:00:00.000Z', disabled_at: null, has_password: true,
-        shared: true },
+        shared: true, external_id: null },
     ],
     next_cursor: null,
   },
@@ -706,9 +710,9 @@ const FIXTURES = {
   'GET /v1/groups': {
     items: [
       { id: '8e1a7c34-2b09-4d56-af73-6c0e5b9d2a41', name: 'legal',
-        created_at: '2026-01-12T08:31:00.000Z', member_count: 2 },
+        created_at: '2026-01-12T08:31:00.000Z', member_count: 2, external_id: null },
       { id: '3c9f5b28-4d71-4e06-b28a-7f1c0e6d9a53', name: 'engineering',
-        created_at: '2026-01-19T12:44:00.000Z', member_count: 5 },
+        created_at: '2026-01-19T12:44:00.000Z', member_count: 5, external_id: 'eng-all' },
     ],
     next_cursor: null,
   },
@@ -724,7 +728,7 @@ const FIXTURES = {
   'POST /v1/users': {
     id: '6a4e2c98-3b17-4f50-9d82-0c7b5e1a4f26', email: 'kim@example.com', role: 'member',
     created_at: '2026-03-14T09:00:00.000Z', disabled_at: null, has_password: true,
-    password: 'aragonite-tide-ledger-shoal-prism-keel-37',
+    external_id: null, password: 'aragonite-tide-ledger-shoal-prism-keel-37',
   },
   'POST /v1/search': {
     items: [
@@ -1147,6 +1151,26 @@ await shot('new-user', {
   hash: '#/people',
   prepare: async (page) => {
     await page.getByRole('button', { name: 'New user' }).click()
+    await page.waitForTimeout(150)
+  },
+})
+// The two dialogs that link a person and a group to somebody else's directory.
+// Opened so the rules measure them: a dialog no shot opens is a dialog whose
+// layout nothing has ever asked about.
+await shot('edit-user', {
+  hash: '#/people',
+  prepare: async (page) => {
+    await page.getByRole('row', { name: /sam@example\.com/ }).getByRole('button', { name: 'Edit' }).click()
+    await page.waitForTimeout(150)
+  },
+})
+await shot('link-group', {
+  hash: '#/people',
+  prepare: async (page) => {
+    await page.getByRole('row', { name: /engineering/ }).getByRole('button', { name: 'Link' }).click()
+    // The row is below the fold, so pressing it scrolled the page — and a
+    // full-page picture then paints the sticky masthead at that offset.
+    await page.evaluate(() => globalThis.scrollTo(0, 0))
     await page.waitForTimeout(150)
   },
 })

@@ -765,7 +765,7 @@ components:
           description: This document, at the release the server was built from.
         version:
           type: string
-          examples: ['0.39.1']
+          examples: ['0.40.0']
     Self:
       type: object
       required: [organization, principal_type, principal_id, role, administers, holds_own_credentials]
@@ -1092,7 +1092,7 @@ components:
             administrative audience, which the REST API and `/mcp` refuse.
     User:
       type: object
-      required: [id, email, role, created_at, disabled_at, has_password, shared]
+      required: [id, email, role, created_at, disabled_at, has_password, shared, external_id]
       properties:
         id:         { type: string, format: uuid }
         email:      { type: string, format: email }
@@ -1109,6 +1109,12 @@ components:
           description: >
             Whether a local password is set at all — false is an SSO-only
             account. Never the hash, and never anything derived from it.
+        external_id:
+          type: [string, 'null']
+          description: >
+            The identity provider subject this person is linked to, or null.
+            It decides whether an identity provider can sign in as them, so it
+            is shown rather than only settable.
         shared:
           type: boolean
           description: |
@@ -1130,7 +1136,7 @@ components:
             recoverable from anywhere — issue a new one instead.
     Group:
       type: object
-      required: [id, name, created_at, member_count]
+      required: [id, name, created_at, member_count, external_id]
       properties:
         id:         { type: string, format: uuid }
         name:       { type: string }
@@ -1138,6 +1144,11 @@ components:
         member_count:
           type: integer
           description: 'Direct members. A nested group counts as one, not as its members.'
+        external_id:
+          type: [string, 'null']
+          description: >
+            A directory's id for this group — what SCIM addresses it by. Unique
+            in the organization; null until linked.
     GroupMember:
       type: object
       required: [type, id, label]
@@ -3889,6 +3900,18 @@ paths:
               properties:
                 email: { type: string, format: email }
                 role:  { type: string, enum: [member, org_admin], default: member }
+                external_id:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: >
+                    The subject an identity provider names this person by — the
+                    `sub` the SSO and EMA modules match an assertion against,
+                    and SCIM matches members by. Exactly as the provider sends
+                    it: not trimmed, not case-folded. Unique in the
+                    organization (409). Linking one is letting that provider
+                    sign in as this person, so a `platform_admin` is refused
+                    (403), as for every other act on that account.
                 shared:
                   type: boolean
                   default: false
@@ -3939,16 +3962,20 @@ paths:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     patch:
-      summary: Change a user's role, or disable and re-enable them
+      summary: Change a user's role, enabled state or identity provider subject
       description: >
-        One operation for both, because the last-administrator guard has to see
-        both: demoting the only `org_admin` and disabling them leave the
-        organization in the same place, and two entry points with one check
-        between them is how the guarded one gets routed around.
+        One operation for all three, because the last-administrator guard has
+        to see role and state together: demoting the only `org_admin` and
+        disabling them leave the organization in the same place, and two entry
+        points with one check between them is how the guarded one gets routed
+        around.
 
 
         `disabled: false` is the only way back from `DELETE`, which is why this
-        exists beside it rather than instead of it.
+        exists beside it rather than instead of it. `external_id` links the
+        person to the subject an identity provider signs them in as, and `null`
+        unlinks them; until 0.40.0 nothing but SQL could, so the SSO module
+        could not be configured through the API.
       requestBody:
         required: true
         content:
@@ -3959,15 +3986,20 @@ paths:
               properties:
                 role:     { type: string, enum: [member, org_admin] }
                 disabled: { type: boolean }
+                external_id:
+                  type: [string, 'null']
+                  minLength: 1
+                  maxLength: 255
+                  description: The identity provider subject to link, or null to unlink. See `POST /users`.
       responses:
         '204': { description: Updated }
-        '400': { description: 'Neither field was given, or one is the wrong type' }
+        '400': { description: 'No field was given, or one is the wrong type' }
         '409':
           description: >
-            The change would leave the organization with no active org_admin.
-            Not a 404: the caller is looking straight at this user, so the
-            answer is about the organization's state rather than about what they
-            can see.
+            The change would leave the organization with no active org_admin,
+            or the external id is already linked to another user here. Not a
+            404: the caller is looking straight at this user, so the answer is
+            about the organization's state rather than about what they can see.
         '403':
           description: >
             The target holds `platform_admin`. That role administers the
@@ -4093,16 +4125,47 @@ paths:
               required: [name]
               properties:
                 name: { type: string, description: Unique within the organization }
+                external_id:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: A directory's id for this group, which SCIM addresses it by. Unique within the organization.
       responses:
         '201':
           description: Created
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Group' }
-        '400': { description: "'name' is missing or empty" }
-        '409': { description: 'The name is already in use in this organization' }
+        '400': { description: "'name' is missing or empty, or 'external_id' is malformed" }
+        '409': { description: 'The name, or the external id, is already in use in this organization' }
         '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
   /groups/{id}:
+    patch:
+      summary: Link a group to a directory's id, or unlink it
+      description: >
+        The id SCIM addresses the group by — `PATCH /v1/admin/scim/Groups/{externalId}`
+        in the SSO module — so a directory can keep its membership in step. The
+        one change a group takes: its name is what grants are issued by and what
+        a person reads.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [external_id]
+              properties:
+                external_id:
+                  type: [string, 'null']
+                  minLength: 1
+                  maxLength: 255
+      responses:
+        '204': { description: 'Linked, or unlinked' }
+        '400': { description: "'external_id' is missing or malformed" }
+        '409': { description: 'Another group in this organization already has that external id' }
+        '404': { $ref: '#/components/responses/NotFoundOrForbidden' }
     delete:
       summary: Delete a group, and the grants issued to it
       description: >

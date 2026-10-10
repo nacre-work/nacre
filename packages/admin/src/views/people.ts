@@ -105,6 +105,10 @@ function userTable(users: readonly User[], root: HTMLElement): HTMLElement {
           // at all — an administrator who ticked that box has no other way to
           // see it afterwards, and the row is where they would look.
           u.shared ? h('span', { class: 'tag' }, 'shared') : null,
+          // Tied to an identity provider's subject. Shown because setting that
+          // up is a pass over a list of people, and the list is where somebody
+          // checks how far through it they are; Edit says which subject.
+          u.externalId === null ? null : h('span', { class: 'tag' }, 'linked'),
         ),
         h('td', {}, h('span', { class: 'slug' }, u.role)),
         // The id, because issuing a grant to one person takes it.
@@ -137,11 +141,16 @@ function groupTable(groups: readonly Group[], root: HTMLElement): HTMLElement {
     ),
     h('tbody', {}, ...groups.map((g) =>
       h('tr', {},
-        h('td', {}, g.name),
+        h('td', {}, g.name,
+          // What a directory sync writes into. Unlinked, a SCIM push naming it
+          // finds no group at all.
+          g.externalId === null ? null : h('span', { class: 'tag' }, 'linked'),
+        ),
         h('td', {}, copyableId(g.id)),
         h('td', { class: 'num tabular' }, String(g.memberCount)),
         h('td', { class: 'right' },
           h('button', { class: 'btn btn-quiet', onclick: () => void membersPanel(g, root) }, 'Members'),
+          h('button', { class: 'btn btn-quiet', onclick: () => linkGroup(g, root) }, 'Link'),
           h('button', {
             class: 'btn btn-quiet btn-danger',
             onclick: () => confirmDeleteGroup(g, root),
@@ -167,6 +176,9 @@ function openUser(root: HTMLElement): void {
       message.className = 'form-message'
       message.textContent = 'Creating…'
       try {
+        // No subject here: this dialog already fills a short laptop screen, and
+        // linking is a second step on Edit — the CLI and the API take it at
+        // creation for anybody onboarding a list.
         const created = await client().users.create(
           email.value.trim(),
           role.value === 'org_admin' ? 'org_admin' : 'member',
@@ -215,6 +227,8 @@ function editUser(user: User, root: HTMLElement): void {
   role.value = user.role === 'org_admin' ? 'org_admin' : 'member'
   const enabled = h('input', { type: 'checkbox' })
   enabled.checked = user.disabledAt === null
+  const subject = h('input', { class: 'input', placeholder: 'not linked' }) as HTMLInputElement
+  subject.value = user.externalId ?? ''
   const message = h('p', { class: 'form-message' })
 
   const dialog = h('dialog', { class: 'dialog' },
@@ -223,9 +237,15 @@ function editUser(user: User, root: HTMLElement): void {
       message.className = 'form-message'
       message.textContent = 'Saving…'
       try {
+        // Sent only when it changed, so saving a role does not write the
+        // subject back into the access log as though it had been set again.
+        // Emptied, it unlinks.
+        const typed = subject.value.trim()
+        const externalId = typed === '' ? null : typed
         const done = await client().users.update(user.id, {
           role: role.value === 'org_admin' ? 'org_admin' : 'member',
           disabled: !enabled.checked,
+          ...(externalId === user.externalId ? {} : { externalId }),
         })
         if (!done) {
           message.className = 'form-message error'
@@ -243,9 +263,12 @@ function editUser(user: User, root: HTMLElement): void {
     } },
       h('h2', {}, user.email),
       h('label', { class: 'field' }, h('span', {}, 'Role'), role),
-      h('label', { class: 'field inline' }, enabled, h('span', {}, 'Can sign in')),
       h('p', { class: 'hint' },
         'platform_admin is not issued here — it administers the installation rather than this organization.'),
+      h('label', { class: 'field' }, h('span', {}, 'Identity provider subject'), subject),
+      h('p', { class: 'hint' },
+        'The sub claim your identity provider signs this person in with. Empty, no identity provider can sign in as them; their password, if they have one, still works.'),
+      h('label', { class: 'field inline' }, enabled, h('span', {}, 'Can sign in')),
       message,
       h('div', { class: 'dialog-actions' },
         h('button', { type: 'button', class: 'btn', onclick: () => dialog.close() }, 'Cancel'),
@@ -364,6 +387,60 @@ function openGroup(root: HTMLElement): void {
       h('div', { class: 'dialog-actions' },
         h('button', { type: 'button', class: 'btn', onclick: () => dialog.close() }, 'Cancel'),
         h('button', { type: 'submit', class: 'btn btn-primary' }, 'Create'),
+      ),
+    ),
+  )
+
+  document.body.append(dialog)
+  dialog.addEventListener('close', () => dialog.remove())
+  dialog.showModal()
+}
+
+/**
+ * Tie a group to the id a directory sync addresses it by, or untie it.
+ *
+ * A SCIM push names a group by that id and replaces its members; until this
+ * existed the id could be written only with SQL. One id belongs to one group —
+ * the server's `409` says which, and it is shown as it came.
+ */
+function linkGroup(group: Group, root: HTMLElement): void {
+  const directoryId = h('input', { class: 'input', placeholder: 'not linked' }) as HTMLInputElement
+  directoryId.value = group.externalId ?? ''
+  const message = h('p', { class: 'form-message' })
+
+  const dialog = h('dialog', { class: 'dialog' },
+    h('form', { method: 'dialog', onsubmit: async (e: Event) => {
+      e.preventDefault()
+      const typed = directoryId.value.trim()
+      const externalId = typed === '' ? null : typed
+      if (externalId === group.externalId) {
+        dialog.close()
+        return
+      }
+      message.className = 'form-message'
+      message.textContent = 'Saving…'
+      try {
+        const done = await client().groups.link(group.id, externalId)
+        if (!done) {
+          message.className = 'form-message error'
+          message.textContent = 'No such group, or this token may not administer this organization.'
+          return
+        }
+        dialog.close()
+        void peopleView(root)
+      } catch (error) {
+        message.className = 'form-message error'
+        message.textContent = explain(error)
+      }
+    } },
+      h('h2', {}, `Link ${group.name} to a directory`),
+      h('label', { class: 'field' }, h('span', {}, 'Directory id'), directoryId),
+      h('p', { class: 'hint' },
+        'The id your directory sends this group as. A sync naming it replaces the people in the group with the directory\'s list; nested groups and the grants issued here stay as they are. Empty, a sync no longer reaches it.'),
+      message,
+      h('div', { class: 'dialog-actions' },
+        h('button', { type: 'button', class: 'btn', onclick: () => dialog.close() }, 'Cancel'),
+        h('button', { type: 'submit', class: 'btn btn-primary' }, 'Save'),
       ),
     ),
   )

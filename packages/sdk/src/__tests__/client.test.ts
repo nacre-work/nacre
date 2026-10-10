@@ -138,6 +138,35 @@ describe('NacreClient', () => {
     expect(self.holdsOwnCredentials).toBe(false)
   })
 
+  it('reads and writes external_id, the field SSO and SCIM match on', async () => {
+    // The server's own field name, and a null that stays null rather than
+    // becoming the string "null" — an account linked to nothing is not one
+    // linked to a subject called that.
+    const listed = await client(stub(json(200, {
+      items: [
+        { id: 'u-1', email: 'a@x', role: 'member', created_at: 't', disabled_at: null, has_password: true, shared: false, external_id: 'okta|a' },
+        { id: 'u-2', email: 'b@x', role: 'member', created_at: 't', disabled_at: null, has_password: false, shared: false, external_id: null },
+      ],
+      next_cursor: null,
+    })).fetchImpl).users.list()
+    expect(listed.map((u) => u.externalId)).toEqual(['okta|a', null])
+
+    const { fetchImpl, calls } = stub(new Response(null, { status: 204 }))
+    const nacre = client(fetchImpl)
+    expect(await nacre.users.update('u-1', { externalId: 'okta|b' })).toBe(true)
+    expect(await nacre.users.update('u-1', { externalId: null })).toBe(true)
+    expect(await nacre.users.update('u-1', { role: 'member' })).toBe(true)
+    expect(await nacre.groups.link('g-1', 'dir-7')).toBe(true)
+    expect(calls.map((c) => [c.method, new URL(c.url).pathname, c.body])).toEqual([
+      ['PATCH', '/v1/users/u-1', { external_id: 'okta|b' }],
+      ['PATCH', '/v1/users/u-1', { external_id: null }],
+      // A change that does not name it does not send it, or a role change
+      // would unlink everybody it touched.
+      ['PATCH', '/v1/users/u-1', { role: 'member' }],
+      ['PATCH', '/v1/groups/g-1', { external_id: 'dir-7' }],
+    ])
+  })
+
   it('maps manages_embedders in the two directions that hide the screen', async () => {
     // `manages_embedders: true` is the only value that draws the embedder
     // screen. An older API that never sends the field, and a managed platform
