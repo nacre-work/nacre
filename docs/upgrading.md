@@ -285,6 +285,18 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.38.1 — the Layers screen by permission
+
+**Nothing to do.** The Layers screen offered **Rename**, **Model** and
+**Delete** on every row to whoever could see the row, so a member who only
+reads a layer was shown three controls the server refuses them. It offers each
+where the caller may use it now: renaming and deleting need `admin` on the
+layer's workspace, moving a layer onto another model needs `admin` on the layer,
+and **Skill** stays on every row because reading a skill needs only seeing the
+layer. Nothing about what the server permits changed — the refusals were always
+there, and this is the screen stopping offering them. `Layer` in the SDK carries
+`workspaceId`, which the server has always sent as `workspace_id`.
+
 ### 0.38.0 — a security release
 
 **One migration, and three things to check if they describe you.** Migration

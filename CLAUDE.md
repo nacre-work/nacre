@@ -3633,6 +3633,19 @@ rather than all of `.env`, every workflow declares its token, third-party
 actions are pinned, a skill proposal shows every file it would write, and
 decided proposals are pruned with the access log.
 
+**The Layers screen offered a reader four controls it would refuse three of —
+0.38.1.** Rename, Model and Delete were drawn on every row the caller could
+see, so a member who only reads was offered the whole administrative column
+and got a refusal from each. Found by walking the console as a member to write
+its manual, which is the fifth defect this console has surfaced by being looked
+at rather than tested — and the screenshot pass could not have seen it, because
+its only Layers shot was taken as an `org_admin`, for whom every control is
+true. Each control asks the fact its route asks now: the workspace's `admin`
+for renaming and deleting, the layer's `admin` for a model, and nothing for a
+skill, which is visible exactly when the layer is. `layers-member` is the shot
+that was missing, and it throws on the first refused control rather than
+photographing it; the shipped view named `Rename` the moment it was put back.
+
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.
