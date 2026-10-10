@@ -1588,13 +1588,17 @@ export class PostgresJobs implements Jobs {
         // Reachable through either permission, checked independently. A caller
         // holding `read` on one layer and `write` on another sees the fate of
         // documents in both, and of nothing else.
-        const reaches = (plan: ReturnType<typeof resolver.resolve>): boolean => {
+        //
+        // And inside the narrowing for that same permission, or a token
+        // narrowed to L reads the fate of M's documents — T43.
+        const reaches = (plan: ReturnType<typeof resolver.resolve>, permission: 'read' | 'write'): boolean => {
+          if (!withinDelegation(auth, row.layer_id, permission)) return false
           if (plan.kind === 'none') return false
           if (plan.kind === 'all') return true
           if (plan.deniedDocs.includes(jobId)) return false
           return plan.layers.includes(row.layer_id) || plan.extraDocs.includes(jobId)
         }
-        if (!reaches(readable) && !reaches(writable)) return undefined
+        if (!reaches(readable, 'read') && !reaches(writable, 'write')) return undefined
 
         const status = (
           ['queued', 'parsing', 'embedding', 'indexed', 'failed'].includes(row.status)
@@ -1720,6 +1724,48 @@ export async function contextFor(
  * ceiling consulted after that line would not bound the one principal it
  * exists for.
  */
+/**
+ * Whether a delegation's narrowing admits these scopes, for one permission.
+ *
+ * The narrowing was enforced wherever a layer id and a *document* meet — as a
+ * `must` on search and as a refusal on the paths that hold one row — and not on
+ * the paths that hold a layer id and no document: renaming and deleting a
+ * layer, issuing, revoking and listing grants, starting a reindex, the
+ * reference queries, a job's status and a reindex's. So a token a person
+ * narrowed to L could delete M. T42 and T43.
+ *
+ * A workspace is admitted only where there is no narrowing at all: a grant on
+ * one reaches every layer in it, so a narrowed token issuing one would widen
+ * itself. A document is admitted through its layer, read in one statement for
+ * the whole set. With no narrowing every scope is admitted and nothing is read.
+ */
+async function narrowingAdmits(
+  client: PoolClient,
+  auth: AuthContext,
+  scopes: readonly { readonly type: string; readonly id: string }[],
+  permission: import('@nacre.work/core').Permission,
+): Promise<(scope: { readonly type: string; readonly id: string }) => boolean> {
+  const admitted = delegatedLayers(auth, permission)
+  if (admitted === undefined) return () => true
+  const documentIds = scopes.filter((scope) => scope.type === 'document').map((scope) => scope.id)
+  const layerOf = new Map<string, string>()
+  if (documentIds.length > 0) {
+    const { rows } = await client.query<{ id: string; layer_id: string }>(
+      'SELECT id, layer_id FROM documents WHERE org_id = $1 AND id = ANY($2::uuid[])',
+      [auth.orgId, documentIds],
+    )
+    for (const row of rows) layerOf.set(row.id, row.layer_id)
+  }
+  return (scope) => {
+    if (scope.type === 'layer') return admitted.includes(scope.id)
+    if (scope.type === 'document') {
+      const layer = layerOf.get(scope.id)
+      return layer !== undefined && admitted.includes(layer)
+    }
+    return false
+  }
+}
+
 function ceilingOf(auth: AuthContext): { ceiling?: readonly import('@nacre.work/core').Permission[] } {
   const ceiling = auth.delegation?.permissions
   // `skill` stripped, because it is not a permission and `resolve` must never
@@ -1932,8 +1978,10 @@ export class PostgresLayers implements Layers {
 
         // Admin on the workspace, exactly as renaming asks. Checked after the
         // lookup so a caller who may not administer it gets the same answer
-        // whether or not the layer exists.
+        // whether or not the layer exists. And the layer inside the
+        // narrowing, or a token narrowed to L deletes M — T42.
         if (!referenceAllows(context, { type: 'workspace', id: workspaceId }, 'admin')) return false
+        if (!withinDelegation(auth, layerId, 'admin')) return false
 
         // The index first, then the rows — the same order the document delete
         // uses and for the same reason. One `setPayload` filtered on layer_id,
@@ -1992,6 +2040,9 @@ export class PostgresLayers implements Layers {
         if (!referenceAllows(context, { type: 'workspace', id: input.workspaceId }, 'admin')) {
           return { kind: 'denied' }
         }
+        // A narrowed token creates nothing: the layer it would make is one no
+        // narrowing written before it can name. T42.
+        if (delegatedLayers(auth, 'admin') !== undefined) return { kind: 'denied' }
 
         // Checked after the permission, so a caller who may not administer the
         // workspace gets the same answer whether or not it exists.
@@ -2593,6 +2644,8 @@ async function updateLayer(
       // inferring it from the layers a plan happens to contain gets an empty
       // workspace wrong.
       if (!referenceAllows(context, { type: 'workspace', id: workspaceId }, 'admin')) return false
+      // And the layer inside the narrowing, or a token narrowed to L renames M.
+      if (!withinDelegation(auth, layerId, 'admin')) return false
 
       // COALESCE, so an absent field is left alone rather than blanked. PATCH
       // changes what it names; a missing key is not an instruction to erase.
@@ -2687,13 +2740,20 @@ export class PostgresGrants implements Grants {
           params,
         )
 
+        const inNarrowing = await narrowingAdmits(
+          client,
+          auth,
+          rows.map((r) => ({ type: r.scope_type, id: r.scope_id })),
+          'admin',
+        )
         const visible = rows
-          .filter((r) =>
-            referenceAllows(
-              context,
-              { type: r.scope_type as 'workspace' | 'layer' | 'document', id: r.scope_id },
-              'admin',
-            ),
+          .filter(
+            (r) =>
+              referenceAllows(
+                context,
+                { type: r.scope_type as 'workspace' | 'layer' | 'document', id: r.scope_id },
+                'admin',
+              ) && inNarrowing({ type: r.scope_type, id: r.scope_id }),
           )
           .map((r) => ({
             id: r.id,
@@ -2738,6 +2798,10 @@ export class PostgresGrants implements Grants {
         if (!referenceAllows(context, { type: input.scopeType, id: input.scopeId }, 'admin')) {
           return undefined
         }
+        // And inside the narrowing: a token narrowed to L grants nothing on M,
+        // and nothing on a workspace, which would reach M too. T42.
+        const scope = { type: input.scopeType, id: input.scopeId }
+        if (!(await narrowingAdmits(client, auth, [scope], 'admin'))(scope)) return undefined
 
         // And the scope has to exist in this organization, which the check
         // above does not establish. `referenceAllows` returns `true` for
@@ -2872,6 +2936,7 @@ export class PostgresGrants implements Grants {
           id: row.scope_id,
         }
         if (!referenceAllows(context, scope, 'admin')) return false
+        if (!(await narrowingAdmits(client, auth, [scope], 'admin'))(scope)) return false
 
         const result = await client.query(`DELETE FROM grants WHERE org_id = $1 AND id = $2`, [
           auth.orgId,
@@ -3243,6 +3308,7 @@ export class PostgresReindex implements Reindex {
         // documents in rather than about the layer itself.
         const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'admin')
         if (plan.kind === 'none') return undefined
+        if (!withinDelegation(auth, layerId, 'admin')) return undefined
 
         // Locked for the whole decision. Two starts arriving together would
         // both read "no reindex running" and both write a state, and the loser
@@ -3389,6 +3455,8 @@ export class PostgresReindex implements Reindex {
         // the layer buys nothing.
         const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'read')
         if (plan.kind === 'none') return undefined
+        // Inside the narrowing too: a reindex's state is a fact about M. T43.
+        if (!withinDelegation(auth, layerId, 'read')) return undefined
 
         const { rows } = await client.query<{
           id: string
@@ -3508,6 +3576,7 @@ export class PostgresReferenceQueries implements ReferenceQueries {
     const plan = activeResolver().resolve(await contextFor(client, auth, this.principalsCache), 'admin')
     if (plan.kind === 'none') return false
     if (plan.kind === 'scoped' && !plan.layers.includes(layerId)) return false
+    if (!withinDelegation(auth, layerId, 'admin')) return false
 
     const { rows } = await client.query<{ id: string }>(
       'SELECT id FROM layers WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL',

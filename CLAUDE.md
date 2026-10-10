@@ -1393,7 +1393,7 @@ requiredness — are narrow enough to be defeated by rewording, which is the
 shape of check this repository keeps deleting. `grep` found the other three
 copies, and they were correct.
 
-**Every case of T1–T41 in docs/authz.md runs** — all forty-one, since notifications closed T35 — against real services, plus the truth
+**Every case of T1–T44 in docs/authz.md runs** — all forty-four, since the security review added T42–T44 — against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
 round trip that puts the worker and the search path against each other.
 `acl-invariants` is a gate on what that document specifies — and only on that.

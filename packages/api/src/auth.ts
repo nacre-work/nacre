@@ -206,7 +206,11 @@ export function delegationPermits(auth: AuthContext, permission: Permission): bo
  * repository keeps re-deriving.
  */
 export function administers(auth: AuthContext): boolean {
-  return auth.role === 'org_admin' && delegationPermits(auth, 'admin')
+  // And never a narrowed delegation. Administering the organization — people,
+  // groups, agents, providers — happens inside no layer, so a token a person
+  // restricted to layer L that could mint an `org_admin` and read back its
+  // generated password would leave the narrowing in one request. T44.
+  return auth.role === 'org_admin' && delegationPermits(auth, 'admin') && auth.delegation?.layers === undefined
 }
 
 /**
