@@ -48,7 +48,8 @@ components:
           type: boolean
           default: true
           description: >
-            false omits `text` from every hit, leaving ids and scores. Applied
+            false sends every hit's `text` as an empty string, leaving ids and
+            scores. The field stays, so a hit has one shape either way. Applied
             after reranking, because a reranker scores the query against the
             text.
         filters:
