@@ -1947,9 +1947,13 @@ function resourceFor(method: string, instance: string): Resource | undefined {
  * repeat by definition, so idempotency bought it nothing in the first place.
  *
  * The test for adding a path: **would the response be a problem in a cache
- * dump?** If a response is only ever shown once on purpose, or is assembled
- * from what one caller in particular may read, it does not go in a store with a
- * 24-hour TTL and no access control of its own.
+ * dump?** A response assembled from what one caller in particular may read
+ * belongs here. One that is shown once on purpose — a key, a password, a token
+ * pair, a second factor's secret — no longer needs to be listed: the cache
+ * refuses any body carrying a credential field, whichever route produced it
+ * (`CREDENTIAL_FIELDS` in idempotency.ts). That rule exists because this list
+ * was the only one, and five routes added after the service account key's
+ * entry were not on it.
  */
 const NEVER_CACHED: readonly string[] = ['/v1/service-accounts', '/v1/documents', '/v1/search', '/v1/uploads']
 
