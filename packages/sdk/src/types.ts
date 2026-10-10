@@ -619,7 +619,8 @@ export interface Proposal {
   /** The module that registered the tool; null for the core's own. */
   readonly module: string | null
   readonly summary: string
-  readonly details: readonly { readonly label: string; readonly value: string }[]
+  /** `text` marks a file's whole text, to be shown with its line breaks — a skill proposal's files. */
+  readonly details: readonly { readonly label: string; readonly value: string; readonly text?: boolean }[]
   readonly createdAt: string
   readonly expiresAt: string
   /** The administrative connection it came through. */

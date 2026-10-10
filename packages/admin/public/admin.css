@@ -684,6 +684,20 @@ th.tick {
   color: var(--n-text-faint); align-self: center;
 }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
+/* A file's whole text — what a skill proposal carries, because a skill is what
+   every later agent on the layer follows and the person applying it reads the
+   instructions rather than their paths. The path heads the row as it is
+   spelled, and the text keeps its line breaks in a box that scrolls. */
+.facts dt.file {
+  grid-column: 1 / -1; text-transform: none; letter-spacing: 0;
+  font-size: 12px; color: var(--n-text); padding-top: 6px;
+}
+.facts dd.text {
+  grid-column: 1 / -1; white-space: pre-wrap; overflow-wrap: break-word;
+  font-family: var(--n-font-mono); font-size: 13px; line-height: 1.55;
+  background: var(--n-surface-sunk); border: 1px solid var(--n-border-color);
+  border-radius: var(--n-radius); padding: 10px 12px; max-height: 24em; overflow: auto;
+}
 
 /* ─── Where a client connects ─────────────────────────────────────────── */
 /* The addresses on the Connections screen, each beside the control that takes

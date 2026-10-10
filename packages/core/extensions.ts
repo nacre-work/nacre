@@ -352,6 +352,12 @@ export interface McpToolCall {
 export interface McpProposalDetail {
   readonly label: string
   readonly value: string
+  /**
+   * The value is a file's text, shown whole with its line breaks rather than as
+   * one line. What a skill proposal carries: the person applying it reads the
+   * instructions every later agent will follow, not a list of their paths.
+   */
+  readonly text?: boolean
 }
 
 /**

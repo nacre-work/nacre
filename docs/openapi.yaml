@@ -850,6 +850,12 @@ components:
             properties:
               label: { type: string }
               value: { type: string }
+              text:
+                type: boolean
+                description: |
+                  The value is a file's text, to be shown whole with its line
+                  breaks. A skill proposal carries every file this way, because
+                  a skill is what every later agent on the layer follows.
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
         connection:
