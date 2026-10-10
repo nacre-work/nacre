@@ -330,6 +330,11 @@ sends more than ten requests a second as one principal.**
 - **The SDK honours `Retry-After`** on a retried `429` or `503`, up to ten
   seconds, and hands a longer wait back as `NacreError.retryAfter` rather than
   sleeping through it.
+- **A module can hold an organization to limits of its own** through the eighth
+  extension point, `registerRateLimits` — a total across everybody in it, and
+  its own per-caller, search and ingest numbers. Nothing changes without one:
+  the open core does not count an organization's total at all. `tenancy` is
+  the module that uses it.
 
 **Migration `0044`** adds three columns to `oauth_clients`, an index on it, and
 indexes on `client_id` in `oauth_consents` and `oauth_authorizations`, which

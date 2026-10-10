@@ -446,6 +446,17 @@ A refusal is written to the access log once per window as `rate_limited`, not
 once per refusal: the log is per request, and a client hammering a limit would
 otherwise turn the limit into the way the log is flooded.
 
+**There is no limit on an organization's total here, and that is deliberate.**
+With one organization a total would be a ceiling on the whole installation,
+which can only refuse somebody the hardware could have served; the per-caller
+budget already stops the loop it would exist for. An installation serving
+several organizations needs one, so that one tenant cannot take the
+installation away from the others, and it comes with the module that makes an
+installation serve several: `tenancy` sets a default total per organization and
+lets a platform administrator set any organization's limits — its total, its
+per-caller budget, its search and ingest — on the Organizations screen.
+`docs/extensions.md`, `registerRateLimits`, is how.
+
 ### The limits apply to MCP too
 
 `NACRE_RATE_SEARCH_PER_MIN` and `NACRE_RATE_INGEST_PER_HOUR` used to apply to

@@ -96,6 +96,7 @@ describe('the default registry', () => {
       gates: [],
       signIn: [],
       mcpTools: [],
+      rateLimits: null,
     })
   })
 
@@ -308,6 +309,7 @@ describe('loadModules', () => {
       gates: [],
       signIn: [],
       mcpTools: [],
+      rateLimits: null,
     })
   })
 
@@ -358,6 +360,7 @@ describe('loadModules', () => {
       gates: ['tenancy:quota'],
       signIn: ['tenancy:policy'],
       mcpTools: [],
+      rateLimits: null,
     })
   })
 })

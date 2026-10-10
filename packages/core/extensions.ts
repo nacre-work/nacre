@@ -15,7 +15,11 @@ import { auditClient } from './audit.js'
  * and correct with no gate registered. The sixth, `registerSignInGate`, is the
  * same direction again: both kinds of second factor are individually opt-in and
  * an organization had no way to *require* one, so the point is declared here
- * and the policy that uses it is a module.
+ * and the policy that uses it is a module. The seventh adds administrative MCP
+ * tools. The eighth, `registerRateLimits`, is the limiter's: the core counts
+ * every caller against the installation's limits, and an installation serving
+ * several organizations needs to hold each to its own — which only something
+ * that knows there are several can say.
  *
  * `nacre-enterprise` has named these since before there was a module to write —
  * `registerAuthProvider`, `registerAuthzResolver`, `registerAuditSink`,
@@ -462,6 +466,42 @@ export class McpToolRefusal extends Error {
   }
 }
 
+/**
+ * What an organization's rate limits can be set for. docs/extensions.md,
+ * `registerRateLimits`.
+ *
+ * - `requests` — every request, per caller inside the organization.
+ * - `org_requests` — every request of every caller in it, together. The core
+ *   counts it only where a source names a limit: with one organization it would
+ *   be a ceiling on the whole installation, and the only thing such a ceiling
+ *   can do there is refuse somebody the hardware could have served.
+ * - `search`, `ingest` — per organization, as the installation counts them.
+ *
+ * Sign-in and client registration are deliberately absent: both are counted
+ * before anybody has said which organization they belong to.
+ */
+export type OrganizationLimit = 'requests' | 'org_requests' | 'search' | 'ingest'
+
+/**
+ * Where an organization's rate limits come from, when they are not the
+ * installation's.
+ *
+ * **Called on every request, synchronously.** A source answers from memory it
+ * keeps fresh on its own clock, never from a query: the limiter exists to keep
+ * the server answering, and one that waited on a database to decide would be
+ * the thing a flood stalls first.
+ *
+ * A resource absent from the answer keeps the installation's limit, and an
+ * answer of `undefined` keeps all of them. A value that is not a positive
+ * integer is ignored rather than trusted — a zero read as "refuse everything"
+ * would be an outage typed into a form. A source that throws is ignored too: a
+ * rate limit fails open, for the reason the limiter gives.
+ */
+export interface RateLimitSource {
+  readonly name: string
+  limitsFor(orgId: string): Partial<Readonly<Record<OrganizationLimit, number>>> | undefined
+}
+
 /** Names a module tool may take: the same shape the proposal table admits. */
 const MCP_TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/
 
@@ -473,6 +513,7 @@ interface Registry {
   readonly gates: { module: string; value: IngestGate }[]
   readonly signIn: { module: string; value: SignInGate }[]
   readonly mcp: { module: string; surface: McpSurface; value: McpTool }[]
+  rateLimits: { readonly module: string; readonly value: RateLimitSource } | undefined
 }
 
 const registry: Registry = {
@@ -483,6 +524,7 @@ const registry: Registry = {
   gates: [],
   signIn: [],
   mcp: [],
+  rateLimits: undefined,
 }
 
 /** Which module is registering, or `undefined` when registration is closed. */
@@ -535,6 +577,48 @@ export function registerIngestGate(gate: IngestGate): void {
 
 export function registerSignInGate(gate: SignInGate): void {
   registry.signIn.push({ module: mustBeLoading('a sign-in gate'), value: gate })
+}
+
+/**
+ * Hold organizations to limits of their own. docs/extensions.md,
+ * `registerRateLimits`.
+ *
+ * One source, and a second is refused rather than layered: two answers to "what
+ * may this organization send" settled by precedence would leave the loser
+ * loaded, configured and ignored — the second-resolver failure again.
+ */
+export function registerRateLimits(source: RateLimitSource): void {
+  const module = mustBeLoading('a rate-limit source')
+  if (registry.rateLimits !== undefined) {
+    throw new ExtensionError(
+      `two rate-limit sources were registered — ${registry.rateLimits.module} and ${module}. ` +
+        'An organization has one set of limits. Load one.',
+    )
+  }
+  registry.rateLimits = { module, value: source }
+}
+
+/**
+ * The limits a module holds this organization to, cleaned: only positive
+ * integers survive, and a source that throws answers nothing. `undefined` where
+ * no module is loaded, which is the open core.
+ */
+export function organizationLimits(orgId: string): Partial<Readonly<Record<OrganizationLimit, number>>> | undefined {
+  const source = registry.rateLimits?.value
+  if (source === undefined) return undefined
+  let raw: Partial<Readonly<Record<OrganizationLimit, number>>> | undefined
+  try {
+    raw = source.limitsFor(orgId)
+  } catch {
+    return undefined
+  }
+  if (raw === undefined) return undefined
+  const kept: Partial<Record<OrganizationLimit, number>> = {}
+  for (const key of ['requests', 'org_requests', 'search', 'ingest'] as const) {
+    const value = raw[key]
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) kept[key] = value
+  }
+  return kept
 }
 
 /**
@@ -833,6 +917,7 @@ export function loadedExtensions(): {
   gates: string[]
   signIn: string[]
   mcpTools: string[]
+  rateLimits: string | null
 } {
   return {
     resolver: registry.resolver?.module ?? null,
@@ -842,6 +927,7 @@ export function loadedExtensions(): {
     gates: registry.gates.map((g) => `${g.module}:${g.value.name}`),
     signIn: registry.signIn.map((g) => `${g.module}:${g.value.name}`),
     mcpTools: registry.mcp.map((t) => `${t.module}:${t.surface}.${t.value.name}`),
+    rateLimits: registry.rateLimits === undefined ? null : `${registry.rateLimits.module}:${registry.rateLimits.value.name}`,
   }
 }
 
@@ -861,6 +947,7 @@ export function resetExtensionsForTests(): void {
   registry.gates.length = 0
   registry.signIn.length = 0
   registry.mcp.length = 0
+  registry.rateLimits = undefined
   loading = undefined
 }
 

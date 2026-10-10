@@ -52,6 +52,7 @@ when('rate limiting', () => {
       redis,
       policies: {
         requests: { limit, windowSeconds: 60 },
+        org_requests: { limit, windowSeconds: 60 },
         search: { limit, windowSeconds: 60 },
         ingest: { limit, windowSeconds: 3600 },
         login: { limit, windowSeconds: 900 },

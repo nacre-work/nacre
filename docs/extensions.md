@@ -1,6 +1,6 @@
 # Extension points
 
-Normative. Seven points a module outside this repository plugs into, the loader
+Normative. Eight points a module outside this repository plugs into, the loader
 that gets it in, one seam in the console that is not a registry at all, and what
 the core refuses.
 
@@ -55,7 +55,8 @@ and the route count:
 ```
 api listening port=8080 extensions={"resolver":"@nacre.work/enterprise-tenancy",
   "providers":["@nacre.work/enterprise-sso:oidc"],"sinks":[],"routes":4,
-  "gates":[],"signIn":["@nacre.work/enterprise-tenancy:second-factor"]}
+  "gates":[],"signIn":["@nacre.work/enterprise-tenancy:second-factor"],
+  "rateLimits":"@nacre.work/enterprise-tenancy:limits"}
 ```
 
 A module that imports cleanly and registers nothing is the failure worth seeing,
@@ -453,9 +454,65 @@ the core evaluates and refuses to issue, become proposals on the administrative
 surface where the module is loaded — and its document listing opens the grants
 panel with a form to give or deny access to a document.
 
+## `registerRateLimits(source)`
+
+The limits an organization is held to, where they are not the installation's.
+
+```ts
+type OrganizationLimit = 'requests' | 'org_requests' | 'search' | 'ingest'
+
+interface RateLimitSource {
+  readonly name: string
+  limitsFor(orgId: string): Partial<Record<OrganizationLimit, number>> | undefined
+}
+```
+
+The core counts every authenticated request against its caller (`requests`) and
+the costly ones against the organization (`search`, `ingest`), at the limits
+the installation configures — `docs/config.md`, "Every caller has a budget". An
+installation serving several organizations needs two more things, and only
+something that knows there are several can supply them: a **total per
+organization** across every caller in it (`org_requests`), so one tenant cannot
+take the installation away from the others, and **a different number for a
+particular organization** — a large customer's search allowance, a trial's
+smaller one.
+
+- **`org_requests` is counted only where a source names a limit for the
+  organization.** The open core has one organization, where a total would be a
+  ceiling on the whole installation, and a ceiling there can only refuse
+  somebody the hardware could have served. It has no variable for the same
+  reason.
+- **A source sets how many, never over how long.** Windows stay the
+  installation's, so `RateLimit-Policy` stays comparable between organizations
+  and a counter's key keeps naming one window. Raising a limit mid-window
+  carries the count over rather than handing out a fresh budget.
+- **Sign-in and client registration cannot be set.** Both are counted before
+  anybody has said which organization they belong to.
+- **`limitsFor` is synchronous and called on every request**, on REST and on
+  both MCP surfaces. Answer from memory kept fresh on the module's own clock,
+  never from a query: a limiter that waits on a database to decide is the first
+  thing a flood stalls.
+- **Only positive integers are taken.** Anything else — zero, a negative, a
+  fraction — keeps the installation's limit, because a zero read as "refuse
+  everything" is an outage typed into a form. A source that throws is ignored
+  for that request; a rate limit fails open, for the reason the limiter gives.
+- **One source.** A second is refused at load, naming both, for the reason a
+  second resolver is.
+
+Every request is counted in one order, by one function both surfaces call: the
+caller, then the organization's total, then the operation. Whatever a later
+limit refuses is given back to every earlier one, so a refusal costs nothing,
+and the order decides only which limit the answer names — the narrowest one the
+caller has spent, so a looping agent is told it is its own loop even when its
+organization is full too.
+
+`tenancy` is the caller: an installation-wide default for the organization
+total, and per-organization overrides a platform administrator sets on the
+Organizations screen, beside the quotas.
+
 ## The console's extension file
 
-The seven points above are for the API process. This one is for the browser, and
+The eight points above are for the API process and the MCP transports. This one is for the browser, and
 it is deliberately not a registry: the console is a static bundle in a different
 image, so nothing a module registers in the API process can reach it.
 

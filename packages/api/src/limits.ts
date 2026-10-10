@@ -1,4 +1,4 @@
-import type { Config, Redis } from '@nacre.work/core'
+import { organizationLimits, type Config, type OrganizationLimit, type Redis } from '@nacre.work/core'
 
 /**
  * Rate limiting: per organization for the costly operations, per principal for
@@ -51,6 +51,12 @@ import type { Config, Redis } from '@nacre.work/core'
  *   that keeps a single caller — a runaway agent, a script in a loop — from
  *   taking the server away from everybody else, and it is set high enough that
  *   a person working never meets it.
+ * - `org_requests` counts every request of every caller in an organization
+ *   together. It is what keeps one tenant from taking a shared installation away
+ *   from the others, and it is counted only where a module holds an
+ *   organization to one (`registerRateLimits`): with a single organization it
+ *   would be a ceiling on the whole installation, which can only refuse
+ *   somebody the hardware could have served.
  * - `search` and `ingest` are counted per **organization**, because they are
  *   what costs an embedding call; a per-token limit there is bypassed by issuing
  *   another key.
@@ -68,7 +74,14 @@ import type { Config, Redis } from '@nacre.work/core'
  * Failing open matters more on the sign-in ones rather than less: a cache
  * outage that locked everybody out of signing in would be the outage.
  */
-export type Resource = 'requests' | 'search' | 'ingest' | 'login' | 'login_source' | 'client_registration'
+export type Resource =
+  | 'requests'
+  | 'org_requests'
+  | 'search'
+  | 'ingest'
+  | 'login'
+  | 'login_source'
+  | 'client_registration'
 
 export interface LimitDecision {
   readonly allowed: boolean
@@ -129,12 +142,41 @@ export function limitPoliciesFrom(config: Pick<
 >): Readonly<Record<Resource, LimitPolicy>> {
   return {
     requests: { limit: config.rateRequestsPerMin, windowSeconds: 60 },
+    // Not counted unless a module names a limit for the organization — see
+    // `Resource`. The window is the installation's; the number is the module's.
+    org_requests: { limit: 0, windowSeconds: 60 },
     search: { limit: config.rateSearchPerMin, windowSeconds: 60 },
     ingest: { limit: config.rateIngestPerHour, windowSeconds: 3600 },
     login: { limit: config.rateLoginPer15Min, windowSeconds: 900 },
     login_source: { limit: config.rateLoginSourcePer15Min, windowSeconds: 900 },
     client_registration: { limit: config.rateClientRegistrationPerHour, windowSeconds: 3600 },
   }
+}
+
+/**
+ * The policy a request in this organization is held to, or `undefined` where
+ * it is not counted.
+ *
+ * The window is always the installation's: a module changes how many, never
+ * over how long, so two organizations' `RateLimit-Policy` headers stay
+ * comparable and a key's name keeps meaning one window. A limit of zero is "not
+ * counted", which is how `org_requests` stays off in the open core.
+ */
+export function policyFor(
+  policies: Readonly<Record<Resource, LimitPolicy>>,
+  resource: Resource,
+  orgId?: string,
+): LimitPolicy | undefined {
+  const base = policies[resource]
+  if (base === undefined) return undefined
+  const override =
+    orgId !== undefined && isOrganizationLimit(resource) ? organizationLimits(orgId)?.[resource] : undefined
+  const limit = override ?? base.limit
+  return limit > 0 ? { limit, windowSeconds: base.windowSeconds } : undefined
+}
+
+function isOrganizationLimit(resource: Resource): resource is OrganizationLimit {
+  return resource === 'requests' || resource === 'org_requests' || resource === 'search' || resource === 'ingest'
 }
 
 /** What `requests` is counted against: the principal, inside its organization. */
@@ -178,8 +220,15 @@ export class RateLimiter {
     return this.options.policies[resource]
   }
 
-  async check(subject: string, resource: Resource): Promise<LimitDecision> {
-    const policy = this.options.policies[resource]
+  /**
+   * Count one request against `subject` and say whether it fits.
+   *
+   * `policy` overrides the installation's for this call — an organization a
+   * module holds to its own limit. The key does not change with it, so raising
+   * an organization's limit mid-window carries its count over rather than
+   * handing it a fresh one.
+   */
+  async check(subject: string, resource: Resource, policy: LimitPolicy = this.options.policies[resource]): Promise<LimitDecision> {
     const windowMs = policy.windowSeconds * 1000
     const now = this.options.now?.() ?? Date.now()
     const windowStart = Math.floor(now / windowMs) * windowMs
@@ -286,4 +335,60 @@ export function limitHeaders(
   }
   if (!decision.allowed) headers['retry-after'] = String(decision.reset)
   return headers
+}
+
+/** A request's passage through every limit it counts against. */
+export type Admission =
+  | { readonly allowed: true; readonly headers: Record<string, string> }
+  | {
+      readonly allowed: false
+      readonly headers: Record<string, string>
+      /** The limit that refused, which is what the answer and the access log name. */
+      readonly resource: Resource
+      readonly decision: LimitDecision
+      readonly policy: LimitPolicy
+    }
+
+/**
+ * Count an authenticated request against the caller, then the organization,
+ * then the operation, and say whether it may proceed.
+ *
+ * **One function both surfaces call**, because the order is the rule and two
+ * copies of an order are two chances to disagree about it: REST and MCP spend
+ * one budget, and a request one of them counted in a different sequence would
+ * be refused in different words.
+ *
+ * A request a later limit refuses is given back to every earlier one: refused
+ * costs nothing, whichever limit refused it. That makes the order invisible to
+ * the counts and decisive for the answer — the narrowest subject goes first, so
+ * a caller who has spent their own budget is told it is their own loop even
+ * when their organization is full as well, rather than sent to blame everybody
+ * else in it. The headers are the last limit checked.
+ */
+export async function admitRequest(
+  limits: RateLimiter,
+  policies: Readonly<Record<Resource, LimitPolicy>>,
+  auth: { readonly orgId: string; readonly principal: { readonly type: string; readonly id: string } },
+  operation: Resource | undefined,
+): Promise<Admission> {
+  const steps: { resource: Resource; subject: string }[] = [
+    { resource: 'requests', subject: principalSubject(auth) },
+    { resource: 'org_requests', subject: auth.orgId },
+  ]
+  if (operation !== undefined) steps.push({ resource: operation, subject: auth.orgId })
+
+  const passed: { resource: Resource; subject: string }[] = []
+  let headers: Record<string, string> = {}
+  for (const step of steps) {
+    const policy = policyFor(policies, step.resource, auth.orgId)
+    if (policy === undefined) continue
+    const decision = await limits.check(step.subject, step.resource, policy)
+    headers = limitHeaders(decision, policy, step.resource)
+    if (!decision.allowed) {
+      for (const earlier of passed) await limits.release(earlier.subject, earlier.resource)
+      return { allowed: false, headers, resource: step.resource, decision, policy }
+    }
+    passed.push(step)
+  }
+  return { allowed: true, headers }
 }

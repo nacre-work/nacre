@@ -739,6 +739,7 @@ second agent is something only an administrator can make.
 | Resource | Default | Counted against |
 |---|---|---|
 | every request | 600/min | the caller — a person, an agent, a delegation as its person |
+| every request, together | not counted | the organization — set per organization where a module serves several (`registerRateLimits`) |
 | search | 60 requests/min | the organization |
 | ingest | 600 documents/hour | the organization |
 | client registration | 100/hour | the client address, on `/oauth/register` and metadata document fetches |

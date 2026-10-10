@@ -3799,6 +3799,20 @@ unseen — "seen" being the authorization endpoint asked for it with a redirect 
 registered, after that check, so only a request that could reach a consent
 screen keeps one alive.
 
+**An organization's total is not counted by the core, and that is the
+decision rather than the gap.** With one organization a total is a ceiling on
+the installation, which can only refuse somebody the hardware could have served,
+and the per-caller budget already stops the loop it would exist for. Several
+organizations on one installation need one each, so the core declares the
+eighth extension point, `registerRateLimits`, and counts `org_requests` only
+where a source names a limit — with the numbers a module sets and the windows
+the installation keeps. Both surfaces admit a request through one
+`admitRequest`, the caller first, and its first test of the order could not fail:
+the give-back makes the counts the same either way round, so what the order
+decides is only which limit the refusal *names*. The case asks that now — a
+looping caller is told it is its own loop even when its organization is full
+too — and swapping the two steps turns it red.
+
 **Client ID Metadata Documents are in, beside registration**, and the reason
 they were declined is the reason they could be built. The decline was an
 outbound fetch to an address an unauthenticated caller chose; `egressFetch`

@@ -72,8 +72,8 @@ import { passwordChangedMessage, secondFactorMessage } from './messages.js'
 import { isConflict, isReplay, type IdempotencyStore } from './idempotency.js'
 import { TICKET_SHAPE, TICKET_TTL_SECONDS, uploadDescriptor, type UploadTicketStore } from './uploads.js'
 import {
+  admitRequest,
   limitHeaders,
-  principalSubject,
   type LimitDecision,
   type LimitPolicy,
   type RateLimiter,
@@ -2083,6 +2083,15 @@ function resourceFor(method: string, instance: string): Resource | undefined {
   // elsewhere, where the redeem counts again anyway.
   if (method === 'POST' && instance === '/v1/uploads') return 'ingest'
   return undefined
+}
+
+/** What a refusal says, by which limit refused. */
+function refusalDetail(resource: Resource, decision: LimitDecision, policy: LimitPolicy): string {
+  const rate = `${String(decision.limit)} requests per ${String(policy.windowSeconds)} seconds`
+  const wait = `Try again in ${String(decision.reset)} seconds.`
+  if (resource === 'requests') return `This account has used its ${rate}. ${wait}`
+  if (resource === 'org_requests') return `This organization has used its ${rate}, across everybody in it. ${wait}`
+  return `The ${resource} limit for this organization is ${String(decision.limit)} per ${String(policy.windowSeconds)} seconds. ${wait}`
 }
 
 /**
@@ -4350,62 +4359,46 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
 
   // Rate limiting, after the token is verified and before any work is done.
   //
-  // After verification because both limits are counted against something the
-  // token says — the principal for every request, the organization for the
-  // costly ones — and there is nothing to count until it has been read. Before
-  // the handler because the point is to refuse before spending an embedding
-  // call, or a database query a loop asks for a thousand times a second.
+  // After verification because every limit is counted against something the
+  // token says — the caller, the organization — and there is nothing to count
+  // until it has been read. Before the handler because the point is to refuse
+  // before spending an embedding call, or a database query a loop asks for a
+  // thousand times a second.
   //
-  // The principal's limit first, then the operation's. A request the second
-  // refuses is given back to the first, so whichever limit says no, a refusal
-  // costs the caller nothing.
+  // `admitRequest` holds the order and the give-back; the MCP transport calls
+  // the same function, which is what makes the two surfaces one budget.
   //
   // The headers go on the successful response too. A client that only learns
   // its budget by being refused has to be refused to learn it.
   let rateHeaders: Record<string, string> = {}
   if (options.limits !== undefined && options.limitPolicies !== undefined) {
-    const limits = options.limits
-    const policies = options.limitPolicies
-    const subject = principalSubject(auth)
-    const general = await limits.check(subject, 'requests')
-    rateHeaders = limitHeaders(general, policies.requests, 'requests')
-    let refused: { decision: LimitDecision; resource: Resource } | undefined =
-      general.allowed ? undefined : { decision: general, resource: 'requests' }
-
-    const resource = resourceFor(req.method ?? 'GET', instance)
-    if (refused === undefined && resource !== undefined) {
-      const decision = await limits.check(auth.orgId, resource)
-      rateHeaders = limitHeaders(decision, policies[resource], resource)
-      if (!decision.allowed) {
-        refused = { decision, resource }
-        await limits.release(subject, 'requests')
-      }
-    }
-
-    if (refused !== undefined) {
+    const admission = await admitRequest(
+      options.limits,
+      options.limitPolicies,
+      auth,
+      resourceFor(req.method ?? 'GET', instance),
+    )
+    rateHeaders = admission.headers
+    if (!admission.allowed) {
       // Recorded once per window, not once per refusal: the access log is
       // written per request, and a client hammering a limit would otherwise
       // turn the limit into the way the log is flooded.
-      if (refused.decision.firstRefusal) {
+      if (admission.decision.firstRefusal) {
         await options.audit.write({
           orgId: auth.orgId,
           actor: `${auth.principal.type}:${auth.principal.id}`,
           action: 'rate_limited',
           result: 'deny',
-          target: { resource: refused.resource },
-          detail: { limit: refused.decision.limit },
+          target: { resource: admission.resource },
+          detail: { limit: admission.decision.limit },
           requestId,
         })
       }
-      const window = policies[refused.resource].windowSeconds
       const problem = new Problem({
         type: 'https://nacre.work/errors/rate-limited',
         title: 'Too many requests',
         status: 429,
-        detail:
-          refused.resource === 'requests'
-            ? `This account has used its ${String(refused.decision.limit)} requests per ${String(window)} seconds. Try again in ${String(refused.decision.reset)} seconds.`
-            : `The ${refused.resource} limit for this organization is ${String(refused.decision.limit)} per ${String(window)} seconds. Try again in ${String(refused.decision.reset)} seconds.`,
+        detail: refusalDetail(admission.resource, admission.decision, admission.policy),
         instance,
         requestId,
       })

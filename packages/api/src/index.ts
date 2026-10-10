@@ -153,8 +153,16 @@ export type { ServiceAccount, ServiceAccounts, ServiceKeyResolver } from './serv
 // exported: NACRE_RATE_* applied to REST only.
 export { auditFormat, auditJson, readAuditQuery, toCsv, toNdjson } from './audit-export.js'
 export type { AuditFormat } from './audit-export.js'
-export { limitHeaders, limitPoliciesFrom, principalSubject, RateLimiter, secondsUntilRoom } from './limits.js'
-export type { LimitDecision, LimitPolicy, Resource } from './limits.js'
+export {
+  admitRequest,
+  limitHeaders,
+  limitPoliciesFrom,
+  policyFor,
+  principalSubject,
+  RateLimiter,
+  secondsUntilRoom,
+} from './limits.js'
+export type { Admission, LimitDecision, LimitPolicy, Resource } from './limits.js'
 export { clientSource } from './source.js'
 export { Login } from './login.js'
 export type { LoginDeps, LoginRequest, Tokens } from './login.js'
