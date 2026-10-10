@@ -171,6 +171,16 @@ when('service accounts, against the database', () => {
     expect(await keys.resolve(key)).toBeUndefined()
   })
 
+  it('an account asked by id is active until revoked, and only in its own organization', async () => {
+    // What an upload ticket asks at redemption, where there is no key to
+    // resolve again: the ticket remembers the account and nothing else.
+    const { account } = (await accounts.create(admin, 'agent-ticket'))!
+    expect(await keys.active(ORG, account.id)).toBe(true)
+    expect(await keys.active(OTHER, account.id), 'another organization answered for this account').toBe(false)
+    expect(await accounts.revoke(admin, account.id)).toBe(true)
+    expect(await keys.active(ORG, account.id)).toBe(false)
+  })
+
   it('revoking twice is not an error the second time, it is a no', async () => {
     const { account } = (await accounts.create(admin, 'agent-4'))!
     expect(await accounts.revoke(admin, account.id)).toBe(true)

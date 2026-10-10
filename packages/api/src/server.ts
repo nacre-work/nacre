@@ -60,6 +60,7 @@ import {
   administers,
   administersTenants,
   authenticate,
+  stillActing,
   rejectTenantOverride,
   type AuthContext,
   type VerifyOptions,
@@ -3343,6 +3344,15 @@ async function redeemTicket(
     send(res, problem.status, problem.toJSON(), requestId)
     return
   }
+  // The authority the ticket was minted under, asked again: a connection
+  // revoked or a service account revoked since minting is a ticket that no
+  // longer carries anybody's write, and it answers like one that never existed.
+  const acting = await stillActing(ticket.auth, options.verify)
+  if (acting === undefined) {
+    const problem = notFound(instance, requestId)
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
 
   // The ticket is spent whatever happens below. A refusal is the caller's to
   // read and a fresh ticket is one request away; a ticket that survived its
@@ -3382,7 +3392,7 @@ async function redeemTicket(
   // The same bucket the minting spent from, counted again: the mint was the
   // promise and this is the ingest.
   if (options.limits !== undefined && options.limitPolicies !== undefined) {
-    const decision = await options.limits.check(ticket.auth.orgId, 'ingest')
+    const decision = await options.limits.check(acting.orgId, 'ingest')
     if (!decision.allowed) {
       const problem = new Problem({
         type: 'https://nacre.work/errors/rate-limited',
@@ -3403,14 +3413,14 @@ async function redeemTicket(
   const filename = new URL(req.url ?? '/', 'http://localhost').searchParams.get('filename')
   const externalId = ticket.externalId ?? (filename !== null && filename !== '' ? filename : randomUUID())
 
-  const outcome = await options.ingest.queue(ticket.auth, {
+  const outcome = await options.ingest.queue(acting, {
     layer: ticket.layer,
     externalId,
     ...(ticket.title === undefined ? {} : { title: ticket.title }),
     ...('binary' in admitted ? { bytes: admitted.binary.bytes, contentType: admitted.binary.contentType } : { content: admitted.content }),
     metadata: parseMetadata(ticket.metadata),
   })
-  await answerIngest(res, instance, requestId, ticket.auth, ticket.layer, outcome, options)
+  await answerIngest(res, instance, requestId, acting, ticket.layer, outcome, options)
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOptions): Promise<void> {

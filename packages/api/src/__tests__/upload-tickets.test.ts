@@ -44,6 +44,10 @@ let server: Server
 let base: string
 let queued: (IngestRequest & { readonly asPrincipal: string }) | undefined
 let writable = true
+/** Whether the connection and the service account a stored ticket names are still live. */
+let connectionLive = true
+let lastAuth: UploadTicket['auth'] | undefined
+let accountLive = true
 const audited: AuditEvent[] = []
 const store = new MapTickets()
 
@@ -77,12 +81,22 @@ async function redeem(ticket: string, bytes: Buffer | string, contentType: strin
 describe('upload tickets', () => {
   beforeAll(async () => {
     server = createApi({
-      verify: { key: SECRET, issuer: 'i', audience: 'a' },
+      verify: {
+        key: SECRET,
+        issuer: 'i',
+        audience: 'a',
+        delegations: {
+          resolve: async (_org, id) =>
+            connectionLive && id === 'conn-1' ? { userId: 'alice', role: 'member', layers: [{ id: 'L1' }] } : undefined,
+        },
+        serviceKeys: { resolve: async () => undefined, active: async () => accountLive },
+      },
       documents: { read: async () => undefined },
       search: { search: async () => [] },
       ingest: {
         queue: async (auth, request) => {
           queued = { ...request, asPrincipal: `${auth.principal.type}:${auth.principal.id}` }
+          lastAuth = auth
           return { documentId: 'd1', jobId: 'j1', unchanged: false }
         },
         writable: async () => writable,
@@ -104,6 +118,8 @@ describe('upload tickets', () => {
   beforeEach(() => {
     queued = undefined
     writable = true
+    connectionLive = true
+    accountLive = true
     store.down = false
     store.tickets.clear()
     audited.length = 0
@@ -158,6 +174,38 @@ describe('upload tickets', () => {
     const { ticket: other } = (await mint({ layer: 'contracts' })).body as { ticket: string }
     expect((await redeem(other, PDF, 'text/plain')).status).toBe(400)
     expect((await redeem(other, 'fine', 'text/plain')).status).toBe(404)
+  })
+
+  it('a ticket whose connection or service account was revoked since minting carries nobody\'s write', async () => {
+    // Revoking a connection is what a person does when they stop trusting an
+    // application, and it is immediate on every request — so it is immediate
+    // here too, where the ticket is redeemed with no credential at all.
+    const stored = (auth: UploadTicket['auth']): string => {
+      const id = `t${'r'.repeat(42)}${String(store.tickets.size)}`.slice(0, 43)
+      store.tickets.set(id, { auth, layer: 'contracts', expiresAt: Math.floor(Date.now() / 1000) + 300 })
+      return id
+    }
+    const delegated: UploadTicket['auth'] = {
+      orgId: ORG,
+      principal: { type: 'user', id: 'alice' },
+      role: 'member',
+      delegation: { id: 'conn-1' },
+    }
+    const agent: UploadTicket['auth'] = { orgId: ORG, principal: { type: 'service_account', id: 'agent-7' }, role: 'member' }
+
+    // Live, both go through — and the delegation arrives as it is now, with
+    // the narrowing the connection carries today rather than at minting.
+    expect((await redeem(stored(delegated), 'one', 'text/plain')).status).toBe(202)
+    expect(queued?.asPrincipal).toBe('user:alice')
+    expect(lastAuth?.delegation?.layers).toEqual([{ id: 'L1' }])
+    expect((await redeem(stored(agent), 'two', 'text/plain')).status).toBe(202)
+
+    connectionLive = false
+    accountLive = false
+    queued = undefined
+    expect((await redeem(stored(delegated), 'three', 'text/plain')).status, 'a revoked connection still uploaded').toBe(404)
+    expect((await redeem(stored(agent), 'four', 'text/plain')).status, 'a revoked service account still uploaded').toBe(404)
+    expect(queued, 'a document was queued on a revoked authority').toBeUndefined()
   })
 
   it('an unknown, malformed or expired ticket is one 404', async () => {
