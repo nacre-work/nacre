@@ -872,13 +872,16 @@ export function adminTools(deps: AdminDeps): AdminRunner {
     args: Record<string, unknown>,
   ): Promise<AdminResult> => {
     let proposal
+    let stored
     try {
       proposal = await entry.tool.propose({ auth, requestId }, args)
+      // Storing can refuse too — too many already waiting on this connection —
+      // and that refusal is recorded like the tool's own.
+      stored = await recordProposal({ proposals, audit }, auth, { tool: entry.tool.name, module: entry.module, proposal }, requestId)
     } catch (error) {
       await recordRefusedProposal({ audit }, auth, { tool: entry.tool.name, module: entry.module }, refusalOf(error), requestId)
       throw error
     }
-    const stored = await recordProposal({ proposals, audit }, auth, { tool: entry.tool.name, module: entry.module, proposal }, requestId)
     return new AdminResult(
       {
         proposed: proposal.summary,

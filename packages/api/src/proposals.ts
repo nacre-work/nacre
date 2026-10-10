@@ -34,6 +34,18 @@ import type { AuthContext } from './auth.js'
 
 export const PROPOSAL_TTL_MS = 10 * 60_000
 
+/**
+ * How many proposals may wait on one connection at once.
+ *
+ * A person reads each before applying it, so a queue longer than this is not
+ * one anybody is going to read — it is an agent in a loop, or an injected
+ * instruction asking for the same change over and over. Each row is kept for
+ * the access log's retention, so without a bound the loop also writes a
+ * skill's text into the database once per call. Refused with a sentence the
+ * agent can act on: decide what is waiting first.
+ */
+export const OPEN_PER_CONNECTION = 25
+
 /** Who is deciding: the connection's panel, or the person in the console. */
 export type ProposalDecider =
   /** The change panel: this connection, holding the key the panel was handed. */
@@ -98,6 +110,19 @@ export class PostgresProposals {
     // Handed to the panel once, in `_meta`, and kept here only as a hash.
     const panelKey = randomBytes(32).toString('base64url')
     return this.inOrg(auth, async (client) => {
+      // Counted rather than locked: two calls racing past the bound leave it
+      // one or two over, and the bound is about a loop, not about one more.
+      const { rows: waiting } = await client.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM admin_proposals
+          WHERE org_id = $1 AND consent_id = $2 AND status = 'open' AND expires_at > now()`,
+        [auth.orgId, consentId],
+      )
+      if ((waiting[0]?.n ?? 0) >= OPEN_PER_CONNECTION) {
+        throw new McpToolRefusal(
+          `${String(OPEN_PER_CONNECTION)} changes are already waiting for the person on this connection. ` +
+            'Ask them to apply or cancel those before proposing more.',
+        )
+      }
       const { rows } = await client.query<{ id: string; expires_at: string }>(
         `INSERT INTO admin_proposals (org_id, consent_id, proposed_by, tool, module, summary, details, input, expires_at, panel_key_hash)
          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, now() + make_interval(secs => $9), $10)

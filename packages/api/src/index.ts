@@ -70,7 +70,7 @@ export { Problem, badRequest, forbidden, internal, notFound, unauthorized } from
 export { MAX_REACH_LAYERS, PostgresAccess } from './access.js'
 export { AdminNames, isUuid } from './admin-names.js'
 export type { NamedLayer, PrincipalKind } from './admin-names.js'
-export { coreAdminWrites } from './admin-writes.js'
+export { coreAdminWrites, SKILL_REVIEW_CHARS } from './admin-writes.js'
 export type { AdminWritePorts } from './admin-writes.js'
 export { notificationTools } from './admin-notify.js'
 export type { NotifyPorts } from './admin-notify.js'
@@ -79,6 +79,7 @@ export type { AlertRule, Enqueued, NewAlertRule, NotificationStore } from './not
 export {
   applyProposal,
   cancelProposal,
+  OPEN_PER_CONNECTION,
   PostgresProposals,
   PROPOSAL_TTL_MS,
   recordProposal,

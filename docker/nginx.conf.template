@@ -187,8 +187,18 @@ server {
 
     # The admin is a static bundle with client-side (hash) routing, so any path
     # that is not a file falls back to index.html rather than 404ing.
+    #
+    # Never in a frame. The page's own policy is a <meta> tag, and a browser
+    # ignores `frame-ancestors` there, so without these headers any site could
+    # put this console in an invisible frame over its own page — the consent
+    # screen's Approve button included, which is a connection granted by a
+    # click the person thought was somewhere else. `always`, so an error page is
+    # covered too; both spellings, because X-Frame-Options is what an old
+    # browser reads and frame-ancestors is what a current one does.
     location / {
         root /usr/share/nginx/html;
+        add_header X-Frame-Options "DENY" always;
+        add_header Content-Security-Policy "frame-ancestors 'none'" always;
         try_files $uri /index.html;
     }
 }

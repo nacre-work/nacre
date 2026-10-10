@@ -159,6 +159,84 @@ class RebindingTests(unittest.TestCase):
         self.assertIs(conn._create_connection, app._guarded_connection)
 
 
+class BoundsTests(unittest.TestCase):
+    """
+    What one request may hold, and for how long.
+
+    A per-read timeout bounds nothing a slow server cannot stay under, and a
+    threaded server with no bound on its threads bounds nothing at all — both
+    are measured here against a real socket rather than a mock of one.
+    """
+
+    def test_a_page_that_drips_in_is_refused_at_the_deadline(self) -> None:
+        import http.server
+        import threading
+        import time as clock
+
+        class Drip(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(200)
+                self.send_header("content-type", "text/plain")
+                self.end_headers()
+                # Each byte well inside the per-read timeout; the whole far past
+                # the deadline.
+                for _ in range(40):
+                    try:
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                    except OSError:
+                        return
+                    clock.sleep(0.1)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Drip)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            started = clock.monotonic()
+            with mock.patch.object(app, "ALLOW_PRIVATE", True), mock.patch.object(app, "FETCH_DEADLINE_SECONDS", 1):
+                with self.assertRaises(app.ParseError) as caught:
+                    app.fetch(f"http://127.0.0.1:{server.server_address[1]}/")
+            self.assertIn("longer than 1 seconds", str(caught.exception))
+            self.assertLess(clock.monotonic() - started, 3, "the fetch outlived its deadline")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_past_its_slots_the_parser_answers_busy_before_reading_a_body(self) -> None:
+        import http.client
+        import threading
+
+        server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        held = 0
+        try:
+            # Every slot taken, as by eight documents in flight.
+            while app._SLOTS.acquire(blocking=False):
+                held += 1
+            self.assertEqual(held, app.PARSE_SLOTS)
+            with mock.patch.object(app, "SLOT_WAIT_SECONDS", 0.2):
+                conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+                conn.request("POST", "/parse", body=b'{"content": "hello"}', headers={"content-type": "application/json"})
+                answer = conn.getresponse()
+                self.assertEqual(answer.status, 503)
+                answer.read()
+                conn.close()
+            # And a slot given back is a slot used.
+            app._SLOTS.release()
+            held -= 1
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+            conn.request("POST", "/parse", body=b'{"content": "hello"}', headers={"content-type": "application/json"})
+            self.assertEqual(conn.getresponse().status, 200)
+            conn.close()
+        finally:
+            for _ in range(held):
+                app._SLOTS.release()
+            server.shutdown()
+            server.server_close()
+
+
 class ParseSourceTests(unittest.TestCase):
     def test_exactly_one_of_content_or_url(self) -> None:
         for source in ({}, {"content": "a", "url": "http://example.com"}):

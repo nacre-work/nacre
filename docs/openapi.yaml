@@ -764,7 +764,7 @@ components:
           description: This document, at the release the server was built from.
         version:
           type: string
-          examples: ['0.37.1']
+          examples: ['0.38.0']
     Self:
       type: object
       required: [organization, principal_type, principal_id, role, administers, holds_own_credentials]
@@ -850,6 +850,12 @@ components:
             properties:
               label: { type: string }
               value: { type: string }
+              text:
+                type: boolean
+                description: |
+                  The value is a file's text, to be shown whole with its line
+                  breaks. A skill proposal carries every file this way, because
+                  a skill is what every later agent on the layer follows.
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
         connection:
@@ -940,6 +946,19 @@ components:
       type: object
       required: [client_id, redirect_uri, code_challenge]
       properties:
+        decision:
+          type: string
+          enum: [approve, deny]
+          default: approve
+          description: |
+            `deny` is the consent screen's Cancel. Nothing is stored and no code
+            is minted; the answer's `redirect_to` is the client's redirect URI
+            carrying `error=access_denied` and the `state`. The address is
+            checked against the registration exactly as an approval's is,
+            because the screen reads it from a link anybody can write — built in
+            the browser instead, Cancel was an open redirect on this origin.
+            Every field below except the three required ones and `state` is
+            ignored.
         client_id:
           type: string
           description: From the authorization request. Verified against the registration again here.
@@ -2496,7 +2515,8 @@ paths:
             Where the browser should go next. The redirect is the page's to
             perform: this is a request from a screen somebody is looking at, and
             a `302` on it would be followed by the fetch rather than by the
-            browser.
+            browser. For `decision: deny`, the client's redirect URI with
+            `error=access_denied`.
           content:
             application/json:
               schema:

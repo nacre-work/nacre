@@ -12,7 +12,7 @@ import {
 import type { SparseVector } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
-import type { DocumentStore, Parser, ParsedDocument, StoredDocument, VectorWriter } from './ingest.js'
+import { ClaimLost, type DocumentStore, type Parser, type ParsedDocument, type StoredDocument, type VectorWriter } from './ingest.js'
 import type { PurgeTarget } from './collect.js'
 import type { StrandedDocument } from './reap.js'
 import type { ReindexTarget } from './reindex.js'
@@ -136,15 +136,19 @@ export class PostgresDocumentStore implements DocumentStore {
    * ties a vector back to its text. `withOrg` already opens a transaction, so
    * the delete and the inserts commit together or not at all.
    */
-  async upsert(input: {
-    orgId: string
-    layerId: string
-    externalId: string
-    title: string | undefined
-    contentHash: string
-    chunks: readonly { ordinal: number; text: string; pointId: string }[]
-    metadata: Record<string, unknown>
-  }): Promise<StoredDocument> {
+  async upsert(
+    input: {
+      orgId: string
+      layerId: string
+      externalId: string
+      title: string | undefined
+      contentHash: string
+      chunks: readonly { ordinal: number; text: string; pointId: string }[]
+      metadata: Record<string, unknown>
+      claim?: string
+    },
+    write?: (stored: StoredDocument) => Promise<void>,
+  ): Promise<StoredDocument> {
     return withOrg(
       this.pool,
       input.orgId,
@@ -190,6 +194,16 @@ export class PostgresDocumentStore implements DocumentStore {
              -- migrated and switching onto a slot it is absent from.
              reindexed_vector = NULL,
              updated_at   = now()
+           -- The fence. A pass writes only the row it claimed, while it is
+           -- still that claim's, still being indexed and not deleted: a lease
+           -- another worker has taken, a re-send that requeued the document and
+           -- a delete each leave this matching nothing, and the pass stops
+           -- before it writes a point. Without it every one of them was
+           -- overwritten. See ClaimLost.
+           WHERE $8::timestamptz IS NULL
+              OR (documents.claimed_at = $8::timestamptz
+                  AND documents.status = 'parsing'
+                  AND documents.deleted_at IS NULL)
            RETURNING id`,
           [
             input.orgId,
@@ -199,11 +213,15 @@ export class PostgresDocumentStore implements DocumentStore {
             input.title ?? null,
             JSON.stringify(input.metadata),
             input.chunks.length,
+            input.claim ?? null,
           ],
         )
 
         const id = rows[0]?.id
-        if (id === undefined) throw new Error('the document upsert returned no id')
+        if (id === undefined) {
+          if (input.claim !== undefined) throw new ClaimLost(undefined)
+          throw new Error('the document upsert returned no id')
+        }
 
         await client.query('DELETE FROM chunks WHERE org_id = $1 AND document_id = $2', [input.orgId, id])
 
@@ -227,7 +245,12 @@ export class PostgresDocumentStore implements DocumentStore {
         }
 
         // The upsert writes status = 'indexed', so the row it returns is.
-        return { id, contentHash: input.contentHash, chunkCount: input.chunks.length, indexed: true }
+        const stored = { id, contentHash: input.contentHash, chunkCount: input.chunks.length, indexed: true }
+        // Inside the transaction and under the row lock the upsert took, so a
+        // delete waits for the points and then flags them, rather than
+        // flagging the old ones while these arrive unflagged.
+        if (write !== undefined) await write(stored)
+        return stored
       },
       this.scope,
     )
@@ -837,6 +860,23 @@ export async function pruneAuditEvents(
       'SELECT prune_audit_events($1, $2) AS pruned',
       [retentionDays, limit],
     )
+    return Number(rows[0]?.pruned ?? 0)
+  })
+}
+
+/**
+ * Decided proposals past the access log's retention horizon.
+ *
+ * Through `prune_admin_proposals`, for `pruneAuditEvents`'s reasons: a number
+ * of days and never a predicate, and no DELETE held by any application role.
+ * An open or applying proposal is never removed, whatever its age. 0041.
+ */
+export async function pruneProposals(pool: Pool, retentionDays: number, limit: number): Promise<number> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{ pruned: number }>('SELECT prune_admin_proposals($1, $2) AS pruned', [
+      retentionDays,
+      limit,
+    ])
     return Number(rows[0]?.pruned ?? 0)
   })
 }

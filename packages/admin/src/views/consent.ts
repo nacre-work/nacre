@@ -58,6 +58,30 @@ export function readRequest(hash: string): Request | undefined {
   }
 }
 
+/**
+ * Cancel: back to the client with an error, which is what RFC 6749 asks a
+ * refusal to look like — the application is told, rather than left waiting on
+ * a tab the person closed.
+ *
+ * The address comes from the server and not from the fragment. The fragment is
+ * whatever the link said, and building the redirect from it made Cancel an
+ * open redirect on this origin; the server checks the address against the
+ * client's registration, as it does for Approve.
+ */
+async function decline(request: Request, message: HTMLElement): Promise<void> {
+  try {
+    const to = await client().declineConsent({
+      clientId: request.clientId,
+      redirectUri: request.redirectUri,
+      codeChallenge: request.codeChallenge,
+      ...(request.state === undefined ? {} : { state: request.state }),
+    })
+    location.assign(to)
+  } catch (error) {
+    message.textContent = explain(error)
+  }
+}
+
 export async function consentView(root: HTMLElement): Promise<void> {
   clear(root)
   const request = readRequest(location.hash)
@@ -403,15 +427,7 @@ export async function consentView(root: HTMLElement): Promise<void> {
     })()
   })
 
-  deny.addEventListener('click', () => {
-    // Back to the client with an error, which is what RFC 6749 asks a refusal
-    // to look like: the application is told, rather than left waiting on a tab
-    // the person closed.
-    const to = new URL(request.redirectUri)
-    to.searchParams.set('error', 'access_denied')
-    if (request.state !== undefined) to.searchParams.set('state', request.state)
-    location.assign(to.toString())
-  })
+  deny.addEventListener('click', () => void decline(request, message))
 
   root.append(
     // The house shape: a page header, then the panel. The first version put the
@@ -485,12 +501,7 @@ async function administrativeConsent(root: HTMLElement, request: Request, host: 
   const approve = h('button', { type: 'button', class: 'btn btn-primary' }, 'Approve') as HTMLButtonElement
   const deny = h('button', { type: 'button', class: 'btn' }, 'Cancel')
 
-  deny.addEventListener('click', () => {
-    const to = new URL(request.redirectUri)
-    to.searchParams.set('error', 'access_denied')
-    if (request.state !== undefined) to.searchParams.set('state', request.state)
-    location.assign(to.toString())
-  })
+  deny.addEventListener('click', () => void decline(request, message))
 
   approve.addEventListener('click', () => {
     void (async () => {

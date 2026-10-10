@@ -1,10 +1,13 @@
 import {
+  checkSkill,
   looksLikeEmail,
   McpToolRefusal,
   readSkillZip,
+  SKILL_FILE,
   withOrg,
   type AuditWriter,
   type McpProposal,
+  type McpProposalDetail,
   type McpToolCall,
   type McpWriteTool,
 } from '@nacre.work/core'
@@ -94,6 +97,35 @@ const LAYER_PROP = { type: 'string', description: "The layer's slug." } as const
 
 const typeWord = (type: string): string =>
   type === 'user' ? 'person' : type === 'service_account' ? 'service account' : type
+
+/**
+ * How much of a skill a proposal shows, in characters across all its files.
+ *
+ * A skill is the instructions every later agent on a layer follows, and the
+ * agent proposing one may be carrying an instruction it read in a document.
+ * The person pressing Apply is the only check between the two, so they read
+ * every file's text and not a list of its paths. A skill longer than this is
+ * refused rather than shown in part, because the part not shown is where an
+ * injection would sit; a person writes a larger one on the console or in the
+ * skill panel, where the write is theirs.
+ */
+export const SKILL_REVIEW_CHARS = 40_000
+
+/**
+ * A skill's files as proposal details: `SKILL.md` first, then the rest by path,
+ * each whole. `undefined` when the whole would not fit `SKILL_REVIEW_CHARS`.
+ */
+export function skillReview(files: Readonly<Record<string, string>>): McpProposalDetail[] | undefined {
+  const paths = Object.keys(files).sort((a, b) => (a === SKILL_FILE ? -1 : b === SKILL_FILE ? 1 : a < b ? -1 : a > b ? 1 : 0))
+  let total = 0
+  for (const path of paths) total += (files[path] as string).length
+  if (total > SKILL_REVIEW_CHARS) return undefined
+  return paths.map((path) => ({ label: path, value: files[path] as string, text: true }))
+}
+
+const tooLongToReview = (what: string): string =>
+  `${what} is longer than the ${SKILL_REVIEW_CHARS.toLocaleString('en-US')} characters a proposal shows whole, and a skill ` +
+  'is not applied from a part of it. Write it on the console\'s Skills screen or in the skill panel instead.'
 
 export function coreAdminWrites(ports: AdminWritePorts): readonly McpWriteTool[] {
   const names = new AdminNames(ports.pool, ports.role)
@@ -746,15 +778,27 @@ export function coreAdminWrites(ports: AdminWritePorts): readonly McpWriteTool[]
         if (files === null || typeof files !== 'object' || Object.values(files).some((v) => typeof v !== 'string')) {
           throw new McpToolRefusal("'files' maps each path to its text.")
         }
-        const paths = Object.keys(files as Record<string, string>).sort()
+        // Checked here as well as on apply: what the person reads must be a
+        // skill the write would take, and a refusal belongs to the agent that
+        // can correct it rather than to the person pressing Apply.
+        const checked = checkSkill(files)
+        if (checked.kind === 'refused') throw new McpToolRefusal(`Not a skill: ${checked.reason}.`)
+        if (checked.kind === 'cleared') throw new McpToolRefusal('An empty skill clears it; propose clear_skill for that.')
+        const review = skillReview(files as Record<string, string>)
+        if (review === undefined) throw new McpToolRefusal(tooLongToReview('This skill'))
+        const paths = Object.keys(files as Record<string, string>)
+        const scripts = paths.filter((p) => p.startsWith('scripts/')).length
         const based = await currentVersion(call, level)
         return proposal(
-          `Write ${where} as version ${String(based + 1)}: ${String(paths.length)} file${paths.length === 1 ? '' : 's'}${paths.some((p) => p.startsWith('scripts/')) ? ', including scripts' : ''}.`,
+          `Write ${where} as version ${String(based + 1)}: ${String(paths.length)} file${paths.length === 1 ? '' : 's'}${scripts > 0 ? ', including scripts' : ''}. Read every file below before applying it — every later agent there follows it.`,
           [
             { label: 'skill', value: where },
             { label: 'version', value: `${String(based)} → ${String(based + 1)}` },
-            { label: 'files', value: paths.join(', ').slice(0, 900) },
             { label: 'note', value: 'Written by an agent, and marked as such in the history.' },
+            ...(scripts > 0
+              ? [{ label: 'scripts', value: `${String(scripts)} file${scripts === 1 ? '' : 's'} under scripts/, which an agent would run on its side with the person's approval.` }]
+              : []),
+            ...review,
           ],
           { ...(layer === undefined ? {} : { layer_id: layer }), files, based_on: based },
         )
@@ -785,13 +829,20 @@ export function coreAdminWrites(ports: AdminWritePorts): readonly McpWriteTool[]
         if (!Number.isInteger(n) || n < 1) throw new McpToolRefusal("'version' is a version number from the skill's history.")
         const old = await ports.skills.version(auth(call), level, n)
         if (old === undefined) throw new McpToolRefusal(`${where} has no version ${String(n)}.`)
+        // An old version is shown whole for the same reason a new one is: it
+        // may be one an agent wrote, and bringing it back makes it what every
+        // later agent follows again.
+        const review = skillReview(old.files)
+        if (review === undefined) throw new McpToolRefusal(tooLongToReview(`Version ${String(n)} of ${where}`))
         const based = await currentVersion(call, level)
         return proposal(
-          `Bring back version ${String(n)} of ${where} as version ${String(based + 1)}.`,
+          `Bring back version ${String(n)} of ${where} as version ${String(based + 1)}.${review.length > 0 ? ' Read every file below before applying it.' : ''}`,
           [
             { label: 'skill', value: where },
             { label: 'restoring', value: `version ${String(n)}${old.name === null ? ' (empty)' : ` — ${old.name}`}` },
             { label: 'version', value: `${String(based)} → ${String(based + 1)}` },
+            { label: 'written', value: `by ${old.byAgent ? 'an agent' : 'a person'}${old.hasScripts ? ', with scripts an agent would run on its side' : ''}` },
+            ...review,
           ],
           { ...(layer === undefined ? {} : { layer_id: layer }), version: n, based_on: based },
         )

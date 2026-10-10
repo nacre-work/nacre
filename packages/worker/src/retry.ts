@@ -23,6 +23,8 @@ export interface FailedClaim {
    * the claim statement increments it before the work starts.
    */
   readonly attempts: number
+  /** The claim's lease. Given, the verdict is written only while the row is still this claim's. */
+  readonly claimedAt?: string
 }
 
 /**
@@ -116,6 +118,11 @@ export async function recordFailure(
                                    ELSE NULL END,
                 updated_at  = now()
           WHERE org_id = $1 AND id = $2
+            -- The same fence the pass's own write carries. A pass whose lease
+            -- was taken, whose document was re-sent or deleted, must not mark
+            -- failed what somebody else now holds. See ClaimLost.
+            AND ($7::timestamptz IS NULL
+                 OR (claimed_at = $7::timestamptz AND status = 'parsing' AND deleted_at IS NULL))
           RETURNING status, attempts`,
         [
           claim.orgId,
@@ -124,6 +131,7 @@ export async function recordFailure(
           isRetryable(reason),
           maxAttempts,
           retryDelayMs(claim.attempts) / 1000,
+          claim.claimedAt ?? null,
         ],
       )
       const row = rows[0]

@@ -1181,6 +1181,10 @@ export function loadConfig(env: Env = process.env): Config {
     // upsert, short enough that a drained node's documents are not stuck for an
     // afternoon. The minimum is 60 rather than 0 — a zero lease reclaims a
     // document the instant it is claimed, which is a loop, not a setting.
+    //
+    // A pass that outlives its lease does not race the one that reclaimed the
+    // document: every write a pass makes is fenced on its own `claimed_at`, so
+    // the late one stops before it writes a point (ClaimLost in the worker).
     indexLease: r.number('NACRE_INDEX_LEASE', 900, { min: 60, max: 86_400 }),
     indexMaxAttempts: r.number('NACRE_INDEX_MAX_ATTEMPTS', 5, { min: 1, max: 100 }),
 

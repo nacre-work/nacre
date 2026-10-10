@@ -489,6 +489,12 @@ Two tables are swept by the worker, hourly, in bounded batches:
   is what the append-only guarantee is actually protecting. **The 30-day floor
   is refused at startup**, not clamped: a deployment configured for a week of
   audit history should not come up believing it has one.
+- **`admin_proposals`** that have been decided — applied, cancelled, expired or
+  failed — past the same `NACRE_AUDIT_RETENTION_DAYS`, through
+  `prune_admin_proposals` on the same terms (migration `0041`). The access log
+  carries each proposal's record, so keeping the row longer would be a second
+  retention of a skill's text or an address that nobody configured. A proposal
+  still waiting or being applied is never pruned, whatever its age.
 
 On the same clock, and third, the worker reclaims what a model migration left
 behind, past `NACRE_COLLECTION_RETENTION_DAYS`: **the collection it replaced**,
@@ -1318,8 +1324,11 @@ services outside the profiles it was given. Everything else updates and one
 thing silently does not.
 
 **Changing a credential needs the container recreated, not restarted.** The
-services here take their environment through `env_file`, which Compose reads
-when it **creates** a container and bakes into it. `docker compose restart`
+services here take their environment from `.env` — the application services
+through `env_file`, the embedding adapter through an `environment:` list naming
+only the variables it reads, so the signing secret and the database URL never
+reach the one container that parses somebody else's answers — and Compose
+reads both when it **creates** a container and bakes the values into it. `docker compose restart`
 re-runs the same container with the same baked values and re-reads nothing; a
 plain `up -d` recreates only if it decides the configuration changed, which
 depending on the Compose version does not include the contents of an env file.

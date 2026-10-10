@@ -140,6 +140,13 @@ export interface VerifyOptions {
    */
   readonly serviceKeys?: {
     resolve(key: string): Promise<AuthContext | undefined>
+    /**
+     * Whether a service account is still unrevoked, by id. For an authority
+     * stored and used later — an upload ticket — where there is no key to
+     * resolve again. Absent means that question cannot be asked, and a stored
+     * service-account authority is then refused rather than trusted.
+     */
+    active?(orgId: string, id: string): Promise<boolean>
   }
   /**
    * Consulted only for a token carrying a `del` claim.
@@ -206,7 +213,11 @@ export function delegationPermits(auth: AuthContext, permission: Permission): bo
  * repository keeps re-deriving.
  */
 export function administers(auth: AuthContext): boolean {
-  return auth.role === 'org_admin' && delegationPermits(auth, 'admin')
+  // And never a narrowed delegation. Administering the organization — people,
+  // groups, agents, providers — happens inside no layer, so a token a person
+  // restricted to layer L that could mint an `org_admin` and read back its
+  // generated password would leave the narrowing in one request. T44.
+  return auth.role === 'org_admin' && delegationPermits(auth, 'admin') && auth.delegation?.layers === undefined
 }
 
 /**
@@ -398,6 +409,56 @@ const NOISY: ReadonlySet<Refusal> = new Set<Refusal>(['no_bearer', 'unverifiable
  * from "wrong audience" from "unknown issuer" in the response tells an attacker
  * which of their guesses was closest.
  */
+/**
+ * A stored authority, asked again at the moment it is used.
+ *
+ * An upload ticket carries the `AuthContext` it was minted under and is
+ * redeemed up to five minutes later with no credential at all. The write is
+ * resolved again on arrival — a grant revoked in between refuses it — but the
+ * *authority* was not: a connection revoked, its person disabled, or a service
+ * account revoked inside those five minutes still queued a document as if
+ * nothing had happened. Revoking is what somebody does when they stop trusting
+ * an application, and it is meant to be immediate everywhere; this is the one
+ * door where it was not.
+ *
+ * So the two authorities that can be revoked are asked again, through the same
+ * ports `authenticate` asks: a delegation's row — which also brings back its
+ * current role, narrowing and ceiling, since any of them may have changed — and
+ * a service account's. A person's own session is what it was when the ticket
+ * was minted, exactly as the session itself is until it expires. Either
+ * question unanswerable is a refusal (invariant 3).
+ */
+export async function stillActing(
+  auth: AuthContext,
+  verify: Pick<VerifyOptions, 'delegations' | 'serviceKeys'>,
+): Promise<AuthContext | undefined> {
+  if (auth.delegation !== undefined) {
+    if (verify.delegations === undefined) return undefined
+    const row = await verify.delegations.resolve(auth.orgId, auth.delegation.id)
+    if (row === undefined || row.userId !== auth.principal.id) return undefined
+    // A ticket is minted on the ordinary surface; a connection that is for
+    // the administrative one now is not the connection that minted it.
+    if ((row.surface ?? 'default') !== (auth.delegation.surface ?? 'default')) return undefined
+    return {
+      orgId: auth.orgId,
+      principal: auth.principal,
+      role: row.role,
+      delegation: {
+        id: auth.delegation.id,
+        ...(auth.delegation.surface === undefined ? {} : { surface: auth.delegation.surface }),
+        ...(row.layers === undefined ? {} : { layers: row.layers }),
+        ...(row.permissions === undefined ? {} : { permissions: row.permissions }),
+      },
+    }
+  }
+  if (auth.principal.type === 'service_account') {
+    const active = verify.serviceKeys?.active
+    if (active === undefined) return undefined
+    return (await active(auth.orgId, auth.principal.id)) ? auth : undefined
+  }
+  return auth
+}
+
 export async function authenticate(
   authorization: string | undefined,
   options: VerifyOptions,

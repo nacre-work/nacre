@@ -60,6 +60,7 @@ import {
   administers,
   administersTenants,
   authenticate,
+  stillActing,
   rejectTenantOverride,
   type AuthContext,
   type VerifyOptions,
@@ -1947,9 +1948,13 @@ function resourceFor(method: string, instance: string): Resource | undefined {
  * repeat by definition, so idempotency bought it nothing in the first place.
  *
  * The test for adding a path: **would the response be a problem in a cache
- * dump?** If a response is only ever shown once on purpose, or is assembled
- * from what one caller in particular may read, it does not go in a store with a
- * 24-hour TTL and no access control of its own.
+ * dump?** A response assembled from what one caller in particular may read
+ * belongs here. One that is shown once on purpose — a key, a password, a token
+ * pair, a second factor's secret — no longer needs to be listed: the cache
+ * refuses any body carrying a credential field, whichever route produced it
+ * (`CREDENTIAL_FIELDS` in idempotency.ts). That rule exists because this list
+ * was the only one, and five routes added after the service account key's
+ * entry were not on it.
  */
 const NEVER_CACHED: readonly string[] = ['/v1/service-accounts', '/v1/documents', '/v1/search', '/v1/uploads']
 
@@ -2502,6 +2507,34 @@ async function handleAuth(
     send(res, problem.status, problem.toJSON(), requestId)
   }
 
+  /**
+   * The per-client bucket every unauthenticated credential route spends from,
+   * answered here once. True when it refused, with the `429` already sent.
+   *
+   * It was written out by hand on the second-factor route and on no other, so
+   * the WebAuthn sign-in and the recovery link's redemption took any number of
+   * requests from one client — and the redemption ran a full scrypt for each,
+   * which fills the gate every sign-in shares and answers `503` to all of them.
+   * One function so the next such route is a call, not a copy.
+   */
+  const limitedBySource = async (): Promise<boolean> => {
+    if (options.limits === undefined || options.limitPolicies?.login_source === undefined) return false
+    const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 })
+    if (source === undefined) return false
+    const decision = await options.limits.check(`src:${source}`, 'login_source')
+    if (decision.allowed) return false
+    const problem = new Problem({
+      type: 'https://nacre.work/errors/rate-limited',
+      title: 'Too many requests',
+      status: 429,
+      detail: `Too many sign-in attempts. Try again in ${decision.reset} seconds.`,
+      instance,
+      requestId,
+    })
+    send(res, problem.status, problem.toJSON(), requestId)
+    return true
+  }
+
   if (instance === '/v1/auth/login') {
     const { email, password, organization } = (body ?? {}) as {
       email?: unknown
@@ -2722,6 +2755,7 @@ async function handleAuth(
       return
     }
 
+    if (await limitedBySource()) return
     const outcome = await options.recovery.redeem(token, password)
     if (outcome === 'too-short') {
       // The one thing this endpoint does say, because it is about what the
@@ -2771,6 +2805,7 @@ async function handleAuth(
       send(res, problem.status, problem.toJSON(), requestId)
       return
     }
+    if (await limitedBySource()) return
     const begun = await options.login.beginSecondFactorWebAuthn(challenge)
     if (begun === undefined) {
       // One refusal for a challenge that is not ours, one that has expired, and
@@ -2800,24 +2835,7 @@ async function handleAuth(
       return
     }
 
-    if (options.limits !== undefined && options.limitPolicies?.login !== undefined) {
-      const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 })
-      if (source !== undefined && options.limitPolicies.login_source !== undefined) {
-        const decision = await options.limits.check(`src:${source}`, 'login_source')
-        if (!decision.allowed) {
-          const problem = new Problem({
-            type: 'https://nacre.work/errors/rate-limited',
-            title: 'Too many requests',
-            status: 429,
-            detail: `Too many sign-in attempts. Try again in ${decision.reset} seconds.`,
-            instance,
-            requestId,
-          })
-          send(res, problem.status, problem.toJSON(), requestId)
-          return
-        }
-      }
-    }
+    if (await limitedBySource()) return
 
     const outcome = await options.login.completeSecondFactor(challenge, proof)
     if (outcome === undefined) {
@@ -3326,6 +3344,15 @@ async function redeemTicket(
     send(res, problem.status, problem.toJSON(), requestId)
     return
   }
+  // The authority the ticket was minted under, asked again: a connection
+  // revoked or a service account revoked since minting is a ticket that no
+  // longer carries anybody's write, and it answers like one that never existed.
+  const acting = await stillActing(ticket.auth, options.verify)
+  if (acting === undefined) {
+    const problem = notFound(instance, requestId)
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
 
   // The ticket is spent whatever happens below. A refusal is the caller's to
   // read and a fresh ticket is one request away; a ticket that survived its
@@ -3365,7 +3392,7 @@ async function redeemTicket(
   // The same bucket the minting spent from, counted again: the mint was the
   // promise and this is the ingest.
   if (options.limits !== undefined && options.limitPolicies !== undefined) {
-    const decision = await options.limits.check(ticket.auth.orgId, 'ingest')
+    const decision = await options.limits.check(acting.orgId, 'ingest')
     if (!decision.allowed) {
       const problem = new Problem({
         type: 'https://nacre.work/errors/rate-limited',
@@ -3386,14 +3413,14 @@ async function redeemTicket(
   const filename = new URL(req.url ?? '/', 'http://localhost').searchParams.get('filename')
   const externalId = ticket.externalId ?? (filename !== null && filename !== '' ? filename : randomUUID())
 
-  const outcome = await options.ingest.queue(ticket.auth, {
+  const outcome = await options.ingest.queue(acting, {
     layer: ticket.layer,
     externalId,
     ...(ticket.title === undefined ? {} : { title: ticket.title }),
     ...('binary' in admitted ? { bytes: admitted.binary.bytes, contentType: admitted.binary.contentType } : { content: admitted.content }),
     metadata: parseMetadata(ticket.metadata),
   })
-  await answerIngest(res, instance, requestId, ticket.auth, ticket.layer, outcome, options)
+  await answerIngest(res, instance, requestId, acting, ticket.layer, outcome, options)
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOptions): Promise<void> {
@@ -6156,6 +6183,28 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
           "'client_id', 'redirect_uri' and 'code_challenge' are required.",
         )
         send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+
+      // Cancel. RFC 6749 sends a refusal back to the client as an error on its
+      // redirect URI, and the console used to build that address itself, from
+      // the fragment — which anybody can write. `#/consent?redirect_uri=…`
+      // turned this console into an open redirect: a link on the installation's
+      // own origin that, pressed, went wherever its author chose. The address is
+      // checked against the registration here exactly as Approve's is, and
+      // nothing is recorded: declining stores no connection and mints no code.
+      if (consent['decision'] === 'deny') {
+        const client = await options.oauth.clients.find(clientId)
+        if (client === undefined || !redirectAllowed(redirectUri, client.redirectUris)) {
+          const problem = badRequest(instance, requestId, 'Unknown client, or a redirect_uri it did not register.')
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
+        const to = new URL(redirectUri)
+        to.searchParams.set('error', 'access_denied')
+        const state = need('state')
+        if (state !== undefined) to.searchParams.set('state', state)
+        send(res, 200, { redirect_to: to.toString() }, requestId)
         return
       }
 

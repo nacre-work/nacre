@@ -92,6 +92,21 @@ const PROPOSED = {
   expires_at: new Date(Date.now() + 9 * 60_000).toISOString(),
   how_it_is_applied: 'The person applies or cancels it in the panel shown with this result.',
 }
+const PROPOSED_SKILL = {
+  proposed:
+    "Write the layer handbook's skill as version 4: 2 files, including scripts. Read every file below before applying it — every later agent there follows it.",
+  details: [
+    { label: 'skill', value: "the layer handbook's skill" },
+    { label: 'version', value: '3 → 4' },
+    { label: 'note', value: 'Written by an agent, and marked as such in the history.' },
+    { label: 'scripts', value: "1 file under scripts/, which an agent would run on its side with the person's approval." },
+    { label: 'SKILL.md', value: '---\nname: handbook\ndescription: How documents in the handbook layer are named, tagged and updated.\n---\n\n# Handbook\n\nSearch the handbook before answering a policy question, and quote the section you used.\n\n- One document per policy, named after it: `leave-policy`, `expenses`.\n- Tag every document with `owner` and `reviewed`.\n- When a policy changes, update its document in place; never add a second copy.\n', text: true },
+    { label: 'scripts/unreviewed.sh', value: '#!/bin/sh\n# Lists handbook documents not reviewed this year.\nnacre search --layer handbook --filter reviewed=2025\n', text: true },
+  ],
+  status: 'Waiting for the person to apply it. Nothing has changed.',
+  expires_at: new Date(Date.now() + 9 * 60_000).toISOString(),
+  how_it_is_applied: 'The person applies or cancels it in the panel shown with this result.',
+}
 const withProposal = (value) => ({
   ...text(value),
   _meta: { 'nacre/proposal': { id: '3f1c2b9e-5d7a-4e21-9c84-0a6b2f1d7e55', key: 'k7Qm2pXv9aLr4TnB8sWc1dYe6fGh3jKu5oZi0xNq_Rw', expires_at: value.expires_at } },
@@ -371,6 +386,22 @@ const SCENARIOS = [
       await frame.locator('.status', { hasText: 'Applied.' }).waitFor()
       const display = await frame.locator('button', { hasText: 'Apply' }).evaluate((b) => getComputedStyle(b).display)
       if (display !== 'none') throw new Error(`Apply is still displayed (${display}) after applying`)
+    },
+  },
+  {
+    // A skill is shown whole: the person reads the instructions every later
+    // agent will follow, not a list of their paths.
+    view: 'change',
+    name: 'change-skill',
+    input: { layer: 'handbook', files: {} },
+    result: withProposal(PROPOSED_SKILL),
+    calls: {},
+    check: async (frame) => {
+      if ((await frame.locator('.facts dt.path').count()) !== 2) throw new Error('the panel does not head each file')
+      const text = frame.locator('.facts dd.text').first()
+      if (!(await text.textContent())?.includes('never add a second copy')) throw new Error("the panel does not show SKILL.md's text")
+      const space = await text.evaluate((d) => getComputedStyle(d).whiteSpace)
+      if (space !== 'pre-wrap') throw new Error(`a file's text loses its line breaks (white-space: ${space})`)
     },
   },
   {

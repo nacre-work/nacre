@@ -183,6 +183,27 @@ when('idempotency', () => {
     expect(second.cached).toEqual({ status: 201, body: { id: 'grant-1' } })
   })
 
+  it('never stores a response carrying a credential, so Redis never holds one', async () => {
+    // Five routes answered once-shown values — a generated password, a token
+    // pair, a TOTP secret, recovery codes — and none was on the list of routes
+    // the cache skipped, so each sat in Redis for a day. The body decides now.
+    for (const body of [
+      { id: 'u-1', email: 'a@b.c', password: 'coral-river-71' },
+      { session: { access_token: 'eyJ…', refresh_token: 'r-1' } },
+      { factors: [{ id: 'f-1', otpauth_url: 'otpauth://totp/x' }] },
+    ]) {
+      const k = key()
+      const first = await idem().begin(k, ALICE, 'POST', '/v1/users', { n: 1 })
+      if (isReplay(first) || isConflict(first)) throw new Error('expected to proceed')
+      await first.store(201, body)
+      const raw = await redis?.command('GET', `nacre:idem:${ORG}:user:alice:${await digestOf(k)}`)
+      expect(raw).toBeNull()
+      const second = await idem().begin(k, ALICE, 'POST', '/v1/users', { n: 1 })
+      expect(isReplay(second)).toBe(false)
+      expect(isConflict(second)).toBe(false)
+    }
+  })
+
   it('the same key from another principal in the same organization is a different key', async () => {
     // The leak this replaced. Scoped to the organization alone, any principal
     // in the tenant who presented the same key and the same body was handed

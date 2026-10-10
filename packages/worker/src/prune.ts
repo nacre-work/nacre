@@ -1,5 +1,5 @@
 /**
- * Retention: the two tables that only ever grew.
+ * Retention: the tables that only ever grew.
  *
  * Both were documented as swept and neither was. `refresh_tokens` carries a
  * comment in migration `0009` on the index built to make the sweep cheap;
@@ -12,6 +12,11 @@
  * floor, a missing grant on a database migrated by hand — must not stop token
  * expiry, and the reverse holds too. Nothing downstream waits on either, so a
  * pass that half worked is a pass that did half the work and said so.
+ *
+ * Decided proposals on the administrative MCP go at the access log's horizon,
+ * because the log is where their record lives: a proposal kept past the events
+ * that describe it would be a second, longer retention nobody configured.
+ * Migration 0041.
  */
 
 export interface PrunePorts {
@@ -23,12 +28,15 @@ export interface PrunePorts {
    * `pruneAuditEvents` — and a refusal is the operator's to see.
    */
   audit(retentionDays: number, limit: number): Promise<number>
-  onError(what: 'tokens' | 'audit', error: unknown): void
+  /** Decided proposals past the same horizon, through `prune_admin_proposals`. */
+  proposals(retentionDays: number, limit: number): Promise<number>
+  onError(what: 'tokens' | 'audit' | 'proposals', error: unknown): void
 }
 
 export interface PruneResult {
   readonly tokens: number
   readonly audit: number
+  readonly proposals: number
   readonly failed: number
 }
 
@@ -41,6 +49,7 @@ export async function pruneOnce(
 
   let tokens = 0
   let audit = 0
+  let proposals = 0
   let failed = 0
 
   try {
@@ -57,5 +66,12 @@ export async function pruneOnce(
     ports.onError('audit', error)
   }
 
-  return { tokens, audit, failed }
+  try {
+    proposals = await ports.proposals(retentionDays, batch)
+  } catch (error) {
+    failed++
+    ports.onError('proposals', error)
+  }
+
+  return { tokens, audit, proposals, failed }
 }

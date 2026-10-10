@@ -53,6 +53,8 @@ export const looksLikeServiceKey = (value: string): boolean => value.startsWith(
 export interface ServiceKeyResolver {
   /** The caller this key belongs to, or undefined for every kind of failure. */
   resolve(key: string): Promise<AuthContext | undefined>
+  /** Whether the account is still unrevoked. See `VerifyOptions.serviceKeys.active`. */
+  active(orgId: string, id: string): Promise<boolean>
 }
 
 /**
@@ -136,6 +138,21 @@ export class PostgresServiceKeys implements ServiceKeyResolver {
       principal: { type: 'service_account', id: matched.id },
       role: 'member',
     }
+  }
+
+  async active(orgId: string, id: string): Promise<boolean> {
+    return withOrg(
+      this.pool,
+      orgId,
+      async (client) =>
+        (
+          await client.query(`SELECT 1 FROM service_accounts WHERE org_id = $1 AND id = $2 AND revoked_at IS NULL`, [
+            orgId,
+            id,
+          ])
+        ).rows.length === 1,
+      this.role === undefined ? {} : { role: this.role },
+    )
   }
 }
 

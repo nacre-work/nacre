@@ -1,5 +1,5 @@
 /**
- * The T1-T41 inventory from docs/authz.md section "Test plan".
+ * The T1-T44 inventory from docs/authz.md section "Test plan".
  *
  * This exists so the gap between "the suite the specification requires" and
  * "the suite that runs today" is a checked fact rather than a memory. A test
@@ -149,6 +149,16 @@ export const TEST_PLAN: readonly TestCase[] = [
   // endpoint has to refuse one, or a connection approves itself a wider one.
   { id: 'T41', group: 'adversarial', status: 'implemented',
     scenario: 'A connected application cannot approve a connection, so it cannot widen its own ceiling' },
+  // The narrowing was enforced where a layer id meets a document and nowhere
+  // else, so a token narrowed to L could delete, rename, grant on and reindex
+  // M; read M's jobs and reindex state; and, for an org_admin, mint an
+  // org_admin and read back its password. Found by the security review.
+  { id: 'T42', group: 'delegation', status: 'implemented',
+    scenario: 'A delegation narrowed to L administers nothing of M, however much its person administers' },
+  { id: 'T43', group: 'delegation', status: 'implemented',
+    scenario: 'A narrowed delegation learns nothing of M from a job or a reindex status' },
+  { id: 'T44', group: 'delegation', status: 'implemented',
+    scenario: 'A narrowed delegation of an org_admin administers nothing organization-wide' },
   // A layer skill is written by a layer's administrator, who has less authority
   // than the org_admin the administrative surface acts for — so a layer skill
   // followed there is an escalation written in prose.

@@ -138,6 +138,28 @@ export class PasswordRecovery {
     const [orgId, secret] = token.split('.')
     if (orgId === undefined || secret === undefined || !UUID.test(orgId)) return 'refused'
 
+    // The link before the scrypt. Hashing first let anybody, with no
+    // credential, spend a full scrypt per request on a token that never
+    // existed — the gate every sign-in shares fills at sixty-six, and every
+    // sign-in then answers `503`. A token that is not live is refused for the
+    // price of one indexed read; the spend below is still the UPDATE that finds
+    // it, so this read decides nothing on its own and a race between two
+    // holders of one link is still won once.
+    const live = await withOrg(
+      this.deps.pool,
+      orgId,
+      async (client) => {
+        const { rows } = await client.query(
+          `SELECT 1 FROM password_reset_tokens
+            WHERE org_id = $1 AND token_hash = $2 AND used_at IS NULL AND expires_at > now()`,
+          [orgId, digest(token)],
+        )
+        return rows.length > 0
+      },
+      this.scope,
+    )
+    if (!live) return 'refused'
+
     const hash = await hashPassword(password)
 
     const address = await withOrg(

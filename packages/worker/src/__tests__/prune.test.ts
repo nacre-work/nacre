@@ -17,6 +17,7 @@ const ports = (overrides: Partial<PrunePorts> = {}): PrunePorts & { errors: stri
     errors,
     tokens: async () => 0,
     audit: async () => 0,
+    proposals: async () => 0,
     onError: (what) => errors.push(what),
     ...overrides,
   }
@@ -25,7 +26,7 @@ const ports = (overrides: Partial<PrunePorts> = {}): PrunePorts & { errors: stri
 describe('pruneOnce', () => {
   it('reports what each sweep removed', async () => {
     const p = ports({ tokens: async () => 12, audit: async () => 300 })
-    expect(await pruneOnce(p, 1000, 400)).toEqual({ tokens: 12, audit: 300, failed: 0 })
+    expect(await pruneOnce(p, 1000, 400)).toEqual({ tokens: 12, audit: 300, proposals: 0, failed: 0 })
     expect(p.errors).toEqual([])
   })
 

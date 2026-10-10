@@ -18,3 +18,10 @@ not go through the second. The formats it reads are the rows of `FORMATS` in
 Nothing about either leaks outward, and if a good enough TypeScript
 equivalent shows up this service gets swapped wholesale with no changes
 anywhere else.
+
+**What one request may hold, and for how long.** A fetch has a 60-second
+deadline over the whole page, not only a per-read timeout, because a server
+dripping one byte at a time stays inside any per-read timeout forever. At most
+eight documents are parsed at once. A request past that waits up to thirty
+seconds before reading its body, and is then answered `503`; the worker reads
+that as `unavailable` and tries again later rather than failing the document.

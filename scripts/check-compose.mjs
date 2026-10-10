@@ -480,4 +480,90 @@ if (tracked.status !== 0) {
   }
 }
 
+/**
+ * ─── What the two most exposed containers can reach ──────────────────────────
+ *
+ * Rendered as JSON from the `hosted` profile, because it is the one profile
+ * holding both, with `.env.example` as `.env` for the reason given above.
+ *
+ * **The embedding adapter is handed the variables it reads and no others.** It
+ * had `env_file: .env` of its own, under a comment saying it was given only the
+ * credentials it needs, and `.env` carries the JWT signing secret, the database
+ * URL and every other key the installation has. Its environment is compared
+ * against the `NACRE_*` literals in its own source, in both directions: one it
+ * reads and is not given is a vendor that cannot be configured here, and one it
+ * is given and does not read is a secret in a process that has no use for it.
+ *
+ * **The parser shares no network with Postgres, Qdrant or Redis.** It reads
+ * every uploaded file and every page an ingest names, and two of those three
+ * take no credential at all.
+ */
+{
+  const scratchHosted = mkdtempSync(join(tmpdir(), 'nacre-compose-'))
+  copyFileSync('.env.example', join(scratchHosted, '.env'))
+  const hosted = spawnSync(
+    'docker',
+    ['compose', '--project-directory', scratchHosted, '-f', 'docker-compose.yml', '--profile', 'hosted', 'config', '--format', 'json'],
+    { encoding: 'utf8' },
+  )
+  rmSync(scratchHosted, { recursive: true, force: true })
+  if (hosted.status !== 0) {
+    console.error(`::error::the hosted profile does not render:\n${hosted.stderr}`)
+    failed = true
+  } else {
+    const config = JSON.parse(hosted.stdout)
+    const services = config.services ?? {}
+
+    const adapter = services[ADAPTER]
+    const source = readFileSync('services/embedding_adapter/app.py', 'utf8')
+    const reads = new Set([...source.matchAll(/["'](NACRE_[A-Z0-9_]+)["']/g)].map((m) => m[1]))
+    const given = new Set(Object.keys(adapter?.environment ?? {}))
+    if (adapter === undefined || reads.size === 0) {
+      console.error(`::error::${ADAPTER} or the variables it reads were not found; this rule has nothing to hold`)
+      failed = true
+    } else {
+      for (const name of given) {
+        if (!reads.has(name)) {
+          console.error(
+            `::error::${ADAPTER} is given ${name}, which it never reads. A credential in a container ` +
+              'that parses somebody else\'s answers is one somebody else can take; hand it what it reads.',
+          )
+          failed = true
+        }
+      }
+      for (const name of reads) {
+        if (!given.has(name)) {
+          console.error(`::error::${ADAPTER} reads ${name} and docker-compose.yml does not pass it, so it cannot be configured.`)
+          failed = true
+        }
+      }
+      if ([...given].every((n) => reads.has(n)) && [...reads].every((n) => given.has(n))) {
+        console.log(`${ADAPTER}: given exactly the ${String(reads.size)} variables it reads`)
+      }
+    }
+
+    const networksOf = (name) => new Set(Object.keys(services[name]?.networks ?? { default: {} }))
+    const parser = networksOf('parser')
+    let shared = false
+    for (const store of ['postgres', 'qdrant', 'redis']) {
+      const common = [...networksOf(store)].filter((n) => parser.has(n))
+      if (common.length > 0) {
+        console.error(
+          `::error::the parser shares ${common.join(', ')} with ${store}. It reads hostile input, and ` +
+            'a parser a crafted document took over would reach it by name.',
+        )
+        failed = true
+        shared = true
+      }
+    }
+    const worker = networksOf('worker')
+    if (![...parser].some((n) => worker.has(n))) {
+      console.error('::error::the worker shares no network with the parser, and it is the parser\'s only caller.')
+      failed = true
+    } else if (!shared) {
+      console.log('parser: on a network with the worker and none of the stores')
+    }
+  }
+}
+
 process.exit(failed ? 1 : 0)

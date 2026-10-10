@@ -108,7 +108,8 @@ function card(proposal: Proposal, message: HTMLElement, load: () => Promise<void
   const left = minutesLeft(proposal.expiresAt)
   return h('section', { class: 'panel' },
     h('h3', {}, proposal.summary),
-    h('dl', { class: 'facts' }, ...proposal.details.flatMap((d) => [h('dt', {}, d.label), h('dd', {}, d.value)])),
+    h('dl', { class: 'facts' }, ...proposal.details.flatMap((d) =>
+      d.text === true ? [h('dt', { class: 'path' }, d.label), h('dd', { class: 'text' }, d.value)] : [h('dt', {}, d.label), h('dd', {}, d.value)])),
     h('p', { class: 'muted' },
       `Proposed through ${proposal.connection.application ?? 'an application'}`,
       proposal.module === null ? '' : `, by the ${proposal.module} module`,

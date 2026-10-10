@@ -72,6 +72,51 @@ const RESERVATION_SECONDS = 60
 const digest = (value: string): string =>
   createHash('sha256').update(value).digest('base64url').slice(0, 32)
 
+/**
+ * Field names a response carries a credential under, anywhere in its body.
+ *
+ * A response holding one of these is never written to the cache, whichever
+ * route produced it. The cache had a list of *routes* it skipped, and the list
+ * was the defect: service account keys were found in Redis with `redis-cli
+ * GET`, the route went on the list, and five routes added after it — a
+ * generated password on `POST /v1/users` and on `POST /v1/users/{id}/password`,
+ * a live token pair on `POST /v1/me/password`, a TOTP secret and its
+ * `otpauth://` link, and the recovery codes — answered once-shown values that
+ * sat in Redis for 24 hours, because nothing told the list there were five.
+ * A property of the body is asked of every body, so the next such route is
+ * covered on the day it is written.
+ *
+ * A false positive costs a retry its replay, which is the situation before
+ * this cache existed; a false negative is a credential in a store with no
+ * access control of its own. `idempotency-secrets.test.ts` holds every field
+ * the contract describes as shown once against this set.
+ */
+export const CREDENTIAL_FIELDS: ReadonlySet<string> = new Set([
+  'password',
+  'access_token',
+  'refresh_token',
+  'secret',
+  'otpauth_url',
+  'recovery_codes',
+  'key',
+  'token',
+  'code',
+  'redirect_to',
+])
+
+/** Whether any object in `value`, at any depth, has a field named in `CREDENTIAL_FIELDS`. */
+export function carriesCredential(value: unknown, depth = 0): boolean {
+  // Bounded: a response deeper than this is not one this API writes, and an
+  // unbounded walk over a caller-shaped value is the wrong habit to have.
+  if (depth > 16 || value === null || typeof value !== 'object') return false
+  if (Array.isArray(value)) return value.some((item) => carriesCredential(item, depth + 1))
+  for (const [field, inner] of Object.entries(value)) {
+    if (CREDENTIAL_FIELDS.has(field)) return true
+    if (carriesCredential(inner, depth + 1)) return true
+  }
+  return false
+}
+
 export interface CachedResponse {
   readonly status: number
   readonly body: unknown
@@ -207,7 +252,11 @@ export class Idempotency implements IdempotencyStore {
           // *effect*, and a request that failed had none to repeat. Storing one
           // makes a transient 500 permanent for 24 hours and turns the retry
           // the feature exists to serve into the one thing it cannot do.
-          if (status >= 400) {
+          //
+          // Nor what carries a credential. A retry then redoes the effect,
+          // which is the situation before this cache existed; keeping it would
+          // put a once-shown value in Redis for a day. See CREDENTIAL_FIELDS.
+          if (status >= 400 || carriesCredential(responseBody)) {
             await this.options.redis.command('DEL', cacheKey).catch(() => undefined)
             return
           }

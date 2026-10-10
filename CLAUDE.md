@@ -1393,7 +1393,7 @@ requiredness — are narrow enough to be defeated by rewording, which is the
 shape of check this repository keeps deleting. `grep` found the other three
 copies, and they were correct.
 
-**Every case of T1–T41 in docs/authz.md runs** — all forty-one, since notifications closed T35 — against real services, plus the truth
+**Every case of T1–T44 in docs/authz.md runs** — all forty-four, since the security review added T42–T44 — against real services, plus the truth
 table, a property-based comparison against the reference implementation, and a
 round trip that puts the worker and the search path against each other.
 `acl-invariants` is a gate on what that document specifies — and only on that.
@@ -3602,6 +3602,36 @@ any case — the ceiling's suite asks what a token may do, and approving a conse
 was never on its list of things a token might do. T41 is that case now, over the
 real handler and a real database, and with the guard removed it answered `200`
 and a code.
+
+**A full security review swept every surface, and 0.38.0 is what it found.**
+Fifteen findings, each reproduced before it was fixed and measured red with the
+fix taken back out. Five were about credentials and authority. The idempotency
+cache held five more once-shown values the service account key's entry had
+never covered, so it refuses any body carrying a credential field now, whatever
+route produced it. A recovery link spent scrypt before it knew whether the token
+existed, on a route with no rate limit, so forged links could fill the gate
+every sign-in shares. A delegation narrowed to some layers could rename, delete,
+grant on and reindex the layers outside them, and an `org_admin`'s could
+administer the organization outright, because `administers()` read the ceiling
+and not the narrowing (T42–T44). An upload ticket kept the authority it was
+minted with past a revocation, and asks again on redemption now. Consent's
+Cancel redirected wherever the page said.
+
+Two were about tenants. `/metrics` read cross-tenant gauges outside
+`acrossOrganizations` and was silently empty on a split deployment. The provider
+listing named its organization only through row-level security, which
+`lint:tenant-scope` now refuses across 244 statements: a predicate counts only
+inside a `WHERE` or `ON`, because the first version was satisfied by `org_id` in
+a select list.
+
+One was an invariant 5 race. A worker pass could write points for a document
+deleted or re-sent under it, so the pass is fenced on its own claim and writes
+under the row lock that a delete now takes first. The rest were containment:
+the console refuses to be framed, the parser shares no network with the stores
+and bounds a fetch and its parses, the adapter takes the variables it reads
+rather than all of `.env`, every workflow declares its token, third-party
+actions are pinned, a skill proposal shows every file it would write, and
+decided proposals are pruned with the access log.
 
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.

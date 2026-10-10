@@ -19,7 +19,7 @@ import { call, clear, connect, el, mount, status } from './shared.js'
 
 interface Proposed {
   readonly proposed?: string
-  readonly details?: readonly { readonly label: string; readonly value: string }[]
+  readonly details?: readonly { readonly label: string; readonly value: string; readonly text?: boolean }[]
   readonly expires_at?: string
 }
 
@@ -35,6 +35,15 @@ const CHANGE_STYLE = `
   .facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 14px; font-size: 13.5px; }
   .facts dt { font-family: var(--n-font-mono); font-size: 12px; color: var(--n-text-muted); text-transform: uppercase; letter-spacing: 0.04em; padding-top: 2px; }
   .facts dd { margin: 0; overflow-wrap: break-word; min-width: 0; }
+  /* A file's whole text — a skill proposal's. The path is a heading across the
+     row rather than an uppercase label, and the text keeps its line breaks in a
+     box that scrolls, so the panel stays one height whatever the file. */
+  .facts dt.path { grid-column: 1 / -1; text-transform: none; letter-spacing: 0; color: var(--n-text); padding-top: 6px; }
+  .facts dd.text {
+    grid-column: 1 / -1; white-space: pre-wrap; font-family: var(--n-font-mono); font-size: 12.5px; line-height: 1.5;
+    max-height: 22em; overflow: auto; padding: 10px 12px; border: 1px solid var(--n-border-color); border-radius: var(--n-radius);
+    background: var(--n-surface-sunk);
+  }
   .when { margin: 0 0 12px; font-size: 13px; color: var(--n-text-muted); }
   .decided { font-weight: 600; color: var(--n-text); }
 `
@@ -100,7 +109,12 @@ async function main(): Promise<void> {
     summary.textContent = value.proposed ?? ''
     summary.hidden = summary.textContent === ''
     clear(facts)
-    for (const fact of value.details ?? []) facts.append(el('dt', {}, fact.label), el('dd', {}, fact.value))
+    for (const fact of value.details ?? []) {
+      facts.append(
+        el('dt', fact.text === true ? { class: 'path' } : {}, fact.label),
+        el('dd', fact.text === true ? { class: 'text' } : {}, fact.value),
+      )
+    }
     facts.hidden = (value.details ?? []).length === 0
 
     const meta = (result._meta as Record<string, unknown> | undefined)?.['nacre/proposal'] as ProposalMeta | undefined

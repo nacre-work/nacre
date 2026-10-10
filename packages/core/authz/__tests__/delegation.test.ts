@@ -5,10 +5,13 @@ import {
   postgresVerification,
   PostgresDocuments,
   PostgresGrants,
+  PostgresJobs,
   PostgresLayers,
   PostgresOAuthAuthorizations,
   PostgresOAuthConsents,
   PostgresOAuthRefreshTokens,
+  PostgresReferenceQueries,
+  PostgresReindex,
   PostgresSkills,
   Problem,
   type AuthContext,
@@ -79,6 +82,9 @@ let documents: PostgresDocuments
 let skills: PostgresSkills
 let layers: PostgresLayers
 let grants: PostgresGrants
+let jobs: PostgresJobs
+let reindex: PostgresReindex
+let referenceQueries: PostgresReferenceQueries
 let catalog: ReturnType<typeof layerCatalog>
 /** Documents whose payload was rewritten, so a refusal can be told from a write. */
 const wrote: string[] = []
@@ -169,6 +175,9 @@ when('delegation · a person lending their own reach', () => {
       AS_APP,
     )
     grants = new PostgresGrants(pool, AS_APP)
+    jobs = new PostgresJobs(pool, AS_APP)
+    reindex = new PostgresReindex(pool, { vectorsOf: async () => ({ v: 4 }) }, AS_APP)
+    referenceQueries = new PostgresReferenceQueries(pool, AS_APP)
     catalog = layerCatalog(pool)
 
     const c = await pool.connect()
@@ -791,6 +800,83 @@ when('delegation · a person lending their own reach', () => {
     expect((await skills.write(only, L_SKILL, SKILL('No.'), 0, 'mcp')).kind).toBe('not_found')
     expect(await skills.current(only, L_SKILL)).toBeUndefined()
     expect((await skills.list(only, page)).layers.items).toEqual([])
+  })
+
+  it('T42 · a delegation narrowed to L administers nothing of M, however much its person administers', async () => {
+    // `admin` on the workspace, so the person administers L and M alike — and
+    // the narrowing is the only thing between the token and M. No ceiling, the
+    // spelling for "no restriction on verbs", and then `{read, admin}`, which
+    // the contract keeps reachable through the API: neither may reach M.
+    await holding([['workspace', WS, 'admin']])
+    const person = context(PERSON)
+    const UNKNOWN_PROVIDER = id(99)
+    for (const ceiling of [[], ['read', 'admin']] as const) {
+      const narrowed = await delegated(person, [LAYER_L], ceiling)
+
+      // M: every layer-administration path answers as if it were not there.
+      expect(await layers.update(narrowed, LAYER_M, { name: 'Renamed by the application' })).toBe(false)
+      expect(await layers.remove(narrowed, LAYER_M)).toBe(false)
+      expect(tombstoned).toEqual([])
+      expect(await reindex.start(narrowed, LAYER_M, UNKNOWN_PROVIDER)).toBeUndefined()
+      expect(await referenceQueries.list(narrowed, LAYER_M)).toBeUndefined()
+      const onM = { principalType: 'user', principalId: ADMIN, scopeType: 'layer', scopeId: LAYER_M, permission: 'read' } as const
+      expect(await grants.issue(narrowed, onM)).toBeUndefined()
+      // A grant on the workspace reaches M too, so a narrowed token issues none.
+      const onW = { principalType: 'user', principalId: ADMIN, scopeType: 'workspace', scopeId: WS, permission: 'read' } as const
+      expect(await grants.issue(narrowed, onW)).toBeUndefined()
+      // Nor creates a layer, which no narrowing written before it can name.
+      expect((await layers.create(narrowed, { workspaceId: WS, slug: 'made-by-app', name: 'Made by the app' })).kind).toBe('denied')
+
+      // The person issues one on M; the token can neither revoke it nor see it.
+      const theirs = await grants.issue(person, onM)
+      expect(theirs).toBeDefined()
+      expect(await grants.revoke(narrowed, theirs?.id as string)).toBe(false)
+      expect((await grants.list(narrowed)).items.map((g) => g.id)).not.toContain(theirs?.id)
+      expect(await grants.revoke(person, theirs?.id as string)).toBe(true)
+
+      // L: the same paths answer, which is what makes the refusals above the
+      // narrowing's rather than the person's.
+      expect(await layers.update(narrowed, LAYER_L, { name: 'L' })).toBe(true)
+      expect(await reindex.start(narrowed, LAYER_L, UNKNOWN_PROVIDER)).toEqual({ kind: 'unknown_provider' })
+      expect(await referenceQueries.list(narrowed, LAYER_L)).toEqual([])
+      const onL = await grants.issue(narrowed, { ...onM, scopeId: LAYER_L })
+      expect(onL).toBeDefined()
+      expect((await grants.list(narrowed)).items.map((g) => g.id)).toContain(onL?.id)
+      expect(await grants.revoke(narrowed, onL?.id as string)).toBe(true)
+    }
+  })
+
+  it('T43 · a narrowed delegation learns nothing of M from a job or a reindex status', async () => {
+    // The default `{read}` consent, narrowed to L, for a person who reads both.
+    const narrowed = await delegated(context(PERSON), [LAYER_L], [])
+    expect(await documents.read(narrowed, DOC_IN_M)).toBeUndefined()
+    expect(await jobs.read(narrowed, DOC_IN_M)).toBeUndefined()
+    expect(await jobs.read(narrowed, DOC_IN_L)).toBeDefined()
+
+    const c = await pool.connect()
+    try {
+      await c.query(
+        `UPDATE layers SET reindex_state = '{"status":"complete","shadow_vector":"v2"}'::jsonb WHERE org_id = $1`,
+        [ORG],
+      )
+      expect(await reindex.status(narrowed, LAYER_M)).toBeUndefined()
+      expect(await reindex.status(narrowed, LAYER_L)).toBeDefined()
+    } finally {
+      await c.query(`UPDATE layers SET reindex_state = NULL WHERE org_id = $1`, [ORG])
+      c.release()
+    }
+  })
+
+  it('T44 · a narrowed delegation of an org_admin administers nothing organization-wide', async () => {
+    // Administering the organization — people, groups, agents, providers — is
+    // not inside any layer. A token narrowed to L that could mint an
+    // `org_admin` and read back its generated password would leave the
+    // narrowing in one request.
+    const admin = context(ADMIN, 'org_admin')
+    expect(administers(await delegated(admin, [], []))).toBe(true)
+    expect(administers(await delegated(admin, [LAYER_L], []))).toBe(false)
+    expect(administers(await delegated(admin, [LAYER_L], ['read', 'admin']))).toBe(false)
+    expect(administers(await delegated(admin, [{ id: LAYER_L, permissions: ['admin'] }], ['read', 'admin']))).toBe(false)
   })
 
   it('T40 · the layer catalog, over REST and MCP alike, lists the narrowing and nothing past the ceiling', async () => {

@@ -69,15 +69,48 @@ export interface DocumentStore {
    * vectors are written, not with the row — and the difference is the whole
    * point. See the call site.
    */
-  upsert(input: {
-    orgId: string
-    layerId: string
-    externalId: string
-    title: string | undefined
-    contentHash: string
-    chunks: readonly { ordinal: number; text: string; pointId: string }[]
-    metadata: Record<string, unknown>
-  }): Promise<StoredDocument>
+  upsert(
+    input: {
+      orgId: string
+      layerId: string
+      externalId: string
+      title: string | undefined
+      contentHash: string
+      chunks: readonly { ordinal: number; text: string; pointId: string }[]
+      metadata: Record<string, unknown>
+      /**
+       * The lease this pass holds — the claim's `claimed_at`. Given, the row is
+       * written only while it is still this claim's, still `parsing` and not
+       * deleted, and `ClaimLost` is thrown otherwise. See `ClaimLost`.
+       */
+      claim?: string
+    },
+    /**
+     * The vector write, run inside the same transaction as the row and while
+     * its lock is held, so a delete that arrives meanwhile waits for it and
+     * then flags every point the pass just wrote.
+     */
+    write?: (stored: StoredDocument) => Promise<void>,
+  ): Promise<StoredDocument>
+}
+
+/**
+ * The document stopped being this pass's to write while the pass was working.
+ *
+ * A lease that expired under a slow pass and was taken by another worker, a
+ * re-send that requeued the document, or a delete. Every one of those used to
+ * be overwritten: the pass finished, set the row back to `indexed` with the
+ * content it had parsed, and wrote points carrying `deleted: false` — so a
+ * document deleted while it was being embedded came back into every search
+ * until the collector reached it (invariant 5), and a re-send arriving mid-pass
+ * could be replaced by the version it was sent to replace. Not a failure of
+ * the document and never recorded as one: whoever holds it now decides.
+ */
+export class ClaimLost extends Error {
+  constructor(readonly documentId: string | undefined) {
+    super('the document is no longer this pass to write: re-sent, reclaimed or deleted while it was being indexed')
+    this.name = 'ClaimLost'
+  }
 }
 
 export interface VectorWriter {
@@ -139,6 +172,8 @@ export interface IngestRequest {
   readonly bytes?: Uint8Array
   readonly contentType?: string
   readonly chunkConfig?: ChunkConfig
+  /** The claim's `claimed_at`, which fences every write this pass makes. See `ClaimLost`. */
+  readonly claim?: string
 }
 
 export interface IngestResult {
@@ -245,28 +280,32 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
   if (planned.length === 0) {
     // Nothing to index. Recording the document anyway keeps the idempotency key
     // meaningful — a retry must not re-parse an empty file forever.
-    const stored = await ports.documents.upsert({
-      orgId: request.orgId,
-      layerId: request.layerId,
-      externalId: request.externalId,
-      title: request.title,
-      contentHash: hash,
-      chunks: [],
-      metadata: parsed.metadata,
-    })
     // Not a no-op. A document that had chunks and now parses to none — an
     // emptied file, a parser that stopped recognising a format — keeps every
     // point from its last pass unless they are swept here, and those are the
     // worst kind: a document with no text left, still holding places in results.
-    await ports.vectors.write({
-      orgId: request.orgId,
-      collection: request.collection,
-      metadata: request.metadata,
-      layerId: request.layerId,
-      documentId: stored.id,
-      vectorName: request.vectorName,
-      points: [],
-    })
+    const stored = await ports.documents.upsert(
+      {
+        orgId: request.orgId,
+        layerId: request.layerId,
+        externalId: request.externalId,
+        title: request.title,
+        contentHash: hash,
+        chunks: [],
+        metadata: parsed.metadata,
+        ...(request.claim === undefined ? {} : { claim: request.claim }),
+      },
+      (row) =>
+        ports.vectors.write({
+          orgId: request.orgId,
+          collection: request.collection,
+          metadata: request.metadata,
+          layerId: request.layerId,
+          documentId: row.id,
+          vectorName: request.vectorName,
+          points: [],
+        }),
+    )
 
     // A document with no chunks has no points, so there is no stale tag it can
     // leak through and it is trivially current. Leaving it behind the version
@@ -330,43 +369,48 @@ export async function ingest(request: IngestRequest, ports: IngestPorts): Promis
   // a document with no vectors, which is recoverable by reindexing — the other
   // order leaves vectors with no document, which is a leak waiting for a
   // collision on the id.
-  const stored = await ports.documents.upsert({
-    orgId: request.orgId,
-    layerId: request.layerId,
-    externalId: request.externalId,
-    title: request.title,
-    contentHash: hash,
-    chunks: withPoints,
-    metadata: parsed.metadata,
-  })
-
-  await ports.vectors.write({
-    orgId: request.orgId,
-    collection: request.collection,
-      metadata: request.metadata,
-    layerId: request.layerId,
-    documentId: stored.id,
-    vectorName: request.vectorName,
-    points: withPoints.map((c, i) => ({
-      pointId: c.pointId,
-      ordinal: c.ordinal,
-      vector: vectors[i] as readonly number[],
-      // From `c.text`, the same string that was embedded — not from the
-      // document, and not from the parser's extracted text before chunking.
-      // A sparse vector built over the whole document and attached to each of
-      // its chunks would make every chunk match every term the document
-      // contains, so a search for a phrase appearing once would rank all
-      // thirty of its chunks and the reader would get the wrong one.
-      sparse: encodeDocument(c.text),
-      docId: stored.id,
-    })),
-  })
-
-  // After the vector write, never before. The column is a claim that the points
-  // carry tags built from this groups_version, and the only moment that claim is
-  // true is once the write has returned. Marking first and then failing would
-  // leave a document reporting itself caught up while its points still carry a
-  // revoked grant — the exact state invariant I4 forbids, recorded as healthy.
+  //
+  // And the points inside that write, while the row is locked. A delete takes
+  // the same lock before it flags the points, so the two serialize: either this
+  // pass finishes first and the delete then flags every point it wrote, or the
+  // delete finishes first and the fence refuses this pass before it writes one.
+  const stored = await ports.documents.upsert(
+    {
+      orgId: request.orgId,
+      layerId: request.layerId,
+      externalId: request.externalId,
+      title: request.title,
+      contentHash: hash,
+      chunks: withPoints,
+      metadata: parsed.metadata,
+      ...(request.claim === undefined ? {} : { claim: request.claim }),
+    },
+    (row) => writePoints(row.id),
+  )
 
   return { documentId: stored.id, chunkCount: withPoints.length, unchanged: false }
+
+  function writePoints(documentId: string): Promise<void> {
+    return ports.vectors.write({
+      orgId: request.orgId,
+      collection: request.collection,
+      metadata: request.metadata,
+      layerId: request.layerId,
+      documentId,
+      vectorName: request.vectorName,
+      points: withPoints.map((c, i) => ({
+        pointId: c.pointId,
+        ordinal: c.ordinal,
+        vector: vectors[i] as readonly number[],
+        // From `c.text`, the same string that was embedded — not from the
+        // document, and not from the parser's extracted text before chunking.
+        // A sparse vector built over the whole document and attached to each of
+        // its chunks would make every chunk match every term the document
+        // contains, so a search for a phrase appearing once would rank all
+        // thirty of its chunks and the reader would get the wrong one.
+        sparse: encodeDocument(c.text),
+        docId: documentId,
+      })),
+    })
+  }
 }

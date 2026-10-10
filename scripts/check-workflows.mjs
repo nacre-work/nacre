@@ -460,4 +460,46 @@ for (const file of files) {
 }
 if (services > 0) console.log(`${String(services)} service container(s), each signed in or not on Docker Hub`)
 
+/**
+ * ─── What a workflow's token may do, and whose code it runs ──────────────────
+ *
+ * **Every workflow says what its token may do.** One that does not gets the
+ * repository's default, which an organization can set to write, so the same
+ * file is read-only in one place and can push in another, depending on a
+ * setting nobody reads in a pull request. Two of five said nothing.
+ *
+ * **An action outside `actions/` is pinned to a commit.** A tag is a pointer
+ * its owner can move, and these run in jobs that hold registry credentials and
+ * push the images a deployment pulls. The version stays beside the SHA as a
+ * comment, so a reader still sees which release it is. GitHub's own `actions/`
+ * are left on their major tags, which is what they publish for. A local action
+ * (`./…`) is this repository's own code.
+ */
+let pinned = 0
+for (const file of files) {
+  const text = readFileSync(join(DIR, file), 'utf8')
+  if (!/^permissions:/m.test(text)) {
+    console.error(`::error file=${DIR}/${file}::declares no top-level permissions, so its token is whatever the repository's default is.`)
+    failed = true
+  }
+  for (const m of text.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)/gm)) {
+    const ref = m[1]
+    if (ref.startsWith('./') || ref.startsWith('actions/') || ref.startsWith('docker://')) continue
+    pinned += 1
+    if (!/@[0-9a-f]{40}$/.test(ref)) {
+      console.error(
+        `::error file=${DIR}/${file}::${ref} is referenced by a tag its owner can move. Pin it to the commit, ` +
+          'with the version in a comment beside it.',
+      )
+      failed = true
+    }
+  }
+}
+if (pinned === 0) {
+  console.error('::error::no third-party action found in any workflow; the pinning rule has nothing to hold, which is not a pass.')
+  failed = true
+} else if (!failed) {
+  console.log(`${String(pinned)} third-party action reference(s), each pinned to a commit; every workflow declares its permissions`)
+}
+
 process.exit(failed ? 1 : 0)

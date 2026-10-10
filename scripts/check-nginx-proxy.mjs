@@ -72,9 +72,22 @@ if (locations.length === 0) {
 }
 
 let proxied = 0
+let served = 0
 for (const { name, body } of locations) {
-  // A `location` that serves files has no upstream and no headers to get wrong.
-  if (!/proxy_pass\s/.test(body)) continue
+  // A `location` that serves files has no upstream and no proxy headers to get
+  // wrong — and is the console, which must never be framed. Its policy is a
+  // <meta> tag, where a browser ignores `frame-ancestors`, so the header is the
+  // only place that refusal can live.
+  if (!/proxy_pass\s/.test(body)) {
+    served += 1
+    if (!/add_header\s+X-Frame-Options\s+"?DENY"?\s+always\s*;/.test(body)) {
+      note(`location ${name} serves the console and does not send \`X-Frame-Options DENY\` always; any site could frame it, Approve included.`)
+    }
+    if (!/add_header\s+Content-Security-Policy\s+"frame-ancestors 'none'"\s+always\s*;/.test(body)) {
+      note(`location ${name} serves the console and does not send \`frame-ancestors 'none'\` as a header, which a <meta> policy cannot carry.`)
+    }
+    continue
+  }
   proxied += 1
 
   if (/proxy_set_header\s+Host\s+\$host\s*;/.test(body)) {
@@ -105,6 +118,10 @@ for (const { name, body } of locations) {
         'what a client is, and therefore what the sign-in limiter counts.',
     )
   }
+}
+
+if (served === 0) {
+  note('no location in docker/nginx.conf.template serves the console; the framing rule has nothing to hold.')
 }
 
 if (proxied === 0) {

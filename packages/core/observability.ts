@@ -1,6 +1,6 @@
 import type { Pool } from 'pg'
 
-import { withOrg } from './db/client.js'
+import { acrossOrganizations, withOrg } from './db/client.js'
 import { fromStateJson, reindexProgress } from './reindex.js'
 import type { Metrics } from './metrics.js'
 
@@ -15,20 +15,19 @@ export function collectDatabaseGauges(pool: Pool, metrics: Metrics, role?: strin
   const scope = role === undefined ? {} : { role }
 
   return async () => {
-    const client = await pool.connect()
-    try {
-      // Across organizations, so it runs outside withOrg under the role that
-      // may see them all. Every query below names org_id in its output rather
-      // than filtering to one.
+    // The three reads that span organizations — the tenants, a reindex's
+    // progress per layer, and the collections a finished migration still holds
+    // — go through `acrossOrganizations`, the mechanism for reading across
+    // tenants. They ran on a bare connection, which read fine in development,
+    // where the connection is a superuser no policy binds, and raised in a
+    // deployment connecting as `nacre_app`: `layers` and `retired_collections`
+    // are FORCEd and `app.current_org` is unset outside `withOrg`, so both
+    // gauges were absent there. What leaves this block is slugs, a ratio and a
+    // count — never a document.
+    const { orgs, reindexing, retained } = await acrossOrganizations(pool, async (client) => {
       const { rows: orgs } = await client.query<{ id: string; slug: string }>(
         'SELECT id, slug FROM organizations WHERE deleted_at IS NULL',
       )
-
-      metrics.documents.reset()
-      metrics.tombstonesPending.reset()
-      metrics.processingAge.reset()
-      metrics.reindexProgress.reset()
-      metrics.collectionsRetired.reset()
 
       // One series per layer that has ever been reindexed, labelled by slug
       // like every other per-tenant gauge here. Layers with no reindex produce
@@ -51,11 +50,6 @@ export function collectDatabaseGauges(pool: Pool, metrics: Metrics, role?: strin
           WHERE l.reindex_state IS NOT NULL
             AND l.deleted_at IS NULL AND o.deleted_at IS NULL`,
       )
-      for (const row of reindexing) {
-        const state = fromStateJson(row.state)
-        if (state === undefined) continue
-        metrics.reindexProgress.set(reindexProgress(state), { org: row.slug, layer: row.layer })
-      }
 
       // Collections a finished migration is still holding, for the same reason
       // and in the same shape as the reindex gauge above: one query across
@@ -74,78 +68,89 @@ export function collectDatabaseGauges(pool: Pool, metrics: Metrics, role?: strin
            JOIN organizations o ON o.id = r.org_id
           GROUP BY o.slug`,
       )
-      for (const row of retained) {
-        metrics.collectionsRetired.set(Number(row.n), { org: row.slug })
+      return { orgs, reindexing, retained }
+    })
+
+    metrics.documents.reset()
+    metrics.tombstonesPending.reset()
+    metrics.processingAge.reset()
+    metrics.reindexProgress.reset()
+    metrics.collectionsRetired.reset()
+
+    for (const row of reindexing) {
+      const state = fromStateJson(row.state)
+      if (state === undefined) continue
+      metrics.reindexProgress.set(reindexProgress(state), { org: row.slug, layer: row.layer })
+    }
+    for (const row of retained) {
+      metrics.collectionsRetired.set(Number(row.n), { org: row.slug })
+    }
+
+    for (const org of orgs) {
+      // One query per organization, not three.
+      //
+      // It was three — document counts, pending tombstones, propagation lag —
+      // each a separate round trip inside its own `withOrg`, so a scrape cost
+      // 3N+1 queries and each of those three also paid for a connection
+      // checkout and a `SET LOCAL app.current_org`. At five hundred tenants
+      // that is fifteen hundred queries every fifteen seconds, on the same
+      // pool the request path uses, triggered by an endpoint that anyone who
+      // can reach the port may call as fast as they like.
+      //
+      // All three read `documents` for one organization, so they are one
+      // grouped query with FILTERed aggregates. Still per organization and
+      // still inside `withOrg`: collapsing across tenants would mean reading
+      // every tenant's documents from the API process, and the row-level
+      // policies are not something to route around for a gauge.
+      const rows = await withOrg(
+        pool,
+        org.id,
+        async (c) =>
+          (
+            await c.query<{
+              status: string
+              live: string
+              tombstoned: string
+              claim_age: string | null
+            }>(
+              // claim_age rides this query rather than adding one: claimed_at
+              // is on the same documents rows, non-null only while a document
+              // is being indexed, and cleared on success or failure. The max
+              // per status is the oldest in-flight document; the max across
+              // statuses is taken below, so a worker wedged in either
+              // `parsing` or `indexing` shows up.
+              `SELECT status,
+                      count(*) FILTER (WHERE deleted_at IS NULL)::text AS live,
+                      count(*) FILTER (
+                        WHERE deleted_at IS NOT NULL AND vectors_purged_at IS NULL
+                      )::text AS tombstoned,
+                      extract(
+                        epoch FROM max(now() - claimed_at) FILTER (WHERE claimed_at IS NOT NULL)
+                      ) AS claim_age
+                 FROM documents
+                WHERE org_id = $1
+                GROUP BY status`,
+              [org.id],
+            )
+          ).rows,
+        scope,
+      )
+
+      let tombstoned = 0
+      let claimAge = 0
+      for (const row of rows) {
+        metrics.documents.set(Number(row.live), { org: org.slug, status: row.status })
+        tombstoned += Number(row.tombstoned)
+        if (row.claim_age !== null) claimAge = Math.max(claimAge, Number(row.claim_age))
       }
 
-      for (const org of orgs) {
-        // One query per organization, not three.
-        //
-        // It was three — document counts, pending tombstones, propagation lag —
-        // each a separate round trip inside its own `withOrg`, so a scrape cost
-        // 3N+1 queries and each of those three also paid for a connection
-        // checkout and a `SET LOCAL app.current_org`. At five hundred tenants
-        // that is fifteen hundred queries every fifteen seconds, on the same
-        // pool the request path uses, triggered by an endpoint that anyone who
-        // can reach the port may call as fast as they like.
-        //
-        // All three read `documents` for one organization, so they are one
-        // grouped query with FILTERed aggregates. Still per organization and
-        // still inside `withOrg`: collapsing across tenants would mean reading
-        // every tenant's documents from the API process, and the row-level
-        // policies are not something to route around for a gauge.
-        const rows = await withOrg(
-          pool,
-          org.id,
-          async (c) =>
-            (
-              await c.query<{
-                status: string
-                live: string
-                tombstoned: string
-                claim_age: string | null
-              }>(
-                // claim_age rides this query rather than adding one: claimed_at
-                // is on the same documents rows, non-null only while a document
-                // is being indexed, and cleared on success or failure. The max
-                // per status is the oldest in-flight document; the max across
-                // statuses is taken below, so a worker wedged in either
-                // `parsing` or `indexing` shows up.
-                `SELECT status,
-                        count(*) FILTER (WHERE deleted_at IS NULL)::text AS live,
-                        count(*) FILTER (
-                          WHERE deleted_at IS NOT NULL AND vectors_purged_at IS NULL
-                        )::text AS tombstoned,
-                        extract(
-                          epoch FROM max(now() - claimed_at) FILTER (WHERE claimed_at IS NOT NULL)
-                        ) AS claim_age
-                   FROM documents
-                  WHERE org_id = $1
-                  GROUP BY status`,
-                [org.id],
-              )
-            ).rows,
-          scope,
-        )
-
-        let tombstoned = 0
-        let claimAge = 0
-        for (const row of rows) {
-          metrics.documents.set(Number(row.live), { org: org.slug, status: row.status })
-          tombstoned += Number(row.tombstoned)
-          if (row.claim_age !== null) claimAge = Math.max(claimAge, Number(row.claim_age))
-        }
-
-        metrics.tombstonesPending.set(tombstoned, { org: org.slug })
-        // Only when something is in flight. A zero for every idle tenant would
-        // be true and useless; the alertable shape is a series that exists and
-        // climbs, so no claimed document means no series, the same way the
-        // reindex and retired-collection gauges stay silent about tenants with
-        // nothing to report.
-        if (claimAge > 0) metrics.processingAge.set(claimAge, { org: org.slug })
-      }
-    } finally {
-      client.release()
+      metrics.tombstonesPending.set(tombstoned, { org: org.slug })
+      // Only when something is in flight. A zero for every idle tenant would
+      // be true and useless; the alertable shape is a series that exists and
+      // climbs, so no claimed document means no series, the same way the
+      // reindex and retired-collection gauges stay silent about tenants with
+      // nothing to report.
+      if (claimAge > 0) metrics.processingAge.set(claimAge, { org: org.slug })
     }
   }
 }

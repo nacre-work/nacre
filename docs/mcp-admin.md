@@ -193,6 +193,16 @@ layer's slug — and the proposal is where those names are resolved, so what the
 panel shows is what was found rather than what was typed. A name that matches
 nothing, or more than one thing, is refused there, before anything is stored.
 
+**A skill is proposed whole.** A skill is the instructions every later agent on
+a layer follows, and the agent proposing one may be carrying an instruction it
+read in a document — so `write_skill` and `restore_skill` show the person every
+file's text, `SKILL.md` first, rather than a list of paths. A skill is checked
+when it is proposed, so the person is never asked to apply one the write would
+refuse. One longer than 40,000 characters across its files is refused rather
+than shown in part, because the part not shown is where an instruction would
+sit. A person writes a larger one on the console's Skills screen or in the skill
+panel, where the write is theirs.
+
 **What is not here, and why:**
 
 - **Passwords and keys.** A generated password or a service account key returned
@@ -405,6 +415,13 @@ a revocation writing `cancelled` for each one it ends — and an applied one als
 leaves the ordinary record of the change itself, with the proposal's id beside
 it. A stream of proposals nobody applied, or of presses that were refused, is
 what an injection attempt looks like from the outside.
+
+A decided proposal is kept as long as those events are, and goes with them at
+`NACRE_AUDIT_RETENTION_DAYS` — never one still waiting. And at most 25 wait on a
+connection at once: past that the next is refused, recorded like any other
+refusal, with a sentence asking the person to decide what is waiting first. A
+queue longer than a person will read is an agent in a loop, or an injected
+instruction asking for the same change again and again.
 
 ## Current state
 
