@@ -244,6 +244,9 @@ services:
   worker:
     <<: *app
     command: ["node", "packages/worker/dist/main.js"]
+    # Both: the default network for Postgres, Qdrant and Redis, and `parsing`,
+    # which it shares with the parser and nothing else. See `parser`.
+    networks: [default, parsing]
     # No ports. The worker talks outward only — which also means the image's
     # HTTP healthcheck can never pass here, and a container that is permanently
     # unhealthy is one an orchestrator will restart forever. It has nothing to
@@ -313,12 +316,19 @@ services:
       timeout: 3s
       retries: 10
 
+  # On a network of its own, shared with the worker and nothing else. It is the
+  # one process that reads hostile input — every uploaded file and every page
+  # an ingest names — and the default network beside it holds Qdrant and Redis,
+  # which take no credential, and Postgres. A parser that a crafted document
+  # took over would have reached all three by name. The worker is its only
+  # caller, so the worker is the only other member. `lint:compose` holds it.
   parser:
     build:
       context: .
       dockerfile: docker/Dockerfile.parser
     restart: unless-stopped
     expose: ["8090"]
+    networks: [parsing]
 
   # ─────────────────────────── hosted ───────────────────────────
 
@@ -341,13 +351,36 @@ services:
       context: .
       dockerfile: docker/Dockerfile.embedding-adapter
     restart: unless-stopped
-    # Its own env_file rather than the shared `x-app` anchor: that anchor also
-    # carries the database and Qdrant settings, and this service reaches
-    # neither. A credential-holding container should be handed the credentials
-    # it needs and no others.
-    env_file:
-      - path: .env
-        required: false
+    # The variables it reads and no others, named one by one. It used to take
+    # `env_file: .env` of its own, under a comment saying it was handed only the
+    # credentials it needs — and `.env` is the whole installation's: the JWT
+    # signing secret, the database URL, the bucket keys, the second-factor key,
+    # the mail relay. This is the one container that parses answers from
+    # somebody else's servers. `lint:compose` holds this list against the
+    # literals in services/embedding_adapter/app.py, in both directions.
+    environment:
+      NACRE_EMBED_ROUTES: ${NACRE_EMBED_ROUTES:-}
+      NACRE_EMBED_OPENAI_COMPATIBLE_ENDPOINT: ${NACRE_EMBED_OPENAI_COMPATIBLE_ENDPOINT:-}
+      NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY: ${NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY:-}
+      NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY_FILE: ${NACRE_EMBED_OPENAI_COMPATIBLE_API_KEY_FILE:-}
+      NACRE_EMBED_CLOUDFLARE_ACCOUNT: ${NACRE_EMBED_CLOUDFLARE_ACCOUNT:-}
+      NACRE_EMBED_CLOUDFLARE_API_KEY: ${NACRE_EMBED_CLOUDFLARE_API_KEY:-}
+      NACRE_EMBED_CLOUDFLARE_API_KEY_FILE: ${NACRE_EMBED_CLOUDFLARE_API_KEY_FILE:-}
+      NACRE_EMBED_GOOGLE_API_KEY: ${NACRE_EMBED_GOOGLE_API_KEY:-}
+      NACRE_EMBED_GOOGLE_API_KEY_FILE: ${NACRE_EMBED_GOOGLE_API_KEY_FILE:-}
+      NACRE_EMBED_VOYAGE_API_KEY: ${NACRE_EMBED_VOYAGE_API_KEY:-}
+      NACRE_EMBED_VOYAGE_API_KEY_FILE: ${NACRE_EMBED_VOYAGE_API_KEY_FILE:-}
+      NACRE_RERANK_VENDOR: ${NACRE_RERANK_VENDOR:-}
+      NACRE_RERANK_MODEL: ${NACRE_RERANK_MODEL:-}
+      NACRE_RERANK_CLOUDFLARE_ACCOUNT: ${NACRE_RERANK_CLOUDFLARE_ACCOUNT:-}
+      NACRE_RERANK_CLOUDFLARE_API_KEY: ${NACRE_RERANK_CLOUDFLARE_API_KEY:-}
+      NACRE_RERANK_CLOUDFLARE_API_KEY_FILE: ${NACRE_RERANK_CLOUDFLARE_API_KEY_FILE:-}
+      NACRE_RERANK_COHERE_API_KEY: ${NACRE_RERANK_COHERE_API_KEY:-}
+      NACRE_RERANK_COHERE_API_KEY_FILE: ${NACRE_RERANK_COHERE_API_KEY_FILE:-}
+      NACRE_RERANK_JINA_API_KEY: ${NACRE_RERANK_JINA_API_KEY:-}
+      NACRE_RERANK_JINA_API_KEY_FILE: ${NACRE_RERANK_JINA_API_KEY_FILE:-}
+      NACRE_RERANK_VOYAGE_API_KEY: ${NACRE_RERANK_VOYAGE_API_KEY:-}
+      NACRE_RERANK_VOYAGE_API_KEY_FILE: ${NACRE_RERANK_VOYAGE_API_KEY_FILE:-}
     expose: ["8091"]
 
   # ─────────────────────────── full ───────────────────────────
@@ -556,3 +589,10 @@ volumes:
   # keeping them any longer would leave a file naming logins that no longer
   # exist.
   demo:
+
+# `default` is Compose's own and holds everything. `parsing` holds the parser
+# and the worker: the parser reads hostile input, and nothing it could be made
+# to do should find Postgres, Qdrant or Redis on its network.
+networks:
+  default: {}
+  parsing: {}

@@ -1324,8 +1324,11 @@ services outside the profiles it was given. Everything else updates and one
 thing silently does not.
 
 **Changing a credential needs the container recreated, not restarted.** The
-services here take their environment through `env_file`, which Compose reads
-when it **creates** a container and bakes into it. `docker compose restart`
+services here take their environment from `.env` — the application services
+through `env_file`, the embedding adapter through an `environment:` list naming
+only the variables it reads, so the signing secret and the database URL never
+reach the one container that parses somebody else's answers — and Compose
+reads both when it **creates** a container and bakes the values into it. `docker compose restart`
 re-runs the same container with the same baked values and re-reads nothing; a
 plain `up -d` recreates only if it decides the configuration changed, which
 depending on the Compose version does not include the contents of an env file.
