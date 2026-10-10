@@ -64,14 +64,23 @@ for (let run = 1; run <= runs; run += 1) {
     .filter((m) => m !== null)
     .map((m) => m[1].trim())
 
-  if (result.status !== 0 && failures.length === 0) {
-    // A run that died without naming a case — a crashed worker, a database that
-    // went away. Counted rather than swallowed, because "the suite could not
-    // run" is a different answer from "the suite passed".
-    broken += 1
-  }
+  // A run that died without naming a case — a crashed worker, a database that
+  // went away. Counted rather than swallowed, because "the suite could not run"
+  // is a different answer from "the suite passed", and its line says so: it
+  // used to read `clean`, which is the one word that run had not earned.
+  const died = result.status !== 0 && failures.length === 0
+  if (died) broken += 1
   for (const name of new Set(failures)) seen.set(name, (seen.get(name) ?? 0) + 1)
-  process.stdout.write(`run ${String(run)}/${String(runs)}: ${failures.length === 0 ? 'clean' : failures.join(' | ')}\n`)
+  const verdict = died ? 'named no case and failed' : failures.length === 0 ? 'clean' : failures.join(' | ')
+  process.stdout.write(`run ${String(run)}/${String(runs)}: ${verdict}\n`)
+  if (died) {
+    // Its output is printed, because it is the only evidence there is: the hunt
+    // of 2026-10-09 reported one such run and kept nothing of it, so the red was
+    // a number nobody could act on and the next clean night closed it.
+    const why = result.error ? String(result.error) : `exit ${String(result.status)}, signal ${String(result.signal)}`
+    const tail = output.trimEnd().split('\n').slice(-80).join('\n')
+    process.stdout.write(`::group::run ${String(run)} — ${why}, its last 80 lines\n${tail}\n::endgroup::\n`)
+  }
 }
 
 if (broken > 0) {

@@ -92,6 +92,33 @@ import { administers, delegatedLayers, delegationPermits, withinDelegation, type
 import { permissionsOf } from './skill-ceiling.js'
 
 /**
+ * The join from the points a search returned to their rows. Exported so the
+ * live test explains *this* text against a real Postgres.
+ *
+ * It starts from the ids, and says so: the chunks are looked up first, through
+ * `chunks_org_point_idx` (migration 0042), inside a `MATERIALIZED` CTE the
+ * planner may not reorder, and only those rows are joined to their documents
+ * and layers by key. Written as one flat join, the planner was free to start
+ * from `layers` instead and walk every document of the organization to find
+ * ten chunks — and it did, index or no index, whenever `layers` had never been
+ * analyzed. That is the ordinary state of a table with a few rows: autoanalyze
+ * waits for fifty changed rows, which an organization's layers may never reach,
+ * and a never-analyzed table misleads the estimate for every join it is in.
+ */
+export const HYDRATE_SQL = `WITH hit AS MATERIALIZED (
+       SELECT point_id, document_id, text
+         FROM chunks
+        WHERE org_id = $1
+          AND point_id = ANY($2::uuid[])
+     )
+     SELECT h.point_id AS chunk_id, h.document_id AS doc_id, l.slug AS layer, d.title, h.text
+       FROM hit h
+       JOIN documents d ON d.id = h.document_id AND d.org_id = $1
+       JOIN layers    l ON l.id = d.layer_id    AND l.org_id = d.org_id
+      WHERE d.deleted_at IS NULL
+        AND l.deleted_at IS NULL`
+
+/**
  * The adapters that put the permission model on the request path.
  *
  * `NacreSearchService` is the one to read. Every step between a token and a
@@ -935,14 +962,7 @@ export class NacreSearchService implements SearchService {
           // different values. Joining on the wrong one matches nothing and
           // returns an empty result set, which looks exactly like a permission
           // working correctly.
-          `SELECT c.point_id AS chunk_id, c.document_id AS doc_id, l.slug AS layer, d.title, c.text
-             FROM chunks c
-             JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id
-             JOIN layers    l ON l.id = d.layer_id    AND l.org_id = d.org_id
-            WHERE c.org_id = $1
-              AND c.point_id = ANY($2::uuid[])
-              AND d.deleted_at IS NULL
-              AND l.deleted_at IS NULL`,
+          HYDRATE_SQL,
           [orgId, chunkIds],
         )
         return rows
