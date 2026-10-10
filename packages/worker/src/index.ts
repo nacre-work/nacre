@@ -17,6 +17,7 @@ export {
   claimStranded,
   expireProposals,
   HttpParser,
+  pruneProposals,
   PostgresDocumentStore,
   QdrantVectorWriter,
 } from './adapters.js'

@@ -842,6 +842,23 @@ export async function pruneAuditEvents(
 }
 
 /**
+ * Decided proposals past the access log's retention horizon.
+ *
+ * Through `prune_admin_proposals`, for `pruneAuditEvents`'s reasons: a number
+ * of days and never a predicate, and no DELETE held by any application role.
+ * An open or applying proposal is never removed, whatever its age. 0041.
+ */
+export async function pruneProposals(pool: Pool, retentionDays: number, limit: number): Promise<number> {
+  return acrossOrganizations(pool, async (client) => {
+    const { rows } = await client.query<{ pruned: number }>('SELECT prune_admin_proposals($1, $2) AS pruned', [
+      retentionDays,
+      limit,
+    ])
+    return Number(rows[0]?.pruned ?? 0)
+  })
+}
+
+/**
  * Proposals on the administrative MCP that nobody applied in time.
  *
  * Applying refuses an expired one on its own — the claim compares `expires_at`

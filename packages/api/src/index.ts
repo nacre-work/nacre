@@ -79,6 +79,7 @@ export type { AlertRule, Enqueued, NewAlertRule, NotificationStore } from './not
 export {
   applyProposal,
   cancelProposal,
+  OPEN_PER_CONNECTION,
   PostgresProposals,
   PROPOSAL_TTL_MS,
   recordProposal,

@@ -489,6 +489,12 @@ Two tables are swept by the worker, hourly, in bounded batches:
   is what the append-only guarantee is actually protecting. **The 30-day floor
   is refused at startup**, not clamped: a deployment configured for a week of
   audit history should not come up believing it has one.
+- **`admin_proposals`** that have been decided — applied, cancelled, expired or
+  failed — past the same `NACRE_AUDIT_RETENTION_DAYS`, through
+  `prune_admin_proposals` on the same terms (migration `0041`). The access log
+  carries each proposal's record, so keeping the row longer would be a second
+  retention of a skill's text or an address that nobody configured. A proposal
+  still waiting or being applied is never pruned, whatever its age.
 
 On the same clock, and third, the worker reclaims what a model migration left
 behind, past `NACRE_COLLECTION_RETENTION_DAYS`: **the collection it replaced**,

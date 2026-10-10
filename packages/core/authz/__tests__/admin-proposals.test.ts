@@ -18,13 +18,14 @@ import {
   PostgresSkills,
   PostgresUsers,
   PostgresWorkspaces,
+  OPEN_PER_CONNECTION,
   SKILL_REVIEW_CHARS,
   writeLookup,
   type AdminWritePorts,
   type AuthContext,
 } from '@nacre.work/api'
 import { adminTools, createMcpServer } from '@nacre.work/mcp'
-import { expireProposals } from '@nacre.work/worker'
+import { expireProposals, pruneProposals } from '@nacre.work/worker'
 import { SignJWT } from 'jose'
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -373,6 +374,52 @@ when('adversarial · a change on the administrative MCP waits for a person', () 
     expect(back.details.find((d) => d.text === true && d.label === 'SKILL.md')?.value).toBe(body)
   })
 
+  it("a decided proposal goes at the access log's horizon, and one still waiting never does", async () => {
+    // The access log is pruned at NACRE_AUDIT_RETENTION_DAYS and carries the
+    // record of every proposal, so a proposal kept past it is a second, longer
+    // retention of a skill's text and an address nobody configured. 0041.
+    await revokeAll()
+    const client = await connect(adminToken)
+    let old: string, waiting: string, recent: string
+    try {
+      old = (await propose(client)).id
+      waiting = (await propose(client)).id
+      recent = (await propose(client)).id
+    } finally {
+      await client.close()
+    }
+    const c = await pool.connect()
+    try {
+      const aged = `created_at = now() - interval '91 days', expires_at = now() - interval '91 days' + interval '10 minutes'`
+      await c.query(`UPDATE admin_proposals SET status = 'cancelled', decided_at = now() - interval '91 days', ${aged} WHERE id = $1`, [old])
+      // Open and ancient: the expiry sweep ends it, never retention.
+      await c.query(`UPDATE admin_proposals SET created_at = now() - interval '91 days' WHERE id = $1`, [waiting])
+      await c.query(`UPDATE admin_proposals SET status = 'cancelled', decided_at = now() - interval '1 day' WHERE id = $1`, [recent])
+    } finally {
+      c.release()
+    }
+
+    expect(await pruneProposals(pool, 90, 1000)).toBeGreaterThanOrEqual(1)
+    expect(await statusOf(old), 'a proposal decided past the horizon was kept').toBeUndefined()
+    expect(await statusOf(waiting), 'a waiting proposal was removed').toBe('open')
+    expect(await statusOf(recent), 'a proposal inside the horizon was removed').toBe('cancelled')
+    // The access log's floor, for the access log's reason.
+    await expect(pruneProposals(pool, 7, 10)).rejects.toThrow(/30 day floor/)
+
+    // And no application role holds a DELETE of its own: the function is the
+    // one way a proposal goes before its organization does.
+    const d = await pool.connect()
+    try {
+      await d.query('BEGIN')
+      await d.query(`SET LOCAL ROLE ${AS_APP}`)
+      await d.query(`SELECT set_config('app.current_org', $1, true)`, [ORG])
+      await expect(d.query(`DELETE FROM admin_proposals WHERE id = $1`, [recent])).rejects.toThrow(/permission denied/)
+    } finally {
+      await d.query('ROLLBACK')
+      d.release()
+    }
+  })
+
   it('applies once, from the panel, as the person — and never twice', async () => {
     await revokeAll()
     const client = await connect(adminToken)
@@ -605,6 +652,39 @@ when('adversarial · a change on the administrative MCP waits for a person', () 
       expect(await triedCount()).toBe(before + 1)
     } finally {
       await client.close()
+    }
+  })
+
+  it('a connection stops proposing once more are waiting than a person will read, and says so', async () => {
+    // An agent in a loop, or an injected instruction asking for one change
+    // over and over, is a queue nobody reads — and each row is kept for the
+    // access log's retention.
+    const settle = async (): Promise<void> => {
+      const c = await pool.connect()
+      try {
+        await c.query(`UPDATE admin_proposals SET status = 'cancelled', decided_at = now() WHERE consent_id = $1 AND status = 'open'`, [adminConnection])
+      } finally {
+        c.release()
+      }
+    }
+    await settle()
+    const client = await connect(adminToken)
+    try {
+      for (let i = 0; i < OPEN_PER_CONNECTION; i += 1) await propose(client)
+      const before = await triedCount()
+      const refused = await client.callTool({
+        name: 'issue_grant',
+        arguments: { person: 'member@ap.test', layer: 'handbook', permission: 'read' },
+      })
+      expect(refused.isError).toBe(true)
+      expect(textOf(refused)).toContain('already waiting')
+      expect(await triedCount(), 'the refusal left nothing in the log').toBe(before + 1)
+      // Deciding what is waiting is what frees the connection.
+      await settle()
+      await propose(client)
+    } finally {
+      await client.close()
+      await settle()
     }
   })
 

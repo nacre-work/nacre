@@ -416,6 +416,13 @@ leaves the ordinary record of the change itself, with the proposal's id beside
 it. A stream of proposals nobody applied, or of presses that were refused, is
 what an injection attempt looks like from the outside.
 
+A decided proposal is kept as long as those events are, and goes with them at
+`NACRE_AUDIT_RETENTION_DAYS` — never one still waiting. And at most 25 wait on a
+connection at once: past that the next is refused, recorded like any other
+refusal, with a sentence asking the person to decide what is waiting first. A
+queue longer than a person will read is an agent in a loop, or an injected
+instruction asking for the same change again and again.
+
 ## Current state
 
 **Built in 0.32.0** — the half every write will rest on:
