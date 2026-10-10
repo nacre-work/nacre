@@ -1099,6 +1099,32 @@ await shot('search', {
     await page.waitForTimeout(400)
   },
 })
+// A reader's search. Every hit carried a Delete, which needs `write` on the
+// layer, so a member was offered one on every result and refused by each — the
+// Layers screen's 0.38.1 defect one screen over. It throws on the first one.
+await shot('search-member', {
+  hash: '#/search',
+  fixtures: {
+    'GET /v1/me': {
+      organization: 'acme', principal_type: 'user', principal_id: '4f2c8e61-7a95-4d13-9b60-2e8a5c0f7b34',
+      role: 'member', administers: false, holds_own_credentials: true,
+    },
+    'GET /v1/layers': {
+      items: [
+        { id: LAYER, slug: 'handbook', name: 'Handbook', workspace_id: WORKSPACE, description: 'Policies and how-tos',
+          document_count: 128, failed_count: 0, permissions: ['read'] },
+      ],
+      next_cursor: null,
+    },
+  },
+  prepare: async (page) => {
+    await page.getByPlaceholder('What can this token find?').fill('when do new hires get access')
+    await page.getByRole('button', { name: 'Search' }).click()
+    await page.waitForTimeout(400)
+    const offered = await page.getByRole('button', { name: 'Delete', exact: true }).count()
+    if (offered !== 0) throw new Error(`search-member: a member who only reads was offered "Delete" ${String(offered)} time(s)`)
+  },
+})
 await shot('grants', { hash: '#/grants' })
 // A query that empties the list says so, rather than drawing an empty table
 // under a box somebody may have forgotten they typed into.

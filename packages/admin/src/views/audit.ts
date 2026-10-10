@@ -455,7 +455,8 @@ const LISTED = 5
  *
  * A list stops after `LISTED` items and says how many it left out. The whole
  * list is in the export, which is where a reader who needs every id goes, and
- * the document filter above already answers "which searches returned this".
+ * the question "which searches returned this" is answered by a document filter —
+ * the administrative MCP's `query_audit` takes one; this screen does not.
  */
 function targetValue(value: unknown): (string | HTMLElement)[] {
   if (Array.isArray(value)) {
