@@ -399,7 +399,10 @@ export function fileControl(input: HTMLInputElement, prompt: string): HTMLElemen
 }
 
 export function status(root: HTMLElement, text: string, kind: 'info' | 'error' = 'info'): HTMLElement {
-  let node = root.querySelector<HTMLElement>('.status')
+  // Its own line, not a descendant's: a panel's refusal is written into the
+  // confirm area inside it, and finding that one first left the panel's own
+  // count stale beside a fresh one, saying two different things.
+  let node = root.querySelector<HTMLElement>(':scope > .status')
   if (node === null) {
     node = el('p', { class: 'status' })
     root.append(node)

@@ -9,7 +9,7 @@ model, and reworking it after search is written is expensive.
 | [architecture.md](./architecture.md) | Components, data flow, vector storage, reindexing, backups |
 | [mcp.md](./mcp.md) | MCP server: transport, authorization, tools |
 | [skills.md](./skills.md) | Skills: what an agent is told on connecting, at installation, organization and layer level — the skill panel, the console screens and the consent box included |
-| [mcp-admin.md](./mcp-admin.md) | The administrative MCP: a separate resource and token, changes a person applies, the access log — *reads, writes, notifications, alert rules and panels built* |
+| [mcp-admin.md](./mcp-admin.md) | The administrative MCP: a separate resource and token, changes a person applies, the access log — *reads, writes, notifications, alert rules and panels built, a module's read included* |
 | [mcp-conformance.md](./mcp-conformance.md) | Every normative sentence of the 2026-07-28 binding, and where we stand on it |
 | [api.md](./api.md) | REST API conventions · contract in [openapi.yaml](./openapi.yaml) |
 | [config.md](./config.md) | Environment variables, Compose profiles, metrics |

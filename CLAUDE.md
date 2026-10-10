@@ -3526,6 +3526,22 @@ the `external_id` from the subject — and a search hit carries a `doc_id` and n
 The plain-words and exact-term searches the skill asks for were worth keeping:
 the first ranked `onboarding.md` above `on-call.md` and the second put it first.
 
+**Access is changed from a panel now, and a module's listing can open one —
+0.37.0.** `list_grants` opens a Grants panel: who has what on which scope, a
+Revoke on every row, and where the read was about a scope a form to give access
+there. Asked for in those words — "enterprise tools, for example document
+access" — and the answer was not an enterprise panel: the core already
+evaluates document grants and denies, so drawing them is the core's, and what a
+module adds is a read that *names* the core's panel and the writes its form may
+offer. The core checks every offer is a write on this surface before the panel
+sees it, so a module cannot offer `apply_proposal` or anything else that is not
+a proposal, and it ships no markup at all — no second renderer of somebody
+else's text. `acl-advanced`'s document listing is the first to use it.
+
+Rendering it found that a panel's `status()` searched every descendant, so a
+refusal written into the confirm area became "the" status line and the panel's
+own count went stale beside a fresh one — two numbers for one table. It reads its
+own line now, and Connections and Layer had the same latent defect.
 **The vector store's client pinned a vulnerable `undici`, and the newest one
 still does — 0.36.1.** `@qdrant/js-client-rest` depends on `undici` at exactly
 7.29.0: two high advisories, one of them a certificate check a dropped

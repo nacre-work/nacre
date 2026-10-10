@@ -1,7 +1,7 @@
 # The administrative MCP
 
 > **Reads since 0.32.0, writes since 0.34.0, notifications since 0.35.0, panels
-> since 0.36.0.** The resource, its audience and consent, the guide, every read
+> since 0.36.0, the grants panel since 0.37.0.** The resource, its audience and consent, the guide, every read
 > tool, the access log and the four prompts were served first; proposals, the
 > change panel, the console's Proposals screen, the write tools and the extension
 > point followed; then notifications and alert rules; then the four read panels.
@@ -325,7 +325,7 @@ was removed finds no tool, and is refused rather than queued for nobody.
 
 A panel is an MCP App view the host renders beside the answer, and it reaches
 the server through the host with the same connection and nothing else: every
-one is listed with no network of its own. Four open from a read and one from a
+one is listed with no network of its own. Five open from a read and one from a
 write.
 
 | Panel | Opened by | What it shows |
@@ -335,6 +335,7 @@ write.
 | Connections | `list_connections` | who has connected what, as whom, through which surface, with which ceiling, and when it was last used; Revoke proposes `revoke_connection` from the panel |
 | Access | `effective_access` | one principal's reach as a matrix of layers against `read`, `write` and `admin` in the permission colours, computed by the resolver search uses, with the grants that decide it; anybody else can be asked from the panel |
 | Layer | `layer_status` | documents indexed, pending and failed; the most recent failures with their reason and whether each comes back by itself; the model, a reindex's progress, the recall gate |
+| Grants | `list_grants`, and a module's read that names it | grants as issued — who, on what, which permission, allow or deny — with Revoke on every row, and, where the read was about a scope, a form to give or deny access there |
 
 **A press in a panel is a proposal like the model's.** Revoke calls the same
 write the model would, the server's sentence appears under the table, and the
@@ -347,6 +348,18 @@ against one layer. "What does Petya see" is one call to the resolver; "who sees
 `contracts`" is one call per principal, and a panel that made them would be
 issuing reads nobody asked for. The model answers the second from `list_grants`
 on the scope and `effective_access` for whoever it names, and cites both.
+
+**The Grants panel is where access is changed from a conversation.** Listed by
+a layer or a workspace, it offers `issue_grant` on that scope from a form under
+the table; listed by a person alone there is no scope to fix and no form. Revoke
+on a row is `revoke_grant`, which withdraws any grant by id — a module's
+included. What the form may offer is not the panel's to decide: the server
+attaches it to the result in `_meta`, and only writes in this surface's catalog
+survive into it. A module's read can open this panel too — `acl-advanced`'s
+`list_document_grants` does, offering `issue_document_grant` and `issue_deny` with
+a document field — which is how a document's access is set without leaving the
+conversation. See [extensions.md](./extensions.md), "A read can open a core
+panel".
 
 **The Layer panel offers nothing to press.** Retrying a failed document is a
 write on its layer, and this surface's connection holds `read` and `admin` but
@@ -460,5 +473,13 @@ what an injection attempt looks like from the outside.
   opened by `query_audit`, `list_connections`, `effective_access` and the new
   read tool `layer_status`, each listed with an empty `connectDomains`.
 - Revoke in the Connections panel, as a proposal applied with the panel's key.
+
+**Built in 0.37.0** — the grants panel:
+
+- `ui://nacre/grants.html`, opened by `list_grants` and by any module read that
+  names it; a form proposing what the server offers in `_meta['nacre/panel']`,
+  and Revoke on every row.
+- `McpReadTool.panel` in `registerMcpTools`, and the core's check that an offer
+  names a write on this surface.
 
 Nothing here is specified and unbuilt.

@@ -175,7 +175,7 @@ export const viewUri = (view: View): string => `ui://nacre/${view}.html`
  * the four a read opens. Served on `/mcp/admin` only; the ordinary surface
  * lists none of them.
  */
-export const ADMIN_VIEWS = ['change', 'audit', 'connections', 'access', 'layer'] as const
+export const ADMIN_VIEWS = ['change', 'audit', 'connections', 'access', 'layer', 'grants'] as const
 export type AdminView = (typeof ADMIN_VIEWS)[number]
 
 export async function viewHtml(view: View | AdminView): Promise<string> {

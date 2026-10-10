@@ -285,6 +285,20 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.37.0 — the grants panel, and a module's read can open it
+
+**No migration and nothing to configure.** `list_grants` on the administrative
+MCP opens a panel: the grants, a Revoke on each, and — listed by a layer or a
+workspace — a form to give access there. Every press is a proposal the person
+applies, as before.
+
+`registerMcpTools` gains an optional `panel` on a read, so a commercial module's
+listing can open the same panel; the commercial `acl-advanced` module does from
+its 0.12.0, for documents. A module built against an older core sends nothing
+new and is unaffected.
+
+`list_grants`'s answer to the model is unchanged; the panel's data is in the
+result's `_meta`.
 ### 0.36.1 — `undici` 7.30.0 under the vector store client
 
 **No migration and nothing to configure: pull the images.** `@qdrant/js-client-rest`

@@ -38,9 +38,11 @@ import {
   MetadataError,
   mcpTools,
   withoutHosts,
+  logger,
   McpToolRefusal,
   withOrg,
   type AuditWriter,
+  type McpPanelOffer,
   type McpReadTool,
   type McpTool,
   type McpWriteTool,
@@ -52,6 +54,7 @@ import {
   AdminResult,
   AUTHORED_NOTICE,
   DECIDE_CATALOG,
+  PANEL_META,
   PROPOSAL_META,
   readDefinition,
   skillNotice,
@@ -809,6 +812,48 @@ export function adminTools(deps: AdminDeps): AdminRunner {
     ...DECIDE_CATALOG,
   ]
   const moduleOf = new Map<string, { readonly module: string; readonly tool: McpTool }>(modules.map((m) => [m.tool.name, m]))
+
+  /**
+   * A read panel's `_meta`: the tool to ask again after a change, and the
+   * writes its form may offer. An offer survives only if it names a write in
+   * this catalog — a module offering `apply_proposal`, a read, or a tool no
+   * longer loaded is dropped here, before the panel could show it — and its
+   * fixed arguments are text. A press on what is left proposes, exactly as the
+   * model's call would, and the person applies it.
+   */
+  const writeNames = new Set(catalog.filter((d) => d.kind === 'write').map((d) => d.name))
+  const admissible = (offer: McpPanelOffer): boolean =>
+    typeof offer.tool === 'string' &&
+    writeNames.has(offer.tool) &&
+    typeof offer.label === 'string' &&
+    offer.label.trim() !== '' &&
+    (offer.document === 'none' || offer.document === 'optional' || offer.document === 'required') &&
+    typeof offer.fixed === 'object' &&
+    offer.fixed !== null &&
+    Object.values(offer.fixed).every((v) => typeof v === 'string')
+  const panelled = (name: string, result: unknown, offers: () => readonly McpPanelOffer[]): AdminResult => {
+    let offered: readonly McpPanelOffer[] = []
+    try {
+      offered = offers().filter(admissible)
+    } catch (error) {
+      // An offer is a convenience on a panel; a module whose offers throw
+      // still answers the read, and the panel shows no form.
+      logger.warn('a panel offer could not be built', { tool: name, error: String(error) })
+    }
+    return new AdminResult(result, { [PANEL_META]: { tool: name, offers: offered } })
+  }
+
+  /** The core's own reads that open a panel with something to offer from it. */
+  const coreOffers: Readonly<Record<string, (args: Record<string, unknown>) => readonly McpPanelOffer[]>> = {
+    // Listed by a layer or a workspace, the panel can give access on that
+    // scope; listed by a person alone, there is no scope to fix and no form.
+    list_grants: (args) =>
+      typeof args.layer === 'string'
+        ? [{ tool: 'issue_grant', label: 'Give access', document: 'none', fixed: { layer: args.layer } }]
+        : typeof args.workspace === 'string'
+          ? [{ tool: 'issue_grant', label: 'Give access', document: 'none', fixed: { workspace: args.workspace } }]
+          : [],
+  }
   const proposalWord = (deps.consoleUrl === undefined ? 'the console' : `${deps.consoleUrl.replace(/#.*$/, '')}#/proposals`)
 
   /**
@@ -890,7 +935,8 @@ export function adminTools(deps: AdminDeps): AdminRunner {
           throw error
         }
         await recorded(auth, requestId, name, done.detail)
-        return done.result
+        const offers = coreOffers[name]
+        return offers === undefined ? done.result : panelled(name, done.result, () => offers(args))
       }
 
       if (name === 'apply_proposal' || name === 'cancel_proposal') return decide(auth, requestId, name, args)
@@ -924,7 +970,8 @@ export function adminTools(deps: AdminDeps): AdminRunner {
           throw error
         }
         await recorded(auth, requestId, name, { module: added.module })
-        return result
+        const panel = added.tool.panel
+        return panel === undefined ? result : panelled(name, result, () => panel.offers?.(args) ?? [])
       }
 
       throw new Error(`no administrative tool ${name}`)

@@ -1,4 +1,5 @@
 import { AUDIT_GROUPINGS } from '@nacre.work/api'
+import type { McpPanelView } from '@nacre.work/core'
 
 import type { ToolAnnotations } from './tools.js'
 
@@ -28,6 +29,11 @@ export interface AdminToolDefinition {
    * Absent is `read`.
    */
   readonly kind?: 'read' | 'write' | 'decide'
+  /**
+   * A module's read that names a core panel. The core's own reads that open
+   * one are in `READ_PANELS`, beside the panels themselves.
+   */
+  readonly panel?: McpPanelView
 }
 
 /**
@@ -46,6 +52,13 @@ export class AdminResult {
 
 /** The key the change panel reads the proposal from. */
 export const PROPOSAL_META = 'nacre/proposal'
+
+/**
+ * The key a read panel reads its tool and its offers from: which tool to ask
+ * again after a change, and which writes its form may propose. Built by the
+ * core, never by a module, so an offer is only ever a write on this surface.
+ */
+export const PANEL_META = 'nacre/panel'
 
 /**
  * What every result carrying text somebody else wrote opens with.
@@ -335,8 +348,17 @@ export function readDefinition(tool: {
   readonly title: string
   readonly description: string
   readonly inputSchema: Readonly<Record<string, unknown>>
+  readonly panel?: { readonly view: McpPanelView }
 }): AdminToolDefinition {
-  return { name: tool.name, title: tool.title, description: tool.description, inputSchema: { ...tool.inputSchema }, annotations: read(tool.title), kind: 'read' }
+  return {
+    name: tool.name,
+    title: tool.title,
+    description: tool.description,
+    inputSchema: { ...tool.inputSchema },
+    annotations: read(tool.title),
+    kind: 'read',
+    ...(tool.panel === undefined ? {} : { panel: tool.panel.view }),
+  }
 }
 
 const proposalArg = {

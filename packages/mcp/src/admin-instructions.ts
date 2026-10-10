@@ -88,9 +88,11 @@ the document or retries it through the API — this surface changes no documents
 so do not offer to retry one from here.
 
 Where the client shows panels, \`query_audit\`, \`list_connections\`,
-\`effective_access\` and \`layer_status\` open one beside their answer. The
-person can narrow, page and press Revoke there; a press is a proposal they
-apply, exactly as yours are.
+\`effective_access\`, \`layer_status\` and \`list_grants\` open one beside
+their answer. The person can narrow, page, revoke, and — on a grants panel
+listed by a scope — give or deny access from a form there; every press is a
+proposal they apply, exactly as yours are. You do not need to repeat a change
+the person made in a panel.
 
 ## Reading the access log
 

@@ -4,6 +4,7 @@ import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { adminTools } from '../admin-services.js'
+import { AdminResult, PANEL_META } from '../admin-tools.js'
 import type { ToolRunner } from '../factory.js'
 
 /**
@@ -45,8 +46,11 @@ const admin: AuthContext = {
 let pool: Pool
 let tools: ToolRunner
 
-const call = async (name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> =>
-  (await tools.call(name, args, admin, `req-${name}`)) as Record<string, unknown>
+/** What the model is handed: a panel's `_meta` is beside it, not in it. */
+const call = async (name: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> => {
+  const answered = await tools.call(name, args, admin, `req-${name}`)
+  return (answered instanceof AdminResult ? answered.result : answered) as Record<string, unknown>
+}
 
 when('the administrative tools, against a real database', () => {
   beforeAll(async () => {
@@ -146,6 +150,17 @@ when('the administrative tools, against a real database', () => {
     expect(onHandbook.map((g) => g.principal.name)).toEqual(['readers'])
     const forReader = (await call('list_grants', { person: 'reader@at.test' })).grants as { effect: string }[]
     expect(forReader.map((g) => g.effect)).toEqual(['deny'])
+  })
+
+  it('list_grants opens the grants panel, offering to give access on the scope it was asked about and nowhere else', async () => {
+    const meta = async (args: Record<string, unknown>): Promise<unknown> =>
+      ((await tools.call('list_grants', args, admin, 'req-panel')) as AdminResult).meta[PANEL_META]
+    expect(await meta({ layer: 'handbook' })).toEqual({
+      tool: 'list_grants',
+      offers: [{ tool: 'issue_grant', label: 'Give access', document: 'none', fixed: { layer: 'handbook' } }],
+    })
+    // Listed by a person there is no scope to fix, so the panel has no form.
+    expect(await meta({ person: 'reader@at.test' })).toEqual({ tool: 'list_grants', offers: [] })
   })
 
   it('list_layers carries failures and the model', async () => {
