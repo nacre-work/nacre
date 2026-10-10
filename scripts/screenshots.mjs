@@ -339,6 +339,26 @@ const PENDING_PROPOSALS = [
   },
 ]
 
+/** A skill an agent proposed, shown whole — every file's text, not its path. */
+const SKILL_PROPOSAL = {
+  id: '5e8a1c3f-2b7d-4a90-8e16-9d4c0b2a7f31',
+  tool: 'write_skill',
+  module: null,
+  summary:
+    "Write the layer handbook's skill as version 4: 2 files, including scripts. Read every file below before applying it — every later agent there follows it.",
+  details: [
+    { label: 'skill', value: "the layer handbook's skill" },
+    { label: 'version', value: '3 → 4' },
+    { label: 'note', value: 'Written by an agent, and marked as such in the history.' },
+    { label: 'scripts', value: "1 file under scripts/, which an agent would run on its side with the person's approval." },
+    { label: 'SKILL.md', value: '---\nname: handbook\ndescription: How documents in the handbook layer are named, tagged and updated.\n---\n\n# Handbook\n\nSearch the handbook before answering a policy question, and quote the section you used.\n\n- One document per policy, named after it: `leave-policy`, `expenses`.\n- Tag every document with `owner` and `reviewed`.\n- When a policy changes, update its document in place; never add a second copy.\n', text: true },
+    { label: 'scripts/unreviewed.sh', value: '#!/bin/sh\n# Lists handbook documents not reviewed this year.\nnacre search --layer handbook --filter reviewed=2025\n', text: true },
+  ],
+  created_at: '2026-03-15T08:59:00.000Z',
+  expires_at: '2026-03-15T09:09:00.000Z',
+  connection: { id: 'a9d2f0c4-6e18-4b7a-8c35-1f4e9b2d7a60', application: 'Claude' },
+}
+
 const FIXTURES = {
   // Polled by the header to show whether the API is reachable.
   'GET /v1/health': { status: 'ok' },
@@ -1431,6 +1451,14 @@ await shot('proposals', {
 await shot('proposals-waiting', {
   hash: '#/layers',
   fixtures: { 'GET /v1/proposals': { items: PENDING_PROPOSALS } },
+})
+
+// A skill proposal, with every file's text: what the person reads before a
+// skill every later agent follows is applied.
+await shot('proposal-skill', {
+  hash: '#/proposals',
+  heading: 'Proposed changes',
+  fixtures: { 'GET /v1/proposals': { items: [SKILL_PROPOSAL] } },
 })
 
 await shot('skills-platform-admin', {

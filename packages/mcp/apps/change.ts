@@ -38,7 +38,7 @@ const CHANGE_STYLE = `
   /* A file's whole text — a skill proposal's. The path is a heading across the
      row rather than an uppercase label, and the text keeps its line breaks in a
      box that scrolls, so the panel stays one height whatever the file. */
-  .facts dt.file { grid-column: 1 / -1; text-transform: none; letter-spacing: 0; color: var(--n-text); padding-top: 6px; }
+  .facts dt.path { grid-column: 1 / -1; text-transform: none; letter-spacing: 0; color: var(--n-text); padding-top: 6px; }
   .facts dd.text {
     grid-column: 1 / -1; white-space: pre-wrap; font-family: var(--n-font-mono); font-size: 12.5px; line-height: 1.5;
     max-height: 22em; overflow: auto; padding: 10px 12px; border: 1px solid var(--n-border-color); border-radius: var(--n-radius);
@@ -111,7 +111,7 @@ async function main(): Promise<void> {
     clear(facts)
     for (const fact of value.details ?? []) {
       facts.append(
-        el('dt', fact.text === true ? { class: 'file' } : {}, fact.label),
+        el('dt', fact.text === true ? { class: 'path' } : {}, fact.label),
         el('dd', fact.text === true ? { class: 'text' } : {}, fact.value),
       )
     }

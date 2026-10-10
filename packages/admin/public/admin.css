@@ -688,7 +688,7 @@ th.tick {
    every later agent on the layer follows and the person applying it reads the
    instructions rather than their paths. The path heads the row as it is
    spelled, and the text keeps its line breaks in a box that scrolls. */
-.facts dt.file {
+.facts dt.path {
   grid-column: 1 / -1; text-transform: none; letter-spacing: 0;
   font-size: 12px; color: var(--n-text); padding-top: 6px;
 }
