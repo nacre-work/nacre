@@ -3843,6 +3843,23 @@ replaced, an OpenTelemetry trace nothing emits, a second paragraph offering
 is, so correcting the code is not done until `grep` has been through
 `.claude/skills` too.
 
+**Dependabot's pull requests could not run CI at all — 0.41.1.** Every job with a
+service container failed before its first step with `The template is not valid
+… Unexpected value ''`, because those containers sign in to Docker Hub with
+`secrets.DOCKER_USER` and `secrets.DOCKER_PAT`, and a run Dependabot triggers
+is given *Dependabot* secrets, not Actions secrets. Main stayed green, the bumps
+sat red, and two of them were security fixes — nodemailer and undici, beside a
+high advisory in zod under the MCP SDK that `pnpm audit` named the same day.
+They landed through an ordinary branch. The repair is two secrets under
+Settings → Secrets and variables → **Dependabot**, the same values the Actions
+ones hold, and it is a human's: a secret's value cannot be read back out.
+
+Dependencies move to their newest release **at least two weeks old**
+(`pnpm update --latest --config.minimum-release-age=20160`), because a release
+a few days old is the window a hijacked package is live in. A peer the tooling
+needs is declared rather than left to auto-install: pnpm held vitest's vite at a
+vulnerable 8.2.0 through both an update and an override until it was named.
+
 - **English everywhere** — code, comments, commits, branches, issues, PRs, docs.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`.
 - Squash merge, linear history. One PR, one topic.
