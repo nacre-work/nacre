@@ -286,6 +286,23 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.41.1 — dependency fixes: zod, nodemailer and undici past their advisories
+
+**No migration and nothing to configure: pull the images.**
+
+- **zod 4.6.7** under the MCP SDK. Below 4.6.6, validating an oversized
+  constrained collection can exhaust memory, and the MCP transport validates
+  every tool's arguments through it — a high-severity advisory on a surface a
+  connected client reaches.
+- **nodemailer 10.1.7** and **undici 8.12.2** (and 7.30.1 under the vector store
+  client), each past a moderate advisory.
+- Everything else moved to its newest release at least two weeks old; the
+  development chain (vite, vitest, eslint) is past its advisories too.
+
+A deployment installing `@nacre.work/core` from the registry into a workspace of
+its own resolves these through the package's ranges: refreshing its lockfile is
+enough, and no override is needed for any of them.
+
 ### 0.41.0 — a budget per caller, registration bounded, and clients identified by their metadata document
 
 **Nothing to do on most installations; read the first item if anything you run

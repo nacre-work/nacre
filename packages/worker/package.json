@@ -17,12 +17,12 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1"
   },
   "dependencies": {
     "@nacre.work/core": "workspace:*",
     "@qdrant/js-client-rest": "^1.19.0",
-    "pg": "^8.23.0"
+    "pg": "^8.23.1"
   }
 }
