@@ -3850,9 +3850,14 @@ service container failed before its first step with `The template is not valid
 is given *Dependabot* secrets, not Actions secrets. Main stayed green, the bumps
 sat red, and two of them were security fixes — nodemailer and undici, beside a
 high advisory in zod under the MCP SDK that `pnpm audit` named the same day.
-They landed through an ordinary branch. The repair is two secrets under
-Settings → Secrets and variables → **Dependabot**, the same values the Actions
-ones hold, and it is a human's: a secret's value cannot be read back out.
+They landed through an ordinary branch, and **that is the procedure rather
+than a workaround**: the Dependabot copies of those two secrets are deliberately
+not configured, so a Dependabot pull request is a report and never a merge.
+Whoever works in these repositories checks for open ones first, takes the bump
+into their own branch — merging Dependabot's branch keeps its lockfile and closes
+the pull request when it lands — runs the checks there, and closes it with a line
+naming the pull request that carried it. Every repository, not this one alone:
+the same Docker Hub login is in `nacre-enterprise`'s workflows too.
 
 Dependencies move to their newest release **at least two weeks old**
 (`pnpm update --latest --config.minimum-release-age=20160`), because a release
