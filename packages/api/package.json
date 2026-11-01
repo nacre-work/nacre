@@ -33,10 +33,10 @@
   "dependencies": {
     "@nacre.work/core": "workspace:*",
     "jose": "^6.2.12",
-    "pg": "^8.23.0"
+    "pg": "^8.23.1"
   },
   "devDependencies": {
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1"
   },
   "keywords": [

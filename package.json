@@ -67,14 +67,14 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@redocly/cli": "^2.54.3",
-    "@types/node": "^26.6.2",
+    "@redocly/cli": "^2.64.1",
+    "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
-    "eslint": "^10.11.0",
+    "eslint": "^10.13.0",
     "fast-check": "^4.10.2",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.70.1",
+    "typescript-eslint": "^8.71.2",
     "vite": "^8.3.4",
     "vitest": "^5.0.5"
   },
