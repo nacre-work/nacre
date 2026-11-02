@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { classifyIngestFailure, withoutHosts } from '../index.js'
+import { classifyIngestFailure, isRetryable, withoutHosts } from '../index.js'
 
 describe('classifyIngestFailure', () => {
   it('recognises the refusal this repository has actually seen', () => {
@@ -15,6 +15,36 @@ describe('classifyIngestFailure', () => {
     expect(classifyIngestFailure('TypeError: fetch failed').reason).toBe('unavailable')
     expect(classifyIngestFailure('connect ECONNREFUSED 10.0.0.4:8080').reason).toBe('unavailable')
     expect(classifyIngestFailure('the parser could not extract text').reason).toBe('unreadable')
+  })
+
+  /**
+   * services/parser/app.py bounds concurrency with an 8-slot semaphore and,
+   * when no slot frees in time, answers 503 with a body its own comment says
+   * the worker should read as "unavailable" and retry. HttpParser.parse
+   * builds the message for *every* non-ok parser response as
+   * `${reason} (parser answered ${status})`, independent of the actual
+   * status — so the word "parser" (which contains "parse") used to satisfy
+   * the `unreadable` alternative before the `unavailable` one ever ran,
+   * writing a transient, documented-retryable dependency blip to
+   * `documents` as a permanent failure on the first attempt. These two
+   * strings are the literal wire text that call builds for the busy-503,
+   * with and without a body.
+   */
+  it('reads a busy parser as unavailable, and retryable, rather than unreadable', () => {
+    const withBody = classifyIngestFailure('the parser is busy; try again (parser answered 503)')
+    expect(withBody.reason).toBe('unavailable')
+    expect(isRetryable(withBody.reason)).toBe(true)
+
+    const noBody = classifyIngestFailure('the parser answered 503')
+    expect(noBody.reason).toBe('unavailable')
+    expect(isRetryable(noBody.reason)).toBe(true)
+
+    // The control this must not move: a genuine 4xx sidecar refusal, which
+    // never contains "answered 5\d\d" or any other availability word, stays
+    // classified exactly as before.
+    const notAPdf = classifyIngestFailure('not a PDF (parser answered 422)')
+    expect(notAPdf.reason).toBe('unreadable')
+    expect(isRetryable(notAPdf.reason)).toBe(false)
   })
 
   it('is honest rather than clever about what it does not recognise', () => {

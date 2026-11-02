@@ -82,17 +82,29 @@ export interface IngestFailure {
 export function classifyIngestFailure(raw: string): IngestFailure {
   const text = raw.toLowerCase()
 
+  // `unavailable` is tested before `unreadable`, and that order is load-
+  // bearing rather than arbitrary. HttpParser.parse builds the message for
+  // every non-ok parser response as `${reason} (parser answered ${status})`
+  // — independent of the actual status — so the literal word "parser"
+  // (which contains "parse") satisfied the `unreadable` alternative first
+  // for every parser failure, including the sidecar's own documented-
+  // retryable 503 "the parser is busy; try again" reply. A transient-
+  // availability signal in the text — a status code, a network error — is a
+  // stronger claim than the generic substring "parse", so it is checked
+  // first. This does not reclassify a genuine 4xx sidecar refusal (e.g. a
+  // 422 "not a PDF"): those never contain "answered 5\d\d" or any of the
+  // other availability words.
   const reason: IngestFailureReason =
     /must have less than \d+ tokens|too long|maximum (?:input )?length|context length/.test(text)
       ? 'too_long'
       : /quota|max_documents|limit reached|too many documents/.test(text)
         ? 'quota'
-        : /parse|unsupported|not a pdf|%pdf|decode|extract/.test(text)
-          ? 'unreadable'
-          : /econnrefused|enotfound|etimedout|timeout|fetch failed|socket|answered 5\d\d|unavailable|network/.test(
-                text,
-              )
-            ? 'unavailable'
+        : /econnrefused|enotfound|etimedout|timeout|fetch failed|socket|answered 5\d\d|unavailable|network/.test(
+              text,
+            )
+          ? 'unavailable'
+          : /parse|unsupported|not a pdf|%pdf|decode|extract/.test(text)
+            ? 'unreadable'
             : 'internal'
 
   // The message is the real one with hosts removed, not a sentence written
