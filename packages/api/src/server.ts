@@ -6564,6 +6564,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // cannot see and one that does not exist are the same answer here as
       // everywhere.
       //
+      // Naming an agent is an administrative act — listing and minting a
+      // service account are both `administers(auth)` everywhere else this
+      // product reaches one — and this screen is the one place that was never
+      // asked: `options.serviceAccounts.list` filters only on organization, so
+      // a plain member naming any service account's id in this body reached
+      // the visibility loop below and found every one of them visible. Gated
+      // the same way GET/POST /v1/service-accounts already are, before that
+      // loop runs at all.
+      //
       // The whole listing, not one page of it. A `find` over the first 200
       // used to stand here, so in an organization with more accounts than
       // that, approving one ordered past the cut answered `404`
@@ -6571,6 +6580,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // nothing on the screen to say why. The loop terminates because the
       // listing seeks on `(created_at, id)`, and it stops early on a hit.
       if (!delegating) {
+        if (!administers(auth)) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
         let visible = false
         if (options.serviceAccounts !== undefined) {
           let after: Page['after']
