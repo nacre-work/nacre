@@ -2017,7 +2017,14 @@ async function admitClientRegistration(
   options: ApiOptions,
 ): Promise<boolean> {
   if (options.limits === undefined || options.limitPolicies === undefined) return true
-  const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 }) ?? 'unknown'
+  const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 })
+  // `undefined` means the transport gave no address to key on — see
+  // source.ts's own contract and the identical pattern beside the login
+  // limiter. Skipped rather than folded into the literal string 'unknown',
+  // which turned every unidentifiable client into one shared bucket: a
+  // denial of service with extra steps, and the opposite of what this
+  // function's caller is trying to prevent.
+  if (source === undefined) return true
   const decision = await options.limits.check(`src:${source}`, 'client_registration')
   if (decision.allowed) return true
   send(
