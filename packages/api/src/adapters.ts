@@ -1228,8 +1228,19 @@ export class NacreIngest implements Ingest {
     )
     if (plan.kind === 'none') return undefined
 
+    // `FOR SHARE`, held for the rest of this transaction (writableLayer runs
+    // inside `queue`'s own `withOrg` client). PostgresLayers.remove takes
+    // `FOR UPDATE` on this same row before it locks any document, so the two
+    // serialize: a delete already in flight blocks this SELECT until it
+    // commits, after which `deleted_at IS NULL` correctly excludes the row;
+    // an ingest already holding this lock blocks the delete's `FOR UPDATE`
+    // until the ingest's upsert has committed, so the delete's own
+    // document-locking SELECT sees the row it just wrote. Without this, a
+    // delete reading the layer with no lock at all and an ingest checking it
+    // with no lock at all could interleave so that a document commits live
+    // into a layer the delete has already decided does not exist to tombstone.
     const { rows } = await client.query<{ id: string }>(
-      `SELECT id FROM layers WHERE org_id = $1 AND slug = $2 AND deleted_at IS NULL`,
+      `SELECT id FROM layers WHERE org_id = $1 AND slug = $2 AND deleted_at IS NULL FOR SHARE`,
       [auth.orgId, layerSlug],
     )
     const id = rows[0]?.id
@@ -1998,9 +2009,16 @@ export class PostgresLayers implements Layers {
 
         const context = await contextFor(client, auth, this.principalsCache)
 
+        // `FOR UPDATE`, before the documents below are locked and before an
+        // ingest's own `FOR SHARE` on this same row (writableLayer,
+        // NacreIngest.queue) can land. Without it, a check-then-act race let
+        // an ingest's upsert commit into a layer after this read had already
+        // decided the layer was live, landing a live document the sweep
+        // below never sees because it only locked the documents that
+        // existed at that moment.
         const { rows } = await client.query<{ workspace_id: string }>(
           `SELECT workspace_id FROM layers
-            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE`,
           [auth.orgId, layerId],
         )
         const workspaceId = rows[0]?.workspace_id
