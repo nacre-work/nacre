@@ -4,6 +4,7 @@ import { QdrantClient } from '@qdrant/js-client-rest'
 import {
   configureLogging,
   acrossOrganizations,
+  assertCollectionUnclaimed,
   isBinaryFormat,
   ConfigError,
   createPool,
@@ -430,6 +431,14 @@ async function main(): Promise<void> {
         }
       }
       try {
+        // Qdrant collection names are not prefix-free, so `to` — built by
+        // concatenation from the organization's current name and the new
+        // vector slot — can coincide with another organization's name. Asked
+        // before the destructive step below, which deletes and recreates
+        // whatever is already called `to`: a caught refusal here leaves that
+        // organization's collection untouched, where catching it after would
+        // be too late.
+        await assertCollectionUnclaimed(pool, target.orgId, to)
         logger.info('copying collection', { org: target.orgSlug, from: target.collection, to })
         await store.copyCollection({
           from: target.collection,

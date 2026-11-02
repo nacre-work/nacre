@@ -1228,8 +1228,19 @@ export class NacreIngest implements Ingest {
     )
     if (plan.kind === 'none') return undefined
 
+    // `FOR SHARE`, held for the rest of this transaction (writableLayer runs
+    // inside `queue`'s own `withOrg` client). PostgresLayers.remove takes
+    // `FOR UPDATE` on this same row before it locks any document, so the two
+    // serialize: a delete already in flight blocks this SELECT until it
+    // commits, after which `deleted_at IS NULL` correctly excludes the row;
+    // an ingest already holding this lock blocks the delete's `FOR UPDATE`
+    // until the ingest's upsert has committed, so the delete's own
+    // document-locking SELECT sees the row it just wrote. Without this, a
+    // delete reading the layer with no lock at all and an ingest checking it
+    // with no lock at all could interleave so that a document commits live
+    // into a layer the delete has already decided does not exist to tombstone.
     const { rows } = await client.query<{ id: string }>(
-      `SELECT id FROM layers WHERE org_id = $1 AND slug = $2 AND deleted_at IS NULL`,
+      `SELECT id FROM layers WHERE org_id = $1 AND slug = $2 AND deleted_at IS NULL FOR SHARE`,
       [auth.orgId, layerSlug],
     )
     const id = rows[0]?.id
@@ -1907,23 +1918,30 @@ export class PostgresLayers implements Layers {
         // whether a layer is worth opening — and the MCP catalog has always
         // carried it, so a REST client had to be told to use MCP for that.
         //
-        // It counts live documents in the layer, not documents this caller may
-        // read: layer-scoped grants are all this build has, so anyone who can
-        // see the layer can read everything in it. The moment document-level
-        // grants exist — a commercial module — this becomes a number that
-        // discloses more than the caller can reach, and it has to be recomputed
-        // per caller or dropped.
+        // Excludes `plan.deniedDocs`, which is empty on every core-only
+        // installation — the core refuses to issue a deny rule at all — and
+        // populated once a module that issues document-scoped denies (such
+        // as `acl-advanced`) is loaded. Without this, a caller denied one
+        // document in a layer it may otherwise read was told the document
+        // exists and whether it failed, from the one surface a deny is
+        // supposed to make it indistinguishable from "does not exist" (I4):
+        // `PostgresDocuments.read` already subtracts the same set for a
+        // single document, and a count is a small disclosure and still a
+        // disclosure.
         // `created_at::text` beside `created_at`, and the cursor is built from
         // it. See `Position.createdAt` — a timestamp that has been through a
         // JavaScript `Date` is truncated to milliseconds, and a truncated bound
         // matches the row it came from all over again.
-        const projection = `l.id, l.slug, l.name, l.workspace_id, l.description, l.created_at,
+        const denied = plan.kind === 'scoped' ? [...plan.deniedDocs] : []
+        const projection = (deniedParam: number) => `l.id, l.slug, l.name, l.workspace_id, l.description, l.created_at,
               l.created_at::text AS created_at_text,
               (SELECT count(*) FROM documents d
-                WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS document_count,
+                WHERE d.layer_id = l.id AND d.deleted_at IS NULL
+                  AND NOT (d.id = ANY($${deniedParam}::uuid[]))) AS document_count,
               (SELECT count(*) FROM documents d
                 WHERE d.layer_id = l.id AND d.deleted_at IS NULL
-                  AND d.status = 'failed') AS failed_count`
+                  AND d.status = 'failed'
+                  AND NOT (d.id = ANY($${deniedParam}::uuid[]))) AS failed_count`
 
         // Ordered by (created_at, id) rather than by slug, because that is the
         // cursor's sort key and a page has to be stable under inserts. Sorting
@@ -1933,19 +1951,27 @@ export class PostgresLayers implements Layers {
         const seek = after === undefined ? '' : ' AND (l.created_at, l.id) > ($3::timestamptz, $4::uuid)'
         const cap = page === undefined ? '' : ` LIMIT ${page.limit}`
 
+        // `denied` is always the last bound parameter, on both branches —
+        // appended rather than threaded through the seek clause's own
+        // numbering above, so a cursor page keeps the exact SQL it had
+        // before this.
         const { rows } =
           ids === undefined
             ? await client.query<LayerRow>(
-                `SELECT ${projection} FROM layers l
+                `SELECT ${projection(after === undefined ? 2 : 4)} FROM layers l
                   WHERE l.org_id = $1 AND l.deleted_at IS NULL${seek.replace('$3', '$2').replace('$4', '$3')}
                   ${order}${cap}`,
-                after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
+                after === undefined
+                  ? [auth.orgId, denied]
+                  : [auth.orgId, after.createdAt, after.id, denied],
               )
             : await client.query<LayerRow>(
-                `SELECT ${projection} FROM layers l
+                `SELECT ${projection(after === undefined ? 3 : 5)} FROM layers l
                   WHERE l.org_id = $1 AND l.deleted_at IS NULL AND l.id = ANY($2::uuid[])${seek}
                   ${order}${cap}`,
-                after === undefined ? [auth.orgId, [...ids]] : [auth.orgId, [...ids], after.createdAt, after.id],
+                after === undefined
+                  ? [auth.orgId, [...ids], denied]
+                  : [auth.orgId, [...ids], after.createdAt, after.id, denied],
               )
 
         const layers = rows.map((r) => ({
@@ -1998,9 +2024,16 @@ export class PostgresLayers implements Layers {
 
         const context = await contextFor(client, auth, this.principalsCache)
 
+        // `FOR UPDATE`, before the documents below are locked and before an
+        // ingest's own `FOR SHARE` on this same row (writableLayer,
+        // NacreIngest.queue) can land. Without it, a check-then-act race let
+        // an ingest's upsert commit into a layer after this read had already
+        // decided the layer was live, landing a live document the sweep
+        // below never sees because it only locked the documents that
+        // existed at that moment.
         const { rows } = await client.query<{ workspace_id: string }>(
           `SELECT workspace_id FROM layers
-            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
+            WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE`,
           [auth.orgId, layerId],
         )
         const workspaceId = rows[0]?.workspace_id
@@ -2506,7 +2539,22 @@ export class PostgresWorkspaces implements Workspaces {
           after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
         )
 
+        // The delegation's narrowing, the same rule T40 puts on the layer
+        // catalog: a delegation narrowed to layer L whose person also reaches
+        // workspace M used to be listed M anyway — its slug, its name, its
+        // layer count and, for an org_admin person, read/write/admin on it —
+        // which is "something from M" by the catalog's own test. Narrowed,
+        // the workspace-grant branch is skipped outright: that branch exists
+        // for a workspace with no layers yet, and a narrowing only ever names
+        // layers, so it can never admit a workspace through that door.
+        const narrowing = delegatedLayers(auth, 'read')
+        const reachesLayer = (id: string): boolean =>
+          plan.kind === 'all' || (plan.kind === 'scoped' && plan.layers.includes(id))
+        const visibleLayers = (w: { layer_ids: string[] | null }): string[] =>
+          (w.layer_ids ?? []).filter((id) => narrowing === undefined || narrowing.includes(id))
+
         const reachable = rows.filter((w) => {
+          if (narrowing !== undefined) return visibleLayers(w).some(reachesLayer)
           if (plan.kind === 'all') return true
           if (
             plan.kind === 'scoped' &&
@@ -2541,8 +2589,17 @@ export class PostgresWorkspaces implements Workspaces {
          * taken on trust from the filter above: a row only reaches this point
          * because the caller can see the workspace — through a grant on it, or
          * through a layer inside it, or by role. Either way `read` is true.
+         *
+         * Narrowed, this reports `read` alone and never asks `referenceAllows`
+         * at all. A workspace scope is not a layer, so a narrowing — which
+         * names layers — has nothing to say about `write` or `admin` on one;
+         * a ceiling never confers administration, and creating or renaming a
+         * workspace is checked on the workspace scope directly (T42), which a
+         * narrowed token cannot reach regardless of what the role would
+         * otherwise answer.
          */
         const permissionsOn = (w: { id: string }): Permission[] => {
+          if (narrowing !== undefined) return ['read']
           const held = new Set<Permission>(['read'])
           for (const permission of ['write', 'admin'] as const) {
             if (referenceAllows(context, { type: 'workspace', id: w.id }, permission)) {
@@ -2559,7 +2616,7 @@ export class PostgresWorkspaces implements Workspaces {
             id: w.id,
             slug: w.slug,
             name: w.name,
-            layerCount: (w.layer_ids ?? []).length,
+            layerCount: narrowing === undefined ? (w.layer_ids ?? []).length : visibleLayers(w).length,
             createdAt: w.created_at.toISOString(),
             permissions: permissionsOn(w),
           }))

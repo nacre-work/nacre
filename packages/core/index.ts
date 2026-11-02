@@ -102,7 +102,13 @@ export { acrossOrganizations, createPool, whileAuthenticating, withOrg } from '.
 export type { DbOptions, WithOrgOptions } from './db/client.js'
 export { migrate, loadMigrations, migrationNames, pendingMigrations } from './db/migrate.js'
 export type { Migration, MigrateOptions, MigrateResult } from './db/migrate.js'
-export { looksLikeEmail, organizationSlugError, provisionInPostgres, provisionOrganization } from './provision.js'
+export {
+  assertCollectionUnclaimed,
+  looksLikeEmail,
+  organizationSlugError,
+  provisionInPostgres,
+  provisionOrganization,
+} from './provision.js'
 export type { ProviderSpec, ProvisionOptions, ProvisionResult } from './provision.js'
 export { loadGrants, loadGroupsVersion, loadScopeTree, PostgresGroupGraph } from './authz/store.js'
 export {

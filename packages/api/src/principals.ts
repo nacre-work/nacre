@@ -402,6 +402,23 @@ export class PostgresUsers implements Users {
       this.pool,
       auth.orgId,
       async (client) => {
+        // The last-administrator count below spans every org_admin row in
+        // the organization, not just this one — so `FOR UPDATE` on the
+        // target row serializes two writers only when they target the *same*
+        // row. Two administrators demoting or disabling each other lock two
+        // different rows, neither waits, and each counts the other as still
+        // active at READ COMMITTED: classic write skew, and independently
+        // reproduced landing both changes and leaving zero. This lock is
+        // keyed on the organization rather than the row, ahead of any
+        // `SELECT`, so the second of two concurrent changes to this
+        // organization's users waits for the first to commit and then sees
+        // its result. One lock for every caller of `onTargetUser`, not only
+        // `update`, because the guard it protects has nothing to do with
+        // which of this method's callers happened to run first.
+        await client.query(
+          `SELECT pg_advisory_xact_lock(hashtextextended('nacre.org-admins:' || $1::text, 0))`,
+          [auth.orgId],
+        )
         const { rows } = await client.query<{ role: string; disabled_at: Date | null }>(
           'SELECT role, disabled_at FROM users WHERE org_id = $1 AND id = $2 FOR UPDATE',
           [auth.orgId, id],
@@ -490,7 +507,20 @@ export class PostgresUsers implements Users {
         'UPDATE users SET password_hash = $3 WHERE org_id = $1 AND id = $2',
         [auth.orgId, id, passwordHash],
       )
-      return (rowCount ?? 0) > 0 ? { password } : 'no-user'
+      if ((rowCount ?? 0) === 0) return 'no-user'
+      // Every one, the same statement Login.changePassword and password
+      // recovery both run on the same row. Omitting it was the one way this
+      // reset differed from its two siblings: a refresh token issued before
+      // the reset kept renewing after it, so an administrator rotating a
+      // credential they believe is compromised — which docs/api.md names
+      // this endpoint as the way to do for a published, shared account —
+      // left every session already open on it running.
+      await client.query(
+        `UPDATE refresh_tokens SET revoked_at = now()
+          WHERE org_id = $1 AND user_id = $2 AND revoked_at IS NULL`,
+        [auth.orgId, id],
+      )
+      return { password }
     })
   }
 

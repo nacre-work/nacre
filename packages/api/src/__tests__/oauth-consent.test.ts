@@ -6,7 +6,10 @@ import {
   verifierMatches,
   redirectAllowed,
 } from '@nacre.work/core'
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, createSecretKey, randomBytes } from 'node:crypto'
+import type { Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { SignJWT } from 'jose'
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -17,6 +20,7 @@ import {
   PostgresOAuthRefreshTokens,
 } from '../oauth-store.js'
 import { PostgresServiceAccounts } from '../service-keys.js'
+import { createApi } from '../server.js'
 
 /**
  * The consent flow, against a real database.
@@ -339,6 +343,31 @@ when('the OAuth consent flow, against the database', () => {
     expect(await refresh.rotate(second)).toBeUndefined()
   })
 
+  it('refuses to renew once the agent it acts as is revoked', async () => {
+    // Revocation is supposed to end an account's authority outright — unlike
+    // disabling a person, it is not something the product currently
+    // reverses — so this is `revoked`, not `suspended`: the token stays dead
+    // rather than coming back if the account were ever un-revoked.
+    const agent = (await accounts.create(admin, 'revoked-mid-connection'))!
+    const app = await register('an app connected to an agent')
+    const consentId = await consents.record(admin, app, {
+      actsAs: 'service_account',
+      serviceAccountId: agent.account.id,
+    })
+    const token = generateCode()
+    await refresh.issue(ORG, consentId, token, undefined, new Date(Date.now() + 60_000))
+
+    expect(await accounts.revoke(admin, agent.account.id)).toBe(true)
+
+    // Not `'suspended'`: a revoked service account does not come back, so the
+    // token must die rather than wait.
+    expect(await refresh.rotate(token)).toBeUndefined()
+    // And asked twice, for the same reason the suspension case asks twice —
+    // a refusal that spent the token on the way past would answer
+    // differently the second time, and nothing here should.
+    expect(await refresh.rotate(token)).toBeUndefined()
+  })
+
   it('suspends a delegation while its person is disabled, and restores it', async () => {
     // The promise docs/authz.md makes about disabling somebody: it is
     // reversible, so the connections they approved are *suspended* rather than
@@ -443,6 +472,113 @@ when('the OAuth consent flow, against the database', () => {
         expiresAt: new Date(Date.now() + 60_000),
       }),
     ).rejects.toThrow()
+  })
+
+  /**
+   * `POST /v1/oauth/consent`'s agent branch, over the real HTTP route — the
+   * visibility check it is supposed to run (`options.serviceAccounts.list`)
+   * returns every service account in the organization regardless of role,
+   * so without its own `administers(auth)` gate a plain member naming any
+   * agent's id reached the same code path an administrator does and got
+   * back a code for it.
+   */
+  describe('POST /v1/oauth/consent, naming an agent, over HTTP', () => {
+    const KEY = createSecretKey(Buffer.from('c'.repeat(48)))
+    const ISSUER = 'https://consent.test'
+    const AUDIENCE = 'consent'
+    const MEMBER = '0a111111-1111-4111-8111-1111111111a3'
+
+    let server: Server
+    let base: string
+
+    beforeAll(async () => {
+      await pool.query(
+        `INSERT INTO users (id, org_id, email, role) VALUES ($1,$2,'member@consentone.test','member')
+         ON CONFLICT DO NOTHING`,
+        [MEMBER, ORG],
+      )
+      server = createApi({
+        verify: { key: KEY, issuer: ISSUER, audience: AUDIENCE },
+        documents: { read: async () => undefined },
+        search: { search: async () => [] },
+        ingest: { queue: async () => undefined, remove: async () => false },
+        audit: { write: async () => undefined },
+        oauth: {
+          issuer: ISSUER,
+          consentUrl: `${ISSUER}/#/consent`,
+          clients,
+          authorizations,
+          consents,
+          refreshTokens: refresh,
+          refreshTtlSeconds: 3600,
+          accessTtlSeconds: 300,
+          mint: async () => ({ accessToken: 'unused', expiresIn: 300 }),
+        },
+        serviceAccounts: accounts,
+      } as never)
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+      base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`
+    })
+
+    afterAll(async () => {
+      await new Promise<void>((resolve) => server?.close(() => resolve()))
+    })
+
+    const sessionToken = (userId: string, role: 'member' | 'org_admin'): Promise<string> =>
+      new SignJWT({ org: ORG, principal_type: 'user', role })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setSubject(userId)
+        .setIssuer(ISSUER)
+        .setAudience(AUDIENCE)
+        .setExpirationTime('5m')
+        .sign(KEY)
+
+    const postConsent = async (token: string, body: Record<string, unknown>): Promise<Response> =>
+      fetch(`${base}/v1/oauth/consent`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+    it('refuses a member naming a service account they do not administer', async () => {
+      const agent = (await accounts.create(admin, 'http-visible-agent'))!
+      const clientId = await register('http agent client')
+      const token = await sessionToken(MEMBER, 'member')
+
+      const before = (
+        await pool.query('SELECT count(*) FROM oauth_consents WHERE org_id = $1', [ORG])
+      ).rows[0] as { count: string }
+
+      const res = await postConsent(token, {
+        client_id: clientId,
+        redirect_uri: 'http://127.0.0.1:33418/callback',
+        code_challenge: pkce().challenge,
+        service_account_id: agent.account.id,
+      })
+      expect(res.status).toBe(404)
+
+      const after = (
+        await pool.query('SELECT count(*) FROM oauth_consents WHERE org_id = $1', [ORG])
+      ).rows[0] as { count: string }
+      // Refused before anything is stored — invariant 3, fail closed.
+      expect(after.count).toBe(before.count)
+    })
+
+    it('lets an org_admin approve the same agent', async () => {
+      const agent = (await accounts.create(admin, 'http-visible-agent-2'))!
+      const clientId = await register('http admin client')
+      const token = await sessionToken(ADMIN, 'org_admin')
+
+      const res = await postConsent(token, {
+        client_id: clientId,
+        redirect_uri: 'http://127.0.0.1:33418/callback',
+        code_challenge: pkce().challenge,
+        service_account_id: agent.account.id,
+      })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { redirect_to: string }
+      expect(body.redirect_to).toContain('code=')
+    })
   })
 })
 

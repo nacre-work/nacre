@@ -141,6 +141,14 @@ export function layerCatalog(pool: Pool, principalsCache?: PrincipalsCache): Lay
           // there is another one without a count over the table. The per-layer
           // document count stays a correlated subquery because it is now
           // bounded by the page rather than by the organization.
+          //
+          // Excludes `plan.deniedDocs`, empty on every core-only installation
+          // and populated once a module issuing document-scoped denies loads
+          // — the same subtraction `GET /v1/layers` makes and for the same
+          // reason: a count of documents the caller may not read is "something
+          // from" a document a deny exists to make indistinguishable from one
+          // that does not exist.
+          const denied = plan.kind === 'scoped' ? [...plan.deniedDocs] : []
           const bounded = Math.min(Math.max(1, page.limit), 500)
           const { rows } = await client.query<{
             id: string
@@ -152,7 +160,8 @@ export function layerCatalog(pool: Pool, principalsCache?: PrincipalsCache): Lay
           }>(
             `SELECT l.id, l.slug, l.name, l.description,
                     (SELECT count(*) FROM documents d
-                      WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS documents,
+                      WHERE d.layer_id = l.id AND d.deleted_at IS NULL
+                        AND NOT (d.id = ANY($5::uuid[]))) AS documents,
                     -- The newest version decides: a cleared skill is no skill.
                     COALESCE((SELECT s.name IS NOT NULL FROM skill_versions s
                                WHERE s.org_id = l.org_id AND s.layer_id = l.id
@@ -163,7 +172,7 @@ export function layerCatalog(pool: Pool, principalsCache?: PrincipalsCache): Lay
                 AND ($3::uuid IS NULL OR l.id > $3::uuid)
               ORDER BY l.id
               LIMIT $4`,
-            [auth.orgId, ids === undefined ? null : [...ids], page.afterId ?? null, bounded + 1],
+            [auth.orgId, ids === undefined ? null : [...ids], page.afterId ?? null, bounded + 1, denied],
           )
 
           const slice = rows.slice(0, bounded)
@@ -629,16 +638,31 @@ export function buildServices(
           if ((args.files === undefined) === (zip === undefined)) {
             throw new ToolArgumentError('send the skill as files or as zip_base64, and exactly one of them')
           }
-          let files: unknown = args.files
-          if (typeof zip === 'string') {
-            const read = readSkillZip(Buffer.from(zip, 'base64'))
-            if ('error' in read) throw new ToolArgumentError(`not a skill zip: ${read.error}`)
-            files = read.files
-          }
+          // Resolved, and write-authorized where a zip is coming, before the
+          // zip is ever parsed: readSkillZip bounds what it inflates, but
+          // bounded is not free, and a caller who may not write (or even see)
+          // this level must not be able to spend that cost at all.
           const layerId = await skills.layerBySlug(auth, which)
-          const level: SkillLevel | undefined = layerId === undefined ? undefined : { kind: 'layer', layerId }
-          const outcome: SkillWrite =
-            level === undefined ? { kind: 'not_found' } : await skills.write(auth, level, files, basedOn, 'mcp')
+          let files: unknown = args.files
+          let outcome: SkillWrite
+          if (layerId === undefined) {
+            outcome = { kind: 'not_found' }
+          } else {
+            const level: SkillLevel = { kind: 'layer', layerId }
+            if (typeof zip !== 'string') {
+              outcome = await skills.write(auth, level, files, basedOn, 'mcp')
+            } else {
+              const denied = await skills.mayWrite(auth, level, 'mcp')
+              if (denied !== undefined) {
+                outcome = denied
+              } else {
+                const read = readSkillZip(Buffer.from(zip, 'base64'))
+                if ('error' in read) throw new ToolArgumentError(`not a skill zip: ${read.error}`)
+                files = read.files
+                outcome = await skills.write(auth, level, files, basedOn, 'mcp')
+              }
+            }
+          }
 
           if (outcome.kind === 'written' || outcome.kind === 'not_found' || outcome.kind === 'forbidden') {
             const target = { skill: 'layer', layer_id: layerId ?? null, layer: which }

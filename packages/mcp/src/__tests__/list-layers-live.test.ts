@@ -161,3 +161,100 @@ when('list_layers, paged', () => {
     expect(page.layers).toHaveLength(5)
   })
 })
+
+/**
+ * Security audit 2026-11-01, LOW finding
+ * api/adapters.ts:layer-document-count-includes-denied-documents.
+ *
+ * `list_layers`' `documentCount` used the same unfiltered `count(*)` as
+ * `GET /v1/layers` (adapters.ts) — ignoring `plan.deniedDocs` — so a caller
+ * denied a specific document in a layer it may otherwise read was told that
+ * document exists, from the one tool whose catalog is supposed to say only
+ * what the caller may reach. The core itself can never issue a document-
+ * scoped deny; the row below is inserted directly, the way a module that
+ * does (`acl-advanced`) would issue one.
+ */
+const ORG2 = '66666666-6666-4666-8666-666666660002'
+const MEMBER_ID = '66666666-6666-4666-8666-6666666600b1'
+const member: AuthContext = { orgId: ORG2, principal: { type: 'user', id: MEMBER_ID }, role: 'member' }
+let pool2: Pool
+let services2: Services
+let layerId2: string
+let docVisible: string
+let docDenied: string
+
+when('list_layers’ documentCount, beside a document-scoped deny', () => {
+  // Its own pool rather than the one above: that block's own `afterAll`
+  // closes it, and vitest does not promise these run in file order relative
+  // to each other's teardown.
+  beforeAll(async () => {
+    const { loadConfig } = await import('@nacre.work/core')
+    services2 = buildServices(loadConfig())
+    pool2 = services2.pool
+    const c = await pool2.connect()
+    try {
+      await c.query(
+        `INSERT INTO organizations (id, slug, name, vector_collection)
+         VALUES ($1,'mcpdeny','mcpdeny','org_mcpdeny') ON CONFLICT DO NOTHING`,
+        [ORG2],
+      )
+      const ws = await c.query<{ id: string }>(
+        `INSERT INTO workspaces (org_id, slug, name) VALUES ($1,'w','w')
+         ON CONFLICT (org_id, slug) DO UPDATE SET name = 'w' RETURNING id`,
+        [ORG2],
+      )
+      const provider = await c.query<{ id: string }>(
+        `INSERT INTO embedding_providers (org_id, name, endpoint, model, dimensions)
+         VALUES ($1,'p','http://embedder','stub',4)
+         ON CONFLICT DO NOTHING RETURNING id`,
+        [ORG2],
+      )
+      const pid =
+        provider.rows[0]?.id ??
+        (await c.query<{ id: string }>(
+          `SELECT id FROM embedding_providers WHERE org_id = $1 AND name = 'p'`,
+          [ORG2],
+        )).rows[0]!.id
+      await c.query('DELETE FROM layers WHERE org_id = $1', [ORG2])
+      const layer = await c.query<{ id: string }>(
+        `INSERT INTO layers (org_id, workspace_id, slug, name, provider_id, vector_name)
+         VALUES ($1,$2,'l','l',$3,'v_stub_4') RETURNING id`,
+        [ORG2, ws.rows[0]!.id, pid],
+      )
+      layerId2 = layer.rows[0]!.id
+      const visible = await c.query<{ id: string }>(
+        `INSERT INTO documents (org_id, layer_id, external_id, source_type, title, content_hash, status)
+         VALUES ($1,$2,'visible','inline','Visible','sha256:a','indexed') RETURNING id`,
+        [ORG2, layerId2],
+      )
+      docVisible = visible.rows[0]!.id
+      const denied = await c.query<{ id: string }>(
+        `INSERT INTO documents (org_id, layer_id, external_id, source_type, title, content_hash, status)
+         VALUES ($1,$2,'denied','inline','Denied','sha256:b','failed') RETURNING id`,
+        [ORG2, layerId2],
+      )
+      docDenied = denied.rows[0]!.id
+      await c.query(
+        `INSERT INTO grants (org_id, principal_type, principal_id, scope_type, scope_id, permission, effect, source)
+         VALUES ($1,'user',$2,'layer',$3,'read','allow','manual'),
+                ($1,'user',$2,'document',$4,'read','deny','manual')`,
+        [ORG2, MEMBER_ID, layerId2, docDenied],
+      )
+    } finally {
+      c.release()
+    }
+  })
+
+  afterAll(async () => {
+    await pool2.query('DELETE FROM organizations WHERE id = $1', [ORG2])
+    await pool2.end()
+  })
+
+  it('excludes the denied document from the catalog’s documentCount', async () => {
+    const page = await services2.layers.forCaller(member, { limit: 10 })
+    const layer = page.layers.find((l) => l.id === layerId2)
+    expect(layer).toBeDefined()
+    expect(layer?.documentCount).toBe(1)
+    void docVisible
+  })
+})

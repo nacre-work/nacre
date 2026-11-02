@@ -45,6 +45,36 @@ describe('the idempotency cache never holds a credential', () => {
     expect(CREDENTIAL_FIELDS.has('refresh_token')).toBe(true)
   })
 
+  /**
+   * Security audit 2026-11-01, LOW finding
+   * api/idempotency.ts:CREDENTIAL_FIELDS:enrolment-challenge.
+   *
+   * `EnrolmentChallenge` and `SecondFactorChallenge`'s own contract text
+   * never says "shown once" or any of this file's other spellings for
+   * it — a challenge is short-lived rather than one-shot, and
+   * `onceShownFields` above has no reason to find it. But it is a bearer
+   * JWT good for up to 900 seconds that the enrolment door exchanges for a
+   * new factor and a full session, and `POST /v1/me/password` answering
+   * `enrol` wrote one under this exact field name to the idempotency cache
+   * for 24 hours before `challenge` was added to `CREDENTIAL_FIELDS` — a
+   * window the contract's wording could never have caught. Asked directly
+   * of the response shapes themselves rather than of the contract's prose.
+   */
+  it('finds a sign-in or enrolment challenge, by the field name both response shapes use', () => {
+    expect(CREDENTIAL_FIELDS.has('challenge')).toBe(true)
+    expect(
+      carriesCredential({ second_factor_required: true, challenge: 'x', expires_in: 60 }),
+    ).toBe(true)
+    expect(
+      carriesCredential({
+        second_factor_enrolment_required: true,
+        challenge: 'x',
+        expires_in: 900,
+        reason: 'This organization requires a second factor.',
+      }),
+    ).toBe(true)
+  })
+
   it('finds one at any depth, in objects and in arrays', () => {
     expect(carriesCredential({ id: 'u', password: 'p' })).toBe(true)
     expect(carriesCredential({ tokens: { access_token: 'a' } })).toBe(true)

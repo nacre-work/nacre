@@ -808,16 +808,18 @@ export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
           surface: ConsentSurface
           suspended: boolean
         }>(
-          // The user is joined for the delegated case only, and it is a LEFT
-          // join so a service-account connection is unaffected by it. What it
-          // answers is the same question the authentication path asks on every
-          // request: may this authority still be exercised. Asking it here too
-          // is not belt and braces — a renewal that succeeded while the person
-          // was disabled would hand the application a fresh token for every one
-          // of the next fourteen days, each of which 401s.
+          // The user is joined for the delegated case and the service account
+          // for the agent case, each a LEFT join so the other acts_as is
+          // unaffected by it. What both answer is the same question the
+          // authentication path asks on every request: may this authority
+          // still be exercised. Asking it here too is not belt and braces — a
+          // renewal that succeeded after the account or the person was
+          // revoked/disabled would hand the application a fresh token for
+          // every one of the next fourteen days, each of which 401s.
           `SELECT t.id, t.consent_id, t.family_id, t.used_at,
                   t.expires_at <= now() AS expired,
-                  c.revoked_at IS NOT NULL AS revoked,
+                  (c.revoked_at IS NOT NULL
+                     OR (c.acts_as = 'service_account' AND sa.revoked_at IS NOT NULL)) AS revoked,
                   c.acts_as, c.service_account_id, c.approved_by, c.surface,
                   -- An administrative connection is suspended, not ended, when
                   -- its person stops being an organization administrator: the
@@ -830,6 +832,7 @@ export class PostgresOAuthRefreshTokens implements OAuthRefreshTokens {
              FROM oauth_refresh_tokens t
              JOIN oauth_consents c ON c.id = t.consent_id
              LEFT JOIN users u ON u.id = c.approved_by AND u.org_id = c.org_id
+             LEFT JOIN service_accounts sa ON sa.id = c.service_account_id AND sa.org_id = c.org_id
             WHERE t.token_hash = $1
             FOR UPDATE OF t`,
           [hashCode(token)],

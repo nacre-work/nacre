@@ -1738,13 +1738,25 @@ async function handleSkills(
   } else if ((method === 'PUT' || method === 'DELETE') && tail === undefined) {
     let files: unknown
     let basedOnRaw: unknown
+    // Set only on the zip path, and only when the gate below refuses: a
+    // caller who may not write (or even see) this level is answered from
+    // the gate, with readSkillZip never called at all.
+    let denied: SkillWrite | undefined
     if (method === 'DELETE') {
       files = {}
       basedOnRaw = url.searchParams.get('based_on') ?? undefined
     } else if (zipped !== undefined) {
-      const read = readSkillZip(zipped)
-      if ('error' in read) return fail(badRequest(instance, requestId, `The archive is not a skill: ${read.error}.`))
-      files = read.files
+      // Authorize before parsing. readSkillZip bounds what it inflates, but
+      // bounded is not free — a caller who may not write this level must not
+      // be able to spend that cost at all, so the same visibility-and-write
+      // check skills.write runs internally is run here first, before the
+      // body is touched.
+      denied = await skills.mayWrite(auth, level, 'rest')
+      if (denied === undefined) {
+        const read = readSkillZip(zipped)
+        if ('error' in read) return fail(badRequest(instance, requestId, `The archive is not a skill: ${read.error}.`))
+        files = read.files
+      }
       basedOnRaw = url.searchParams.get('based_on') ?? undefined
     } else {
       const fields = body as { files?: unknown; based_on?: unknown } | undefined
@@ -1761,10 +1773,15 @@ async function handleSkills(
       files = fields.files
       basedOnRaw = fields.based_on
     }
-    const basedOn = readBasedOn(basedOnRaw)
-    if (typeof basedOn !== 'number') return fail(badRequest(instance, requestId, basedOn.error))
-    outcome = await skills.write(auth, level, files, basedOn, 'rest')
-    kind = method === 'DELETE' || (outcome.kind === 'written' && outcome.cleared) ? 'cleared' : 'updated'
+    if (denied !== undefined) {
+      outcome = denied
+      kind = 'updated'
+    } else {
+      const basedOn = readBasedOn(basedOnRaw)
+      if (typeof basedOn !== 'number') return fail(badRequest(instance, requestId, basedOn.error))
+      outcome = await skills.write(auth, level, files, basedOn, 'rest')
+      kind = method === 'DELETE' || (outcome.kind === 'written' && outcome.cleared) ? 'cleared' : 'updated'
+    }
   } else {
     return missing()
   }
@@ -2000,7 +2017,14 @@ async function admitClientRegistration(
   options: ApiOptions,
 ): Promise<boolean> {
   if (options.limits === undefined || options.limitPolicies === undefined) return true
-  const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 }) ?? 'unknown'
+  const source = clientSource(req, { trustProxy: options.trustProxy ?? 0 })
+  // `undefined` means the transport gave no address to key on — see
+  // source.ts's own contract and the identical pattern beside the login
+  // limiter. Skipped rather than folded into the literal string 'unknown',
+  // which turned every unidentifiable client into one shared bucket: a
+  // denial of service with extra steps, and the opposite of what this
+  // function's caller is trying to prevent.
+  if (source === undefined) return true
   const decision = await options.limits.check(`src:${source}`, 'client_registration')
   if (decision.allowed) return true
   send(
@@ -2069,6 +2093,66 @@ async function resolveMetadataClient(
 }
 
 /**
+ * Security audit 2026-11-01, LOW finding
+ * api/server.ts:oauth-consent:metadata-client-cache-freshness.
+ *
+ * `resolveMetadataClient`'s freshness rule — use the cached row only while
+ * `refreshAfter` is in the future, otherwise refetch and refuse on failure —
+ * was enforced only on `GET /oauth/authorize`. Both consent decisions
+ * re-read the same row through the raw `oauth.clients.find`, with no
+ * freshness check at all, even though `clientRedirectAllowed`'s own comment
+ * says all three must ask the same question of the same client: the row's
+ * stale `redirect_uris` kept admitting a URI the client's *current* document
+ * had already dropped, so a signed-in person approving a crafted consent
+ * link minted a code — and, through `/oauth/token`, a session — bound to a
+ * redirect URI nobody but its new owner controls, under a legitimate
+ * client's name. `authorize` was already refusing the same client by the
+ * time this was found.
+ *
+ * This is the same resolution `resolveMetadataClient` does, without writing
+ * a response: consent answers in its own Problem shape rather than
+ * `authorize`'s `{error, error_description}`, which is the reason for a
+ * second function rather than a shared one that writes `res` itself. It
+ * does not spend the `client_registration` budget the way `authorize`'s
+ * refetch does — that budget exists against anonymous registration
+ * attempts, and a consent decision is already behind a signed-in person's
+ * session.
+ */
+async function resolveMetadataClientForConsent(
+  clientId: string,
+  options: ApiOptions,
+): Promise<RegisteredClient | undefined> {
+  const oauth = options.oauth
+  if (oauth === undefined) return undefined
+  const documents = oauth.metadataDocuments
+  if (documents === undefined) return undefined
+  const cached = await oauth.clients.find(clientId)
+  if (cached !== undefined && cached.source === 'metadata' && (cached.refreshAfter?.getTime() ?? 0) > Date.now()) {
+    return cached
+  }
+  const fetched = await fetchClientMetadata(clientId, {
+    trustedOrigins: documents.trustedOrigins,
+    redirectAllowed,
+    ...(documents.fetch === undefined ? {} : { fetch: documents.fetch }),
+  })
+  if ('refusal' in fetched) return undefined
+  return oauth.clients.cacheMetadata(clientId, fetched.client.clientName, fetched.client.redirectUris, fetched.ttlSeconds)
+}
+
+/**
+ * The client both consent decisions re-check a redirect URI against — one
+ * function so neither decision can drift from the other, and so a metadata
+ * client gets `authorize`'s own freshness rule here too.
+ */
+async function resolveClientForConsent(
+  clientId: string,
+  options: ApiOptions,
+): Promise<RegisteredClient | undefined> {
+  if (isMetadataClientId(clientId)) return resolveMetadataClientForConsent(clientId, options)
+  return options.oauth?.clients.find(clientId)
+}
+
+/**
  * Which limit a request counts against, or none.
  *
  * Search and ingest are the two the contract names, and they are the two that
@@ -2124,8 +2208,22 @@ function refusalDetail(resource: Resource, decision: LimitDecision, policy: Limi
  * (`CREDENTIAL_FIELDS` in idempotency.ts). That rule exists because this list
  * was the only one, and five routes added after the service account key's
  * entry were not on it.
+ *
+ * `/v1/me` is here too, as the belt beside that suspender rather than the
+ * only defence: every answer under it concerns the caller's own credentials,
+ * and `POST /v1/me/password` answering `enrol` writes a bearer enrolment
+ * challenge under the field name `challenge` — a name `CREDENTIAL_FIELDS`
+ * had not been told about, so the cache held a 900-second token for 24 hours
+ * until that field was added. A second omission from that set must not be a
+ * second route sitting in Redis with no access control of its own.
  */
-const NEVER_CACHED: readonly string[] = ['/v1/service-accounts', '/v1/documents', '/v1/search', '/v1/uploads']
+const NEVER_CACHED: readonly string[] = [
+  '/v1/service-accounts',
+  '/v1/documents',
+  '/v1/search',
+  '/v1/uploads',
+  '/v1/me',
+]
 
 /** Prefix rather than exact match, so `/v1/service-accounts/{id}` is covered too. */
 const neverCached = (instance: string): boolean =>
@@ -3594,6 +3692,24 @@ async function redeemTicket(
 
 async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOptions): Promise<void> {
   const requestId = randomUUID()
+
+  // Before `pathname` is derived, and that ordering is the fix. A front
+  // door is meant to keep `/metrics` off the public origin by matching its
+  // own parsed URI against `location /v1/`, `/oauth/` and `/.well-known/`
+  // and forwarding the client's *raw* request-target unchanged — but on
+  // Linux nginx a backslash is an ordinary byte, so `/v1/..\metrics` stays
+  // inside `location /v1/` there while the WHATWG `URL` below maps `\` to
+  // `/` and resolves `..`, routing this process to `/metrics` regardless of
+  // what sits in front of it. The API must not depend on a proxy to keep
+  // that route off the public origin, so a backslash anywhere in the raw
+  // request-target is refused here, before any pathname this process
+  // derives can disagree with what an edge in front of it saw.
+  if ((req.url ?? '').includes('\\')) {
+    const problem = badRequest(req.url ?? '/', requestId, 'The request path may not contain a backslash.')
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
   const url = new URL(req.url ?? '/', 'http://localhost')
   const instance = url.pathname
 
@@ -3872,6 +3988,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         : []
       if (uris.length === 0) {
         send(res, 400, { error: 'invalid_redirect_uri', error_description: "'redirect_uris' is required." }, requestId)
+        return
+      }
+      // Bounded the way validateMetadataDocument already bounds the same
+      // column on the CIMD door, and for the same reason: the check below is
+      // `uris.every(u => redirectAllowed(u, uris))`, one O(n) membership scan
+      // per entry, which is O(n^2) in the length of this self-asserted,
+      // unauthenticated list. Refused before that check runs, rather than
+      // left to the generic request-body cap to bound — a caller can pack
+      // tens of thousands of short URIs into that cap.
+      if (uris.length > 20 || !uris.every((u) => u.length <= 512)) {
+        send(
+          res,
+          400,
+          { error: 'invalid_redirect_uri', error_description: 'At most 20 redirect URIs, each at most 512 characters.' },
+          requestId,
+        )
         return
       }
       // Checked at registration as well as at authorize. A URI that could never
@@ -6260,6 +6392,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
+      // Security audit 2026-11-01, LOW finding
+      // api/server.ts:oauth-consents-list-and-revoke-accept-delegated-token.
+      //
+      // `PostgresOAuthConsents.list`'s non-administering branch scopes by
+      // `approved_by = auth.principal.id` — the *person*, not the
+      // connection — so a delegated token (`auth.principal.id` is the
+      // delegating person's id, never the connection's) listed every
+      // connection that person approved, including ones its own ceiling and
+      // narrowing say nothing about. Managing which applications may act
+      // for a person is the person's own act in a session they signed
+      // into, exactly like `POST /v1/oauth/consent` (T41) already argues;
+      // this route was left out of that pattern.
+      if (auth.delegation !== undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
       const items = await options.oauth.consents.list(auth)
       send(
         res,
@@ -6315,6 +6464,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     if (instance.startsWith('/v1/oauth/consents/') && options.oauth !== undefined) {
       const id = instance.slice('/v1/oauth/consents/'.length)
       if (req.method !== 'DELETE') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      // Same reason as GET /v1/oauth/consents above: `revoke`'s own
+      // non-administering branch scopes by the approving person, not the
+      // connection, so a delegated token could end any of that person's
+      // other connections — a {read}-only one ending a {read,write}
+      // connection narrowed to a different layer, or, for an org_admin,
+      // ending their administrative MCP connection and cancelling its open
+      // proposals. T41's argument again: ending a connection is the
+      // person's own act.
+      if (auth.delegation !== undefined) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
@@ -6392,7 +6554,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // checked against the registration here exactly as Approve's is, and
       // nothing is recorded: declining stores no connection and mints no code.
       if (consent['decision'] === 'deny') {
-        const client = await options.oauth.clients.find(clientId)
+        const client = await resolveClientForConsent(clientId, options)
         if (client === undefined || !clientRedirectAllowed(client, redirectUri)) {
           const problem = badRequest(instance, requestId, 'Unknown client, or a redirect_uri it did not register.')
           send(res, problem.status, problem.toJSON(), requestId)
@@ -6534,8 +6696,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // this body came back through a redirect the caller controls, so the
       // client and its redirect URI are verified against the registration
       // again — the authorize endpoint's check protected the redirect, and this
-      // one protects the code.
-      const client = await options.oauth.clients.find(clientId)
+      // one protects the code. `resolveClientForConsent` applies the same
+      // freshness rule `authorize` does to a metadata client, rather than the
+      // raw, possibly-stale cached row.
+      const client = await resolveClientForConsent(clientId, options)
       if (client === undefined || !clientRedirectAllowed(client, redirectUri)) {
         const problem = badRequest(instance, requestId, 'Unknown client, or a redirect_uri it did not register.')
         send(res, problem.status, problem.toJSON(), requestId)
@@ -6547,6 +6711,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // cannot see and one that does not exist are the same answer here as
       // everywhere.
       //
+      // Naming an agent is an administrative act — listing and minting a
+      // service account are both `administers(auth)` everywhere else this
+      // product reaches one — and this screen is the one place that was never
+      // asked: `options.serviceAccounts.list` filters only on organization, so
+      // a plain member naming any service account's id in this body reached
+      // the visibility loop below and found every one of them visible. Gated
+      // the same way GET/POST /v1/service-accounts already are, before that
+      // loop runs at all.
+      //
       // The whole listing, not one page of it. A `find` over the first 200
       // used to stand here, so in an organization with more accounts than
       // that, approving one ordered past the cut answered `404`
@@ -6554,6 +6727,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // nothing on the screen to say why. The loop terminates because the
       // listing seeks on `(created_at, id)`, and it stops early on a hit.
       if (!delegating) {
+        if (!administers(auth)) {
+          const problem = notFound(instance, requestId)
+          send(res, problem.status, problem.toJSON(), requestId)
+          return
+        }
         let visible = false
         if (options.serviceAccounts !== undefined) {
           let after: Page['after']

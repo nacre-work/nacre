@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -271,6 +271,33 @@ describe('collecting files to ingest', () => {
     const found = collect(tree()).map((file) => file.externalId)
 
     expect(found).toEqual(['guides/onboarding.md', 'readme.md'])
+  })
+
+  it('skips a symlink inside the tree rather than reading what it points at', () => {
+    // A symlink reports isDirectory() false — the same thing a leaf file
+    // reports — so it fell into the file branch solely because it is not a
+    // directory, and ingest() reads it with readFileSync, which does follow
+    // it: an SSH key, a cloud credential, anything the OS user running this
+    // command can read, indexed under the symlink's own name.
+    const root = scratch()
+    writeFileSync(join(root, 'readme.md'), '# hi')
+    const outsideDir = scratch()
+    writeFileSync(join(outsideDir, 'secret.txt'), 'TOP-SECRET-CONTENT-12345')
+    symlinkSync(join(outsideDir, 'secret.txt'), join(root, 'notes.md'))
+
+    const found = collect(root).map((file) => file.externalId)
+    expect(found).toEqual(['readme.md'])
+  })
+
+  it('does not recurse into a symlinked directory', () => {
+    const root = scratch()
+    writeFileSync(join(root, 'readme.md'), '# hi')
+    const outsideDir = scratch()
+    writeFileSync(join(outsideDir, 'leaked.md'), 'leaked')
+    symlinkSync(outsideDir, join(root, 'linked'))
+
+    const found = collect(root).map((file) => file.externalId)
+    expect(found).toEqual(['readme.md'])
   })
 
   it('gives a file its own name as the external id', () => {

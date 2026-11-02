@@ -186,6 +186,12 @@ const EXEMPT = {
       'installation-wide: finished notifications past their window go whichever organization sent them',
     ],
   ],
+  'packages/core/provision.ts': [
+    [
+      'SELECT org_id FROM retired_collections',
+      'acrossOrganizations: assertCollectionUnclaimed asks whether a *different* organization retired this exact collection name, which is the question only an exclusion can ask — scoping it to the caller’s own org_id would check nothing',
+    ],
+  ],
 }
 
 /**

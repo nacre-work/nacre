@@ -541,6 +541,29 @@ IPv6 clients are counted per `/64` rather than per address: a single subscriber
 is handed a /64, so counting whole addresses means one allocation is more
 buckets than there are requests.
 
+**The shipped Compose profiles default to `0`, and that default does not match
+the topology they run.** Every profile also runs `web` (nginx) in front of
+`api` and `mcp`, proxying `/v1`, `/oauth` and `/.well-known`, so a request that
+arrives through it the way `docs/quickstart.md` describes carries the proxy's
+own socket address at `NACRE_TRUST_PROXY=0` — one bucket for every real client
+behind that front door. Raising it to `1` is not a one-line change here,
+though: `docker-compose.yml` also publishes `api`'s and `mcp`'s own ports
+(`NACRE_API_HOST_PORT`, `NACRE_MCP_HOST_PORT`) directly beside `web`'s, and
+that is by design — the MCP transport's own discovery document is built from
+whichever `Host` a client actually used precisely because a client may reach
+it either through the proxy or on its own port, with nothing in front. With
+`NACRE_TRUST_PROXY=1` and those ports still reachable, a direct caller sends
+its own `X-Forwarded-For` and is trusted as whatever address it names,
+defeating the limit rather than merely leaving it at the unsafe default. Making
+this safe by default is therefore a topology decision — whether the
+unproxied ports stay reachable from outside the host at all — and not only a
+configuration one; it is recorded here rather than changed silently. An
+operator who terminates all external traffic at `web` (binding
+`NACRE_API_HOST_PORT`/`NACRE_MCP_HOST_PORT` to `127.0.0.1`, or not publishing
+them past their own firewall) should set `NACRE_TRUST_PROXY=1`; one who leaves
+the other two ports reachable from outside gets no real benefit from raising
+it.
+
 Separately, and independently of any of this, **the number of passwords being
 verified at once is bounded inside the process**. scrypt runs on libuv's thread
 pool, which is shared with DNS and file I/O, so an unbounded login endpoint
@@ -664,6 +687,19 @@ access is ever read from here.
 
 It is not a queue. Indexing work is claimed from Postgres under a lease
 (`NACRE_INDEX_LEASE`), so a Redis loss cannot strand a document.
+
+### `NACRE_JWT_SECRET` ships empty, and a published value is refused outright
+
+There is no default. `.env.example` leaves the variable empty — `openssl rand
+-base64 32` is the one line that fills it in — because a signing key with a
+default in the source is a key anybody who has read the source can forge
+tokens with. This used to be weaker in one specific way: `.env.example` carried
+a committed placeholder (`development-only-not-a-secret-0123456789`), long
+enough to pass the 32-byte floor, that nothing compared against its own
+published value. `loadJwtKeys` and `loadJwtVerification` now refuse that exact
+string by value, unconditionally rather than only in production, because
+emptying the file does not un-publish a string every clone's git history, every
+fork and every copied `.env` may still carry.
 
 ### Rotating the signing key
 

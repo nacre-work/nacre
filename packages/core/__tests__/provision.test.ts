@@ -252,6 +252,58 @@ when('provisionOrganization', () => {
     expect(asked[1]).not.toContain(vectorName(second.model, second.dimensions))
   })
 
+  /**
+   * Qdrant collection names are not prefix-free: `org_` + a slug with `-`
+   * mapped to `_` is also exactly the name a *reindex copy target* derives
+   * for a different organization on the right model. `ensureCollection`
+   * adopts an existing collection unconditionally, so a new organization
+   * provisioned onto a name a reindex elsewhere already claimed would have
+   * its first search run against a stranger's vectors. Simulated here
+   * directly — a dummy row already holding the name this slug would derive
+   * — rather than by actually reindexing a second organization onto it,
+   * since the collision is in the *name*, not in how it was produced.
+   */
+  it('refuses to provision onto a collection name another organization already owns', async () => {
+    const claimedSlug = 'provclaimed'
+    const victim = 'provvictim'
+    const c = await pool2.connect()
+    try {
+      await c.query(`DELETE FROM organizations WHERE slug = ANY($1)`, [[claimedSlug, victim]])
+      await c.query(
+        `INSERT INTO organizations (slug, name, vector_collection) VALUES ($1, $2, $3)`,
+        [victim, victim, `org_${claimedSlug}`],
+      )
+    } finally {
+      c.release()
+    }
+
+    let called = false
+    const vectors = {
+      ensureCollection: async () => {
+        called = true
+        return `org_${claimedSlug}`
+      },
+    }
+
+    // Two defenses, and either may be the one that actually fires first:
+    // `organizations_vector_collection_key` (migration 0045) refuses the
+    // INSERT itself, before provisionOrganization's own
+    // `assertCollectionUnclaimed` check ever runs — whichever it is, the
+    // property under test is the same, and is checked below rather than by
+    // naming one message: this call must reject, and the Qdrant call that
+    // would adopt the other organization's collection must never happen.
+    await expect(
+      provisionOrganization(
+        pool2,
+        vectors,
+        { slug: claimedSlug, name: 'Claimed', email: 'claimed@prov.test', workspace: 'default' },
+        { endpoint: 'http://embedder.test', model: 'bge-m3', dimensions: 8 },
+      ),
+    ).rejects.toThrow(/already has it as vector_collection|duplicate key|unique constraint/i)
+
+    expect(called).toBe(false)
+  })
+
   it('writes the collection it reports into organizations.vector_collection', async () => {
     // Read by every write and every search. A tenant whose row disagrees with
     // the collection that exists is a tenant whose every search fails.

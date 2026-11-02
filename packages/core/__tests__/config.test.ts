@@ -377,6 +377,34 @@ describe('signing keys', () => {
   it('still requires the current key', () => {
     expect(() => loadJwtKeys({ NACRE_JWT_SECRET_PREVIOUS: PREVIOUS })).toThrow(ConfigError)
   })
+
+  // The value this repository published in `.env.example` before it shipped
+  // empty — long enough to pass the 32-byte floor, and known to anybody who
+  // has read the source. Refused by value, not only under
+  // `NACRE_ENV=production`: emptying the file does not un-publish a string
+  // every clone's git history and every copied `.env` may still carry.
+  const PUBLISHED = 'development-only-not-a-secret-0123456789'
+
+  it('refuses the published .env.example secret as the current key', () => {
+    expect(() => loadJwtKeys({ NACRE_JWT_SECRET: PUBLISHED })).toThrow(
+      /NACRE_JWT_SECRET is set to a value this repository has published/,
+    )
+  })
+
+  it('refuses the published .env.example secret as the previous key too', () => {
+    expect(() =>
+      loadJwtKeys({ NACRE_JWT_SECRET: CURRENT, NACRE_JWT_SECRET_PREVIOUS: PUBLISHED }),
+    ).toThrow(/NACRE_JWT_SECRET_PREVIOUS is set to a value this repository has published/)
+  })
+
+  it('refuses the published secret even outside production', () => {
+    // The whole point: a laptop demo that accepts a known-public key is still
+    // a process an attacker who has read this list can mint org_admin tokens
+    // against. There is no NACRE_ENV in this call at all.
+    expect(() => loadJwtKeys({ NACRE_ENV: 'development', NACRE_JWT_SECRET: PUBLISHED })).toThrow(
+      ConfigError,
+    )
+  })
 })
 
 describe('signing keys, Ed25519', () => {
@@ -600,6 +628,12 @@ describe('verification-only keys', () => {
     expect(() => loadJwtVerification({ NACRE_JWT_PUBLIC_KEY_REF: ref })).toThrow(
       /rsa public key/,
     )
+  })
+
+  it('refuses the published .env.example secret, same as loadJwtKeys', () => {
+    expect(() =>
+      loadJwtVerification({ NACRE_JWT_SECRET: 'development-only-not-a-secret-0123456789' }),
+    ).toThrow(/NACRE_JWT_SECRET is set to a value this repository has published/)
   })
 })
 

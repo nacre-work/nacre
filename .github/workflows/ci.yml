@@ -753,6 +753,13 @@ jobs:
       - name: configure the environment
         run: |
           cp .env.example .env
+          # `.env.example` ships this empty on purpose (the published-secret
+          # fix): a signing key with a default in the source is a key anybody
+          # reading the source can forge tokens with. Generated here the same
+          # way docs/quickstart.md tells a reader to, or the API refuses to
+          # start at all and this job's "the API never became healthy"
+          # failure names a variable instead of the real one.
+          printf 'NACRE_JWT_SECRET=%s\n' "$(openssl rand -base64 32)" >> .env
           # Point at the stub, and shrink the vector width — the vectors are
           # constant and meaningless, so eight floats index as well as a
           # thousand and faster.

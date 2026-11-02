@@ -1,5 +1,6 @@
 import type { Pool } from 'pg'
 
+import { acrossOrganizations } from './db/client.js'
 import { collectionName, vectorName } from './vector/query.js'
 import type { VectorStore } from './vector/search.js'
 
@@ -335,6 +336,52 @@ export async function provisionInPostgres(
 }
 
 /**
+ * Refuse a collection name that another organization already owns.
+ *
+ * Qdrant collection names are built by joining strings — `org_` + a slug
+ * with `-` mapped to `_`, and a reindex copy target is that name plus a
+ * vector slot name, which maps every non-alphanumeric character to `_` the
+ * same way. Neither is prefix-free: a slug such as `acme-v-bge-m3-1024`
+ * derives exactly the collection name a *different* organization's reindex
+ * copy target onto bge-m3/1024 would also derive. Nothing upstream of this
+ * check acts on a name only after confirming no other organization already
+ * holds it — `ensureCollection`, `copyCollection` and `rebuildCollection`
+ * are pure Qdrant operations with no Postgres handle of their own, so the
+ * question has to be asked by whoever is about to call one of them, here,
+ * across every tenant rather than the caller's own.
+ *
+ * `retired_collections` is checked too: a name a reindex moved an
+ * organization *off* is a name the collector may still delete it from under
+ * whoever adopted it next.
+ */
+export async function assertCollectionUnclaimed(
+  pool: Pool,
+  orgId: string,
+  collection: string,
+): Promise<void> {
+  await acrossOrganizations(pool, async (client) => {
+    const { rows: owners } = await client.query<{ id: string }>(
+      'SELECT id FROM organizations WHERE vector_collection = $1 AND id <> $2',
+      [collection, orgId],
+    )
+    if (owners.length > 0) {
+      throw new Error(
+        `refusing to act on ${collection}: organization ${owners[0]!.id} already has it as vector_collection`,
+      )
+    }
+    const { rows: retirees } = await client.query<{ org_id: string }>(
+      'SELECT org_id FROM retired_collections WHERE name = $1 AND org_id <> $2',
+      [collection, orgId],
+    )
+    if (retirees.length > 0) {
+      throw new Error(
+        `refusing to act on ${collection}: organization ${retirees[0]!.org_id} retired it and the collector may still reclaim it`,
+      )
+    }
+  })
+}
+
+/**
  * Both halves, in the order that survives a failure between them.
  *
  * **Qdrant after Postgres commits.** The reverse can leave a collection
@@ -367,6 +414,14 @@ export async function provisionOrganization(
 
   const collection = collectionName(options.slug)
   const ids = await provisionInPostgres(pool, options, provider, collection, log)
+
+  // Before `ensureCollection` ever asks Qdrant whether this name exists.
+  // `ensureCollection` adopts an existing collection unconditionally — right
+  // when it is this organization's own, from a previous, interrupted
+  // attempt, and wrong when a reindex elsewhere derived the same name, since
+  // adopting it would make this organization's next reindex copy a stranger's
+  // vectors into its own collection.
+  await assertCollectionUnclaimed(pool, ids.orgId, collection)
 
   // `ensureCollection` is already idempotent and already creates the payload
   // indexes, which is the part worth not reimplementing: a filter that falls

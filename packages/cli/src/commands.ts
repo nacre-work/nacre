@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, join, relative, sep } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 
@@ -307,6 +307,15 @@ export function collect(target: string): readonly { path: string; externalId: st
       // that indexing them by accident is the difference between a minute and
       // an afternoon.
       if (entry.name === '.git' || entry.name === 'node_modules') continue
+      // A symlink reports isDirectory() false (Dirent is lstat-based, so it
+      // never recurses into one either way) and, with a recognised
+      // extension, fell through to the file branch below solely because it
+      // is not a directory — and ingest() then reads it with readFileSync,
+      // which does follow it, to whatever it points at: an SSH key, a cloud
+      // credential, another user's document, anything the OS user running
+      // this command can read. Skipped before either branch, the same way
+      // `.git` and `node_modules` are.
+      if (entry.isSymbolicLink()) continue
       const path = join(dir, entry.name)
       if (entry.isDirectory()) walk(path)
       else if (TEXT.has(extensionOf(entry.name))) {
@@ -448,6 +457,15 @@ async function watch(
       const target = directories.find((dir) => path.startsWith(dir + sep) || path.startsWith(dir))
       if (target === undefined) continue
       try {
+        // `fs.watch` reports whatever path changed, with no promise about
+        // what it is — and a path a symlink was planted at is exactly the
+        // `collect()` gap one surface over: `readFileSync` below follows it
+        // to whatever it points at. `lstatSync` is what a plain read never
+        // calls, because it is the one that does not follow.
+        if (lstatSync(path).isSymbolicLink()) {
+          process.stderr.write(`skipped ${path}: a symlink is not followed\n`)
+          continue
+        }
         const outcome = await client.documents.add({
           layer,
           externalId: relative(target, path).split(sep).join('/'),

@@ -267,6 +267,95 @@ when('client registration, metadata documents and per-caller limits', () => {
       expect((await row(DOCUMENT_ID))?.source).toBe('metadata')
     })
 
+    /**
+     * Security audit 2026-11-01, LOW finding
+     * api/server.ts:oauth-consent:metadata-client-cache-freshness.
+     *
+     * `authorize`'s freshness rule — refetch a stale row and refuse rather
+     * than serve the old one — used to apply only there. Both `POST
+     * /v1/oauth/consent` decisions re-read the same cached row through the
+     * raw store lookup, with no freshness check, so a stale row kept
+     * admitting a redirect URI the client's *current* document had already
+     * dropped — reaching consent directly, with no prior call to
+     * `authorize` at all, which the console's own fragment-based routing
+     * makes easy to do.
+     */
+    it('consent refuses a stale client exactly as authorize does, with no prior authorize call', async () => {
+      // `https://old.example/cb` rather than a loopback address: a metadata
+      // client's loopback redirect is matched on *path alone*, any port
+      // admitted, per RFC 8252 — which is right, and would make this case
+      // pass for the wrong reason, since a stale row's loopback entry stays
+      // "allowed" however stale it is. A non-loopback URI is compared
+      // exactly, so only genuine freshness explains the difference.
+      const dropped = 'https://old.example/cb'
+      await pool.query(
+        `UPDATE oauth_clients SET redirect_uris = $2, refresh_after = now() - interval '1 second'
+          WHERE client_id = $1`,
+        [DOCUMENT_ID, [dropped]],
+      )
+      // The refetch fails — the row still names the dropped URI, which is
+      // exactly the state a stale cache leaves behind.
+      served = new Error('unreachable')
+
+      // A person of this test's own, rather than the file's shared `PERSON`:
+      // the general per-principal `requests` budget is only 3 a minute, and
+      // this case alone makes three calls against it.
+      const person = `0a555555-5555-4555-8555-${randomBytes(6).toString('hex')}`
+      await pool.query(
+        `INSERT INTO users (id, org_id, email, role) VALUES ($1, $2, $3::text, 'member') ON CONFLICT DO NOTHING`,
+        [person, ORG, `${person}@clientslive.test`],
+      )
+      const token = await new SignJWT({ org: ORG, principal_type: 'user', role: 'member' })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setSubject(person)
+        .setIssuer(ISSUER)
+        .setAudience(AUDIENCE)
+        .setIssuedAt(Math.floor(Date.now() / 1000))
+        .setExpirationTime('5m')
+        .sign(KEY)
+      const postConsent = (body: Record<string, unknown>): Promise<Response> =>
+        fetch(`${base}/v1/oauth/consent`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+
+      const before = await pool.query('SELECT count(*) FROM oauth_authorizations')
+
+      const approve = await postConsent({
+        client_id: DOCUMENT_ID,
+        redirect_uri: dropped,
+        code_challenge: createHash('sha256').update(randomBytes(16)).digest('base64url'),
+      })
+      expect(approve.status).toBe(400)
+
+      const deny = await postConsent({
+        client_id: DOCUMENT_ID,
+        redirect_uri: dropped,
+        code_challenge: createHash('sha256').update(randomBytes(16)).digest('base64url'),
+        decision: 'deny',
+      })
+      expect(deny.status).toBe(400)
+
+      // Neither decision minted a code for the dropped redirect URI — the
+      // defect's whole mechanism, and the one thing a status code alone
+      // does not rule out.
+      const after = await pool.query('SELECT count(*) FROM oauth_authorizations')
+      expect(after.rows[0]).toEqual(before.rows[0])
+
+      // The control: once the document is reachable again and still lists
+      // the URI, the same request succeeds — so this is the freshness rule
+      // refusing, not something else about the client or the person.
+      served = { body: metadataDocument([dropped]) }
+      const after2 = await postConsent({
+        client_id: DOCUMENT_ID,
+        redirect_uri: dropped,
+        code_challenge: createHash('sha256').update(randomBytes(16)).digest('base64url'),
+        decision: 'deny',
+      })
+      expect(after2.status).toBe(200)
+    })
+
     it('says why a document was refused', async () => {
       await pool.query(`UPDATE oauth_clients SET refresh_after = now() - interval '1 second' WHERE client_id = $1`, [
         DOCUMENT_ID,
