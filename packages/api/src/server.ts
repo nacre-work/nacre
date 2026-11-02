@@ -3891,6 +3891,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         send(res, 400, { error: 'invalid_redirect_uri', error_description: "'redirect_uris' is required." }, requestId)
         return
       }
+      // Bounded the way validateMetadataDocument already bounds the same
+      // column on the CIMD door, and for the same reason: the check below is
+      // `uris.every(u => redirectAllowed(u, uris))`, one O(n) membership scan
+      // per entry, which is O(n^2) in the length of this self-asserted,
+      // unauthenticated list. Refused before that check runs, rather than
+      // left to the generic request-body cap to bound — a caller can pack
+      // tens of thousands of short URIs into that cap.
+      if (uris.length > 20 || !uris.every((u) => u.length <= 512)) {
+        send(
+          res,
+          400,
+          { error: 'invalid_redirect_uri', error_description: 'At most 20 redirect URIs, each at most 512 characters.' },
+          requestId,
+        )
+        return
+      }
       // Checked at registration as well as at authorize. A URI that could never
       // receive a code is better refused now, when there is somebody to tell,
       // than at the redirect, when the failure is a blank browser tab.
