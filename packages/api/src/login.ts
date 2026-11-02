@@ -58,6 +58,31 @@ import type { SignInContext } from '@nacre.work/core'
 
 const ACCESS_MIN_SECONDS = 60
 
+/**
+ * How many organizations one unauthenticated, no-slug login may scan.
+ *
+ * `find` and `PasswordRecovery.findUser` (recovery.ts, which imports this)
+ * each run one scoped transaction per organization until they have seen two
+ * matches or run out of organizations — and an email the caller chooses to
+ * match none never produces a second match, so without a bound the cost of
+ * one request is linear in how many tenants the installation has. This caps
+ * that fan-out rather than removing it: `users` deliberately carries no
+ * cross-tenant lookup policy (migration 0008's own comment states that as a
+ * decision, not an omission, because resolving a credential with no
+ * organization at all is a different and larger change than a login that
+ * merely omits a slug), so the per-organization loop stays and this is what
+ * keeps it from being used as one.
+ *
+ * Generous rather than tight, on purpose — the same judgement call
+ * `NACRE_RERANK_CANDIDATES` makes at its own upper bound (500): this is a
+ * ceiling against an unbounded cost, not a limit tuned to an installation's
+ * expected size, so it should be far above what any ordinary multi-tenant
+ * deployment has rather than near it. An installation with more
+ * organizations than this should have its clients pass the slug they
+ * already have.
+ */
+export const MAX_UNSCOPED_ORG_SCAN = 500
+
 /** Long enough to read a phone, short enough not to survive walking away. */
 const CHALLENGE_SECONDS = 300
 
@@ -671,14 +696,20 @@ export class Login {
     // No slug. Which is the ordinary case for the single-organization
     // installation the open core is, and has to stay silent about how many
     // organizations exist when it is not.
+    //
+    // Bounded at MAX_UNSCOPED_ORG_SCAN: an email the caller chooses to match
+    // no account never produces a second match, so stopping early for *that*
+    // case is the one thing the "two is already ambiguous" rule below cannot
+    // do — it only stops once it has found something to be ambiguous about.
+    // One unauthenticated request otherwise opens one scoped transaction per
+    // organization, so its cost would grow with how many tenants exist
+    // rather than staying bounded.
     const orgIds = await this.allOrgIds()
     const found: UserRow[] = []
-    for (const orgId of orgIds) {
+    for (const orgId of orgIds.slice(0, MAX_UNSCOPED_ORG_SCAN)) {
       const row = await this.userIn(orgId, email)
       if (row !== undefined) found.push(row)
-      // Two is already ambiguous; there is nothing to learn from a third, and
-      // stopping keeps the cost of a login independent of how many tenants a
-      // deployment has.
+      // Two is already ambiguous; there is nothing to learn from a third.
       if (found.length > 1) return undefined
     }
     return found[0]

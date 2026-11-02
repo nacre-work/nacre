@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { hashPassword, type Mailer, withOrg } from '@nacre.work/core'
 import type { Pool } from 'pg'
 
+import { MAX_UNSCOPED_ORG_SCAN } from './login.js'
 import { passwordChangedMessage, passwordResetMessage } from './messages.js'
 
 /**
@@ -225,9 +226,12 @@ export class PasswordRecovery {
   /**
    * The one user this address names, or nothing.
    *
-   * The same shape the login path uses, and for the same reasons: two matches
-   * is silence rather than a choice, and the scan stops at two so the cost does
-   * not grow with how many tenants a deployment has.
+   * The same shape the login path uses, and for the same reason the bound is
+   * shared from there (MAX_UNSCOPED_ORG_SCAN, login.ts): two matches is
+   * silence rather than a choice, but an email the caller chooses to match no
+   * account never produces a second match, so stopping at two does not bound
+   * the cost of the miss — only the scan length does, and this is one
+   * unauthenticated transaction per organization until it is reached.
    */
   private async findUser(email: string): Promise<{ orgId: string; userId: string } | undefined> {
     const client = await this.deps.pool.connect()
@@ -242,7 +246,7 @@ export class PasswordRecovery {
     }
 
     const found: { orgId: string; userId: string }[] = []
-    for (const orgId of orgIds) {
+    for (const orgId of orgIds.slice(0, MAX_UNSCOPED_ORG_SCAN)) {
       const row = await withOrg(
         this.deps.pool,
         orgId,
