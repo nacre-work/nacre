@@ -2148,8 +2148,22 @@ function refusalDetail(resource: Resource, decision: LimitDecision, policy: Limi
  * (`CREDENTIAL_FIELDS` in idempotency.ts). That rule exists because this list
  * was the only one, and five routes added after the service account key's
  * entry were not on it.
+ *
+ * `/v1/me` is here too, as the belt beside that suspender rather than the
+ * only defence: every answer under it concerns the caller's own credentials,
+ * and `POST /v1/me/password` answering `enrol` writes a bearer enrolment
+ * challenge under the field name `challenge` — a name `CREDENTIAL_FIELDS`
+ * had not been told about, so the cache held a 900-second token for 24 hours
+ * until that field was added. A second omission from that set must not be a
+ * second route sitting in Redis with no access control of its own.
  */
-const NEVER_CACHED: readonly string[] = ['/v1/service-accounts', '/v1/documents', '/v1/search', '/v1/uploads']
+const NEVER_CACHED: readonly string[] = [
+  '/v1/service-accounts',
+  '/v1/documents',
+  '/v1/search',
+  '/v1/uploads',
+  '/v1/me',
+]
 
 /** Prefix rather than exact match, so `/v1/service-accounts/{id}` is covered too. */
 const neverCached = (instance: string): boolean =>

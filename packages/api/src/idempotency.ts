@@ -102,6 +102,12 @@ export const CREDENTIAL_FIELDS: ReadonlySet<string> = new Set([
   'token',
   'code',
   'redirect_to',
+  // A sign-in or enrolment challenge is a bearer JWT that is stateless until
+  // it is spent: `POST /v1/me/password` answering `enrol` wrote one to this
+  // cache for 24 hours while the token itself was good for 900 seconds, so a
+  // reader of the keyspace within that window could redeem it at the
+  // enrolment door and come away with a session for the account it names.
+  'challenge',
 ])
 
 /** Whether any object in `value`, at any depth, has a field named in `CREDENTIAL_FIELDS`. */
