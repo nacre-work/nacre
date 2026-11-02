@@ -402,6 +402,23 @@ export class PostgresUsers implements Users {
       this.pool,
       auth.orgId,
       async (client) => {
+        // The last-administrator count below spans every org_admin row in
+        // the organization, not just this one — so `FOR UPDATE` on the
+        // target row serializes two writers only when they target the *same*
+        // row. Two administrators demoting or disabling each other lock two
+        // different rows, neither waits, and each counts the other as still
+        // active at READ COMMITTED: classic write skew, and independently
+        // reproduced landing both changes and leaving zero. This lock is
+        // keyed on the organization rather than the row, ahead of any
+        // `SELECT`, so the second of two concurrent changes to this
+        // organization's users waits for the first to commit and then sees
+        // its result. One lock for every caller of `onTargetUser`, not only
+        // `update`, because the guard it protects has nothing to do with
+        // which of this method's callers happened to run first.
+        await client.query(
+          `SELECT pg_advisory_xact_lock(hashtextextended('nacre.org-admins:' || $1::text, 0))`,
+          [auth.orgId],
+        )
         const { rows } = await client.query<{ role: string; disabled_at: Date | null }>(
           'SELECT role, disabled_at FROM users WHERE org_id = $1 AND id = $2 FOR UPDATE',
           [auth.orgId, id],
