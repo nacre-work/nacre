@@ -49,14 +49,16 @@ how a reader ends up running the profile that cannot start.
 
 If what you want is to see it work, start here. `--profile demo` brings its own
 embedder and seeds itself, so there is nothing in `.env` to fill in and no
-endpoint to supply — copy the example and leave it alone. The copy itself is
-required: it carries a development-only JWT secret, and the API refuses to
-start without one because a signing key with a default is a key anybody
-reading the source can forge tokens with.
+endpoint to supply — copy the example and generate the one secret every
+process needs before it will start. `NACRE_JWT_SECRET` ships empty on purpose:
+a signing key with a default in the source is a key anybody reading the
+source can forge tokens with, so there is no value to leave in place, only one
+to generate.
 
 ```bash
 git clone https://github.com/nacre-work/nacre && cd nacre
 cp .env.example .env
+printf 'NACRE_JWT_SECRET=%s\n' "$(openssl rand -base64 32)" >> .env
 docker compose -f docker-compose.yml -f docker-compose.images.yml pull
 docker compose -f docker-compose.yml -f docker-compose.images.yml --profile demo up -d
 docker compose --profile demo logs -f demo-seed
@@ -105,10 +107,18 @@ git clone https://github.com/nacre-work/nacre && cd nacre
 cp .env.example .env
 ```
 
-**Now set `NACRE_DEFAULT_EMBEDDING_ENDPOINT` in `.env`.** It ships empty on
-purpose and the API refuses to start without it, naming the variable. `minimal`
-starts no embedder — that is what keeps it runnable on a laptop without a GPU —
-so this is a value only you can supply:
+**Now set `NACRE_JWT_SECRET` and `NACRE_DEFAULT_EMBEDDING_ENDPOINT` in `.env`.**
+Both ship empty on purpose and every process refuses to start without them,
+naming the variable. The signing secret is not a value to pick — a key with a
+default in the source is a key anybody reading the source can forge tokens
+with — it is one to generate:
+
+```bash
+printf 'NACRE_JWT_SECRET=%s\n' "$(openssl rand -base64 32)" >> .env
+```
+
+`minimal` starts no embedder — that is what keeps it runnable on a laptop
+without a GPU — so the endpoint is a value only you can supply:
 
 ```ini
 # any OpenAI-compatible /embeddings endpoint

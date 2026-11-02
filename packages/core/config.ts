@@ -666,6 +666,33 @@ export function loadSecondFactorKey(env: NodeJS.ProcessEnv = process.env): Buffe
   return decodeSecondFactorKey(inline)
 }
 
+/**
+ * Values this repository has published as `NACRE_JWT_SECRET`, in `.env.example`
+ * or in a document, at any point in its history.
+ *
+ * `.env.example` ships this variable empty now, on exactly this finding — a
+ * signing key with a default in the source is a key anybody who has read the
+ * source can forge tokens with — but the value it used to carry is still in
+ * every clone's git history, every fork, every blog post that quoted it, and
+ * every `.env` an operator copied before this change. Emptying the file does
+ * not un-publish a string that has already been public. So this is refused by
+ * value, unconditionally, never only under `NACRE_ENV=production`: a laptop
+ * demo that accepts a known-public key is still a process an attacker who has
+ * read this list can mint `org_admin` tokens against, for whichever
+ * organization its `org` claim names.
+ */
+const PUBLISHED_JWT_SECRETS: readonly string[] = ['development-only-not-a-secret-0123456789']
+
+function refusePublishedSecret(secret: string, variable: string): void {
+  if (!PUBLISHED_JWT_SECRETS.includes(secret)) return
+  throw new ConfigError([
+    `${variable} is set to a value this repository has published in ` +
+      '.env.example or its documentation. Anybody who has read the source ' +
+      'knows it, so a token signed or verified with it is not secret. ' +
+      `Generate one instead: \`openssl rand -base64 32\`.`,
+  ])
+}
+
 export function loadJwtKeys(env: NodeJS.ProcessEnv = process.env): JwtKeys {
   const secret = env.NACRE_JWT_SECRET
   const ref = env.NACRE_JWT_PRIVATE_KEY_REF
@@ -731,6 +758,7 @@ export function loadJwtKeys(env: NodeJS.ProcessEnv = process.env): JwtKeys {
         'the source can forge tokens with.',
     ])
   }
+  refusePublishedSecret(secret, 'NACRE_JWT_SECRET')
 
   const previous = env.NACRE_JWT_SECRET_PREVIOUS
   if (previous === undefined || previous === '') {
@@ -745,6 +773,7 @@ export function loadJwtKeys(env: NodeJS.ProcessEnv = process.env): JwtKeys {
         'replacing it. Unset it to finish the rotation.',
     ])
   }
+  refusePublishedSecret(previous, 'NACRE_JWT_SECRET_PREVIOUS')
 
   if (previous === secret) {
     // Refused rather than deduplicated. Setting both to the same value is what
@@ -870,6 +899,7 @@ export function loadJwtVerification(env: NodeJS.ProcessEnv = process.env): JwtVe
         'issuer signs.',
     ])
   }
+  refusePublishedSecret(secret, 'NACRE_JWT_SECRET')
 
   const previousSecret = env.NACRE_JWT_SECRET_PREVIOUS
   if (previousSecret !== undefined && previousSecret !== '') {
@@ -879,6 +909,7 @@ export function loadJwtVerification(env: NodeJS.ProcessEnv = process.env): JwtVe
           'key being rotated out and is held to the same floor as the one replacing it.',
       ])
     }
+    refusePublishedSecret(previousSecret, 'NACRE_JWT_SECRET_PREVIOUS')
     if (previousSecret === secret) {
       throw new ConfigError([
         'NACRE_JWT_SECRET_PREVIOUS is the same value as NACRE_JWT_SECRET. That is ' +

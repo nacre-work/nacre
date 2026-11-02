@@ -665,6 +665,19 @@ access is ever read from here.
 It is not a queue. Indexing work is claimed from Postgres under a lease
 (`NACRE_INDEX_LEASE`), so a Redis loss cannot strand a document.
 
+### `NACRE_JWT_SECRET` ships empty, and a published value is refused outright
+
+There is no default. `.env.example` leaves the variable empty — `openssl rand
+-base64 32` is the one line that fills it in — because a signing key with a
+default in the source is a key anybody who has read the source can forge
+tokens with. This used to be weaker in one specific way: `.env.example` carried
+a committed placeholder (`development-only-not-a-secret-0123456789`), long
+enough to pass the 32-byte floor, that nothing compared against its own
+published value. `loadJwtKeys` and `loadJwtVerification` now refuse that exact
+string by value, unconditionally rather than only in production, because
+emptying the file does not un-publish a string every clone's git history, every
+fork and every copied `.env` may still carry.
+
 ### Rotating the signing key
 
 `NACRE_JWT_SECRET_PREVIOUS` is **accepted on verification and never used to
