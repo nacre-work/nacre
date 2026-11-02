@@ -1,0 +1,40 @@
+-- 0045 — one collection belongs to one organization, enforced rather than assumed.
+--
+-- Qdrant collection names are built by joining strings: the initial name is
+-- `org_` + a slug with `-` mapped to `_` (collectionName), and a reindex copy
+-- target is that name plus a vector slot name, which maps every
+-- non-alphanumeric character to `_` the same way (vectorName). Neither is
+-- prefix-free, so one organization's slug can derive exactly the name a
+-- different organization's reindex copy target also derives — e.g. a slug of
+-- `acme-v-bge-m3-1024` collides with any organization named `acme` reindexing
+-- onto bge-m3 at 1024 dimensions.
+--
+-- `organizations.vector_collection` had no constraint against that, so
+-- `ensureCollection` could silently adopt a collection a different
+-- organization already owns, and `finishCopy` (the reindex copy's own
+-- pointer move) could silently point two organizations at one collection —
+-- after which a later `rebuild --replace` of either tenant drops the other's
+-- live vectors.
+--
+-- `packages/core/provision.ts`'s `assertCollectionUnclaimed` is the primary
+-- defense: it is asked, across every organization, before any of
+-- `ensureCollection`, `copyCollection` or `rebuildCollection`'s destructive
+-- `--replace` path ever runs, which is the only place that check can still
+-- matter — by the time a write here would refuse, Qdrant's own side of a copy
+-- has usually already happened. This index is the second line, for exactly
+-- the gap between two concurrent writers each asking that question and each
+-- getting "no" before either has written: the first to reach this statement
+-- wins, and the second's `UPDATE organizations SET vector_collection = …`
+-- (`finishCopy`) or `INSERT` (`provisionInPostgres`) fails here instead of
+-- succeeding.
+--
+-- On an installation where this has already happened — two rows already
+-- sharing one `vector_collection` — this migration fails and names the
+-- index. That is the collision already in the data, surfaced rather than
+-- silently carried forward; resolving which organization actually owns the
+-- collection (and rebuilding the other's from Postgres, which is what
+-- `rebuild --replace` is for) is an operator decision, not one a migration
+-- should make silently.
+
+CREATE UNIQUE INDEX IF NOT EXISTS organizations_vector_collection_key
+    ON organizations (vector_collection);

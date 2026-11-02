@@ -1,5 +1,6 @@
 import type { Pool } from 'pg'
 
+import { assertCollectionUnclaimed } from './provision.js'
 import type { VectorStore } from './vector/search.js'
 
 /**
@@ -185,6 +186,16 @@ export async function rebuildOrganizationIndex(input: {
 }): Promise<RebuildResult | string> {
   const schema = await readRebuildSchema(input.pool, input.slug)
   if (typeof schema === 'string') return schema
+  if (input.replace === true) {
+    // Only on the destructive path. Without --replace, rebuildCollection
+    // already refuses to touch a collection that exists; with it, the drop
+    // runs unconditionally, and `schema.collection` is read from this
+    // organization's own row rather than chosen fresh — so if it already
+    // names another organization's live collection (the collision this
+    // guards against everywhere a name is acted on), --replace would be the
+    // one command that drops a stranger's vectors on purpose.
+    await assertCollectionUnclaimed(input.pool, schema.orgId, schema.collection)
+  }
   await input.vectors.rebuildCollection(schema.collection, schema.slots, schema.metadataKeys, {
     replace: input.replace === true,
   })
