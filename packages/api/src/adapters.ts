@@ -2524,7 +2524,22 @@ export class PostgresWorkspaces implements Workspaces {
           after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
         )
 
+        // The delegation's narrowing, the same rule T40 puts on the layer
+        // catalog: a delegation narrowed to layer L whose person also reaches
+        // workspace M used to be listed M anyway — its slug, its name, its
+        // layer count and, for an org_admin person, read/write/admin on it —
+        // which is "something from M" by the catalog's own test. Narrowed,
+        // the workspace-grant branch is skipped outright: that branch exists
+        // for a workspace with no layers yet, and a narrowing only ever names
+        // layers, so it can never admit a workspace through that door.
+        const narrowing = delegatedLayers(auth, 'read')
+        const reachesLayer = (id: string): boolean =>
+          plan.kind === 'all' || (plan.kind === 'scoped' && plan.layers.includes(id))
+        const visibleLayers = (w: { layer_ids: string[] | null }): string[] =>
+          (w.layer_ids ?? []).filter((id) => narrowing === undefined || narrowing.includes(id))
+
         const reachable = rows.filter((w) => {
+          if (narrowing !== undefined) return visibleLayers(w).some(reachesLayer)
           if (plan.kind === 'all') return true
           if (
             plan.kind === 'scoped' &&
@@ -2559,8 +2574,17 @@ export class PostgresWorkspaces implements Workspaces {
          * taken on trust from the filter above: a row only reaches this point
          * because the caller can see the workspace — through a grant on it, or
          * through a layer inside it, or by role. Either way `read` is true.
+         *
+         * Narrowed, this reports `read` alone and never asks `referenceAllows`
+         * at all. A workspace scope is not a layer, so a narrowing — which
+         * names layers — has nothing to say about `write` or `admin` on one;
+         * a ceiling never confers administration, and creating or renaming a
+         * workspace is checked on the workspace scope directly (T42), which a
+         * narrowed token cannot reach regardless of what the role would
+         * otherwise answer.
          */
         const permissionsOn = (w: { id: string }): Permission[] => {
+          if (narrowing !== undefined) return ['read']
           const held = new Set<Permission>(['read'])
           for (const permission of ['write', 'admin'] as const) {
             if (referenceAllows(context, { type: 'workspace', id: w.id }, permission)) {
@@ -2577,7 +2601,7 @@ export class PostgresWorkspaces implements Workspaces {
             id: w.id,
             slug: w.slug,
             name: w.name,
-            layerCount: (w.layer_ids ?? []).length,
+            layerCount: narrowing === undefined ? (w.layer_ids ?? []).length : visibleLayers(w).length,
             createdAt: w.created_at.toISOString(),
             permissions: permissionsOn(w),
           }))
