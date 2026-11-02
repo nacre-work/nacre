@@ -36,3 +36,6 @@ nodes.conf
 
 # Claude Code: per-developer overrides, never committed
 .claude/settings.local.json
+
+# Claude Code: ephemeral worktrees for isolated background agents
+.claude/worktrees/
