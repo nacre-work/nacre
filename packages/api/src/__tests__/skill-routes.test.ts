@@ -65,7 +65,10 @@ interface Seen {
   basedOn?: number
 }
 
-async function serve(answer: SkillWrite = { kind: 'written', version: version(2), cleared: false }) {
+async function serve(
+  answer: SkillWrite = { kind: 'written', version: version(2), cleared: false },
+  gate: SkillWrite | undefined = undefined,
+) {
   const audited: Written[] = []
   const seen: Seen = {}
   const base: EffectiveBase = {
@@ -86,6 +89,7 @@ async function serve(answer: SkillWrite = { kind: 'written', version: version(2)
     current: async (_auth, level) => (level.kind === 'layer' && level.layerId === LAYER ? version(1) : undefined),
     versions: async () => ({ items: [version(1)], nextCursor: null }),
     version: async (_auth, _level, n) => (n === 1 ? version(1) : undefined),
+    mayWrite: async () => gate,
     write: async (_auth, level, files, basedOn) => {
       Object.assign(seen, { level, files, basedOn })
       return answer
@@ -227,6 +231,36 @@ describe('writing skills', () => {
       expect(((await res.json()) as { detail: string }).detail).toMatch(/not a zip archive/)
     } finally {
       await s.close()
+    }
+  })
+
+  it('refuses a forbidden or invisible level before ever parsing the zip body', async () => {
+    // The gate (mayWrite) denies, so this garbage body — which readSkillZip
+    // would refuse with "not a zip archive" — must never reach it: the
+    // response names the gate's own answer, and write() is never called at
+    // all (seen.files stays unset).
+    const forbidden = await serve(undefined, { kind: 'forbidden' })
+    try {
+      const res = await forbidden.call('PUT', '/v1/skills/organization?based_on=0', {
+        body: 'not a zip, and must never be read',
+        type: 'application/zip',
+      })
+      expect(res.status).toBe(403)
+      expect(forbidden.seen.files).toBeUndefined()
+      expect(forbidden.audited.find((e) => e.action === 'skill.updated')?.result).toBe('deny')
+    } finally {
+      await forbidden.close()
+    }
+    const invisible = await serve(undefined, { kind: 'not_found' })
+    try {
+      const res = await invisible.call('PUT', '/v1/skills/organization?based_on=0', {
+        body: 'not a zip, and must never be read',
+        type: 'application/zip',
+      })
+      expect(res.status).toBe(404)
+      expect(invisible.seen.files).toBeUndefined()
+    } finally {
+      await invisible.close()
     }
   })
 

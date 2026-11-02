@@ -629,16 +629,31 @@ export function buildServices(
           if ((args.files === undefined) === (zip === undefined)) {
             throw new ToolArgumentError('send the skill as files or as zip_base64, and exactly one of them')
           }
-          let files: unknown = args.files
-          if (typeof zip === 'string') {
-            const read = readSkillZip(Buffer.from(zip, 'base64'))
-            if ('error' in read) throw new ToolArgumentError(`not a skill zip: ${read.error}`)
-            files = read.files
-          }
+          // Resolved, and write-authorized where a zip is coming, before the
+          // zip is ever parsed: readSkillZip bounds what it inflates, but
+          // bounded is not free, and a caller who may not write (or even see)
+          // this level must not be able to spend that cost at all.
           const layerId = await skills.layerBySlug(auth, which)
-          const level: SkillLevel | undefined = layerId === undefined ? undefined : { kind: 'layer', layerId }
-          const outcome: SkillWrite =
-            level === undefined ? { kind: 'not_found' } : await skills.write(auth, level, files, basedOn, 'mcp')
+          let files: unknown = args.files
+          let outcome: SkillWrite
+          if (layerId === undefined) {
+            outcome = { kind: 'not_found' }
+          } else {
+            const level: SkillLevel = { kind: 'layer', layerId }
+            if (typeof zip !== 'string') {
+              outcome = await skills.write(auth, level, files, basedOn, 'mcp')
+            } else {
+              const denied = await skills.mayWrite(auth, level, 'mcp')
+              if (denied !== undefined) {
+                outcome = denied
+              } else {
+                const read = readSkillZip(Buffer.from(zip, 'base64'))
+                if ('error' in read) throw new ToolArgumentError(`not a skill zip: ${read.error}`)
+                files = read.files
+                outcome = await skills.write(auth, level, files, basedOn, 'mcp')
+              }
+            }
+          }
 
           if (outcome.kind === 'written' || outcome.kind === 'not_found' || outcome.kind === 'forbidden') {
             const target = { skill: 'layer', layer_id: layerId ?? null, layer: which }

@@ -1738,13 +1738,25 @@ async function handleSkills(
   } else if ((method === 'PUT' || method === 'DELETE') && tail === undefined) {
     let files: unknown
     let basedOnRaw: unknown
+    // Set only on the zip path, and only when the gate below refuses: a
+    // caller who may not write (or even see) this level is answered from
+    // the gate, with readSkillZip never called at all.
+    let denied: SkillWrite | undefined
     if (method === 'DELETE') {
       files = {}
       basedOnRaw = url.searchParams.get('based_on') ?? undefined
     } else if (zipped !== undefined) {
-      const read = readSkillZip(zipped)
-      if ('error' in read) return fail(badRequest(instance, requestId, `The archive is not a skill: ${read.error}.`))
-      files = read.files
+      // Authorize before parsing. readSkillZip bounds what it inflates, but
+      // bounded is not free — a caller who may not write this level must not
+      // be able to spend that cost at all, so the same visibility-and-write
+      // check skills.write runs internally is run here first, before the
+      // body is touched.
+      denied = await skills.mayWrite(auth, level, 'rest')
+      if (denied === undefined) {
+        const read = readSkillZip(zipped)
+        if ('error' in read) return fail(badRequest(instance, requestId, `The archive is not a skill: ${read.error}.`))
+        files = read.files
+      }
       basedOnRaw = url.searchParams.get('based_on') ?? undefined
     } else {
       const fields = body as { files?: unknown; based_on?: unknown } | undefined
@@ -1761,10 +1773,15 @@ async function handleSkills(
       files = fields.files
       basedOnRaw = fields.based_on
     }
-    const basedOn = readBasedOn(basedOnRaw)
-    if (typeof basedOn !== 'number') return fail(badRequest(instance, requestId, basedOn.error))
-    outcome = await skills.write(auth, level, files, basedOn, 'rest')
-    kind = method === 'DELETE' || (outcome.kind === 'written' && outcome.cleared) ? 'cleared' : 'updated'
+    if (denied !== undefined) {
+      outcome = denied
+      kind = 'updated'
+    } else {
+      const basedOn = readBasedOn(basedOnRaw)
+      if (typeof basedOn !== 'number') return fail(badRequest(instance, requestId, basedOn.error))
+      outcome = await skills.write(auth, level, files, basedOn, 'rest')
+      kind = method === 'DELETE' || (outcome.kind === 'written' && outcome.cleared) ? 'cleared' : 'updated'
+    }
   } else {
     return missing()
   }

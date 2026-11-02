@@ -145,4 +145,79 @@ describe('the skill zip', () => {
     const read = readSkillZip(foreign({ 'SKILL.md': files['SKILL.md'], '../escape.md': 'x' }))
     expect('files' in read && checkSkill(read.files).kind).toBe('refused')
   })
+
+  /**
+   * A zip assembled by hand rather than through `foreign()`: central-directory
+   * entries can declare whatever `compressed`/`size` the case wants, and can
+   * point (`localIndex`) at any of `locals` — including the same one twice —
+   * independent of what a real archive's layout would ever produce. That gap
+   * between what the central directory asserts and what the local records
+   * actually hold is exactly what readSkillZip must not trust.
+   */
+  const crafted = (
+    locals: readonly Buffer[],
+    entries: readonly {
+      name: string
+      compressed: number
+      size: number
+      crc?: number
+      localIndex: number
+      method?: number
+    }[],
+  ): Buffer => {
+    const localParts: Buffer[] = []
+    const offsets: number[] = []
+    let offset = 0
+    for (const data of locals) {
+      offsets.push(offset)
+      const h = Buffer.alloc(30)
+      h.writeUInt32LE(0x04034b50, 0); h.writeUInt16LE(20, 4); h.writeUInt16LE(0, 8)
+      h.writeUInt32LE(crc32(data), 14); h.writeUInt32LE(data.length, 18); h.writeUInt32LE(data.length, 22)
+      localParts.push(h, data)
+      offset += h.length + data.length
+    }
+    const central: Buffer[] = []
+    for (const e of entries) {
+      const n = Buffer.from(e.name, 'utf8')
+      const c = Buffer.alloc(46)
+      c.writeUInt32LE(0x02014b50, 0); c.writeUInt16LE(20, 4); c.writeUInt16LE(20, 6)
+      c.writeUInt16LE(e.method ?? 0, 10)
+      c.writeUInt32LE(e.crc ?? 0, 16); c.writeUInt32LE(e.compressed, 20); c.writeUInt32LE(e.size, 24)
+      c.writeUInt16LE(n.length, 28); c.writeUInt32LE(offsets[e.localIndex] ?? 0, 42)
+      central.push(c, n)
+    }
+    const dir = Buffer.concat(central)
+    const end = Buffer.alloc(22)
+    end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10)
+    end.writeUInt32LE(dir.length, 12); end.writeUInt32LE(offset, 16)
+    return Buffer.concat([...localParts, dir, end])
+  }
+
+  it('bounds total compressed bytes independent of declared size, so a near-empty declared entry cannot carry an unbounded blob', () => {
+    // size=0/crc=0 (the hash of nothing), the finding's own trick: it
+    // contributes nothing to the declared-size budget, so only a cap on
+    // `compressed` itself catches it. No local record needed — the budget is
+    // refused before the entry's local offset is ever read.
+    const zip = crafted([], [{ name: 'x.md', compressed: SKILL_LIMITS.totalBytes + 1, size: 0, localIndex: 0 }])
+    expect(readSkillZip(zip)).toMatchObject({ error: expect.stringMatching(/compressed data is at most/) })
+  })
+
+  it('refuses two entries whose compressed data overlaps, before inflating either', () => {
+    const data = Buffer.from('x'.repeat(100), 'utf8')
+    const zip = crafted([data], [
+      { name: 'dup1.md', compressed: data.length, size: data.length, crc: crc32(data), localIndex: 0 },
+      { name: 'dup2.md', compressed: data.length, size: data.length, crc: crc32(data), localIndex: 0 },
+    ])
+    expect(readSkillZip(zip)).toMatchObject({ error: expect.stringMatching(/overlaps another entry's/) })
+  })
+
+  it('accepts two entries whose compressed ranges come from distinct local records and do not overlap', () => {
+    const a = Buffer.from('a'.repeat(50), 'utf8')
+    const b = Buffer.from('b'.repeat(50), 'utf8')
+    const zip = crafted([a, b], [
+      { name: 'a.md', compressed: a.length, size: a.length, crc: crc32(a), localIndex: 0 },
+      { name: 'b.md', compressed: b.length, size: b.length, crc: crc32(b), localIndex: 1 },
+    ])
+    expect(readSkillZip(zip)).toEqual({ files: { 'a.md': 'a'.repeat(50), 'b.md': 'b'.repeat(50) } })
+  })
 })

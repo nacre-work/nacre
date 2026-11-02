@@ -298,6 +298,24 @@ export function readSkillZip(zip: Uint8Array): { readonly files: Record<string, 
 
   const raw: Record<string, string> = {}
   let total = 0
+  // The declared (post-inflate) size is bounded above, per entry and in sum —
+  // but `compressed` never was, and `compressed` is what is actually handed to
+  // `inflateRawSync`. An entry can declare size=0/crc=0, contributing nothing
+  // to `total`, while `compressed` spans up to the whole request body; up to
+  // `SKILL_LIMITS.files * 4` such entries can each reference that region and
+  // each pays a full, synchronous inflate over it, so work scales with entry
+  // count times blob size while the request body only grows by one ~50-byte
+  // central-directory record per entry. Summing `compressed` the same way
+  // `total` sums declared size closes that: a well-formed archive's
+  // compressed bytes never exceed its declared bytes by more than deflate's
+  // own small overhead, so this is never meaningfully tighter than
+  // SKILL_LIMITS.totalBytes already is for size, and it bounds total inflate
+  // work independent of whether any two entries' ranges overlap.
+  let totalCompressed = 0
+  // Independent of the sum above: a well-formed zip never needs two entries
+  // to share local data, each file occupies its own region, so an overlap is
+  // refused outright rather than merely counted against the budget.
+  const usedRanges: { start: number; end: number }[] = []
   let at = dirOffset
   const decoder = new TextDecoder('utf-8', { fatal: true })
   for (let n = 0; n < count; n += 1) {
@@ -324,10 +342,28 @@ export function readSkillZip(zip: Uint8Array): { readonly files: Record<string, 
     total += size
     if (total > SKILL_LIMITS.totalBytes) return fail(`a skill is at most ${String(SKILL_LIMITS.totalBytes / 1024)} KiB in all`)
 
+    // Bounded on the compressed byte range too, and independent of `size`:
+    // `size` can be declared as 0 while `compressed` references a region of
+    // the archive that costs real CPU to inflate, repeatedly, across every
+    // entry that names it.
+    totalCompressed += compressed
+    if (totalCompressed > SKILL_LIMITS.totalBytes) {
+      return fail(`a skill's compressed data is at most ${String(SKILL_LIMITS.totalBytes / 1024)} KiB in all`)
+    }
+
     if (localOffset + 30 > buf.length || buf.readUInt32LE(localOffset) !== LOCAL) return fail(`${name}: entry header is damaged`)
     const dataStart = localOffset + 30 + buf.readUInt16LE(localOffset + 26) + buf.readUInt16LE(localOffset + 28)
-    if (dataStart + compressed > buf.length) return fail(`${name}: entry runs past the end of the archive`)
-    const stored = buf.subarray(dataStart, dataStart + compressed)
+    const dataEnd = dataStart + compressed
+    if (dataEnd > buf.length) return fail(`${name}: entry runs past the end of the archive`)
+    if (compressed > 0) {
+      for (const used of usedRanges) {
+        if (dataStart < used.end && used.start < dataEnd) {
+          return fail(`${name}: entry's compressed data overlaps another entry's`)
+        }
+      }
+      usedRanges.push({ start: dataStart, end: dataEnd })
+    }
+    const stored = buf.subarray(dataStart, dataEnd)
 
     let data: Buffer
     if (method === 0) {

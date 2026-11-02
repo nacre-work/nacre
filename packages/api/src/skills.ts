@@ -98,6 +98,16 @@ export interface Skills {
   /** History, newest first. `undefined` unless the caller may write the level. */
   versions(auth: AuthContext, level: SkillLevel, page: Page): Promise<PageResult<SkillVersionMeta> | undefined>
   version(auth: AuthContext, level: SkillLevel, n: number): Promise<SkillVersion | undefined>
+  /**
+   * `write`'s own visibility-and-permission gate, with no file content and no
+   * `based_on` — for a caller holding a request body it has not parsed yet
+   * (an uploaded `.zip`), so it can authorize before paying to parse it.
+   * `undefined` means the caller may write the level; otherwise this is
+   * exactly the `not_found`/`forbidden` that `write`/`restore` would
+   * themselves answer, so a check here never has to agree with a second
+   * check later by coincidence.
+   */
+  mayWrite(auth: AuthContext, level: SkillLevel, surface: SkillSurface): Promise<SkillWrite | undefined>
   write(
     auth: AuthContext,
     level: SkillLevel,
@@ -514,6 +524,10 @@ export class PostgresSkills implements Skills {
   }
 
   // ── writing ────────────────────────────────────────────────────────────────
+
+  async mayWrite(auth: AuthContext, level: SkillLevel, surface: SkillSurface): Promise<SkillWrite | undefined> {
+    return withOrg(this.pool, auth.orgId, (client) => this.gate(client, auth, level, surface), this.scope)
+  }
 
   async write(auth: AuthContext, level: SkillLevel, files: unknown, basedOn: number, surface: SkillSurface): Promise<SkillWrite> {
     const check = checkSkill(files)
