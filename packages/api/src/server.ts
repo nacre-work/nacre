@@ -3618,6 +3618,24 @@ async function redeemTicket(
 
 async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOptions): Promise<void> {
   const requestId = randomUUID()
+
+  // Before `pathname` is derived, and that ordering is the fix. A front
+  // door is meant to keep `/metrics` off the public origin by matching its
+  // own parsed URI against `location /v1/`, `/oauth/` and `/.well-known/`
+  // and forwarding the client's *raw* request-target unchanged — but on
+  // Linux nginx a backslash is an ordinary byte, so `/v1/..\metrics` stays
+  // inside `location /v1/` there while the WHATWG `URL` below maps `\` to
+  // `/` and resolves `..`, routing this process to `/metrics` regardless of
+  // what sits in front of it. The API must not depend on a proxy to keep
+  // that route off the public origin, so a backslash anywhere in the raw
+  // request-target is refused here, before any pathname this process
+  // derives can disagree with what an edge in front of it saw.
+  if ((req.url ?? '').includes('\\')) {
+    const problem = badRequest(req.url ?? '/', requestId, 'The request path may not contain a backslash.')
+    send(res, problem.status, problem.toJSON(), requestId)
+    return
+  }
+
   const url = new URL(req.url ?? '/', 'http://localhost')
   const instance = url.pathname
 

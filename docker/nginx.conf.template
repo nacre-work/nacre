@@ -93,6 +93,19 @@ server {
     listen ${NGINX_PORT};
     server_name _;
 
+    # A backslash in the raw request-target is never part of a legitimate
+    # path here, and on Linux nginx it is an ordinary byte rather than a
+    # path separator: `/v1/..\metrics` matches `location /v1/` below, is
+    # forwarded with no URI part on the `proxy_pass`, and the API's own
+    # WHATWG URL parsing then maps `\` to `/` and resolves `..`, reaching
+    # its unproxied `/metrics`. Refused here too — the API refuses it on
+    # its own side as well, because this front door is not the only way to
+    # reach that process, and a fix that lived only here would still leave
+    # it relying on a proxy to keep that route off the public origin.
+    if ($request_uri ~ "\\") {
+        return 400;
+    }
+
     # Resolved per request, and that is a fix rather than a preference.
     #
     # nginx resolves a *literal* upstream name once, at load, and caches the
