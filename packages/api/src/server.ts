@@ -6392,6 +6392,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
         send(res, problem.status, problem.toJSON(), requestId)
         return
       }
+      // Security audit 2026-11-01, LOW finding
+      // api/server.ts:oauth-consents-list-and-revoke-accept-delegated-token.
+      //
+      // `PostgresOAuthConsents.list`'s non-administering branch scopes by
+      // `approved_by = auth.principal.id` — the *person*, not the
+      // connection — so a delegated token (`auth.principal.id` is the
+      // delegating person's id, never the connection's) listed every
+      // connection that person approved, including ones its own ceiling and
+      // narrowing say nothing about. Managing which applications may act
+      // for a person is the person's own act in a session they signed
+      // into, exactly like `POST /v1/oauth/consent` (T41) already argues;
+      // this route was left out of that pattern.
+      if (auth.delegation !== undefined) {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
       const items = await options.oauth.consents.list(auth)
       send(
         res,
@@ -6447,6 +6464,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
     if (instance.startsWith('/v1/oauth/consents/') && options.oauth !== undefined) {
       const id = instance.slice('/v1/oauth/consents/'.length)
       if (req.method !== 'DELETE') {
+        const problem = notFound(instance, requestId)
+        send(res, problem.status, problem.toJSON(), requestId)
+        return
+      }
+      // Same reason as GET /v1/oauth/consents above: `revoke`'s own
+      // non-administering branch scopes by the approving person, not the
+      // connection, so a delegated token could end any of that person's
+      // other connections — a {read}-only one ending a {read,write}
+      // connection narrowed to a different layer, or, for an org_admin,
+      // ending their administrative MCP connection and cancelling its open
+      // proposals. T41's argument again: ending a connection is the
+      // person's own act.
+      if (auth.delegation !== undefined) {
         const problem = notFound(instance, requestId)
         send(res, problem.status, problem.toJSON(), requestId)
         return
