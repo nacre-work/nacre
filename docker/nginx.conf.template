@@ -102,7 +102,16 @@ server {
     # its own side as well, because this front door is not the only way to
     # reach that process, and a fix that lived only here would still leave
     # it relying on a proxy to keep that route off the public origin.
-    if ($request_uri ~ "\\") {
+    # Four backslashes, not two: nginx's own config-file lexer unescapes a
+    # quoted string before PCRE ever sees it, so "\\" here is not two
+    # backslash characters handed to the regex engine — it is one, consumed
+    # by nginx's escaping of the other, leaving PCRE a pattern that is a
+    # single trailing backslash and refusing to start at all
+    # (`pcre2_compile() failed: \ at end of pattern`). "\\\\" survives that
+    # first unescaping as two characters, which PCRE then reads as one
+    # escaped, literal backslash — checked against a real nginx with `nginx
+    # -t` and against a live request carrying one.
+    if ($request_uri ~ "\\\\") {
         return 400;
     }
 
