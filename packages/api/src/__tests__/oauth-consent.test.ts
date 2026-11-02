@@ -343,6 +343,31 @@ when('the OAuth consent flow, against the database', () => {
     expect(await refresh.rotate(second)).toBeUndefined()
   })
 
+  it('refuses to renew once the agent it acts as is revoked', async () => {
+    // Revocation is supposed to end an account's authority outright — unlike
+    // disabling a person, it is not something the product currently
+    // reverses — so this is `revoked`, not `suspended`: the token stays dead
+    // rather than coming back if the account were ever un-revoked.
+    const agent = (await accounts.create(admin, 'revoked-mid-connection'))!
+    const app = await register('an app connected to an agent')
+    const consentId = await consents.record(admin, app, {
+      actsAs: 'service_account',
+      serviceAccountId: agent.account.id,
+    })
+    const token = generateCode()
+    await refresh.issue(ORG, consentId, token, undefined, new Date(Date.now() + 60_000))
+
+    expect(await accounts.revoke(admin, agent.account.id)).toBe(true)
+
+    // Not `'suspended'`: a revoked service account does not come back, so the
+    // token must die rather than wait.
+    expect(await refresh.rotate(token)).toBeUndefined()
+    // And asked twice, for the same reason the suspension case asks twice —
+    // a refusal that spent the token on the way past would answer
+    // differently the second time, and nothing here should.
+    expect(await refresh.rotate(token)).toBeUndefined()
+  })
+
   it('suspends a delegation while its person is disabled, and restores it', async () => {
     // The promise docs/authz.md makes about disabling somebody: it is
     // reversible, so the connections they approved are *suspended* rather than
