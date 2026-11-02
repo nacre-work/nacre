@@ -286,6 +286,72 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.41.2 — a security release
+
+**One migration, and two things to check if they describe you.**
+
+- **If `.env`'s `NACRE_JWT_SECRET` (or `NACRE_JWT_SECRET_PREVIOUS`) is still the
+  value `.env.example` used to ship, generate a real one before upgrading.**
+  Both are now refused unconditionally, in both `loadJwtKeys` and
+  `loadJwtVerification`, because a signing key anybody reading the source can
+  see is a key anybody reading the source can forge tokens with — there was
+  never a safe default to leave in place. `.env.example` ships the variable
+  empty now; `printf 'NACRE_JWT_SECRET=%s\n' "$(openssl rand -base64 32)" >>
+  .env` is the one line this asks for, and every session the old secret signed
+  ends with it.
+- **Migration `0045` can fail, and that is the point.** It adds a `UNIQUE`
+  index on `organizations.vector_collection`. On an installation where two
+  organizations already share one Qdrant collection name — a latent collision
+  the code never checked for — this migration refuses rather than applying
+  silently over data already in that state; it names the index in its error.
+  Resolving which organization actually owns the collection and rebuilding the
+  other's from Postgres (`rebuild-collection --replace`, see
+  [the reindex rollback runbook](operations/reindex-rollback.md)) is an
+  operator decision the migration should not make for you. An installation
+  with no such collision applies it instantly — it is one index on a table
+  with as many rows as organizations.
+
+What changed underneath, for an operator reading the log afterwards:
+
+- **A skill's zip is rejected on its total compressed size, and before the
+  permission check that would otherwise run after parsing it.** A write-skill
+  call from somebody who may not write there now gets refused before any
+  CPU goes into the zip at all, on both REST and MCP.
+- **A raw backslash in a request path is refused by nginx itself, not only by
+  the API behind it.** `/v1/..\metrics` used to resolve two different ways on
+  the two sides of the proxy; both now agree, at the edge.
+- **A revoked service account's refresh token stops working on its next
+  rotation, not only on its next sign-in.** Rotating used to re-check the
+  person's `disabled_at` and never the service account's own revocation.
+- **An organization can never again lose its last `org_admin` to a race.**
+  Two concurrent demote/disable requests targeting different administrators
+  used to each pass the count check before either wrote; the guard now takes
+  an advisory lock on the organization first.
+- **A deleted layer and a document being ingested into it can no longer cross
+  paths.** The two lookups now take row locks that serialize them.
+- **A narrowed delegation's workspace listing matches its layer listing.**
+  `GET /v1/workspaces` was the one surface that still ignored the narrowing.
+- **An unscoped login or recovery lookup is bounded** at 500 organizations
+  scanned, rather than unboundedly, on the one path with no slug to narrow it.
+- **The sign-in and enrolment challenge is excluded from the idempotency
+  cache**, like every other once-shown credential 0.38.0 already excluded —
+  this one was missed, and `/v1/me` is excluded from the response cache as a
+  second line of defense.
+- **A Client ID Metadata Document client's consent screen and its
+  `/oauth/authorize` apply the same freshness rule.** The two could
+  previously disagree about how stale a cached document was allowed to be.
+- **A delegated token can no longer list or revoke a connection it did not
+  approve**, matching the refusal `POST /v1/oauth/consent` already had.
+- **A symlink is no longer followed during CLI ingest**, in `collect()` or
+  `watch()`.
+- **A transient parser outage is retried rather than classified as permanent**
+  — `classifyIngestFailure`'s availability check runs before its substring
+  match on "parser" in the message, which used to shadow it.
+
+Every item above came out of this project's own first security audit of
+itself; the full write-up is
+[`docs/security-audits/2026-11-01/`](security-audits/2026-11-01/REPORT.md).
+
 ### 0.41.1 — dependency fixes: zod, nodemailer and undici past their advisories
 
 **No migration and nothing to configure: pull the images.**
