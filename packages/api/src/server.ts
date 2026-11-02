@@ -2093,6 +2093,66 @@ async function resolveMetadataClient(
 }
 
 /**
+ * Security audit 2026-11-01, LOW finding
+ * api/server.ts:oauth-consent:metadata-client-cache-freshness.
+ *
+ * `resolveMetadataClient`'s freshness rule — use the cached row only while
+ * `refreshAfter` is in the future, otherwise refetch and refuse on failure —
+ * was enforced only on `GET /oauth/authorize`. Both consent decisions
+ * re-read the same row through the raw `oauth.clients.find`, with no
+ * freshness check at all, even though `clientRedirectAllowed`'s own comment
+ * says all three must ask the same question of the same client: the row's
+ * stale `redirect_uris` kept admitting a URI the client's *current* document
+ * had already dropped, so a signed-in person approving a crafted consent
+ * link minted a code — and, through `/oauth/token`, a session — bound to a
+ * redirect URI nobody but its new owner controls, under a legitimate
+ * client's name. `authorize` was already refusing the same client by the
+ * time this was found.
+ *
+ * This is the same resolution `resolveMetadataClient` does, without writing
+ * a response: consent answers in its own Problem shape rather than
+ * `authorize`'s `{error, error_description}`, which is the reason for a
+ * second function rather than a shared one that writes `res` itself. It
+ * does not spend the `client_registration` budget the way `authorize`'s
+ * refetch does — that budget exists against anonymous registration
+ * attempts, and a consent decision is already behind a signed-in person's
+ * session.
+ */
+async function resolveMetadataClientForConsent(
+  clientId: string,
+  options: ApiOptions,
+): Promise<RegisteredClient | undefined> {
+  const oauth = options.oauth
+  if (oauth === undefined) return undefined
+  const documents = oauth.metadataDocuments
+  if (documents === undefined) return undefined
+  const cached = await oauth.clients.find(clientId)
+  if (cached !== undefined && cached.source === 'metadata' && (cached.refreshAfter?.getTime() ?? 0) > Date.now()) {
+    return cached
+  }
+  const fetched = await fetchClientMetadata(clientId, {
+    trustedOrigins: documents.trustedOrigins,
+    redirectAllowed,
+    ...(documents.fetch === undefined ? {} : { fetch: documents.fetch }),
+  })
+  if ('refusal' in fetched) return undefined
+  return oauth.clients.cacheMetadata(clientId, fetched.client.clientName, fetched.client.redirectUris, fetched.ttlSeconds)
+}
+
+/**
+ * The client both consent decisions re-check a redirect URI against — one
+ * function so neither decision can drift from the other, and so a metadata
+ * client gets `authorize`'s own freshness rule here too.
+ */
+async function resolveClientForConsent(
+  clientId: string,
+  options: ApiOptions,
+): Promise<RegisteredClient | undefined> {
+  if (isMetadataClientId(clientId)) return resolveMetadataClientForConsent(clientId, options)
+  return options.oauth?.clients.find(clientId)
+}
+
+/**
  * Which limit a request counts against, or none.
  *
  * Search and ingest are the two the contract names, and they are the two that
@@ -6464,7 +6524,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // checked against the registration here exactly as Approve's is, and
       // nothing is recorded: declining stores no connection and mints no code.
       if (consent['decision'] === 'deny') {
-        const client = await options.oauth.clients.find(clientId)
+        const client = await resolveClientForConsent(clientId, options)
         if (client === undefined || !clientRedirectAllowed(client, redirectUri)) {
           const problem = badRequest(instance, requestId, 'Unknown client, or a redirect_uri it did not register.')
           send(res, problem.status, problem.toJSON(), requestId)
@@ -6606,8 +6666,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, options: ApiOpt
       // this body came back through a redirect the caller controls, so the
       // client and its redirect URI are verified against the registration
       // again — the authorize endpoint's check protected the redirect, and this
-      // one protects the code.
-      const client = await options.oauth.clients.find(clientId)
+      // one protects the code. `resolveClientForConsent` applies the same
+      // freshness rule `authorize` does to a metadata client, rather than the
+      // raw, possibly-stale cached row.
+      const client = await resolveClientForConsent(clientId, options)
       if (client === undefined || !clientRedirectAllowed(client, redirectUri)) {
         const problem = badRequest(instance, requestId, 'Unknown client, or a redirect_uri it did not register.')
         send(res, problem.status, problem.toJSON(), requestId)
