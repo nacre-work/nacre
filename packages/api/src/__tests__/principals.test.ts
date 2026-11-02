@@ -221,6 +221,45 @@ when('users and groups, against the database', () => {
     expect(await verifyPassword(created.password, stored)).toBeFalsy()
   })
 
+  it('resetting a password ends every session already open on the account', async () => {
+    // Login.changePassword and password recovery both revoke every refresh
+    // token in the same transaction as the hash update; resetPassword was
+    // the one of the three that did not, so a session issued before an
+    // administrator rotated a compromised or published credential kept
+    // renewing after the reset.
+    const created = (await users.create(admin, 'reset-sessions@example.test', 'member'))!
+    const familyId = await withOrg(
+      pool,
+      ORG,
+      async (c) => {
+        const { rows } = await c.query<{ family_id: string }>(
+          `INSERT INTO refresh_tokens (org_id, user_id, token_hash, family_id, expires_at)
+           VALUES ($1, $2, 'reset-session-token-hash', gen_random_uuid(), now() + interval '30 days')
+           RETURNING family_id`,
+          [ORG, created.user.id],
+        )
+        return rows[0]?.family_id as string
+      },
+      { role: 'nacre_app' },
+    )
+
+    expect(await users.resetPassword(admin, created.user.id)).not.toBe('no-user')
+
+    const revokedAt = await withOrg(
+      pool,
+      ORG,
+      async (c) => {
+        const { rows } = await c.query<{ revoked_at: Date | null }>(
+          'SELECT revoked_at FROM refresh_tokens WHERE org_id = $1 AND family_id = $2',
+          [ORG, familyId],
+        )
+        return rows[0]?.revoked_at ?? null
+      },
+      { role: 'nacre_app' },
+    )
+    expect(revokedAt).not.toBeNull()
+  })
+
   it('the last active org_admin can neither be demoted nor disabled', async () => {
     const first = (await users.create(admin, 'root1@example.test', 'org_admin'))!
 

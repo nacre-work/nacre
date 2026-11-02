@@ -490,7 +490,20 @@ export class PostgresUsers implements Users {
         'UPDATE users SET password_hash = $3 WHERE org_id = $1 AND id = $2',
         [auth.orgId, id, passwordHash],
       )
-      return (rowCount ?? 0) > 0 ? { password } : 'no-user'
+      if ((rowCount ?? 0) === 0) return 'no-user'
+      // Every one, the same statement Login.changePassword and password
+      // recovery both run on the same row. Omitting it was the one way this
+      // reset differed from its two siblings: a refresh token issued before
+      // the reset kept renewing after it, so an administrator rotating a
+      // credential they believe is compromised — which docs/api.md names
+      // this endpoint as the way to do for a published, shared account —
+      // left every session already open on it running.
+      await client.query(
+        `UPDATE refresh_tokens SET revoked_at = now()
+          WHERE org_id = $1 AND user_id = $2 AND revoked_at IS NULL`,
+        [auth.orgId, id],
+      )
+      return { password }
     })
   }
 
