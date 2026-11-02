@@ -1918,23 +1918,30 @@ export class PostgresLayers implements Layers {
         // whether a layer is worth opening — and the MCP catalog has always
         // carried it, so a REST client had to be told to use MCP for that.
         //
-        // It counts live documents in the layer, not documents this caller may
-        // read: layer-scoped grants are all this build has, so anyone who can
-        // see the layer can read everything in it. The moment document-level
-        // grants exist — a commercial module — this becomes a number that
-        // discloses more than the caller can reach, and it has to be recomputed
-        // per caller or dropped.
+        // Excludes `plan.deniedDocs`, which is empty on every core-only
+        // installation — the core refuses to issue a deny rule at all — and
+        // populated once a module that issues document-scoped denies (such
+        // as `acl-advanced`) is loaded. Without this, a caller denied one
+        // document in a layer it may otherwise read was told the document
+        // exists and whether it failed, from the one surface a deny is
+        // supposed to make it indistinguishable from "does not exist" (I4):
+        // `PostgresDocuments.read` already subtracts the same set for a
+        // single document, and a count is a small disclosure and still a
+        // disclosure.
         // `created_at::text` beside `created_at`, and the cursor is built from
         // it. See `Position.createdAt` — a timestamp that has been through a
         // JavaScript `Date` is truncated to milliseconds, and a truncated bound
         // matches the row it came from all over again.
-        const projection = `l.id, l.slug, l.name, l.workspace_id, l.description, l.created_at,
+        const denied = plan.kind === 'scoped' ? [...plan.deniedDocs] : []
+        const projection = (deniedParam: number) => `l.id, l.slug, l.name, l.workspace_id, l.description, l.created_at,
               l.created_at::text AS created_at_text,
               (SELECT count(*) FROM documents d
-                WHERE d.layer_id = l.id AND d.deleted_at IS NULL) AS document_count,
+                WHERE d.layer_id = l.id AND d.deleted_at IS NULL
+                  AND NOT (d.id = ANY($${deniedParam}::uuid[]))) AS document_count,
               (SELECT count(*) FROM documents d
                 WHERE d.layer_id = l.id AND d.deleted_at IS NULL
-                  AND d.status = 'failed') AS failed_count`
+                  AND d.status = 'failed'
+                  AND NOT (d.id = ANY($${deniedParam}::uuid[]))) AS failed_count`
 
         // Ordered by (created_at, id) rather than by slug, because that is the
         // cursor's sort key and a page has to be stable under inserts. Sorting
@@ -1944,19 +1951,27 @@ export class PostgresLayers implements Layers {
         const seek = after === undefined ? '' : ' AND (l.created_at, l.id) > ($3::timestamptz, $4::uuid)'
         const cap = page === undefined ? '' : ` LIMIT ${page.limit}`
 
+        // `denied` is always the last bound parameter, on both branches —
+        // appended rather than threaded through the seek clause's own
+        // numbering above, so a cursor page keeps the exact SQL it had
+        // before this.
         const { rows } =
           ids === undefined
             ? await client.query<LayerRow>(
-                `SELECT ${projection} FROM layers l
+                `SELECT ${projection(after === undefined ? 2 : 4)} FROM layers l
                   WHERE l.org_id = $1 AND l.deleted_at IS NULL${seek.replace('$3', '$2').replace('$4', '$3')}
                   ${order}${cap}`,
-                after === undefined ? [auth.orgId] : [auth.orgId, after.createdAt, after.id],
+                after === undefined
+                  ? [auth.orgId, denied]
+                  : [auth.orgId, after.createdAt, after.id, denied],
               )
             : await client.query<LayerRow>(
-                `SELECT ${projection} FROM layers l
+                `SELECT ${projection(after === undefined ? 3 : 5)} FROM layers l
                   WHERE l.org_id = $1 AND l.deleted_at IS NULL AND l.id = ANY($2::uuid[])${seek}
                   ${order}${cap}`,
-                after === undefined ? [auth.orgId, [...ids]] : [auth.orgId, [...ids], after.createdAt, after.id],
+                after === undefined
+                  ? [auth.orgId, [...ids], denied]
+                  : [auth.orgId, [...ids], after.createdAt, after.id, denied],
               )
 
         const layers = rows.map((r) => ({
