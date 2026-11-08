@@ -503,11 +503,28 @@ jobs:
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_PAT }}
 
+      # Artifact Hub lists a container image only when its config carries these
+      # labels: `readme-url` is the listing body, and `created` must change per
+      # build (RFC 3339) or the hub treats every release as the same one.
+      - name: build timestamp for the OCI labels
+        id: built
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: nacre (api, mcp, worker — one image, three entry points)
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: docker/Dockerfile
+          labels: |
+            org.opencontainers.image.title=Nacre
+            org.opencontainers.image.description=Self-hosted knowledge index with per-reader permissions enforced inside the vector search.
+            org.opencontainers.image.created=${{ steps.built.outputs.at }}
+            org.opencontainers.image.source=https://github.com/nacre-work/nacre
+            org.opencontainers.image.url=https://nacre.work
+            org.opencontainers.image.version=${{ needs.decide.outputs.version }}
+            org.opencontainers.image.licenses=Apache-2.0
+            io.artifacthub.package.readme-url=https://raw.githubusercontent.com/nacre-work/nacre/main/README.md
+            io.artifacthub.package.category=ai-machine-learning
           # A dry run is a dry run for the registry too. This said `true`
           # unconditionally while the input promised to "stop before publishing
           # or tagging" — so the one path that exists to rehearse a release was
