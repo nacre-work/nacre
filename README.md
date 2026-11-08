@@ -65,11 +65,33 @@ On an Apple Silicon Mac, read
 [docs/apple-silicon.md](./docs/apple-silicon.md) first — the images are arm64 and
 the stack is native, but the embedder is the one piece you run on the host.
 
+For Kubernetes, the chart is at [deploy/helm/nacre](./deploy/helm/nacre) and is
+Apache 2.0 like the rest. It refuses to render on defaults: `helm lint` names
+each value you must supply, with the failure it prevents — a default signing
+key is "one anybody reading the chart can forge tokens with".
+
+## Connectors
+
+Six reference connectors keep a source in sync with an index — a document the
+source has is in the index, one it changed is changed, one it dropped is
+removed. One container each, configured entirely through the environment,
+Apache 2.0 in a repository of their own:
+[nacre-work/connectors](https://github.com/nacre-work/connectors).
+
+`git` · `s3` (any S3-compatible store) · `sql` (Postgres, MySQL, MariaDB) ·
+`drive` (Google Drive) · `mongo` · `imap`
+
+They are a simplification, not the way in: Nacre takes documents pushed over
+its API, MCP, SDK or CLI, and you own the sync. There is no Confluence,
+SharePoint, Slack, Notion or Jira connector. If what you need is a crawler
+fleet over SaaS sources, a managed platform will serve you better.
+
 ## Layout
 
 ```
 packages/api        REST API and authorization service
-packages/mcp        MCP server (Streamable HTTP + STDIO)
+packages/mcp        MCP server — eleven tools on /mcp, plus /mcp/admin
+                    (Streamable HTTP + STDIO)
 packages/worker     indexing pipeline: parse, chunk, embed
 packages/core       data model, permission resolver, shared types
 packages/sdk        TypeScript SDK
@@ -158,6 +180,11 @@ are commercial modules. They live in a separate private repository under a
 separate license and are not distributed with this one — see
 [docs/licensing.md](./docs/licensing.md) for the line between the two and the
 one question that decides it.
+
+To be exact about the one most often misread: a single-organization deployment
+gets its own vector collection, in this repository. What `tenancy` adds is
+*many* organizations in one installation. Evaluating document grants and deny
+rules is core too; only issuing them is commercial.
 
 Where this build meets one of them it refuses in the open: a `deny` rule or a
 document-scoped grant is answered `400` with the reason, rather than accepted
