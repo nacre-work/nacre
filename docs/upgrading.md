@@ -286,6 +286,27 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.41.3 — asks nothing of an operator
+
+A routine dependency sweep, no migration and no new variable. The one fix
+worth naming: `@qdrant/js-client-rest` moved to `1.20.0`, which itself pins an
+exact `undici` the workspace's own override no longer matched (the override's
+selector was `undici@<7.29.1`, and the client's new pin is exactly `7.29.1`),
+so the transitive `undici` this process talks to Qdrant through had drifted
+onto a version carrying four high and four moderate advisories — a
+content-encoding/TLS-renegotiation denial of service, cache poisoning via a
+cross-origin redirect, and a TLS-option-drop certificate bypass among them.
+The override's floor moves with it, to `undici@<7.30.1`, which is the fix: not
+a new vulnerability introduced by this release, but one this workspace's own
+pin would otherwise have reintroduced silently the next time `@qdrant/js-client-rest`
+took a patch.
+
+Everything else that moved — `@modelcontextprotocol/server`/`client`,
+`jose`, `nodemailer`, and the dev-only `@redocly/cli`, `typescript-eslint` and
+`vite` — is each package's newest release at least two weeks old, with nothing
+load-bearing bumped across a major: TypeScript stays at `6.0.3` because
+`typescript-eslint`'s newest release does not yet support TypeScript 7.
+
 ### 0.41.2 — a security release
 
 **One migration, and two things to check if they describe you.**
