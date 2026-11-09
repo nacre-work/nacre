@@ -32,7 +32,7 @@
   ],
   "dependencies": {
     "@nacre.work/core": "workspace:*",
-    "jose": "^6.2.12",
+    "jose": "^6.2.13",
     "pg": "^8.23.1"
   },
   "devDependencies": {
