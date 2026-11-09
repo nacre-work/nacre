@@ -37,12 +37,12 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "2.0.3",
-    "@modelcontextprotocol/server": "2.3.1",
+    "@modelcontextprotocol/server": "2.4.0",
     "@nacre.work/api": "workspace:*",
     "@nacre.work/core": "workspace:*"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/client": "2.4.0",
     "@types/node": "^26.6.5",
     "esbuild": "^0.28.2"
   },
