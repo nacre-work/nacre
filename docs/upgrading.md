@@ -286,6 +286,14 @@ matching covers the whole corpus rather than the recent end of it.
 Each section says what the version asked of an operator. A release that asked
 nothing says so.
 
+### 0.41.4 — asks nothing of an operator
+
+A routine dependency sweep, no migration and no new variable. `jose` moves to
+`6.2.14` (api, core) and `@modelcontextprotocol/ext-apps` to `2.0.4` (mcp) —
+both already past this project's two-week floor, nothing load-bearing, and
+`@modelcontextprotocol/server`/`client` and `@qdrant/js-client-rest` stay where
+0.41.3 left them. Nothing to configure: pull the images.
+
 ### 0.41.3 — asks nothing of an operator
 
 A routine dependency sweep, no migration and no new variable. The one fix
