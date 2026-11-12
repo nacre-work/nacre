@@ -1,6 +1,6 @@
 {
   "name": "@nacre.work/api",
-  "version": "0.41.3",
+  "version": "0.41.4",
   "description": "Nacre REST API and authorization service",
   "repository": {
     "type": "git",
@@ -32,7 +32,7 @@
   ],
   "dependencies": {
     "@nacre.work/core": "workspace:*",
-    "jose": "^6.2.13",
+    "jose": "^6.2.14",
     "pg": "^8.23.1"
   },
   "devDependencies": {
