@@ -9,6 +9,9 @@
     <a href="./docs/quickstart.md">Quickstart</a> ·
     <a href="https://github.com/nacre-work/nacre/discussions">Discussions</a>
   </p>
+  <p>
+    <a href="https://www.opensourcealternatives.to"><img src="https://www.opensourcealternatives.to/badge-osa.svg" alt="As seen on Open Source Alternatives"></a>
+  </p>
 </div>
 
 ---
