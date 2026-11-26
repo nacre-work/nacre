@@ -203,3 +203,9 @@ person being asked.
 If it saved you a week, the Sponsor button at the top of this repository is the
 other way to say so. Nothing in this repository is behind it, and nothing will
 be.
+
+## Listed on
+
+<p>
+  <a href="https://www.opensourcealternatives.to"><img src="https://www.opensourcealternatives.to/badge-osa.svg" alt="As seen on Open Source Alternatives" height="24"></a>
+</p>
